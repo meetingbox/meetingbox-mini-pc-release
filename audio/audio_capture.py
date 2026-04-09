@@ -826,7 +826,10 @@ class AudioCaptureService:
       except json.JSONDecodeError:
         logger.warning("Invalid command payload: %s", message["data"])
         continue
-      self._dispatch_command(command)
+      try:
+        self._dispatch_command(command)
+      except Exception:
+        logger.exception("Error handling audio command from Redis")
 
   def run_http_poll(self) -> None:
     """
@@ -874,7 +877,11 @@ class AudioCaptureService:
         logger.warning("Invalid JSON from audio-command wait")
         continue
 
-      self._dispatch_command(command)
+      try:
+        self._dispatch_command(command)
+      except Exception:
+        logger.exception("Error handling audio command %s", command)
+
 
   def run(self) -> None:
     mode = os.getenv("AUDIO_COMMAND_SOURCE", "redis").strip().lower()

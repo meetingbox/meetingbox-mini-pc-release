@@ -608,7 +608,11 @@ class MeetingBoxApp(App):
     # ==================================================================
 
     def on_recording_started(self, data):
-        self.current_session_id = data.get('session_id')
+        sid = data.get('session_id')
+        # API + local audio may both publish recording_started when Redis is shared.
+        if sid and self.current_session_id == sid and self.recording_state.get('active'):
+            return
+        self.current_session_id = sid
         self.recording_state.update(active=True, paused=False, elapsed=0)
         Clock.schedule_once(lambda _: self.goto_screen('recording', 'fade'), 0)
 

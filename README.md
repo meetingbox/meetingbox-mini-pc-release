@@ -38,11 +38,19 @@ python3 -m venv .venv && source .venv/bin/activate && pip install -r requirement
 ./run_audio_capture.sh
 ```
 
-**UI + Docker mic** (optional):
+**UI + Docker mic** — `redis` and `audio` are gated by the **`docker-audio`** profile. Either set in `.env`:
+
+```env
+COMPOSE_PROFILES=mini-pc,docker-audio
+```
+
+or pass profiles on the CLI:
 
 ```bash
 docker compose --profile mini-pc --profile docker-audio up -d --build
 ```
+
+If you only set `COMPOSE_PROFILES=mini-pc`, the mic and Redis containers **will not start** (by design).
 
 ## Splitting into its own git repository
 

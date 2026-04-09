@@ -5,9 +5,12 @@
 #
 #   docker compose up -d --build
 #
-# Profiles (see .env.example → COMPOSE_PROFILES):
+# Profiles (set COMPOSE_PROFILES in .env — see .env.example):
 #   mini-pc, screen  — Kivy container (needs X11)
-#   docker-audio      — mic container (needs Redis from this file)
+#   docker-audio      — Redis + audio container (omitted unless profile is active!)
+#
+# One-shot without editing .env:
+#   docker compose --profile mini-pc --profile docker-audio up -d --build
 
 name: meetingbox-appliance
 
