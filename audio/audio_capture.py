@@ -838,6 +838,12 @@ class AudioCaptureService:
     elif action == "stop_mic_test":
       self.stop_mic_test()
 
+  def _refresh_auth_token(self) -> str:
+    """Re-read the token from file/env so pairing after container start works."""
+    token = _load_device_auth_token()
+    self._upload_auth_token = token
+    return token
+
   def run_redis(self) -> None:
     """Subscribe to Redis ``commands`` (same host or tunnel to server Redis)."""
     logger.info("Command: Redis channel 'commands' (host %s)", REDIS_HOST)
@@ -864,14 +870,28 @@ class AudioCaptureService:
     Requires DEVICE_AUTH_TOKEN and a reachable API; uses UPLOAD_AUDIO_API_URL or
     AUDIO_POLL_BASE_URL to find ``/api/device/audio-command/wait``.
     """
-    if not self._upload_auth_token:
-      logger.error("AUDIO_COMMAND_SOURCE=http requires DEVICE_AUTH_TOKEN (paired device token).")
-      return
+    # Wait for a token to appear (pairing may happen after container start)
+    while not self._upload_auth_token:
+      logger.info(
+        "Waiting for device auth token (pair this device from the dashboard). "
+        "Checking %s every 10s…",
+        DEVICE_AUTH_TOKEN_FILE,
+      )
+      time.sleep(10)
+      self._refresh_auth_token()
+
     base = self._poll_command_api_base()
     url = f"{base}/api/device/audio-command/wait"
-    logger.info("Command: HTTP long-poll %s", url)
+    logger.info("Command: HTTP long-poll %s (token=%s…)", url, self._upload_auth_token[:8])
 
     while True:
+      # Re-read token each iteration so a re-pair is picked up without restart
+      self._refresh_auth_token()
+      if not self._upload_auth_token:
+        logger.warning("Device auth token disappeared — waiting for re-pair…")
+        time.sleep(10)
+        continue
+
       try:
         req = urlrequest.Request(
           url,
@@ -911,31 +931,36 @@ class AudioCaptureService:
       except Exception:
         logger.exception("Error handling audio command %s", command)
 
-
   def run(self) -> None:
-    raw_mode = os.getenv("AUDIO_COMMAND_SOURCE")
-    if raw_mode is None or not str(raw_mode).strip():
-      # Default: Redis only when no device token. Paired appliances with a token
-      # almost always talk to a remote API and must long-poll — local Compose
-      # Redis never sees server-published commands.
-      if self._upload_auth_token:
-        mode = "http"
-        logger.info(
-          "AUDIO_COMMAND_SOURCE not set; using HTTP long-poll (DEVICE_AUTH_TOKEN is set). "
+    # Re-read token right now (may have been written after __init__)
+    self._refresh_auth_token()
+
+    raw_mode = os.getenv("AUDIO_COMMAND_SOURCE", "").strip().lower()
+    has_token = bool(self._upload_auth_token)
+
+    # In a split deployment (mini PC + cloud API), the local Docker Redis
+    # never receives commands published by the remote server.  If a paired
+    # device token exists, HTTP long-poll is the only mode that works.
+    if has_token and raw_mode in ("redis", ""):
+      if raw_mode == "redis":
+        logger.warning(
+          "AUDIO_COMMAND_SOURCE=redis but DEVICE_AUTH_TOKEN is set. "
+          "Overriding to HTTP long-poll — local Redis cannot receive "
+          "commands from the remote API. Remove AUDIO_COMMAND_SOURCE "
+          "from .env to silence this warning.",
         )
       else:
-        mode = "redis"
-        logger.info(
-          "AUDIO_COMMAND_SOURCE not set; using Redis channel 'commands' on %s "
-          "(no DEVICE_AUTH_TOKEN). For cloud API + mini PC, set DEVICE_AUTH_TOKEN and "
-          "leave AUDIO_COMMAND_SOURCE unset or set it to http.",
-          REDIS_HOST,
-        )
-    else:
-      mode = str(raw_mode).strip().lower()
-
-    if mode in ("http", "api", "longpoll"):
+        logger.info("Using HTTP long-poll (DEVICE_AUTH_TOKEN found).")
       self.run_http_poll()
+    elif raw_mode in ("http", "api", "longpoll"):
+      self.run_http_poll()
+    elif not has_token and raw_mode in ("redis", ""):
+      logger.info(
+        "Command: Redis channel 'commands' on %s (no device token). "
+        "For cloud API + mini PC, pair the device first or set DEVICE_AUTH_TOKEN.",
+        REDIS_HOST,
+      )
+      self.run_redis()
     else:
       self.run_redis()
 
