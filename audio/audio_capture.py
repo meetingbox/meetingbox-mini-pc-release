@@ -332,24 +332,33 @@ class AudioCaptureService:
     session_temp = self.temp_dir / session_id
     session_temp.mkdir(parents=True, exist_ok=True)
 
-    mic_index = self.find_mic_device()
-    self.stream = self.audio.open(
-      format=self.FORMAT,
-      channels=self.CAPTURE_CHANNELS,
-      rate=self.RATE,
-      input=True,
-      input_device_index=mic_index,
-      frames_per_buffer=self.CHUNK,
-    )
+    try:
+      mic_index = self.find_mic_device()
+      self.stream = self.audio.open(
+        format=self.FORMAT,
+        channels=self.CAPTURE_CHANNELS,
+        rate=self.RATE,
+        input=True,
+        input_device_index=mic_index,
+        frames_per_buffer=self.CHUNK,
+      )
 
-    output_path = self.recordings_dir / f"{session_id}.wav"
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    wav_writer = wave.open(str(output_path), "wb")
-    wav_writer.setnchannels(self.TARGET_CHANNELS)
-    wav_writer.setsampwidth(self.audio.get_sample_size(self.FORMAT))
-    wav_writer.setframerate(self.TARGET_RATE)
-    self._output_path = output_path
-    self._wav_writer = wav_writer
+      output_path = self.recordings_dir / f"{session_id}.wav"
+      output_path.parent.mkdir(parents=True, exist_ok=True)
+      wav_writer = wave.open(str(output_path), "wb")
+      wav_writer.setnchannels(self.TARGET_CHANNELS)
+      wav_writer.setsampwidth(self.audio.get_sample_size(self.FORMAT))
+      wav_writer.setframerate(self.TARGET_RATE)
+      self._output_path = output_path
+      self._wav_writer = wav_writer
+    except Exception:
+      self.is_recording = False
+      self.current_session_id = None
+      self.stream = None
+      self._output_path = None
+      self._wav_writer = None
+      logger.exception("Failed to open microphone / WAV for session %s", session_id)
+      return False
 
     self.redis_client.publish(
       "events",
@@ -852,7 +861,10 @@ class AudioCaptureService:
           headers={"Authorization": f"Bearer {self._upload_auth_token}"},
         )
         with urlrequest.urlopen(req, timeout=90) as resp:
-          if resp.status == 204:
+          status = getattr(resp, "status", None)
+          if status is None:
+            status = resp.getcode()
+          if status == 204:
             continue
           raw = resp.read().decode("utf-8", errors="replace").strip()
           if not raw:
@@ -884,7 +896,27 @@ class AudioCaptureService:
 
 
   def run(self) -> None:
-    mode = os.getenv("AUDIO_COMMAND_SOURCE", "redis").strip().lower()
+    raw_mode = os.getenv("AUDIO_COMMAND_SOURCE")
+    if raw_mode is None or not str(raw_mode).strip():
+      # Default: Redis only when no device token. Paired appliances with a token
+      # almost always talk to a remote API and must long-poll — local Compose
+      # Redis never sees server-published commands.
+      if self._upload_auth_token:
+        mode = "http"
+        logger.info(
+          "AUDIO_COMMAND_SOURCE not set; using HTTP long-poll (DEVICE_AUTH_TOKEN is set). "
+        )
+      else:
+        mode = "redis"
+        logger.info(
+          "AUDIO_COMMAND_SOURCE not set; using Redis channel 'commands' on %s "
+          "(no DEVICE_AUTH_TOKEN). For cloud API + mini PC, set DEVICE_AUTH_TOKEN and "
+          "leave AUDIO_COMMAND_SOURCE unset or set it to http.",
+          REDIS_HOST,
+        )
+    else:
+      mode = str(raw_mode).strip().lower()
+
     if mode in ("http", "api", "longpoll"):
       self.run_http_poll()
     else:
