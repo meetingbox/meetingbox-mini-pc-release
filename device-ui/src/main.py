@@ -1002,27 +1002,6 @@ class MeetingBoxApp(App):
 # ENTRY POINT
 # ==================================================================
 
-# region agent log
-_DEBUG_LOG_PATH = Path(__file__).resolve().parent.parent.parent / "debug-422319.log"
-
-
-def _debug_ndjson(hypothesis_id: str, location: str, message: str, data=None):
-    try:
-        rec = {
-            "sessionId": "422319",
-            "hypothesisId": hypothesis_id,
-            "location": location,
-            "message": message,
-            "data": data or {},
-            "timestamp": int(time.time() * 1000),
-        }
-        with open(_DEBUG_LOG_PATH, "a", encoding="utf-8") as f:
-            f.write(json.dumps(rec, default=str) + "\n")
-    except Exception:
-        pass
-# endregion
-
-
 def main():
     print(f"[MeetingBox] Starting Device UI", flush=True)
     disp = os.environ.get('DISPLAY', '(not set)')
@@ -1032,6 +1011,15 @@ def main():
     print(f"[MeetingBox] MOCK_BACKEND={os.environ.get('MOCK_BACKEND', '(not set)')}", flush=True)
 
     if sys.platform.startswith('linux'):
+        xauth = os.environ.get("XAUTHORITY", "")
+        if xauth:
+            p = Path(xauth)
+            if not p.is_file():
+                print(
+                    f"[MeetingBox] WARNING: XAUTHORITY={xauth!r} is not a readable file — "
+                    "set XAUTHORITY_HOST in .env to the host cookie (see mini-pc/.env.example).",
+                    flush=True,
+                )
         if not shutil.which('xclip') and not shutil.which('xsel'):
             print(
                 '[MeetingBox] Tip: sudo apt install xclip  '
@@ -1046,6 +1034,14 @@ def main():
                 'local session e.g. DISPLAY=:0',
                 flush=True,
             )
+        x0 = Path("/tmp/.X11-unix/X0")
+        if not x0.exists():
+            print(
+                "[MeetingBox] WARNING: no /tmp/.X11-unix/X0 — no X server on :0 inside this "
+                "environment. On the mini PC: log in on the built-in screen (local graphical "
+                "session), or use Xorg not Wayland-only, or set DISPLAY=:1 if X uses that.",
+                flush=True,
+            )
 
     import subprocess
     try:
@@ -1055,20 +1051,6 @@ def main():
         print(f"[MeetingBox] X11 socket dir: {result.stdout.strip()}", flush=True)
     except Exception as e:
         print(f"[MeetingBox] X11 socket check failed: {e}", flush=True)
-
-    # region agent log
-    _debug_ndjson(
-        "H1",
-        "main.py:main",
-        "startup_env",
-        {
-            "DISPLAY": os.environ.get("DISPLAY"),
-            "WAYLAND_DISPLAY": os.environ.get("WAYLAND_DISPLAY"),
-            "XDG_SESSION_TYPE": os.environ.get("XDG_SESSION_TYPE"),
-            "X0_exists": Path("/tmp/.X11-unix/X0").exists(),
-        },
-    )
-    # endregion
 
     logger.info("Starting MeetingBox Device UI")
     try:

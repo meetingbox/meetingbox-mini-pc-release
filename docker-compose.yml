@@ -77,9 +77,13 @@ services:
       - BACKEND_URL=${BACKEND_URL:-http://host.docker.internal:8000}
       - BACKEND_WS_URL=${BACKEND_WS_URL:-}
       - DASHBOARD_URL=${DASHBOARD_URL:-}
-      - DISPLAY=${DISPLAY:-:0}
+      # Use DEVICE_UI_DISPLAY — not shell DISPLAY. SSH sets DISPLAY=localhost:10.0 which
+      # breaks the kiosk X socket; local panel is almost always :0 or :1.
+      - DISPLAY=${DEVICE_UI_DISPLAY:-:0}
       # Match cookie mount below — fixes "Authorization required, but no authorization protocol specified"
       - XAUTHORITY=/home/uiuser/.Xauthority
+      # Prefer X11 via host socket (avoids SDL trying Wayland inside the container)
+      - SDL_VIDEODRIVER=x11
       - KIVY_WINDOW=sdl2
       - KIVY_NO_CONSOLELOG=1
       - FULLSCREEN=${FULLSCREEN:-0}
