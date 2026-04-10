@@ -48,10 +48,17 @@ else
   echo "WARNING: no $ASU — create user or log in once, then re-run or add XSession=meetingbox-kiosk manually."
 fi
 
+# GDM: skip Ubuntu greeter / session list — jump straight into meetingbox-kiosk X session.
+if [[ -f /etc/gdm3/custom.conf ]]; then
+  bash "$MINI_PC_ROOT/scripts/patch-gdm-autologin-kiosk.sh" /etc/gdm3/custom.conf "$RUN_AS_USER"
+else
+  echo "WARNING: /etc/gdm3/custom.conf missing — set AutomaticLogin + AutomaticLoginSession=meetingbox-kiosk manually."
+fi
+
 echo ""
 echo "Done."
-echo "  1) sudo systemctl disable meetingbox-appliance.service   # optional: session starts Compose itself"
-echo "  2) Reboot. You should see a black screen, then the MeetingBox app — not the Ubuntu dock."
-echo "  3) To get the normal Ubuntu desktop back: edit $ASU → XSession=ubuntu (or delete XSession line)"
+echo "  1) sudo systemctl disable meetingbox-appliance.service   # session starts Compose itself"
+echo "  2) Reboot — you should NOT see the Ubuntu desktop; auto-login goes straight to black screen + app."
+echo "  3) Normal Ubuntu again: remove MeetingBox block from /etc/gdm3/custom.conf; set XSession=ubuntu in $ASU"
 echo ""
-echo "You will still see the motherboard logo and GDM for a moment; that is normal without a custom OEM image."
+echo "Still see GDM purple/orange flash? Use scripts/install-xinit-no-gdm.sh (disables GDM entirely; advanced)."

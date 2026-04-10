@@ -11,8 +11,11 @@ This folder contains everything that normally runs on the **meeting room device*
 | `docker-compose.yml` | Optional: run UI and/or Docker audio on the device |
 | `.env.example` | All appliance env vars — copy to `.env` |
 | `scripts/install-boot-service.sh` | **systemd**: start the Compose stack at boot (kiosk) |
-| `scripts/install-gdm-kiosk-session.sh` | **No GNOME desktop** — black screen + MeetingBox only |
+| `scripts/install-gdm-kiosk-session.sh` | GDM **direct** into kiosk session + `custom.conf` autologin |
+| `scripts/install-xinit-no-gdm.sh` | **Disable GDM** — tty1 `startx` → app only (advanced) |
+| `scripts/revert-xinit-no-gdm.sh` | Restore GDM / graphical target |
 | `kiosk-desktop/meetingbox-kiosk.desktop` | GDM “MeetingBox Kiosk” session |
+| `kiosk-desktop/xinitrc-meetingbox` | `startx` script when GDM is off |
 
 ## Quick start (mini PC only)
 
@@ -79,22 +82,39 @@ For a “single app” feel, hide or disable the host desktop panel/taskbar in y
 
 The boot script runs **`docker compose up -d` once** (no immediate `--force-recreate` of the UI) so the fullscreen app is not stopped and restarted a second time on every boot.
 
-### “Firmware-like” boot — no Ubuntu dashboard (recommended for a dedicated panel)
+### Boot straight into the app — no Ubuntu desktop (two levels)
 
-Full **GNOME** (dock, Activities, wallpaper) always adds delay and a visible desktop. For a room device, install a **minimal GDM X session** that shows only a **black screen** and then your **Docker fullscreen UI**:
+**Goal:** never show the normal Ubuntu/GNOME session (dock, Activities, purple wallpaper). The MeetingBox UI should appear at **login level**, not “on top of” a full desktop.
+
+#### Level A — GDM auto-login → MeetingBox session only (recommended first)
+
+Installs a minimal **X session** (`meetingbox-kiosk`: black screen + Openbox + Docker UI) and patches **`/etc/gdm3/custom.conf`** so GDM **auto-logs in** with **`AutomaticLoginSession=meetingbox-kiosk`**. You should **not** get the Ubuntu desktop or session chooser — only a possible **brief** GDM/video mode flash before the black screen and app.
 
 ```bash
 cd /path/to/meetingbox-mini-pc-release
 sudo bash scripts/install-gdm-kiosk-session.sh
-sudo systemctl disable meetingbox-appliance.service   # session runs ``docker compose`` itself
+sudo systemctl disable meetingbox-appliance.service
 sudo reboot
 ```
 
-The installer adds **`MeetingBox Kiosk`** to the login screen, installs **Openbox** (~2 MB) for window management, writes **`/etc/meetingbox/release`** with your install path, and sets **`XSession=meetingbox-kiosk`** for your auto-login user in **AccountsService**.
+The installer also sets **`WaylandEnable=false`** (stable X11 path) and **`XSession=meetingbox-kiosk`** in **AccountsService** as a fallback.
 
-You will still see **firmware/BIOS**, then **GDM** for a short moment — eliminating that requires a custom boot splash / OEM image, not an app change.
+**Revert:** remove the `MeetingBox kiosk autologin` block from **`/etc/gdm3/custom.conf`** (backups are created beside it); set **`XSession=ubuntu`** in **`/var/lib/AccountsService/users/<you>`**; **`sudo systemctl enable gdm3`** if needed; reboot.
 
-**Revert to normal Ubuntu desktop:** edit `/var/lib/AccountsService/users/<you>` → `XSession=ubuntu` (or remove the `XSession` line), reboot.
+#### Level B — no GDM at all (no Ubuntu login UI)
+
+Disables **GDM**, sets **`multi-user.target`**, **auto-login on tty1**, and runs **`startx`** with **`~/.xinitrc-meetingbox`**. You will **not** see the GDM greeter. You will still see **BIOS/kernel** text unless you tune **`quiet splash`** / Plymouth separately.
+
+```bash
+cd /path/to/meetingbox-mini-pc-release
+MEETINGBOX_I_KNOW=1 sudo bash scripts/install-xinit-no-gdm.sh
+sudo systemctl disable meetingbox-appliance.service
+sudo reboot
+```
+
+Keep **SSH** available from another machine the first time. **Revert:** `sudo bash scripts/revert-xinit-no-gdm.sh`, then remove the **`# --- MEETINGBOX_XINIT_...`** block from **`~/.profile`** if you want it gone, reboot.
+
+**Honest limit:** hiding **all** vendor branding (BIOS logo, Ubuntu plymouth) needs an **OEM/custom image**, not application code alone.
 
 ## Splitting into its own git repository
 

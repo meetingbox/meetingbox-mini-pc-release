@@ -1,0 +1,26 @@
+#!/bin/bash
+# startx entry: no GDM — black screen, Openbox, Docker MeetingBox UI.
+# Installed to ~/.xinitrc-meetingbox by install-xinit-no-gdm.sh
+
+export PATH="/usr/sbin:/usr/bin:/usr/local/bin:$PATH"
+
+RELEASE="$(tr -d '\n' </etc/meetingbox/release 2>/dev/null || echo "$HOME/meetingbox-mini-pc-release")"
+RELEASE=$(cd "$RELEASE" && pwd)
+
+xsetroot -solid '#000000' 2>/dev/null || true
+command -v openbox >/dev/null 2>&1 && openbox >/dev/null 2>&1 &
+sleep 0.25
+
+echo "xinit-meetingbox: waiting for Docker..."
+for _ in $(seq 1 120); do
+  docker info >/dev/null 2>&1 && break
+  sleep 0.5
+done
+
+if [[ -f "$RELEASE/scripts/kiosk-compose-up.sh" ]]; then
+  bash "$RELEASE/scripts/kiosk-compose-up.sh" "$RELEASE" || true
+else
+  logger -t meetingbox-xinit "missing $RELEASE/scripts/kiosk-compose-up.sh"
+fi
+
+exec tail -f /dev/null
