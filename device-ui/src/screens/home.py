@@ -197,18 +197,23 @@ class HomeScreen(BaseScreen):
         tfs = int(FONT_SIZES["body"] * sv)
         tr = max(10, int(14 * sv))
         bfs = int(104 * sv)
-        bfh = max(96, int(124 * sv))
+        # Clock line needs headroom so glyphs do not collide with the row below.
+        bfh = max(96, int(124 * sv), int(bfs * 1.22))
         dfs = int(FONT_SIZES["body"] * sv)
-        dfh = max(22, int(26 * sv))
+        dfh = max(22, int(26 * sv), int(dfs * 1.35))
         ufs = int(FONT_SIZES["medium"] * sv)
-        ufh = max(44, int(52 * sv))
+        # Upcoming is two lines; fixed height must fit both at ufs.
+        ufh = max(44, int(52 * sv), int(ufs * 2.85))
         stats_spacing = max(6, int(8 * sv))
-        stats_col_h = max(58, int(66 * sv))
+        stat_row_h = max(24, int(28 * sv))
+        # Stats BoxLayout height must equal two rows + spacing or inner layout overlaps.
+        stats_col_h = max(58, stat_row_h * 2 + stats_spacing)
         # Button nearly full column width on ultrawide; scale with width ratio.
         btn_w = min(max(400, col_w - 96), int(440 * sh))
         btn_h = max(56, int(70 * sv))
-        btn_row_h = max(72, int(88 * sv))
         btn_pad_b = max(14, int(22 * sv))
+        # Row height minus bottom padding is the slot for the button; btn_h must fit inside.
+        btn_row_h = max(72, int(88 * sv), btn_h + btn_pad_b + 8)
         start_fs = int(FONT_SIZES["large"] * sv)
         sym_fs = int(FONT_SIZES["title"] * sv)
 
@@ -363,7 +368,7 @@ class HomeScreen(BaseScreen):
         )
 
         def _stat_row(dot_color, initial_text, attr_prefix):
-            row_h = max(24, int(28 * sv))
+            row_h = stat_row_h
             badge_w = min(max(280, col_w - 160), int(280 * sh))
             small_fs = int(FONT_SIZES["small"] * sv)
             row = BoxLayout(
