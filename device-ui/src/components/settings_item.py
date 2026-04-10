@@ -67,9 +67,9 @@ class SettingsItem(ButtonBehavior, BoxLayout):
         if on_press and mode == 'arrow':
             self.bind(on_press=on_press)
 
-        # Card background
+        # Card background (keep Color + rect; update rgba on press — avoid clear()+rebuild)
         with self.canvas.before:
-            Color(*COLORS['surface'])
+            self._bg_color = Color(*COLORS['surface'])
             self._bg = RoundedRectangle(
                 pos=self.pos, size=self.size, radius=[BORDER_RADIUS])
         self.bind(
@@ -134,15 +134,8 @@ class SettingsItem(ButtonBehavior, BoxLayout):
     # Press feedback
     def on_press(self):
         if self._mode == 'arrow':
-            with self.canvas.before:
-                self.canvas.before.clear()
-                Color(*COLORS['surface_light'])
-                self._bg = RoundedRectangle(
-                    pos=self.pos, size=self.size, radius=[BORDER_RADIUS])
+            self._bg_color.rgba = COLORS['surface_light']
 
     def on_release(self):
-        self.canvas.before.clear()
-        with self.canvas.before:
-            Color(*COLORS['surface'])
-            self._bg = RoundedRectangle(
-                pos=self.pos, size=self.size, radius=[BORDER_RADIUS])
+        if self._mode == 'arrow':
+            self._bg_color.rgba = COLORS['surface']

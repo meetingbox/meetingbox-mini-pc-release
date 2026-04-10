@@ -5,6 +5,7 @@ PRD §5.11 – Sections: DEVICE, NETWORK, STORAGE, SYSTEM,
 PRIVACY, DISPLAY, AUDIO, INTEGRATIONS, MAINTENANCE, SUPPORT.
 """
 
+import asyncio
 import logging
 
 from kivy.uix.boxlayout import BoxLayout
@@ -64,9 +65,10 @@ class SettingsScreen(BaseScreen):
         root.add_widget(self.status_bar)
 
         # Scrollable items
-        scroll = ScrollView(do_scroll_x=False)
+        scroll = ScrollView(do_scroll_x=False, scroll_distance=12)
         self.container = GridLayout(
             cols=1,
+            size_hint_x=1,
             spacing=self.suv(SPACING['list_item_spacing']),
             padding=[self.suh(SPACING['screen_padding']), self.suv(8)],
             size_hint_y=None,
@@ -288,7 +290,19 @@ class SettingsScreen(BaseScreen):
     def _load_system_info(self):
         async def _fetch():
             try:
-                info = await self.backend.get_system_info()
+                results = await asyncio.gather(
+                    self.backend.get_system_info(),
+                    self.backend.get_settings(),
+                    self.backend.get_integrations(),
+                    return_exceptions=True,
+                )
+                info = results[0] if not isinstance(results[0], Exception) else {}
+                settings = (
+                    results[1] if not isinstance(results[1], Exception) else {}
+                )
+                integrations = (
+                    results[2] if not isinstance(results[2], Exception) else []
+                )
 
                 wifi_ssid = info.get('wifi_ssid', 'N/A')
                 sig = info.get('wifi_signal', 0)
@@ -308,7 +322,6 @@ class SettingsScreen(BaseScreen):
                 up_d = up_s // 86400
                 up_h = (up_s % 86400) // 3600
 
-                settings = await self.backend.get_settings()
                 ad = settings.get('auto_delete_days', 'never')
                 ad_labels = {'never': 'Never', '30': 'After 30 days',
                              '60': 'After 60 days', '90': 'After 90 days'}
@@ -317,6 +330,23 @@ class SettingsScreen(BaseScreen):
                 to = settings.get('screen_timeout', 'never')
                 to_labels = {'never': 'Never', '5': 'After 5 min',
                              '10': 'After 10 min'}
+
+                gmail_status = f'Configure at {DASHBOARD_URL}'
+                cal_status = f'Configure at {DASHBOARD_URL}'
+                for integ in integrations:
+                    iid = (integ.get('id') or '').lower()
+                    iname = (integ.get('name') or '').lower()
+                    connected = bool(integ.get('connected'))
+                    email = (integ.get('email') or '').strip()
+                    acct = f' · {email}' if email else ''
+                    if iid == 'gmail' or 'gmail' in iname or 'mail' in iname:
+                        gmail_status = (
+                            f'Connected{acct}' if connected else f'Not connected · use {DASHBOARD_URL}'
+                        )
+                    elif iid == 'calendar' or 'calendar' in iname:
+                        cal_status = (
+                            f'Connected{acct}' if connected else f'Not connected · use {DASHBOARD_URL}'
+                        )
 
                 def _update(_dt):
                     self.wifi_item.subtitle_label.text = wifi_text
@@ -337,6 +367,9 @@ class SettingsScreen(BaseScreen):
                     self.app.auto_record = auto_rec
                     self.auto_record_item.toggle.active = auto_rec
 
+                    self.gmail_item.subtitle_label.text = gmail_status
+                    self.calendar_item.subtitle_label.text = cal_status
+
                     wifi_ok = bool(info.get('wifi_ssid'))
                     privacy = getattr(self.app, 'privacy_mode', False)
                     self.update_footer(wifi_ok=wifi_ok, free_gb=sf,
@@ -347,7 +380,6 @@ class SettingsScreen(BaseScreen):
                 pass
 
         run_async(_fetch())
-        self._load_integrations()
 
     # ------------------------------------------------------------------
     # Device name info dialog
@@ -362,39 +394,6 @@ class SettingsScreen(BaseScreen):
             cancel_text='',
         )
         self.add_widget(dialog)
-
-    # ------------------------------------------------------------------
-    # Integrations
-    # ------------------------------------------------------------------
-    def _load_integrations(self):
-        async def _fetch():
-            try:
-                integrations = await self.backend.get_integrations()
-                gmail_status = f'Configure at {DASHBOARD_URL}'
-                cal_status = f'Configure at {DASHBOARD_URL}'
-                for integ in integrations:
-                    iid = (integ.get('id') or '').lower()
-                    name = (integ.get('name') or '').lower()
-                    connected = bool(integ.get('connected'))
-                    email = (integ.get('email') or '').strip()
-                    acct = f' · {email}' if email else ''
-                    if iid == 'gmail' or 'gmail' in name or 'mail' in name:
-                        gmail_status = (
-                            f'Connected{acct}' if connected else f'Not connected · use {DASHBOARD_URL}'
-                        )
-                    elif iid == 'calendar' or 'calendar' in name:
-                        cal_status = (
-                            f'Connected{acct}' if connected else f'Not connected · use {DASHBOARD_URL}'
-                        )
-
-                def _update(_dt):
-                    self.gmail_item.subtitle_label.text = gmail_status
-                    self.calendar_item.subtitle_label.text = cal_status
-
-                Clock.schedule_once(_update, 0)
-            except Exception:
-                pass
-        run_async(_fetch())
 
     # ------------------------------------------------------------------
     # Privacy toggle

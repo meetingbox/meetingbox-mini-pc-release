@@ -14,8 +14,10 @@ from config import (
     COLORS,
     FONT_SIZES,
     SPACING,
+    display_now,
     other_screen_horizontal_scale,
     other_screen_vertical_scale,
+    to_display_local,
 )
 
 
@@ -52,9 +54,9 @@ class MeetingCard(ButtonBehavior, BoxLayout):
 
         super().__init__(**kwargs)
 
-        # Background
+        # Background (avoid canvas.before.clear on press — smoother scrolling)
         with self.canvas.before:
-            Color(*COLORS['surface'])
+            self._bg_color = Color(*COLORS['surface'])
             self._bg = RoundedRectangle(
                 pos=self.pos, size=self.size, radius=[BORDER_RADIUS])
         self.bind(
@@ -99,9 +101,12 @@ class MeetingCard(ButtonBehavior, BoxLayout):
             self.add_widget(pa)
 
     def _format_meta(self) -> str:
-        start = datetime.fromisoformat(
-            self.meeting['start_time'].replace('Z', '+00:00'))
-        now = datetime.now(start.tzinfo)
+        start = to_display_local(
+            datetime.fromisoformat(
+                self.meeting['start_time'].replace('Z', '+00:00')
+            )
+        )
+        now = display_now()
         delta = now - start
         if delta < timedelta(hours=1):
             ago = f"{int(delta.total_seconds() / 60)} min ago"
@@ -115,15 +120,7 @@ class MeetingCard(ButtonBehavior, BoxLayout):
         return ago
 
     def on_press(self):
-        self.canvas.before.clear()
-        with self.canvas.before:
-            Color(*COLORS['surface_light'])
-            self._bg = RoundedRectangle(
-                pos=self.pos, size=self.size, radius=[BORDER_RADIUS])
+        self._bg_color.rgba = COLORS['surface_light']
 
     def on_release(self):
-        self.canvas.before.clear()
-        with self.canvas.before:
-            Color(*COLORS['surface'])
-            self._bg = RoundedRectangle(
-                pos=self.pos, size=self.size, radius=[BORDER_RADIUS])
+        self._bg_color.rgba = COLORS['surface']

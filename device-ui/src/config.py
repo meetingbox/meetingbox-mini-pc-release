@@ -97,6 +97,48 @@ TARGET_FPS = int(os.getenv('TARGET_FPS', '30'))
 FULLSCREEN = os.getenv('FULLSCREEN', '0') == '1'
 
 # ============================================================================
+# DISPLAY CLOCK (wall time in UI — default India Standard Time)
+# ============================================================================
+# Set DISPLAY_TIMEZONE to an IANA name (e.g. Europe/London) if needed.
+# If zoneinfo data is missing, falls back to fixed UTC+5:30.
+
+
+def _load_display_tzinfo():
+    from datetime import timedelta, timezone
+
+    name = (os.getenv("DISPLAY_TIMEZONE") or "Asia/Kolkata").strip() or "Asia/Kolkata"
+    try:
+        from zoneinfo import ZoneInfo
+
+        return ZoneInfo(name)
+    except Exception:
+        logger.warning(
+            "DISPLAY_TIMEZONE %r unavailable (install tzdata on this OS); using UTC+5:30",
+            name,
+        )
+        return timezone(timedelta(hours=5, minutes=30))
+
+
+DISPLAY_TZINFO = _load_display_tzinfo()
+
+
+def display_now():
+    """Current time in the configured display timezone (default IST)."""
+    from datetime import datetime
+
+    return datetime.now(DISPLAY_TZINFO)
+
+
+def to_display_local(dt):
+    """Convert an aware datetime to the display timezone; naive values treated as UTC."""
+    from datetime import datetime, timezone
+
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(DISPLAY_TZINFO)
+
+
+# ============================================================================
 # TOUCH SETTINGS
 # ============================================================================
 

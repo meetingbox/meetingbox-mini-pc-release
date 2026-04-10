@@ -16,7 +16,7 @@ from screens.base_screen import BaseScreen
 from components.status_bar import StatusBar
 from components.button import SecondaryButton, DangerButton
 from components.action_item import ActionItemWidget
-from config import COLORS, FONT_SIZES, SPACING
+from config import COLORS, FONT_SIZES, SPACING, to_display_local
 
 
 class MeetingDetailScreen(BaseScreen):
@@ -126,7 +126,8 @@ class MeetingDetailScreen(BaseScreen):
         start = datetime.fromisoformat(
             self.meeting['start_time'].replace('Z', '+00:00'))
         dur = self.meeting.get('duration', 0) // 60
-        self.meta_label.text = f"{start.strftime('%b %d, %I:%M %p')} · {dur}min"
+        local_start = to_display_local(start)
+        self.meta_label.text = f"{local_start.strftime('%b %d, %I:%M %p')} · {dur}min"
 
         summary = self.meeting.get('summary', {})
         self._populate_summary(summary)

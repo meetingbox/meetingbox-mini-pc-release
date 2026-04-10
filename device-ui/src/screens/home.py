@@ -22,9 +22,11 @@ from config import (
     FONT_SIZES,
     HOME_CONTENT_SCALE,
     SPACING,
+    display_now,
     home_center_column_width,
     home_layout_horizontal_scale,
     home_layout_vertical_scale,
+    to_display_local,
 )
 from screens.base_screen import BaseScreen
 
@@ -69,7 +71,7 @@ def _format_home_next_meeting(next_meeting) -> str:
     try:
         if "T" in start:
             dt = datetime.fromisoformat(start.replace("Z", "+00:00"))
-            line = dt.strftime("%a %b %d · %I:%M %p")
+            line = to_display_local(dt).strftime("%a %b %d · %I:%M %p")
         else:
             d = datetime.strptime(start[:10], "%Y-%m-%d")
             line = d.strftime("%a %b %d (all day)")
@@ -472,7 +474,7 @@ class HomeScreen(BaseScreen):
         self.app.start_recording()
 
     def _update_clock_labels(self):
-        now = datetime.now()
+        now = display_now()
         self.top_time_label.text = now.strftime("%H:%M")
         self.big_time_label.text = now.strftime("%H:%M")
         self.date_label.text = f"{now.strftime('%A, %B')} {now.day}"

@@ -29,6 +29,7 @@ from config import (
     FONT_SIZES,
     OTHER_CONTENT_SCALE,
     SPACING,
+    display_now,
     home_center_column_width,
     other_screen_horizontal_scale,
     other_screen_vertical_scale,
@@ -154,6 +155,20 @@ class RecordingScreen(BaseScreen):
             360,
             min(DISPLAY_WIDTH, int(home_center_column_width() * OTHER_CONTENT_SCALE)),
         )
+        # Must fit pause+end row and paused resume+end row (scaled), or controls clip.
+        min_active = (
+            self.suh(268)
+            + self.suh(252)
+            + self.suh(24)
+            + 2 * self.suh(SPACING["screen_padding"] * 3)
+        )
+        min_paused = (
+            self.suh(292)
+            + self.suh(252)
+            + 2 * self.suh(SPACING["screen_padding"])
+        )
+        col_w = max(col_w, min_active, min_paused)
+        col_w = min(col_w, DISPLAY_WIDTH)
         mid_anchor = AnchorLayout(
             size_hint=(1, 1),
             anchor_x="center",
@@ -569,7 +584,7 @@ class RecordingScreen(BaseScreen):
         self.waveform.set_active(False)
         self.waveform.set_levels([2] * _Waveform.NUM_BARS)
 
-        now = datetime.now()
+        now = display_now()
         self._paused_at_text = now.strftime("%H:%M")
         self.paused_title.text = f"Paused at {self._paused_at_text}"
         self.paused_duration.text = f"Meeting duration: {self._fmt_time(self.elapsed_seconds)}"
