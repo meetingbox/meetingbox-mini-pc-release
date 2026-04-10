@@ -393,24 +393,17 @@ class RecordingScreen(BaseScreen):
         paused_title_fs = self.suf(52)
         paused_title_h = self.suv(70)
         self._paused_ampm_font = max(12, int(paused_title_fs * 0.40))
-        paused_title_wrap = AnchorLayout(
+        self._paused_time_gap = self.suh(4)
+        self._paused_time_float = FloatLayout(
             size_hint=(1, None),
             height=paused_title_h,
-            anchor_x="center",
-            anchor_y="center",
-        )
-        paused_row = BoxLayout(
-            orientation="horizontal",
-            size_hint=(None, None),
-            height=paused_title_h,
-            spacing=self.suh(4),
         )
         self._paused_prefix = Label(
             text="Paused at ",
             font_size=paused_title_fs,
             bold=True,
             color=COLORS["white"],
-            size_hint=(None, 1),
+            size_hint=(None, None),
             halign="left",
             valign="middle",
         )
@@ -419,8 +412,8 @@ class RecordingScreen(BaseScreen):
             font_size=paused_title_fs,
             bold=True,
             color=COLORS["white"],
-            size_hint=(None, 1),
-            halign="left",
+            size_hint=(None, None),
+            halign="center",
             valign="middle",
         )
         self._paused_ap = Label(
@@ -428,31 +421,43 @@ class RecordingScreen(BaseScreen):
             font_size=self._paused_ampm_font,
             bold=True,
             color=COLORS["white"],
-            size_hint=(None, 1),
+            size_hint=(None, None),
             halign="left",
             valign="middle",
         )
+        self._paused_time_float.add_widget(self._paused_prefix)
+        self._paused_time_float.add_widget(self._paused_hm)
+        self._paused_time_float.add_widget(self._paused_ap)
 
-        def _sync_paused_row(*_a):
-            self._paused_prefix.width = max(int(self._paused_prefix.texture_size[0]), 1)
-            self._paused_hm.width = max(int(self._paused_hm.texture_size[0]), 1)
-            self._paused_ap.width = max(int(self._paused_ap.texture_size[0]), 1)
-            nsp = 2 * paused_row.spacing
-            paused_row.width = (
-                self._paused_prefix.width
-                + self._paused_hm.width
-                + self._paused_ap.width
-                + nsp
-            )
+        def _layout_paused_time(*_a):
+            fl = self._paused_time_float
+            pr, hm, ap = self._paused_prefix, self._paused_hm, self._paused_ap
+            w, h = float(fl.width), float(fl.height)
+            if w < 2 or h < 2:
+                return
+            gap = self._paused_time_gap
+            hm_w = max(int(hm.texture_size[0]), 1)
+            hm_h = max(int(hm.texture_size[1]), 1)
+            ap_w = max(int(ap.texture_size[0]), 1)
+            ap_h = max(int(ap.texture_size[1]), 1)
+            pr_w = max(int(pr.texture_size[0]), 1)
+            pr_h = max(int(pr.texture_size[1]), 1)
+            hm.size = (hm_w, hm_h)
+            ap.size = (ap_w, ap_h)
+            pr.size = (pr_w, pr_h)
+            cx = w * 0.5
+            hm.x = cx - hm_w * 0.5
+            hm.y = (h - hm_h) * 0.5
+            ap.x = cx + hm_w * 0.5 + gap
+            ap.y = (h - ap_h) * 0.5
+            pr.x = hm.x - gap - pr_w
+            pr.y = (h - pr_h) * 0.5
 
-        self._paused_prefix.bind(texture_size=_sync_paused_row)
-        self._paused_hm.bind(texture_size=_sync_paused_row)
-        self._paused_ap.bind(texture_size=_sync_paused_row)
-        paused_row.add_widget(self._paused_prefix)
-        paused_row.add_widget(self._paused_hm)
-        paused_row.add_widget(self._paused_ap)
-        paused_title_wrap.add_widget(paused_row)
-        ov_content.add_widget(paused_title_wrap)
+        self._paused_time_float.bind(size=_layout_paused_time)
+        self._paused_prefix.bind(texture_size=_layout_paused_time)
+        self._paused_hm.bind(texture_size=_layout_paused_time)
+        self._paused_ap.bind(texture_size=_layout_paused_time)
+        ov_content.add_widget(self._paused_time_float)
 
         self.paused_duration = Label(
             text="Meeting duration: 00:00",

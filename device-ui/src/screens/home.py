@@ -184,7 +184,8 @@ class HomeScreen(BaseScreen):
         room_icon_px = max(22, int(26 * sv))
         icon_holder_w = max(32, int(38 * sv))
         room_fs = int(FONT_SIZES["medium"] * sv)
-        ttw = max(100, int(118 * sv))
+        # Wide enough for HH:MM centered in chip with AM/PM to the right of center.
+        ttw = max(128, int(138 * sv))
         tth = max(28, int(34 * sv))
         tfs = int(FONT_SIZES["body"] * sv)
         self._top_ampm_font = max(9, int(tfs * 0.58))
@@ -254,6 +255,7 @@ class HomeScreen(BaseScreen):
         right.add_widget(Widget())
 
         time_chip_spacing = max(2, int(4 * sh))
+        self._top_time_chip_spacing = time_chip_spacing
         self.top_time_chip = BoxLayout(
             orientation="vertical",
             size_hint=(None, None),
@@ -268,45 +270,49 @@ class HomeScreen(BaseScreen):
             pos=lambda w, _: setattr(self._time_bg, "pos", w.pos),
             size=lambda w, _: setattr(self._time_bg, "size", w.size),
         )
-        top_time_center = AnchorLayout(size_hint=(1, 1))
-        top_time_row = BoxLayout(
-            orientation="horizontal",
-            size_hint=(None, None),
-            height=tth,
-            spacing=time_chip_spacing,
-        )
+        self._top_time_float = FloatLayout(size_hint=(1, 1))
         self._top_clock_hm = Label(
             text="--:--",
             font_size=tfs,
             color=COLORS["white"],
-            size_hint=(None, 1),
-            halign="right",
+            size_hint=(None, None),
+            halign="center",
             valign="middle",
         )
         self._top_clock_ap = Label(
             text="",
             font_size=self._top_ampm_font,
             color=COLORS["white"],
-            size_hint=(None, 1),
+            size_hint=(None, None),
             halign="left",
             valign="middle",
         )
+        self._top_time_float.add_widget(self._top_clock_hm)
+        self._top_time_float.add_widget(self._top_clock_ap)
 
-        def _sync_top_clock_row(*_a):
-            self._top_clock_hm.width = max(int(self._top_clock_hm.texture_size[0]), 1)
-            self._top_clock_ap.width = max(int(self._top_clock_ap.texture_size[0]), 1)
-            top_time_row.width = (
-                self._top_clock_hm.width
-                + self._top_clock_ap.width
-                + top_time_row.spacing
-            )
+        def _layout_top_time_clock(*_a):
+            chip = self.top_time_chip
+            hm, ap = self._top_clock_hm, self._top_clock_ap
+            w, h = float(chip.width), float(chip.height)
+            if w < 2 or h < 2:
+                return
+            gap = self._top_time_chip_spacing
+            hm_w = max(int(hm.texture_size[0]), 1)
+            hm_h = max(int(hm.texture_size[1]), 1)
+            ap_w = max(int(ap.texture_size[0]), 1)
+            ap_h = max(int(ap.texture_size[1]), 1)
+            hm.size = (hm_w, hm_h)
+            ap.size = (ap_w, ap_h)
+            cx = w * 0.5
+            hm.x = cx - hm_w * 0.5
+            hm.y = (h - hm_h) * 0.5
+            ap.x = cx + hm_w * 0.5 + gap
+            ap.y = (h - ap_h) * 0.5
 
-        self._top_clock_hm.bind(texture_size=_sync_top_clock_row)
-        self._top_clock_ap.bind(texture_size=_sync_top_clock_row)
-        top_time_row.add_widget(self._top_clock_hm)
-        top_time_row.add_widget(self._top_clock_ap)
-        top_time_center.add_widget(top_time_row)
-        self.top_time_chip.add_widget(top_time_center)
+        self.top_time_chip.bind(size=_layout_top_time_clock)
+        self._top_clock_hm.bind(texture_size=_layout_top_time_clock)
+        self._top_clock_ap.bind(texture_size=_layout_top_time_clock)
+        self.top_time_chip.add_widget(self._top_time_float)
         right.add_widget(self.top_time_chip)
 
         self.wifi_chip = _IconChip(
@@ -351,25 +357,15 @@ class HomeScreen(BaseScreen):
         inner.add_widget(Widget())
 
         big_time_spacing = max(4, int(6 * sh))
-        big_time_wrap = AnchorLayout(
-            size_hint=(1, None),
-            height=bfh,
-            anchor_x="center",
-            anchor_y="center",
-        )
-        big_time_row = BoxLayout(
-            orientation="horizontal",
-            size_hint=(None, None),
-            height=bfh,
-            spacing=big_time_spacing,
-        )
+        self._big_time_spacing = big_time_spacing
+        self._big_time_float = FloatLayout(size_hint=(1, None), height=bfh)
         self._big_clock_hm = Label(
             text="--:--",
             font_size=bfs,
             bold=True,
             color=COLORS["white"],
-            size_hint=(None, 1),
-            halign="right",
+            size_hint=(None, None),
+            halign="center",
             valign="middle",
         )
         self._big_clock_ap = Label(
@@ -377,26 +373,36 @@ class HomeScreen(BaseScreen):
             font_size=self._big_ampm_font,
             bold=True,
             color=COLORS["white"],
-            size_hint=(None, 1),
+            size_hint=(None, None),
             halign="left",
             valign="middle",
         )
+        self._big_time_float.add_widget(self._big_clock_hm)
+        self._big_time_float.add_widget(self._big_clock_ap)
 
-        def _sync_big_clock_row(*_a):
-            self._big_clock_hm.width = max(int(self._big_clock_hm.texture_size[0]), 1)
-            self._big_clock_ap.width = max(int(self._big_clock_ap.texture_size[0]), 1)
-            big_time_row.width = (
-                self._big_clock_hm.width
-                + self._big_clock_ap.width
-                + big_time_row.spacing
-            )
+        def _layout_big_time_clock(*_a):
+            fl = self._big_time_float
+            hm, ap = self._big_clock_hm, self._big_clock_ap
+            w, h = float(fl.width), float(fl.height)
+            if w < 2 or h < 2:
+                return
+            gap = self._big_time_spacing
+            hm_w = max(int(hm.texture_size[0]), 1)
+            hm_h = max(int(hm.texture_size[1]), 1)
+            ap_w = max(int(ap.texture_size[0]), 1)
+            ap_h = max(int(ap.texture_size[1]), 1)
+            hm.size = (hm_w, hm_h)
+            ap.size = (ap_w, ap_h)
+            cx = w * 0.5
+            hm.x = cx - hm_w * 0.5
+            hm.y = (h - hm_h) * 0.5
+            ap.x = cx + hm_w * 0.5 + gap
+            ap.y = (h - ap_h) * 0.5
 
-        self._big_clock_hm.bind(texture_size=_sync_big_clock_row)
-        self._big_clock_ap.bind(texture_size=_sync_big_clock_row)
-        big_time_row.add_widget(self._big_clock_hm)
-        big_time_row.add_widget(self._big_clock_ap)
-        big_time_wrap.add_widget(big_time_row)
-        inner.add_widget(big_time_wrap)
+        self._big_time_float.bind(size=_layout_big_time_clock)
+        self._big_clock_hm.bind(texture_size=_layout_big_time_clock)
+        self._big_clock_ap.bind(texture_size=_layout_big_time_clock)
+        inner.add_widget(self._big_time_float)
 
         self.date_label = Label(
             text="",
