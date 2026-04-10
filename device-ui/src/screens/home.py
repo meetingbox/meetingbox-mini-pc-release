@@ -305,9 +305,13 @@ class HomeScreen(BaseScreen):
 
         root.add_widget(Widget(size_hint=(1, None), height=max(12, int(18 * sv))))
 
-        mid_row = BoxLayout(orientation="horizontal", size_hint=(1, 1))
-        mid_row.add_widget(Widget(size_hint=(1, 1)))
-
+        # AnchorLayout keeps the fixed-width column truly centered (BoxLayout + two spacers
+        # can leave the block visually shifted on some aspect ratios / Kivy versions).
+        mid_anchor = AnchorLayout(
+            size_hint=(1, 1),
+            anchor_x="center",
+            anchor_y="top",
+        )
         inner = BoxLayout(orientation="vertical", size_hint=(None, 1), width=col_w)
 
         inner.add_widget(Widget())
@@ -447,9 +451,8 @@ class HomeScreen(BaseScreen):
         btn_row.add_widget(Widget())
         inner.add_widget(btn_row)
 
-        mid_row.add_widget(inner)
-        mid_row.add_widget(Widget(size_hint=(1, 1)))
-        root.add_widget(mid_row)
+        mid_anchor.add_widget(inner)
+        root.add_widget(mid_anchor)
 
         root.add_widget(Widget(size_hint=(1, None), height=max(8, int(10 * min(sv, 1.35)))))
         root.add_widget(self.build_footer())
