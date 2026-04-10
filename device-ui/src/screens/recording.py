@@ -595,7 +595,7 @@ class RecordingScreen(BaseScreen):
         now_ts = datetime.now().timestamp()
         if now_ts - self._last_audio_level_ts > 0.25:
             self._level_history = deque([v * 0.82 for v in self._level_history], maxlen=_Waveform.NUM_BARS)
-        levels = [max(2, int(v * _Waveform.MAX_H)) for v in self._level_history]
+        levels = [max(2, int(v * self.waveform.MAX_H)) for v in self._level_history]
         self.waveform.set_levels(levels)
 
     # ==================================================================
