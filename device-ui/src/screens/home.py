@@ -184,11 +184,13 @@ class HomeScreen(BaseScreen):
         room_icon_px = max(22, int(26 * sv))
         icon_holder_w = max(32, int(38 * sv))
         room_fs = int(FONT_SIZES["medium"] * sv)
-        ttw = max(72, int(86 * sv))
+        ttw = max(100, int(118 * sv))
         tth = max(28, int(34 * sv))
         tfs = int(FONT_SIZES["body"] * sv)
+        self._top_ampm_font = max(9, int(tfs * 0.58))
         tr = max(10, int(14 * sv))
         bfs = int(104 * sv)
+        self._big_ampm_font = max(16, int(bfs * 0.38))
         # Clock line needs headroom so glyphs do not collide with the row below.
         bfh = max(96, int(124 * sv), int(bfs * 1.22))
         dfs = int(FONT_SIZES["body"] * sv)
@@ -259,6 +261,7 @@ class HomeScreen(BaseScreen):
             size=(ttw, tth),
             halign="center",
             valign="middle",
+            markup=True,
         )
         self.top_time_label.bind(size=self.top_time_label.setter("text_size"))
         with self.top_time_label.canvas.before:
@@ -322,6 +325,7 @@ class HomeScreen(BaseScreen):
             height=bfh,
             halign="center",
             valign="middle",
+            markup=True,
         )
         self.big_time_label.bind(size=self.big_time_label.setter("text_size"))
         inner.add_widget(self.big_time_label)
@@ -475,9 +479,10 @@ class HomeScreen(BaseScreen):
 
     def _update_clock_labels(self):
         now = display_now()
-        t12 = now.strftime("%I:%M %p")
-        self.top_time_label.text = t12
-        self.big_time_label.text = t12
+        hm = now.strftime("%I:%M")
+        ap = now.strftime("%p")
+        self.top_time_label.text = f"{hm} [size={self._top_ampm_font}]{ap}[/size]"
+        self.big_time_label.text = f"{hm} [size={self._big_ampm_font}]{ap}[/size]"
         self.date_label.text = f"{now.strftime('%A, %B')} {now.day}"
 
     def _load_system_status(self):

@@ -128,7 +128,6 @@ class RecordingScreen(BaseScreen):
         self.timer_event = None
         self.waveform_event = None
         self._is_paused = False
-        self._paused_at_text = ""
         self._level_history = deque([0.0] * _Waveform.NUM_BARS, maxlen=_Waveform.NUM_BARS)
         self._last_audio_level_ts = 0.0
         self._rec_base_elapsed = 0.0
@@ -391,15 +390,18 @@ class RecordingScreen(BaseScreen):
 
         ov_content.add_widget(Widget())
 
+        paused_title_fs = self.suf(52)
+        self._paused_ampm_font = max(12, int(paused_title_fs * 0.40))
         self.paused_title = Label(
             text="Paused at --:--",
-            font_size=self.suf(52),
+            font_size=paused_title_fs,
             bold=True,
             color=COLORS["white"],
             halign="center",
             valign="middle",
             size_hint=(1, None),
             height=self.suv(70),
+            markup=True,
         )
         self.paused_title.bind(size=self.paused_title.setter("text_size"))
         ov_content.add_widget(self.paused_title)
@@ -615,8 +617,11 @@ class RecordingScreen(BaseScreen):
         self.waveform.set_levels([2] * _Waveform.NUM_BARS)
 
         now = display_now()
-        self._paused_at_text = now.strftime("%I:%M %p")
-        self.paused_title.text = f"Paused at {self._paused_at_text}"
+        hm = now.strftime("%I:%M")
+        ap = now.strftime("%p")
+        self.paused_title.text = (
+            f"Paused at {hm} [size={self._paused_ampm_font}]{ap}[/size]"
+        )
         self.paused_duration.text = f"Meeting duration: {self._fmt_time(self.elapsed_seconds)}"
         self.ov_room_label.text = getattr(self.app, "device_name", "MeetingBox")
 
