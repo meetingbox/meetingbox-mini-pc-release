@@ -121,6 +121,9 @@ services:
       - video
       - audio
       - input
+    # nsenter into host PID 1 for Settings → Restart/Power off. cap_add alone is NOT enough:
+    # Docker returns "reassociate to namespaces failed: Operation not permitted" without this.
+    privileged: true
     cap_add:
       - SYS_ADMIN
       - SYS_PTRACE
