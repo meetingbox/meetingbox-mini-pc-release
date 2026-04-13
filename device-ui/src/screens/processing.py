@@ -15,8 +15,9 @@ from kivy.uix.progressbar import ProgressBar
 from kivy.uix.widget import Widget
 
 from screens.base_screen import BaseScreen
+from components.button import SecondaryButton
 from components.status_bar import StatusBar
-from config import COLORS, FONT_SIZES
+from config import COLORS, FONT_SIZES, SPACING
 
 logger = logging.getLogger(__name__)
 
@@ -123,6 +124,24 @@ class ProcessingScreen(BaseScreen):
         )
         self.eta_label.bind(size=self.eta_label.setter("text_size"))
         root.add_widget(self.eta_label)
+
+        root.add_widget(Widget(size_hint=(1, None), height=self.suv(8)))
+
+        home_row = BoxLayout(
+            orientation="vertical",
+            size_hint=(1, None),
+            height=self.suv(60),
+            padding=[self.suh(SPACING["screen_padding"] * 2), 0],
+        )
+        self.home_btn = SecondaryButton(
+            text="Home",
+            font_size=self.suf(FONT_SIZES["medium"]),
+            size_hint=(1, None),
+            height=self.suv(52),
+        )
+        self.home_btn.bind(on_press=lambda *_: self.goto("home", transition="fade"))
+        home_row.add_widget(self.home_btn)
+        root.add_widget(home_row)
 
         root.add_widget(Widget())
 

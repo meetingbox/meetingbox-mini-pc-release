@@ -11,6 +11,7 @@ import logging
 from kivy.uix.boxlayout import BoxLayout
 from kivy.uix.scrollview import ScrollView
 from kivy.uix.gridlayout import GridLayout
+from kivy.effects.scroll import ScrollEffect
 from kivy.uix.label import Label
 from kivy.uix.widget import Widget
 from kivy.clock import Clock
@@ -65,7 +66,13 @@ class SettingsScreen(BaseScreen):
         root.add_widget(self.status_bar)
 
         # Scrollable items
-        scroll = ScrollView(do_scroll_x=False, scroll_distance=12)
+        scroll = ScrollView(
+            do_scroll_x=False,
+            scroll_distance=12,
+            effect_cls=ScrollEffect,
+            smooth_scroll_end=0,
+            always_overscroll=False,
+        )
         self.container = GridLayout(
             cols=1,
             size_hint_x=1,
@@ -454,8 +461,7 @@ class SettingsScreen(BaseScreen):
         self.add_widget(dialog)
 
     def _do_restart(self):
-        """Prefer host reboot from this process; API is fallback (e.g. web has nsenter helper)."""
-        local_ok = request_system_reboot()
+        """Try backend reboot first (host helper/nsenter), then local systemctl/sudo."""
 
         async def _restart():
             api_ok = False
@@ -464,10 +470,15 @@ class SettingsScreen(BaseScreen):
                 api_ok = bool(resp.get('host_reboot_initiated'))
             except Exception as e:
                 logger.debug('restart API: %s', e)
-            if not local_ok and not api_ok:
+            local_ok = False
+            if not api_ok:
+                local_ok = request_system_reboot()
+            if not api_ok and not local_ok:
                 Clock.schedule_once(lambda *_: self._show_power_error('restart'), 0)
 
-        run_async(_restart())
+        fut = run_async(_restart())
+        if fut is None:
+            Clock.schedule_once(lambda *_: self._show_power_error('restart'), 0)
 
     def _show_power_error(self, op: str):
         if op == 'restart':
@@ -504,8 +515,6 @@ class SettingsScreen(BaseScreen):
         self.add_widget(dialog)
 
     def _do_poweroff(self):
-        local_ok = request_system_poweroff()
-
         async def _off():
             api_ok = False
             try:
@@ -513,10 +522,15 @@ class SettingsScreen(BaseScreen):
                 api_ok = bool(resp.get('host_poweroff_initiated'))
             except Exception as e:
                 logger.debug('poweroff API: %s', e)
-            if not local_ok and not api_ok:
+            local_ok = False
+            if not api_ok:
+                local_ok = request_system_poweroff()
+            if not api_ok and not local_ok:
                 Clock.schedule_once(lambda *_: self._show_power_error('poweroff'), 0)
 
-        run_async(_off())
+        fut = run_async(_off())
+        if fut is None:
+            Clock.schedule_once(lambda *_: self._show_power_error('poweroff'), 0)
 
     # ------------------------------------------------------------------
     # Factory reset dialog
