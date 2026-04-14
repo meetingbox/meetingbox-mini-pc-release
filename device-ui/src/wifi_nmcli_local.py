@@ -10,6 +10,7 @@ from __future__ import annotations
 import logging
 import shutil
 import subprocess
+import time
 from typing import Optional
 
 logger = logging.getLogger(__name__)
@@ -76,6 +77,25 @@ def detect_wifi_iface() -> Optional[str]:
     return None
 
 
+def _nmcli_version_skew_warning(stderr: str) -> bool:
+    """
+    True if stderr is only the common advisory when nmcli and the running
+    NetworkManager daemon were built from different releases (e.g. nmcli in
+    Docker vs NetworkManager on the host). The operation may still succeed.
+    """
+    s = (stderr or "").lower()
+    if not s.strip():
+        return False
+    if "don't match" in s or "do not match" in s:
+        if "networkmanager" in s or "nmcli" in s:
+            return True
+    if "restarting network manager" in s or "restart networkmanager" in s:
+        return True
+    if "versions don't match" in s:
+        return True
+    return False
+
+
 def get_wifi_radio_enabled() -> Optional[bool]:
     """
     True if NetworkManager Wi-Fi radio is on.
@@ -104,9 +124,34 @@ def set_wifi_radio(enabled: bool) -> dict:
     arg = "on" if enabled else "off"
     try:
         res = nmcli_run(["radio", "wifi", arg], timeout=15)
+        stderr = (res.stderr or "").strip()
+        stdout = (res.stdout or "").strip()
+
         if res.returncode == 0:
             return {"ok": True, "message": ""}
-        msg = (res.stderr or res.stdout or "").strip() or "nmcli failed"
+
+        # nmcli may exit non-zero while only printing a version-skew warning to
+        # stderr (container nmcli vs host NetworkManager). Confirm via D-Bus state.
+        time.sleep(0.25)
+        actual = get_wifi_radio_enabled()
+        if actual is not None and actual == enabled:
+            if _nmcli_version_skew_warning(stderr):
+                logger.warning(
+                    "nmcli radio wifi %s: exit %s (version skew warning ignored): %s",
+                    arg,
+                    res.returncode,
+                    stderr[:240],
+                )
+            return {"ok": True, "message": ""}
+
+        msg = stderr or stdout or "nmcli failed"
+        if _nmcli_version_skew_warning(stderr) and actual is not None and actual != enabled:
+            msg = (
+                "Wi-Fi radio did not change. nmcli and NetworkManager versions differ "
+                "(often container vs host). On the appliance run:\n"
+                "  sudo systemctl restart NetworkManager\n"
+                "or install matching network-manager / nmcli packages, then try again."
+            )
         return {"ok": False, "message": msg}
     except Exception as e:
         return {"ok": False, "message": str(e)}
