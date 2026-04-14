@@ -161,6 +161,9 @@ def _run_host_helper_script(path: str) -> bool:
     if _running_in_container() and os.geteuid() != 0:
         sudo = shutil.which("sudo")
         if sudo:
+            # Prefer ``sudo /bin/sh script`` so a read-only bind mount without +x still runs;
+            # sudoers must list both the script path and ``/bin/sh`` + path (see Dockerfile).
+            argv_candidates.append([sudo, "-n", "/bin/sh", str(p)])
             argv_candidates.append([sudo, "-n", str(p)])
     argv_candidates.append(["/bin/sh", str(p)])
 

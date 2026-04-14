@@ -76,7 +76,7 @@ RUN groupadd -g 44 video 2>/dev/null || true \
     && groupadd -g 105 input 2>/dev/null || true \
     && useradd -m -u 1000 -s /bin/bash -G video,input,audio uiuser \
     && chown -R uiuser:uiuser /app \
-    && echo 'uiuser ALL=(root) NOPASSWD: /usr/local/bin/meetingbox-host-reboot, /usr/local/bin/meetingbox-host-poweroff' > /etc/sudoers.d/meetingbox-host-power \
+    && printf '%s\n' 'uiuser ALL=(root) NOPASSWD: /usr/local/bin/meetingbox-host-reboot, /usr/local/bin/meetingbox-host-poweroff, /bin/sh /usr/local/bin/meetingbox-host-reboot, /bin/sh /usr/local/bin/meetingbox-host-poweroff' > /etc/sudoers.d/meetingbox-host-power \
     && chmod 0440 /etc/sudoers.d/meetingbox-host-power \
     && visudo -cf /etc/sudoers.d/meetingbox-host-power
 

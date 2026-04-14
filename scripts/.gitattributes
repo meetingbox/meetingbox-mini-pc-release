@@ -1,0 +1,3 @@
+# POSIX shell shebang breaks if these are checked out with CRLF (sudo: command not found).
+meetingbox-host-reboot text eol=lf
+meetingbox-host-poweroff text eol=lf
