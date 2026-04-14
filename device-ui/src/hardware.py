@@ -154,20 +154,35 @@ def _run_host_helper_script(path: str) -> bool:
     p = Path(path)
     if not p.is_file():
         return False
-    try:
-        proc = subprocess.Popen(
-            ["/bin/sh", str(p)], close_fds=True, start_new_session=True
-        )
-        time.sleep(0.2)
-        code = proc.poll()
-        if code is not None and code != 0:
-            logger.warning("Host helper %s exited immediately with code %s", path, code)
-            return False
-        logger.info("Host helper started: %s", path)
-        return True
-    except Exception as e:
-        logger.debug("host helper %s: %s", path, e)
-        return False
+    # nsenter/setns needs root even in a ``privileged`` container when the main
+    # process is USER uiuser (non-zero UID). Image sudoers allows NOPASSWD for
+    # these two paths only.
+    argv_candidates: list[list[str]] = []
+    if _running_in_container() and os.geteuid() != 0:
+        sudo = shutil.which("sudo")
+        if sudo:
+            argv_candidates.append([sudo, "-n", str(p)])
+    argv_candidates.append(["/bin/sh", str(p)])
+
+    for argv in argv_candidates:
+        try:
+            proc = subprocess.Popen(
+                argv, close_fds=True, start_new_session=True
+            )
+            time.sleep(0.2)
+            code = proc.poll()
+            if code is not None and code != 0:
+                logger.warning(
+                    "Host helper %s argv=%s exited immediately with code %s",
+                    path, argv, code,
+                )
+                continue
+            logger.info("Host helper started: %s (%s)", path, argv[0])
+            return True
+        except Exception as e:
+            logger.debug("host helper %s %s: %s", path, argv, e)
+            continue
+    return False
 
 
 def _run_reboot_argv(args: list[str]) -> bool:
