@@ -82,6 +82,26 @@ def _parse_display_px(name: str, default: int) -> int:
     return v
 
 
+def _parse_unit_scale(name: str, default: float) -> float:
+    """Multiplier vs 1024×600 layout baseline (see MEETINGBOX_HOME_CONTENT_SCALE)."""
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    s = str(raw).strip()
+    if not s:
+        logger.warning("%s is set but empty; using default %s", name, default)
+        return default
+    try:
+        v = float(s)
+    except ValueError:
+        logger.warning("%s=%r is not a float; using default %s", name, raw, default)
+        return default
+    if v < 0.5 or v > 1.5:
+        logger.warning("%s=%s out of range [0.5,1.5]; using default %s", name, v, default)
+        return default
+    return v
+
+
 # Display resolution
 # Figma-aligned default is 1024x600; override via env vars as needed.
 DISPLAY_WIDTH = _parse_display_px("DISPLAY_WIDTH", 1024)
@@ -229,7 +249,8 @@ def display_horizontal_scale_raw() -> float:
 
 
 # Home uses this factor on top of display scale; other screens use OTHER (20% larger than home).
-HOME_CONTENT_SCALE = 0.7
+# Default 1.0 matches the Figma 1024×600 baseline; use MEETINGBOX_HOME_CONTENT_SCALE=0.75 on tight 7" panels.
+HOME_CONTENT_SCALE = _parse_unit_scale("MEETINGBOX_HOME_CONTENT_SCALE", 1.0)
 OTHER_CONTENT_SCALE = HOME_CONTENT_SCALE * 1.2
 
 
