@@ -130,6 +130,9 @@ services:
     # nsenter into host PID 1 for Settings → Restart/Power off. cap_add alone is NOT enough:
     # Docker returns "reassociate to namespaces failed: Operation not permitted" without this.
     privileged: true
+    # Default Docker seccomp can block setns() in edge cases; host reboot helpers need nsenter.
+    security_opt:
+      - seccomp:unconfined
     cap_add:
       - SYS_ADMIN
       - SYS_PTRACE

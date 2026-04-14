@@ -167,18 +167,41 @@ def _run_host_helper_script(path: str) -> bool:
     for argv in argv_candidates:
         try:
             proc = subprocess.Popen(
-                argv, close_fds=True, start_new_session=True
+                argv,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                close_fds=True,
+                start_new_session=True,
             )
-            time.sleep(0.2)
-            code = proc.poll()
-            if code is not None and code != 0:
+            time.sleep(0.35)
+            if proc.poll() is None:
+                logger.info(
+                    "Host helper still running (reboot/poweroff may be in progress): %s",
+                    argv,
+                )
+                return True
+            out, err = proc.communicate(timeout=3)
+            err_s = (err or b"").decode("utf-8", errors="replace").strip()
+            out_s = (out or b"").decode("utf-8", errors="replace").strip()
+            if proc.returncode != 0:
                 logger.warning(
-                    "Host helper %s argv=%s exited immediately with code %s",
-                    path, argv, code,
+                    "Host helper failed rc=%s argv=%s stderr=%s stdout=%s",
+                    proc.returncode,
+                    argv,
+                    err_s[:900],
+                    out_s[:400],
                 )
                 continue
-            logger.info("Host helper started: %s (%s)", path, argv[0])
+            if err_s or out_s:
+                logger.info("Host helper rc=0 %s stderr=%s", argv, err_s[:300])
             return True
+        except subprocess.TimeoutExpired:
+            try:
+                proc.kill()
+            except Exception:
+                pass
+            logger.warning("Host helper communicate timeout: %s", argv)
+            continue
         except Exception as e:
             logger.debug("host helper %s %s: %s", path, argv, e)
             continue
