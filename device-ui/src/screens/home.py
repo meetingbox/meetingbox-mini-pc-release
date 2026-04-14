@@ -29,6 +29,7 @@ from config import (
     to_display_local,
 )
 from screens.base_screen import BaseScreen
+from network_util import linux_ethernet_ready
 
 _CHIP_SIZE = 34
 _ICON_SIZE = 16
@@ -561,6 +562,7 @@ class HomeScreen(BaseScreen):
                 info = await self.backend.get_system_info()
                 free_gb = (info["storage_total"] - info["storage_used"]) / (1024 ** 3)
                 wifi_ok = bool(info.get("wifi_ssid"))
+                wired_ok = linux_ethernet_ready()
                 mic_connected = bool(
                     info.get(
                         "microphone_connected",
@@ -570,11 +572,18 @@ class HomeScreen(BaseScreen):
                 privacy = getattr(self.app, "privacy_mode", False)
 
                 def _apply(_dt):
-                    self._wifi_ok = wifi_ok
+                    self._wifi_ok = wifi_ok or wired_ok
                     self._mic_connected = mic_connected
-                    self.wifi_chip.set_icon_color(COLORS["white"] if wifi_ok else COLORS["gray_500"])
+                    self.wifi_chip.set_icon_color(
+                        COLORS["white"] if (wifi_ok or wired_ok) else COLORS["gray_500"]
+                    )
                     self.mic_chip.set_icon_color(COLORS["green"] if mic_connected else COLORS["red"])
-                    self.update_footer(wifi_ok=wifi_ok, free_gb=free_gb, privacy_mode=privacy)
+                    self.update_footer(
+                        wifi_ok=wifi_ok,
+                        free_gb=free_gb,
+                        privacy_mode=privacy,
+                        wired_lan_ok=wired_ok,
+                    )
 
                 Clock.schedule_once(_apply, 0)
             except Exception:

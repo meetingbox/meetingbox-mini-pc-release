@@ -76,6 +76,54 @@ def detect_wifi_iface() -> Optional[str]:
     return None
 
 
+def empty_scan_hint() -> str:
+    """
+    Explain why the Wi-Fi list may be empty (Ethernet-only, no adapter, radio off, etc.).
+    """
+    # Local import: network_util must not import this module.
+    from network_util import linux_ethernet_ready
+
+    wired = linux_ethernet_ready()
+    if not has_nmcli():
+        return "Wi‑Fi scan needs nmcli (rebuild device-ui image)."
+    iface = detect_wifi_iface()
+    if not iface:
+        if wired:
+            return (
+                "Wired Ethernet is connected.\n"
+                "NetworkManager does not see a Wi‑Fi adapter yet. Add USB Wi‑Fi, "
+                "then unplug Ethernet and tap SCAN — or tap ADD and type your SSID."
+            )
+        return (
+            "No Wi‑Fi radio in NetworkManager.\n"
+            "Add a USB Wi‑Fi adapter or use hardware with wireless, then tap SCAN "
+            "or ADD to type the network name."
+        )
+    try:
+        r = nmcli_run(["radio", "wifi"], timeout=5)
+        line = (r.stdout or "").strip().lower()
+        if line in ("disabled", "off") or "disabled" in line:
+            return (
+                "Wi‑Fi is turned off in software.\n"
+                "Enable it on the host or run: nmcli radio wifi on\n"
+                "Then SCAN or use ADD to connect by name."
+            )
+    except Exception:
+        pass
+    if wired:
+        return (
+            "Wired LAN is active — the scan list is often empty until you unplug "
+            "Ethernet and tap SCAN.\n"
+            "You can still tap ADD and enter your Wi‑Fi name and password to connect "
+            "without scanning."
+        )
+    return (
+        "No networks found.\n"
+        "Move closer to a router and tap SCAN, or use ADD. Check the Wi‑Fi driver "
+        "and that the radio is not blocked (rfkill)."
+    )
+
+
 def scan_wifi_networks(rescan: bool = False) -> list[dict]:
     if not has_nmcli():
         raise RuntimeError("nmcli not available")

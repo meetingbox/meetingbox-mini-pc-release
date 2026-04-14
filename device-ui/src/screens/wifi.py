@@ -16,6 +16,7 @@ from kivy.graphics import Color, RoundedRectangle
 from kivy.clock import Clock
 from async_helper import run_async
 import wifi_nmcli_local
+from network_util import linux_ethernet_ready
 
 from screens.base_screen import BaseScreen
 from components.status_bar import StatusBar
@@ -192,8 +193,19 @@ class WiFiScreen(BaseScreen):
         right = BoxLayout(orientation='vertical', size_hint=(0.3, 1),
                           spacing=self.suv(SPACING['button_spacing']))
         from kivy.uix.widget import Widget
-        right.add_widget(Widget(size_hint=(1, 0.6)))
-        scan_btn = SecondaryButton(text='SCAN', size_hint=(1, 0.35))
+        right.add_widget(Widget(size_hint=(1, 0.28)))
+        add_btn = SecondaryButton(
+            text='ADD',
+            size_hint=(1, 0.3),
+            font_size=self.suf(FONT_SIZES['small']),
+        )
+        add_btn.bind(on_press=lambda *_: self._show_manual_network_dialog())
+        right.add_widget(add_btn)
+        scan_btn = SecondaryButton(
+            text='SCAN',
+            size_hint=(1, 0.3),
+            font_size=self.suf(FONT_SIZES['small']),
+        )
         scan_btn.bind(on_press=lambda _: self._load_networks(rescan=True))
         right.add_widget(scan_btn)
         content.add_widget(right)
@@ -261,19 +273,28 @@ class WiFiScreen(BaseScreen):
             self.status_title.text = "Connected"
             self.status_detail.text = f"{ssid}\nSignal {sig}% · IP {ip or '—'}"
         else:
-            self.status_title.text = "Not connected"
-            self.status_detail.text = "Select a network below or tap SCAN."
+            self.status_title.text = "Wi‑Fi"
+            if linux_ethernet_ready():
+                self.status_detail.text = (
+                    "Wired LAN is active. Tap ADD to enter SSID/password, "
+                    "or unplug Ethernet and tap SCAN for nearby networks."
+                )
+            else:
+                self.status_detail.text = (
+                    "Tap SCAN for networks or ADD to type SSID and password."
+                )
 
         self.networks_container.clear_widgets()
         if not nets:
+            hint_text = wifi_nmcli_local.empty_scan_hint()
             hint = Label(
-                text='No networks in list. Tap SCAN or check device Wi‑Fi.',
+                text=hint_text,
                 font_size=self.suf(FONT_SIZES['small']),
                 color=COLORS['gray_500'],
                 halign='left',
                 valign='top',
                 size_hint_y=None,
-                height=self.suv(56),
+                height=self.suv(160),
             )
             hint.bind(size=hint.setter('text_size'))
             self.networks_container.add_widget(hint)
@@ -377,6 +398,136 @@ class WiFiScreen(BaseScreen):
         btn_row.add_widget(cancel_btn)
         btn_row.add_widget(connect_btn)
         card.add_widget(btn_row)
+
+        overlay.add_widget(card)
+        self.add_widget(overlay)
+
+    def _show_manual_network_dialog(self):
+        """Connect by SSID without scanning (works when Ethernet is plugged in)."""
+        from kivy.uix.floatlayout import FloatLayout
+        from kivy.uix.spinner import Spinner
+        from kivy.graphics import Color, Rectangle, RoundedRectangle
+
+        overlay = FloatLayout()
+        with overlay.canvas.before:
+            Color(*COLORS['overlay'])
+            ov = Rectangle(pos=overlay.pos, size=overlay.size)
+        overlay.bind(
+            pos=lambda w, *_: setattr(ov, 'pos', w.pos),
+            size=lambda w, *_: setattr(ov, 'size', w.size),
+        )
+
+        card = BoxLayout(
+            orientation='vertical',
+            size_hint=(None, None),
+            size=(self.suh(420), self.suv(300)),
+            pos_hint={'center_x': 0.5, 'center_y': 0.5},
+            padding=self.suh(16),
+            spacing=self.suv(8),
+        )
+        with card.canvas.before:
+            Color(*COLORS['surface'])
+            cbg = RoundedRectangle(
+                pos=card.pos, size=card.size, radius=[BORDER_RADIUS])
+        card.bind(
+            pos=lambda w, *_: setattr(cbg, 'pos', w.pos),
+            size=lambda w, *_: setattr(cbg, 'size', w.size),
+        )
+
+        card.add_widget(Label(
+            text='Add Wi‑Fi network',
+            font_size=self.suf(FONT_SIZES['title']),
+            bold=True,
+            color=COLORS['white'],
+            halign='left',
+            size_hint=(1, None),
+            height=self.suv(26),
+        ))
+
+        ssid_in = TextInput(
+            hint_text='Network name (SSID)',
+            multiline=False,
+            font_size=self.suf(FONT_SIZES['body']),
+            size_hint=(1, None),
+            height=self.suv(40),
+            background_color=COLORS['surface_light'],
+            foreground_color=COLORS['white'],
+            hint_text_color=COLORS['gray_600'],
+            cursor_color=COLORS['white'],
+        )
+        card.add_widget(ssid_in)
+
+        spin = Spinner(
+            text='WPA2 Personal',
+            values=('Open', 'WPA2 Personal', 'WPA3 Personal'),
+            size_hint=(1, None),
+            height=self.suv(40),
+            background_color=COLORS['gray_800'],
+            color=COLORS['white'],
+        )
+        card.add_widget(spin)
+
+        pwd_in = TextInput(
+            hint_text='Password (if required)',
+            password=True,
+            multiline=False,
+            font_size=self.suf(FONT_SIZES['body']),
+            size_hint=(1, None),
+            height=self.suv(40),
+            background_color=COLORS['surface_light'],
+            foreground_color=COLORS['white'],
+            hint_text_color=COLORS['gray_600'],
+            cursor_color=COLORS['white'],
+        )
+        card.add_widget(pwd_in)
+
+        def on_sec(spinner, txt):
+            pwd_in.disabled = txt == 'Open'
+            pwd_in.opacity = 0.5 if pwd_in.disabled else 1.0
+
+        spin.bind(text=on_sec)
+        on_sec(spin, spin.text)
+
+        row = BoxLayout(size_hint=(1, None), height=self.suv(48), spacing=self.suh(10))
+
+        def dismiss(*_a):
+            if overlay.parent:
+                overlay.parent.remove_widget(overlay)
+
+        def do_add(*_a):
+            name = ssid_in.text.strip()
+            if not name:
+                self.add_widget(ModalDialog(
+                    title='SSID required',
+                    message='Enter the Wi‑Fi network name.',
+                    confirm_text='OK',
+                    cancel_text='',
+                ))
+                return
+            sec = spin.text
+            if sec != 'Open':
+                pw = pwd_in.text.strip()
+                if not pw:
+                    self.add_widget(ModalDialog(
+                        title='Password required',
+                        message='Enter the password or choose Open.',
+                        confirm_text='OK',
+                        cancel_text='',
+                    ))
+                    return
+            dismiss()
+            if sec == 'Open':
+                self._connect_to_network(name, None)
+            else:
+                self._connect_to_network(name, pwd_in.text.strip())
+
+        cancel = SecondaryButton(text='Cancel', size_hint=(0.5, 1))
+        go = PrimaryButton(text='Connect', size_hint=(0.5, 1))
+        cancel.bind(on_press=dismiss)
+        go.bind(on_press=do_add)
+        row.add_widget(cancel)
+        row.add_widget(go)
+        card.add_widget(row)
 
         overlay.add_widget(card)
         self.add_widget(overlay)

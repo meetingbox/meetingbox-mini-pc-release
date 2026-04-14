@@ -24,6 +24,7 @@ from components.modal_dialog import ModalDialog
 from config import (COLORS, FONT_SIZES, SPACING, DEVICE_MODEL,
                     DASHBOARD_URL)
 from hardware import request_system_poweroff, request_system_reboot
+from network_util import linux_ethernet_ready
 
 logger = logging.getLogger(__name__)
 
@@ -379,8 +380,12 @@ class SettingsScreen(BaseScreen):
 
                     wifi_ok = bool(info.get('wifi_ssid'))
                     privacy = getattr(self.app, 'privacy_mode', False)
-                    self.update_footer(wifi_ok=wifi_ok, free_gb=sf,
-                                       privacy_mode=privacy)
+                    self.update_footer(
+                        wifi_ok=wifi_ok,
+                        free_gb=sf,
+                        privacy_mode=privacy,
+                        wired_lan_ok=linux_ethernet_ready(),
+                    )
 
                 Clock.schedule_once(_update, 0)
             except Exception:
