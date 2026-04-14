@@ -10,7 +10,6 @@ import os
 import shutil
 import subprocess
 import sys
-import time
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -141,123 +140,6 @@ def _local_power_skip() -> bool:
     return v in ("1", "true", "yes")
 
 
-def _running_in_container() -> bool:
-    """True when UI runs in Docker — in-container systemctl does not reboot the host."""
-    try:
-        return Path("/.dockerenv").exists()
-    except OSError:
-        return False
-
-
-def _run_host_helper_script(path: str) -> bool:
-    """Run a shell script that reboots/shuts down the host (nsenter wrapper)."""
-    p = Path(path)
-    if not p.is_file():
-        return False
-    # nsenter/setns needs root even in a ``privileged`` container when the main
-    # process is USER uiuser (non-zero UID). Image sudoers allows NOPASSWD for
-    # these two paths only.
-    argv_candidates: list[list[str]] = []
-    if _running_in_container() and os.geteuid() != 0:
-        sudo = shutil.which("sudo")
-        if sudo:
-            # Prefer ``sudo /bin/sh script`` so a read-only bind mount without +x still runs;
-            # sudoers must list both the script path and ``/bin/sh`` + path (see Dockerfile).
-            argv_candidates.append([sudo, "-n", "/bin/sh", str(p)])
-            argv_candidates.append([sudo, "-n", str(p)])
-    argv_candidates.append(["/bin/sh", str(p)])
-
-    for argv in argv_candidates:
-        try:
-            proc = subprocess.Popen(
-                argv,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                close_fds=True,
-                start_new_session=True,
-            )
-            time.sleep(0.35)
-            if proc.poll() is None:
-                logger.info(
-                    "Host helper still running (reboot/poweroff may be in progress): %s",
-                    argv,
-                )
-                return True
-            out, err = proc.communicate(timeout=3)
-            err_s = (err or b"").decode("utf-8", errors="replace").strip()
-            out_s = (out or b"").decode("utf-8", errors="replace").strip()
-            if proc.returncode != 0:
-                logger.warning(
-                    "Host helper failed rc=%s argv=%s stderr=%s stdout=%s",
-                    proc.returncode,
-                    argv,
-                    err_s[:900],
-                    out_s[:400],
-                )
-                continue
-            if err_s or out_s:
-                logger.info("Host helper rc=0 %s stderr=%s", argv, err_s[:300])
-            return True
-        except subprocess.TimeoutExpired:
-            try:
-                proc.kill()
-            except Exception:
-                pass
-            logger.warning("Host helper communicate timeout: %s", argv)
-            continue
-        except Exception as e:
-            logger.debug("host helper %s %s: %s", path, argv, e)
-            continue
-    return False
-
-
-def _run_reboot_argv(args: list[str]) -> bool:
-    """Run a reboot argv; require exit 0 (Popen alone can lie inside containers)."""
-    try:
-        r = subprocess.run(
-            args,
-            capture_output=True,
-            text=True,
-            timeout=12,
-        )
-        if r.returncode == 0:
-            logger.info("Reboot requested via %s", args)
-            return True
-        err = (r.stderr or r.stdout or "").strip()
-        if err:
-            logger.debug("reboot %s failed rc=%s: %s", args, r.returncode, err[:200])
-    except FileNotFoundError:
-        pass
-    except subprocess.TimeoutExpired:
-        logger.debug("reboot %s timed out (treat as failure; may be waiting for password)", args)
-    except Exception as e:
-        logger.debug("reboot %s: %s", args, e)
-    return False
-
-
-def _run_poweroff_argv(args: list[str]) -> bool:
-    try:
-        r = subprocess.run(
-            args,
-            capture_output=True,
-            text=True,
-            timeout=12,
-        )
-        if r.returncode == 0:
-            logger.info("Poweroff requested via %s", args)
-            return True
-        err = (r.stderr or r.stdout or "").strip()
-        if err:
-            logger.debug("poweroff %s failed rc=%s: %s", args, r.returncode, err[:200])
-    except FileNotFoundError:
-        pass
-    except subprocess.TimeoutExpired:
-        logger.debug("poweroff %s timed out (treat as failure)", args)
-    except Exception as e:
-        logger.debug("poweroff %s: %s", args, e)
-    return False
-
-
 def request_system_reboot() -> bool:
     """
     Reboot the machine that runs this UI (mini-PC / kiosk host).
@@ -279,21 +161,6 @@ def request_system_reboot() -> bool:
         except Exception as e:
             logger.warning("MEETINGBOX_LOCAL_REBOOT_CMD failed: %s", e)
 
-    helper_env = (os.environ.get("MEETINGBOX_LOCAL_REBOOT_HELPER") or "").strip()
-    for hp in {h for h in (helper_env, "/usr/local/bin/meetingbox-host-reboot") if h}:
-        if _run_host_helper_script(hp):
-            return True
-
-    in_container = _running_in_container()
-    if in_container:
-        logger.warning(
-            "Reboot from container: no MEETINGBOX_LOCAL_REBOOT_CMD / host helper worked. "
-            "Mount /usr/local/bin/meetingbox-host-reboot from the host, or set "
-            "MEETINGBOX_LOCAL_REBOOT_CMD (e.g. nsenter … systemctl reboot). "
-            "The app will try the backend PATCH /api/device/settings next."
-        )
-        return False
-
     candidates: list[list[str]] = []
     if os.geteuid() == 0:
         rb = shutil.which("reboot") or "/sbin/reboot"
@@ -307,8 +174,14 @@ def request_system_reboot() -> bool:
         ]
     )
     for args in candidates:
-        if _run_reboot_argv(args):
+        try:
+            subprocess.Popen(args, close_fds=True, start_new_session=True)
+            logger.info("Reboot requested via %s", args)
             return True
+        except FileNotFoundError:
+            continue
+        except Exception as e:
+            logger.debug("reboot %s: %s", args, e)
     logger.warning(
         "Local reboot not started — allow systemctl reboot or passwordless sudo "
         "for this user (see sudoers / polkit)."
@@ -331,18 +204,6 @@ def request_system_poweroff() -> bool:
         except Exception as e:
             logger.warning("MEETINGBOX_LOCAL_POWEROFF_CMD failed: %s", e)
 
-    helper_env = (os.environ.get("MEETINGBOX_LOCAL_POWEROFF_HELPER") or "").strip()
-    for hp in {h for h in (helper_env, "/usr/local/bin/meetingbox-host-poweroff") if h}:
-        if _run_host_helper_script(hp):
-            return True
-
-    if _running_in_container():
-        logger.warning(
-            "Poweroff from container: set MEETINGBOX_LOCAL_POWEROFF_CMD or mount "
-            "meetingbox-host-poweroff from the host, or rely on backend PATCH."
-        )
-        return False
-
     candidates: list[list[str]] = []
     if os.geteuid() == 0:
         po = shutil.which("poweroff") or "/sbin/poweroff"
@@ -356,8 +217,14 @@ def request_system_poweroff() -> bool:
         ]
     )
     for args in candidates:
-        if _run_poweroff_argv(args):
+        try:
+            subprocess.Popen(args, close_fds=True, start_new_session=True)
+            logger.info("Poweroff requested via %s", args)
             return True
+        except FileNotFoundError:
+            continue
+        except Exception as e:
+            logger.debug("poweroff %s: %s", args, e)
     logger.warning(
         "Local poweroff not started — allow systemctl poweroff or passwordless sudo."
     )
