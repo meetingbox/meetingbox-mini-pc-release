@@ -37,6 +37,10 @@ logger = logging.getLogger(__name__)
 WELCOME_DIR = ASSETS_DIR / "welcome"
 LOGO_PATH = str(WELCOME_DIR / "LOGO.png")
 
+# Slightly smaller than full-screen onboarding: status bar steals height; same logical
+# density otherwise feels “zoomed in”.
+_HOME_WIFI_FIGMA_LAYOUT_SCALE = 0.88
+
 
 class WiFiScreen(BaseScreen):
     """Wi‑Fi settings from home — Figma list UI aligned with WiFiSetupScreen."""
@@ -64,7 +68,9 @@ class WiFiScreen(BaseScreen):
         )
         root.add_widget(self.status_bar)
 
-        refs = build_figma_wifi_column(LOGO_PATH)
+        refs = build_figma_wifi_column(
+            LOGO_PATH, layout_scale=_HOME_WIFI_FIGMA_LAYOUT_SCALE)
+        self._wifi_figma_layout_scale = refs["layout_scale"]
         self._scan_status_lbl = refs["scan_status_lbl"]
         self._list = refs["list_grid"]
         self._next_btn = refs["next_btn"]
@@ -188,9 +194,15 @@ class WiFiScreen(BaseScreen):
             if not (net.get("ssid") or "").strip():
                 continue
             if not first:
-                self._list.add_widget(FigmaListDivider())
+                self._list.add_widget(
+                    FigmaListDivider(layout_scale=self._wifi_figma_layout_scale))
             first = False
-            row = FigmaWifiNetworkRow(net, self._connecting_ssid or "", self)
+            row = FigmaWifiNetworkRow(
+                net,
+                self._connecting_ssid or "",
+                self,
+                layout_scale=self._wifi_figma_layout_scale,
+            )
             row.bind(on_press=lambda inst, n=net: self._on_row_tap(n))
             self._list.add_widget(row)
             self._row_widgets.append(row)

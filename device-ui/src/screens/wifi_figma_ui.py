@@ -51,6 +51,11 @@ def suf(fs: float) -> int:
     return max(6, int(round(float(fs) * _sv())))
 
 
+def clamp_layout_scale(layout_scale: float) -> float:
+    """Extra scale for embedding under status bar etc. (1.0 = full OTHER_CONTENT scale)."""
+    return max(0.72, min(1.0, float(layout_scale)))
+
+
 def format_wifi_security(sec: str) -> str:
     """Security line as in Figma: OPEN, WPA2 PERSONAL, WPA2 ENTERPRISE, …"""
     s = (sec or "").strip().upper().replace("_", " ")
@@ -81,10 +86,17 @@ class FigmaSignalBars(Widget):
     _GAP = 3
     _HEIGHTS = [5, 9, 13, 17]
 
-    def __init__(self, signal: int = 0, connected: bool = False, **kwargs):
+    def __init__(
+        self,
+        signal: int = 0,
+        connected: bool = False,
+        layout_scale: float = 1.0,
+        **kwargs,
+    ):
         kwargs.setdefault("size_hint", (None, None))
         kwargs.setdefault("size", (32, 22))
         super().__init__(**kwargs)
+        self._ls = clamp_layout_scale(layout_scale)
         self._signal = max(0, min(100, int(signal)))
         self._connected = connected
         self.bind(pos=self._draw, size=self._draw)
@@ -121,15 +133,16 @@ class FigmaSignalBars(Widget):
         lit = self._lit()
         active = self._color()
         dim = COLORS["gray_800"]
-        bw = suh(self._BAR_W)
-        gap = suh(self._GAP)
-        x0 = self.x + suh(2)
-        bot = self.y + suv(2)
-        radius = max(1, suv(2))
+        ls = self._ls
+        bw = max(1, int(round(float(self._BAR_W) * ls * _sh())))
+        gap = max(1, int(round(float(self._GAP) * ls * _sh())))
+        x0 = self.x + max(1, int(round(2 * ls * _sh())))
+        bot = self.y + max(1, int(round(2 * ls * _sv())))
+        radius = max(1, int(round(2 * ls * _sv())))
 
         with self.canvas:
             for i, h_raw in enumerate(self._HEIGHTS):
-                h = suv(h_raw)
+                h = max(1, int(round(float(h_raw) * ls * _sv())))
                 Color(*(active if (self._connected and i < lit) else dim))
                 RoundedRectangle(
                     pos=(x0 + i * (bw + gap), bot),
@@ -141,18 +154,21 @@ class FigmaSignalBars(Widget):
 class FigmaConnectingBadge(Widget):
     """Blue circle with white Wi‑Fi arcs (Figma “connecting” row)."""
 
-    def __init__(self, **kwargs):
+    def __init__(self, layout_scale: float = 1.0, **kwargs):
         kwargs.setdefault("size_hint", (None, None))
         super().__init__(**kwargs)
+        self._ls = clamp_layout_scale(layout_scale)
         self.bind(pos=self._draw, size=self._draw)
         Clock.schedule_once(lambda *_: self._draw(), 0)
 
     def _draw(self, *_):
         self.canvas.clear()
         cx, cy = self.center_x, self.center_y
-        r = min(self.width, self.height) / 2 - max(1, suh(2))
+        inset = max(1, int(round(2 * self._ls * _sh())))
+        r = min(self.width, self.height) / 2 - inset
         if r < 4:
             return
+        lw = max(1.0, float(1.5 * self._ls * _sh()))
         with self.canvas:
             Color(*FIGMA_ACCENT)
             Ellipse(pos=(cx - r, cy - r), size=(r * 2, r * 2))
@@ -161,16 +177,17 @@ class FigmaConnectingBadge(Widget):
                 rr = r * 0.5 * scale
                 Line(
                     circle=(cx, cy - rr * 0.1, rr, 118, 242),
-                    width=max(1.0, suh(1.5)),
+                    width=lw,
                 )
 
 
 class FigmaListDivider(Widget):
     """Full-width hairline between network rows."""
 
-    def __init__(self, **kwargs):
+    def __init__(self, layout_scale: float = 1.0, **kwargs):
         kwargs.setdefault("size_hint_y", None)
-        kwargs.setdefault("height", max(1, suv(1)))
+        ls = clamp_layout_scale(layout_scale)
+        kwargs.setdefault("height", max(1, int(round(1.0 * ls * _sv()))))
         super().__init__(**kwargs)
         self.bind(pos=self._sync, size=self._sync)
         Clock.schedule_once(lambda *_: self._sync(), 0)
@@ -196,10 +213,22 @@ class FigmaWifiNetworkRow(ButtonBehavior, BoxLayout):
         net: dict,
         connecting_ssid: str,
         parent_screen,
+        layout_scale: float = 1.0,
         **kwargs,
     ):
         self.net = net
         self.parent_screen = parent_screen
+        ls = clamp_layout_scale(layout_scale)
+
+        def sv(px: float) -> int:
+            return max(1, int(round(float(px) * ls * _sv())))
+
+        def sh(px: float) -> int:
+            return max(1, int(round(float(px) * ls * _sh())))
+
+        def sf(fs: float) -> int:
+            return max(5, int(round(float(fs) * ls * _sv())))
+
         ssid = (net.get("ssid") or "").strip()
         sec = net.get("security") or ""
         connected = bool(net.get("connected"))
@@ -208,9 +237,9 @@ class FigmaWifiNetworkRow(ButtonBehavior, BoxLayout):
 
         kwargs.setdefault("orientation", "horizontal")
         kwargs.setdefault("size_hint_y", None)
-        kwargs.setdefault("height", suv(self._H))
-        kwargs.setdefault("padding", [suh(16), suv(10), suh(14), suv(10)])
-        kwargs.setdefault("spacing", suh(12))
+        kwargs.setdefault("height", sv(self._H))
+        kwargs.setdefault("padding", [sh(16), sv(10), sh(14), sv(10)])
+        kwargs.setdefault("spacing", sh(12))
         super().__init__(**kwargs)
 
         with self.canvas.before:
@@ -225,10 +254,15 @@ class FigmaWifiNetworkRow(ButtonBehavior, BoxLayout):
             anchor_x="center",
             anchor_y="center",
             size_hint=(None, 1),
-            width=suh(52),
+            width=sh(52),
         )
         if busy:
-            left_wrap.add_widget(FigmaConnectingBadge(size=(suh(46), suv(46))))
+            left_wrap.add_widget(
+                FigmaConnectingBadge(
+                    layout_scale=ls,
+                    size=(sh(46), sv(46)),
+                )
+            )
             self._dots = 0
             self._spinner_event = Clock.schedule_interval(self._tick_connecting, 0.45)
         else:
@@ -236,22 +270,23 @@ class FigmaWifiNetworkRow(ButtonBehavior, BoxLayout):
                 FigmaSignalBars(
                     signal=signal,
                     connected=connected,
-                    size=(suh(32), suv(22)),
+                    layout_scale=ls,
+                    size=(sh(32), sv(22)),
                 )
             )
         self.add_widget(left_wrap)
 
-        mid = BoxLayout(orientation="vertical", size_hint=(1, 1), spacing=suv(4))
+        mid = BoxLayout(orientation="vertical", size_hint=(1, 1), spacing=sv(4))
 
         ssid_lbl = Label(
             text=ssid or "(hidden network)",
-            font_size=suf(FONT_SIZES["medium"]),
+            font_size=sf(FONT_SIZES["medium"]),
             bold=True,
             color=COLORS["white"],
             halign="left",
             valign="middle",
             size_hint=(1, None),
-            height=suv(22),
+            height=sv(22),
         )
         ssid_lbl.bind(size=ssid_lbl.setter("text_size"))
         mid.add_widget(ssid_lbl)
@@ -268,12 +303,12 @@ class FigmaWifiNetworkRow(ButtonBehavior, BoxLayout):
 
         sec_lbl = Label(
             text=sec_txt,
-            font_size=suf(FONT_SIZES["small"]),
+            font_size=sf(FONT_SIZES["small"]),
             color=sec_color,
             halign="left",
             valign="top",
             size_hint=(1, None),
-            height=suv(18),
+            height=sv(18),
         )
         sec_lbl.bind(size=sec_lbl.setter("text_size"))
         mid.add_widget(sec_lbl)
@@ -283,7 +318,7 @@ class FigmaWifiNetworkRow(ButtonBehavior, BoxLayout):
         right = BoxLayout(
             orientation="horizontal",
             size_hint=(None, 1),
-            width=suh(44),
+            width=sh(44),
             spacing=0,
         )
         if busy:
@@ -294,7 +329,7 @@ class FigmaWifiNetworkRow(ButtonBehavior, BoxLayout):
             hit = FigmaIconHit(orientation="vertical", size_hint=(1, 1))
             rlab = Label(
                 text="\u21bb",
-                font_size=suf(24),
+                font_size=sf(24),
                 color=COLORS["gray_500"],
                 halign="center",
                 valign="middle",
@@ -306,7 +341,7 @@ class FigmaWifiNetworkRow(ButtonBehavior, BoxLayout):
         elif not is_open_wifi(sec):
             lock = Label(
                 text="\U0001f512",
-                font_size=suf(16),
+                font_size=sf(16),
                 color=COLORS["gray_600"],
                 halign="center",
                 valign="middle",
@@ -341,16 +376,29 @@ class FigmaTextLink(ButtonBehavior, Label):
         self.opacity = 1.0
 
 
-def build_figma_wifi_column(logo_path: str) -> dict:
+def build_figma_wifi_column(logo_path: str, *, layout_scale: float = 1.0) -> dict:
     """
     Build the main Figma column (brand → list → actions → footer).
 
+    *layout_scale* < 1.0 shrinks padding/fonts (use under status bar on home Wi‑Fi).
+
     Returns dict keys: root, scan_status_lbl, scroll, list_grid, next_btn, back_btn,
-    card_bg, card_outline, list_card (container), add_link, rescan_btn.
+    card_bg, card_outline, list_card (container), add_link, rescan_btn, layout_scale.
     """
+    ls = clamp_layout_scale(layout_scale)
+
+    def sv(px: float) -> int:
+        return max(1, int(round(float(px) * ls * _sv())))
+
+    def sh(px: float) -> int:
+        return max(1, int(round(float(px) * ls * _sh())))
+
+    def sf(fs: float) -> int:
+        return max(5, int(round(float(fs) * ls * _sv())))
+
     root = BoxLayout(
         orientation="vertical",
-        padding=[suh(20), suv(12), suh(20), suv(12)],
+        padding=[sh(20), sv(12), sh(20), sv(12)],
         spacing=0,
         size_hint=(1, 1),
     )
@@ -365,21 +413,21 @@ def build_figma_wifi_column(logo_path: str) -> dict:
     brand = BoxLayout(
         orientation="horizontal",
         size_hint=(1, None),
-        height=suv(40),
-        spacing=suh(8),
+        height=sv(40),
+        spacing=sh(8),
     )
     if logo_path and Path(logo_path).exists():
         brand.add_widget(
             Image(
                 source=logo_path,
                 size_hint=(None, 1),
-                width=suh(32),
+                width=sh(32),
                 fit_mode="contain",
             )
         )
     brand_lbl = Label(
         text="MeetingBox AI",
-        font_size=suf(FONT_SIZES["medium"]),
+        font_size=sf(FONT_SIZES["medium"]),
         bold=False,
         color=COLORS["white"],
         halign="left",
@@ -390,51 +438,51 @@ def build_figma_wifi_column(logo_path: str) -> dict:
     brand.add_widget(brand_lbl)
     root.add_widget(brand)
 
-    root.add_widget(Widget(size_hint=(1, None), height=suv(8)))
+    root.add_widget(Widget(size_hint=(1, None), height=sv(8)))
 
     title_main = Label(
         text="Connect to WiFi",
-        font_size=suf(FONT_SIZES["large"]),
+        font_size=sf(FONT_SIZES["large"]),
         bold=True,
         color=COLORS["white"],
         halign="left",
         valign="middle",
         size_hint=(1, None),
-        height=suv(30),
+        height=sv(30),
     )
     title_main.bind(size=title_main.setter("text_size"))
     root.add_widget(title_main)
 
-    root.add_widget(Widget(size_hint=(1, None), height=suv(6)))
+    root.add_widget(Widget(size_hint=(1, None), height=sv(6)))
 
     sub = Label(
         text="Required for calendar sync and email delivery.",
-        font_size=suf(FONT_SIZES["small"]),
+        font_size=sf(FONT_SIZES["small"]),
         color=SUBTITLE_GRAY,
         halign="left",
         valign="middle",
         size_hint=(1, None),
-        height=suv(22),
+        height=sv(22),
     )
     sub.bind(size=sub.setter("text_size"))
     root.add_widget(sub)
 
-    root.add_widget(Widget(size_hint=(1, None), height=suv(8)))
+    root.add_widget(Widget(size_hint=(1, None), height=sv(8)))
 
     scan_status_lbl = Label(
         text="",
-        font_size=suf(FONT_SIZES["small"]),
+        font_size=sf(FONT_SIZES["small"]),
         bold=False,
         color=COLORS["gray_500"],
         halign="left",
         valign="middle",
         size_hint=(1, None),
-        height=suv(18),
+        height=sv(18),
     )
     scan_status_lbl.bind(size=scan_status_lbl.setter("text_size"))
     root.add_widget(scan_status_lbl)
 
-    root.add_widget(Widget(size_hint=(1, None), height=suv(6)))
+    root.add_widget(Widget(size_hint=(1, None), height=sv(6)))
 
     list_card = BoxLayout(
         orientation="vertical",
@@ -448,12 +496,12 @@ def build_figma_wifi_column(logo_path: str) -> dict:
             radius=[BORDER_RADIUS])
     with list_card.canvas.after:
         Color(*FIGMA_ACCENT)
-        card_outline = Line(width=1.25)
+        card_outline = Line(width=max(1.0, 1.25 * ls))
 
     def _list_card_geom(*_a):
         card_bg.pos = list_card.pos
         card_bg.size = list_card.size
-        inset = max(1.0, float(suh(1)))
+        inset = max(1.0, float(sh(1)))
         card_outline.rounded_rectangle = (
             list_card.x + inset,
             list_card.y + inset,
@@ -468,7 +516,7 @@ def build_figma_wifi_column(logo_path: str) -> dict:
     scroll = ScrollView(
         do_scroll_x=False,
         size_hint=(1, 1),
-        bar_width=suh(4),
+        bar_width=sh(4),
         bar_color=[*FIGMA_ACCENT[:3], 0.55],
         bar_inactive_color=[*COLORS["gray_700"][:3], 0.4],
     )
@@ -476,7 +524,7 @@ def build_figma_wifi_column(logo_path: str) -> dict:
         cols=1,
         spacing=0,
         size_hint_y=None,
-        padding=[suh(12), suv(10), suh(12), suv(10)],
+        padding=[sh(12), sv(10), sh(12), sv(10)],
     )
     list_grid.bind(minimum_height=list_grid.setter("height"))
     scroll.add_widget(list_grid)
@@ -486,56 +534,56 @@ def build_figma_wifi_column(logo_path: str) -> dict:
     actions = BoxLayout(
         orientation="horizontal",
         size_hint=(1, None),
-        height=suv(42),
-        spacing=suh(8),
-        padding=[0, suv(6), 0, 0],
+        height=sv(42),
+        spacing=sh(8),
+        padding=[0, sv(6), 0, 0],
     )
     add_link = FigmaTextLink(
         text="+ Add Network Manually",
-        font_size=suf(FONT_SIZES["medium"]),
+        font_size=sf(FONT_SIZES["medium"]),
         color=FIGMA_ACCENT,
         halign="left",
         valign="middle",
         size_hint=(None, 1),
-        width=suh(260),
+        width=sh(260),
     )
     add_link.bind(size=add_link.setter("text_size"))
     actions.add_widget(add_link)
     actions.add_widget(Widget(size_hint=(1, 1)))
     rescan_btn = FigmaTextLink(
         text="\u21bb  Rescan",
-        font_size=suf(FONT_SIZES["medium"]),
+        font_size=sf(FONT_SIZES["medium"]),
         color=COLORS["gray_500"],
         halign="right",
         valign="middle",
         size_hint=(None, 1),
-        width=suh(120),
+        width=sh(120),
     )
     rescan_btn.bind(size=rescan_btn.setter("text_size"))
     actions.add_widget(rescan_btn)
     root.add_widget(actions)
 
-    root.add_widget(Widget(size_hint=(1, None), height=suv(6)))
+    root.add_widget(Widget(size_hint=(1, None), height=sv(6)))
 
     from components.button import PrimaryButton, SecondaryButton
 
     foot = BoxLayout(
         orientation="horizontal",
         size_hint=(1, None),
-        height=suv(56),
-        spacing=suh(12),
+        height=sv(56),
+        spacing=sh(12),
     )
     back_btn = SecondaryButton(
         text="Back",
         size_hint=(0.5, 1),
-        font_size=suf(FONT_SIZES["medium"]),
+        font_size=sf(FONT_SIZES["medium"]),
     )
     foot.add_widget(back_btn)
 
     next_btn = PrimaryButton(
         text="Next",
         size_hint=(0.5, 1),
-        font_size=suf(FONT_SIZES["medium"]),
+        font_size=sf(FONT_SIZES["medium"]),
     )
     foot.add_widget(next_btn)
     root.add_widget(foot)
@@ -552,4 +600,5 @@ def build_figma_wifi_column(logo_path: str) -> dict:
         "list_card": list_card,
         "add_link": add_link,
         "rescan_btn": rescan_btn,
+        "layout_scale": ls,
     }
