@@ -13,6 +13,7 @@ import time
 from kivy.clock import Clock
 from kivy.graphics import Color, Ellipse, Line, Rectangle, RoundedRectangle
 from kivy.uix.anchorlayout import AnchorLayout
+from kivy.uix.behaviors import ButtonBehavior
 from kivy.uix.boxlayout import BoxLayout
 from kivy.uix.button import Button
 from kivy.uix.label import Label
@@ -28,6 +29,14 @@ _BORDER = (30 / 255.0, 41 / 255.0, 59 / 255.0, 1)
 _MUTED = (148 / 255.0, 163 / 255.0, 184 / 255.0, 1)
 _SUCCESS = (34 / 255.0, 197 / 255.0, 94 / 255.0, 1)
 _CTA = (74 / 255.0, 143 / 255.0, 217 / 255.0, 1)
+
+
+class _TextLink(ButtonBehavior, Label):
+    def on_press(self):
+        self.opacity = 0.60
+
+    def on_release(self):
+        self.opacity = 1.0
 
 
 class _StageRow(BoxLayout):
@@ -125,6 +134,7 @@ class ProcessingScreen(BaseScreen):
         self._pulse_event = None
         self._pulse_alpha = 0.20
         self._pulse_dir = 1
+        self._header_icon_decor = []
         self._build_ui()
 
     def _build_ui(self):
@@ -176,8 +186,8 @@ class ProcessingScreen(BaseScreen):
         left.add_widget(brand)
         header.add_widget(left)
         header.add_widget(Widget())
-        right = BoxLayout(orientation="horizontal", size_hint=(None, 1), width=self.suh(132), spacing=self.suh(8))
-        for sym in ("⚙", "?", "◉"):
+        right = BoxLayout(orientation="horizontal", size_hint=(None, 1), width=self.suh(146), spacing=self.suh(12))
+        for idx, sym in enumerate(("⚙", "?", "◉")):
             b = Label(
                 text=sym,
                 font_size=self.suf(FONT_SIZES["small"] + 1),
@@ -185,16 +195,31 @@ class ProcessingScreen(BaseScreen):
                 halign="center",
                 valign="middle",
                 size_hint=(None, None),
-                size=(self.suh(34), self.suv(34)),
+                size=(self.suh(40), self.suv(40)),
             )
             b.bind(size=b.setter("text_size"))
             with b.canvas.before:
                 Color(*COLORS["surface"])
                 rr = RoundedRectangle(pos=b.pos, size=b.size, radius=[999])
+                if idx == 2:
+                    Color(74 / 255.0, 143 / 255.0, 217 / 255.0, 0.22)
+                    border = Line(circle=(b.center_x, b.center_y, max(1, b.width / 2 - 1)), width=1.8)
+                    self._header_icon_decor.append((rr, border))
+                else:
+                    self._header_icon_decor.append((rr, None))
             b.bind(
                 pos=lambda w, _, r=rr: setattr(r, "pos", w.pos),
                 size=lambda w, _, r=rr: setattr(r, "size", w.size),
             )
+            if idx == 2:
+                b.bind(
+                    center=lambda w, _, bd=border: setattr(
+                        bd, "circle", (w.center_x, w.center_y, max(1, w.width / 2 - 2))
+                    ),
+                    size=lambda w, _, bd=border: setattr(
+                        bd, "circle", (w.center_x, w.center_y, max(1, w.width / 2 - 2))
+                    ),
+                )
             right.add_widget(b)
         header.add_widget(right)
         root.add_widget(header)
@@ -265,11 +290,44 @@ class ProcessingScreen(BaseScreen):
             color=_SUCCESS,
             halign="center",
             valign="middle",
-            size_hint=(1, None),
-            height=self.suv(20),
+            size_hint=(None, None),
+            size=(self.suh(72), self.suv(20)),
         )
         self.success_badge.bind(size=self.success_badge.setter("text_size"))
-        hero_col.add_widget(self.success_badge)
+        success_badge_wrap = AnchorLayout(size_hint=(1, None), height=self.suv(20))
+        with success_badge_wrap.canvas.before:
+            Color(34 / 255.0, 197 / 255.0, 94 / 255.0, 0.10)
+            self._success_badge_bg = RoundedRectangle(
+                pos=(0, 0), size=self.success_badge.size, radius=[999]
+            )
+        success_badge_wrap.bind(
+            pos=lambda w, *_: setattr(
+                self._success_badge_bg,
+                "pos",
+                (
+                    w.center_x - self.success_badge.width / 2,
+                    w.center_y - self.success_badge.height / 2,
+                ),
+            ),
+            size=lambda w, *_: setattr(
+                self._success_badge_bg,
+                "size",
+                self.success_badge.size,
+            ),
+        )
+        self.success_badge.bind(
+            size=lambda *_: setattr(self._success_badge_bg, "size", self.success_badge.size),
+            pos=lambda *_: setattr(
+                self._success_badge_bg,
+                "pos",
+                (
+                    success_badge_wrap.center_x - self.success_badge.width / 2,
+                    success_badge_wrap.center_y - self.success_badge.height / 2,
+                ),
+            ),
+        )
+        success_badge_wrap.add_widget(self.success_badge)
+        hero_col.add_widget(success_badge_wrap)
 
         self.title_label = Label(
             text="Preparing Analysis...",
@@ -360,16 +418,28 @@ class ProcessingScreen(BaseScreen):
                 size=self.summary_btn.size,
                 radius=[999],
             )
+        with self.summary_btn.canvas.after:
+            self._cta_shadow_color = Color(74 / 255.0, 143 / 255.0, 217 / 255.0, 0.24)
+            self._cta_shadow = RoundedRectangle(
+                pos=(self.summary_btn.x, self.summary_btn.y - self.suv(3)),
+                size=self.summary_btn.size,
+                radius=[999],
+            )
         self.summary_btn.bind(
             pos=lambda w, *_: setattr(self._cta_bg, "pos", w.pos),
             size=lambda w, *_: setattr(self._cta_bg, "size", w.size),
             opacity=lambda _, a: setattr(self._cta_color, "rgba", (*_CTA[:3], a)),
         )
+        self.summary_btn.bind(
+            pos=lambda w, *_: setattr(self._cta_shadow, "pos", (w.x, w.y - self.suv(3))),
+            size=lambda w, *_: setattr(self._cta_shadow, "size", w.size),
+            opacity=lambda _, a: setattr(self._cta_shadow_color, "rgba", (74 / 255.0, 143 / 255.0, 217 / 255.0, 0.24 * a)),
+        )
         self.summary_btn.bind(on_press=self._open_summary)
         cta_wrap.add_widget(self.summary_btn)
         col.add_widget(cta_wrap)
 
-        self.home_link = Label(
+        self.home_link = _TextLink(
             text="Back to Home",
             font_size=self.suf(FONT_SIZES["small"] + 1),
             color=_MUTED,
@@ -379,6 +449,7 @@ class ProcessingScreen(BaseScreen):
             height=self.suv(24),
         )
         self.home_link.bind(size=self.home_link.setter("text_size"))
+        self.home_link.bind(on_press=lambda *_: self.goto("home", transition="fade"))
         col.add_widget(self.home_link)
 
         body.add_widget(col)
@@ -404,16 +475,34 @@ class ProcessingScreen(BaseScreen):
             pos=lambda w, *_: setattr(self._footer_top, "pos", (w.x, w.top - 1)),
             size=lambda w, *_: setattr(self._footer_top, "size", (w.width, 1)),
         )
+        left_footer = BoxLayout(
+            orientation="horizontal",
+            size_hint=(0.6, 1),
+            spacing=self.suh(8),
+        )
+        dot = Widget(size_hint=(None, None), size=(self.suh(8), self.suv(8)))
+        with dot.canvas:
+            Color(*_SUCCESS)
+            self._footer_dot = Ellipse(pos=dot.pos, size=dot.size)
+        dot.bind(
+            pos=lambda w, *_: setattr(self._footer_dot, "pos", w.pos),
+            size=lambda w, *_: setattr(self._footer_dot, "size", w.size),
+        )
+        dot_holder = AnchorLayout(size_hint=(None, 1), width=self.suh(12), anchor_x="center", anchor_y="center")
+        dot_holder.add_widget(dot)
+        left_footer.add_widget(dot_holder)
         self.footer_left = Label(
-            text="●  SYSTEM ONLINE",
+            text="SYSTEM ONLINE",
             font_size=self.suf(FONT_SIZES["tiny"]),
+            bold=True,
             color=_MUTED,
             halign="left",
             valign="middle",
-            size_hint=(0.6, 1),
+            size_hint=(1, 1),
         )
         self.footer_left.bind(size=self.footer_left.setter("text_size"))
-        footer.add_widget(self.footer_left)
+        left_footer.add_widget(self.footer_left)
+        footer.add_widget(left_footer)
         self.footer_right = Label(
             text="Analysis in progress...",
             font_size=self.suf(FONT_SIZES["small"]),
