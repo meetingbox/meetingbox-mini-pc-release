@@ -63,6 +63,7 @@ _PROC_ASSETS = ASSETS_DIR / "processing"
 _REC_ASSETS = ASSETS_DIR / "recording"
 _HEADER_GEAR_PROC = _PROC_ASSETS / "header_gear.png"
 _HEADER_PROFILE_RING = _PROC_ASSETS / "header_profile_ring.png"
+_SUMMARY_CTA_IMG = _PROC_ASSETS / "view_meeting_summary.png"
 
 
 class _CanvasHeaderGlyph(Widget):
@@ -194,6 +195,10 @@ class _TextLink(ButtonBehavior, Label):
 
     def on_release(self):
         self.opacity = 1.0
+
+
+class _SummaryImageButton(ButtonBehavior, Image):
+    """Figma-exported View Meeting Summary pill (single PNG)."""
 
 
 class _StageRow(BoxLayout):
@@ -503,7 +508,7 @@ class ProcessingScreen(BaseScreen):
 
         sub_h = self.pv(50)
         hero_h = self.pv(232)
-        cta_h = self.pv(54)
+        cta_h = self.pv(68) if _SUMMARY_CTA_IMG.is_file() else self.pv(54)
         link_h = self.pv(22)
         col_h = (
             hero_h
@@ -667,60 +672,89 @@ class ProcessingScreen(BaseScreen):
 
         col.add_widget(Widget(size_hint=(1, None), height=self.pv(2)))
 
-        # CTA
+        # CTA — Figma bitmap when present, else drawn pill + label
         cta_wrap = AnchorLayout(size_hint=(1, None), height=cta_h, anchor_x="center", anchor_y="center")
-        self.summary_btn = Button(
-            text="View Meeting Summary",
-            font_size=self.pf(FONT_SIZES["medium"] + 2),
-            bold=True,
-            color=COLORS["white"],
-            size_hint=(None, None),
-            size=(min(self.ph(448), col_w - self.ph(24)), self.pv(52)),
-            background_normal="",
-            background_down="",
-            background_color=(0, 0, 0, 0),
-            disabled=True,
-            opacity=0.60,
-        )
-        with self.summary_btn.canvas.before:
-            self._cta_color = Color(*_CTA, self.summary_btn.opacity)
-            self._cta_bg = RoundedRectangle(
-                pos=self.summary_btn.pos,
-                size=self.summary_btn.size,
-                radius=[999],
+        wcap = min(self.ph(448), col_w - self.ph(24))
+        if _SUMMARY_CTA_IMG.is_file():
+            self.summary_btn = _SummaryImageButton(
+                source=str(_SUMMARY_CTA_IMG),
+                size_hint=(None, None),
+                size=(wcap, self.pv(56)),
+                allow_stretch=True,
+                keep_ratio=True,
+                fit_mode="contain",
+                disabled=True,
+                opacity=0.60,
             )
-        with self.summary_btn.canvas.after:
-            self._cta_shadow_color = Color(74 / 255.0, 143 / 255.0, 217 / 255.0, 0.24)
-            self._cta_shadow = RoundedRectangle(
-                pos=(self.summary_btn.x, self.summary_btn.y - self.pv(2)),
-                size=self.summary_btn.size,
-                radius=[999],
+
+            def _fit_summary_cta_texture(*_a):
+                tw, th = self.summary_btn.texture_size
+                if not tw or not th:
+                    return
+                self.summary_btn.width = wcap
+                ar = float(th) / float(tw)
+                h = int(round(float(wcap) * ar))
+                self.summary_btn.height = min(max(self.pv(48), h), self.pv(68))
+
+            self.summary_btn.bind(texture_size=_fit_summary_cta_texture)
+            self.summary_btn.bind(on_press=self._open_summary)
+        else:
+            self.summary_btn = Button(
+                text="View Meeting Summary",
+                font_size=self.pf(FONT_SIZES["medium"] + 2),
+                bold=True,
+                color=COLORS["white"],
+                size_hint=(None, None),
+                size=(wcap, self.pv(52)),
+                background_normal="",
+                background_down="",
+                background_color=(0, 0, 0, 0),
+                disabled=True,
+                opacity=0.60,
             )
-            self._cta_chv_col = Color(1, 1, 1, self.summary_btn.opacity)
-            self._cta_chevron = Line(
-                width=max(2.0, float(self.pv(2))),
-                cap="round",
-                joint="round",
+            with self.summary_btn.canvas.before:
+                self._cta_color = Color(*_CTA, self.summary_btn.opacity)
+                self._cta_bg = RoundedRectangle(
+                    pos=self.summary_btn.pos,
+                    size=self.summary_btn.size,
+                    radius=[999],
+                )
+            with self.summary_btn.canvas.after:
+                self._cta_shadow_color = Color(74 / 255.0, 143 / 255.0, 217 / 255.0, 0.24)
+                self._cta_shadow = RoundedRectangle(
+                    pos=(self.summary_btn.x, self.summary_btn.y - self.pv(2)),
+                    size=self.summary_btn.size,
+                    radius=[999],
+                )
+                self._cta_chv_col = Color(1, 1, 1, self.summary_btn.opacity)
+                self._cta_chevron = Line(
+                    width=max(2.0, float(self.pv(2))),
+                    cap="round",
+                    joint="round",
+                )
+            self.summary_btn.bind(
+                pos=self._sync_cta_chevron,
+                size=self._sync_cta_chevron,
             )
-        self.summary_btn.bind(
-            pos=self._sync_cta_chevron,
-            size=self._sync_cta_chevron,
-        )
-        self.summary_btn.bind(
-            pos=lambda w, *_: setattr(self._cta_bg, "pos", w.pos),
-            size=lambda w, *_: setattr(self._cta_bg, "size", w.size),
-            opacity=lambda _, a: setattr(self._cta_color, "rgba", (*_CTA[:3], a)),
-        )
-        self.summary_btn.bind(
-            pos=lambda w, *_: setattr(self._cta_shadow, "pos", (w.x, w.y - self.pv(2))),
-            size=lambda w, *_: setattr(self._cta_shadow, "size", w.size),
-            opacity=lambda _, a: setattr(self._cta_shadow_color, "rgba", (74 / 255.0, 143 / 255.0, 217 / 255.0, 0.24 * a)),
-        )
-        self.summary_btn.bind(
-            opacity=lambda _, a: setattr(self._cta_chv_col, "rgba", (1, 1, 1, a)),
-        )
-        self.summary_btn.bind(on_press=self._open_summary)
-        Clock.schedule_once(lambda *_: self._sync_cta_chevron(self.summary_btn), 0)
+            self.summary_btn.bind(
+                pos=lambda w, *_: setattr(self._cta_bg, "pos", w.pos),
+                size=lambda w, *_: setattr(self._cta_bg, "size", w.size),
+                opacity=lambda _, a: setattr(self._cta_color, "rgba", (*_CTA[:3], a)),
+            )
+            self.summary_btn.bind(
+                pos=lambda w, *_: setattr(self._cta_shadow, "pos", (w.x, w.y - self.pv(2))),
+                size=lambda w, *_: setattr(self._cta_shadow, "size", w.size),
+                opacity=lambda _, a: setattr(
+                    self._cta_shadow_color,
+                    "rgba",
+                    (74 / 255.0, 143 / 255.0, 217 / 255.0, 0.24 * a),
+                ),
+            )
+            self.summary_btn.bind(
+                opacity=lambda _, a: setattr(self._cta_chv_col, "rgba", (1, 1, 1, a)),
+            )
+            self.summary_btn.bind(on_press=self._open_summary)
+            Clock.schedule_once(lambda *_: self._sync_cta_chevron(self.summary_btn), 0)
         cta_wrap.add_widget(self.summary_btn)
         col.add_widget(cta_wrap)
 
