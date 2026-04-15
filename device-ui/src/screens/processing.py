@@ -16,10 +16,19 @@ from kivy.uix.anchorlayout import AnchorLayout
 from kivy.uix.behaviors import ButtonBehavior
 from kivy.uix.boxlayout import BoxLayout
 from kivy.uix.button import Button
+from kivy.uix.image import Image
 from kivy.uix.label import Label
 from kivy.uix.widget import Widget
 
-from config import COLORS, DISPLAY_WIDTH, FONT_SIZES
+from config import (
+    ASSETS_DIR,
+    COLORS,
+    DISPLAY_HEIGHT,
+    DISPLAY_WIDTH,
+    FONT_SIZES,
+    other_screen_horizontal_scale,
+    other_screen_vertical_scale,
+)
 from screens.base_screen import BaseScreen
 
 logger = logging.getLogger(__name__)
@@ -29,6 +38,89 @@ _BORDER = (30 / 255.0, 41 / 255.0, 59 / 255.0, 1)
 _MUTED = (148 / 255.0, 163 / 255.0, 184 / 255.0, 1)
 _SUCCESS = (34 / 255.0, 197 / 255.0, 94 / 255.0, 1)
 _CTA = (74 / 255.0, 143 / 255.0, 217 / 255.0, 1)
+
+# Nominal vertical design units for the main column (pre-scale). Tuned so that on
+# 800px-tall panels with OTHER_CONTENT_SCALE, body content fits without clipping.
+_PROCESSING_BODY_STACK_PX = 730
+
+
+def _compute_processing_layout_fit() -> float:
+    """Shrink processing UI on short displays (e.g. 800px height) vs 1024×600 baseline."""
+    v = other_screen_vertical_scale()
+    header_h = int(round(58 * v))
+    footer_h = int(round(56 * v))
+    margin = int(round(16 * v))
+    avail = max(240, DISPLAY_HEIGHT - header_h - footer_h - margin)
+    need = _PROCESSING_BODY_STACK_PX * v
+    if need <= avail:
+        return 1.0
+    return max(0.50, min(1.0, float(avail) / float(max(need, 1))))
+
+
+class _HeroCheckCircle(Widget):
+    """Large green ring + white check (no font glyphs — works on kiosk fonts)."""
+
+    def __init__(self, size_px: int, **kwargs):
+        kwargs.setdefault("size_hint", (None, None))
+        kwargs.setdefault("size", (size_px, size_px))
+        super().__init__(**kwargs)
+        self.bind(pos=self._draw, size=self._draw)
+        Clock.schedule_once(lambda *_: self._draw(), 0)
+
+    def _draw(self, *_):
+        self.canvas.clear()
+        cx, cy = self.center_x, self.center_y
+        r = min(self.width, self.height) / 2.0
+        if r < 4:
+            return
+        inset = max(2.0, r * 0.08)
+        with self.canvas:
+            Color(34 / 255.0, 197 / 255.0, 94 / 255.0, 0.12)
+            Ellipse(pos=(cx - r, cy - r), size=(r * 2, r * 2))
+            Color(34 / 255.0, 197 / 255.0, 94 / 255.0, 0.35)
+            Line(circle=(cx, cy, max(1.0, r - inset)), width=max(2.0, r * 0.04))
+            Color(1, 1, 1, 1)
+            lw = max(2.5, r * 0.09)
+            x0, y0 = cx - r * 0.32, cy - r * 0.08
+            x1, y1 = cx - r * 0.06, cy - r * 0.34
+            x2, y2 = cx + r * 0.36, cy + r * 0.22
+            Line(points=[x0, y0, x1, y1, x2, y2], width=lw, cap="round", joint="round")
+
+
+class _StageMark(Widget):
+    """20dp stage icon: hollow (pending), ring (active), green check (done)."""
+
+    def __init__(self, **kwargs):
+        kwargs.setdefault("size_hint", (None, None))
+        kwargs.setdefault("size", (22, 22))
+        super().__init__(**kwargs)
+        self._state = "pending"
+        self.bind(pos=self._draw, size=self._draw)
+
+    def set_state(self, state: str):
+        self._state = state
+        self._draw()
+
+    def _draw(self, *_):
+        self.canvas.clear()
+        cx, cy = self.center_x, self.center_y
+        r = min(self.width, self.height) * 0.38
+        if r < 2:
+            return
+        with self.canvas:
+            if self._state == "pending":
+                Color(*_MUTED)
+                Line(circle=(cx, cy, r), width=max(1.2, r * 0.12))
+            elif self._state == "active":
+                Color(*_SUCCESS)
+                Line(circle=(cx, cy, r), width=max(1.5, r * 0.14))
+            else:
+                Color(*_SUCCESS)
+                lw = max(2.0, r * 0.18)
+                x0, y0 = cx - r * 0.45, cy
+                x1, y1 = cx - r * 0.12, cy - r * 0.42
+                x2, y2 = cx + r * 0.5, cy + r * 0.38
+                Line(points=[x0, y0, x1, y1, x2, y2], width=lw, cap="round", joint="round")
 
 
 class _TextLink(ButtonBehavior, Label):
@@ -43,67 +135,67 @@ class _StageRow(BoxLayout):
     """Single timeline stage row with indicator, optional connector, title, subtitle."""
 
     def __init__(self, title: str, subtitle: str, show_connector: bool, parent_screen, **kwargs):
+        ps = parent_screen
+        row_h = ps.pv(68 if show_connector else 44)
         kwargs.setdefault("orientation", "horizontal")
         kwargs.setdefault("size_hint", (1, None))
-        kwargs.setdefault("height", parent_screen.suv(82 if show_connector else 52))
-        kwargs.setdefault("spacing", parent_screen.suh(14))
+        kwargs.setdefault("height", row_h)
+        kwargs.setdefault("spacing", ps.ph(14))
         super().__init__(**kwargs)
         self._show_connector = show_connector
-        self._state = "pending"  # pending | active | done
+        self._state = "pending"
         self._screen = parent_screen
 
+        mark_sz = ps.ph(22)
         left = BoxLayout(
             orientation="vertical",
             size_hint=(None, 1),
-            width=parent_screen.suh(24),
+            width=max(mark_sz, ps.ph(24)),
             spacing=0,
         )
-        self.dot = Label(
-            text="○",
-            font_size=parent_screen.suf(18),
-            color=_MUTED,
-            halign="center",
-            valign="middle",
-            size_hint=(1, None),
-            height=parent_screen.suv(22),
-        )
-        self.dot.bind(size=self.dot.setter("text_size"))
-        left.add_widget(self.dot)
+        self.mark = _StageMark(size=(mark_sz, mark_sz))
+        mark_anchor = AnchorLayout(size_hint=(1, None), height=mark_sz, anchor_x="center", anchor_y="top")
+        mark_anchor.add_widget(self.mark)
+        left.add_widget(mark_anchor)
         if show_connector:
             self.connector = Widget(size_hint=(1, 1))
             with self.connector.canvas:
-                Color(*_BORDER)
+                self._connector_color = Color(*_BORDER[:3], 0.45)
                 self._connector_line = Rectangle(pos=self.connector.pos, size=self.connector.size)
             self.connector.bind(
-                pos=lambda w, *_: setattr(self._connector_line, "pos", (w.center_x - 0.5, w.y + parent_screen.suv(2))),
+                pos=lambda w, *_: setattr(
+                    self._connector_line, "pos", (w.center_x - 0.5, w.y + ps.pv(2))
+                ),
                 size=lambda w, *_: setattr(
-                    self._connector_line, "size", (1, max(1, w.height - parent_screen.suv(8)))
+                    self._connector_line,
+                    "size",
+                    (1, max(1, w.height - ps.pv(6))),
                 ),
             )
             left.add_widget(self.connector)
         self.add_widget(left)
 
-        txt = BoxLayout(orientation="vertical", size_hint=(1, 1), spacing=parent_screen.suv(2))
+        txt = BoxLayout(orientation="vertical", size_hint=(1, 1), spacing=ps.pv(2))
         self.title = Label(
             text=title,
-            font_size=parent_screen.suf(16),
+            font_size=ps.pf(16),
             bold=True,
             color=COLORS["white"],
             halign="left",
             valign="middle",
             size_hint=(1, None),
-            height=parent_screen.suv(24),
+            height=ps.pv(22),
         )
         self.title.bind(size=self.title.setter("text_size"))
         txt.add_widget(self.title)
         self.subtitle = Label(
             text=subtitle,
-            font_size=parent_screen.suf(FONT_SIZES["small"] + 1),
+            font_size=ps.pf(FONT_SIZES["small"]),
             color=_MUTED,
             halign="left",
             valign="middle",
             size_hint=(1, None),
-            height=parent_screen.suv(22),
+            height=ps.pv(20),
         )
         self.subtitle.bind(size=self.subtitle.setter("text_size"))
         txt.add_widget(self.subtitle)
@@ -111,17 +203,12 @@ class _StageRow(BoxLayout):
 
     def set_state(self, state: str):
         self._state = state
-        if state == "done":
-            self.dot.text = "●"
-            self.dot.color = _SUCCESS
-            if self._show_connector:
-                self._connector_line.size = (1, self._connector_line.size[1])
-        elif state == "active":
-            self.dot.text = "◉"
-            self.dot.color = _SUCCESS
-        else:
-            self.dot.text = "○"
-            self.dot.color = _MUTED
+        self.mark.set_state(state)
+        if self._show_connector:
+            if state in ("done", "active"):
+                self._connector_color.rgba = (34 / 255.0, 197 / 255.0, 94 / 255.0, 0.30)
+            else:
+                self._connector_color.rgba = (*_BORDER[:3], 0.45)
 
 
 class ProcessingScreen(BaseScreen):
@@ -135,7 +222,20 @@ class ProcessingScreen(BaseScreen):
         self._pulse_alpha = 0.20
         self._pulse_dir = 1
         self._header_icon_decor = []
+        self._layout_fit = _compute_processing_layout_fit()
         self._build_ui()
+
+    def pv(self, px: float) -> int:
+        v = other_screen_vertical_scale()
+        return max(1, int(round(float(px) * v * self._layout_fit)))
+
+    def ph(self, px: float) -> int:
+        h = other_screen_horizontal_scale()
+        return max(1, int(round(float(px) * h * self._layout_fit)))
+
+    def pf(self, fs: float) -> int:
+        v = other_screen_vertical_scale()
+        return max(6, int(round(float(fs) * v * self._layout_fit)))
 
     def _build_ui(self):
         root = BoxLayout(orientation="vertical")
@@ -151,8 +251,8 @@ class ProcessingScreen(BaseScreen):
         header = BoxLayout(
             orientation="horizontal",
             size_hint=(1, None),
-            height=self.suv(58),
-            padding=[self.suh(20), self.suv(10), self.suh(20), self.suv(10)],
+            height=self.pv(52),
+            padding=[self.ph(24), self.pv(10), self.ph(24), self.pv(10)],
         )
         with header.canvas.after:
             Color(*_BORDER)
@@ -161,21 +261,32 @@ class ProcessingScreen(BaseScreen):
             pos=lambda w, *_: setattr(self._header_line, "pos", (w.x, w.y)),
             size=lambda w, *_: setattr(self._header_line, "size", (w.width, 1)),
         )
-        left = BoxLayout(orientation="horizontal", size_hint=(None, 1), width=self.suh(200), spacing=self.suh(8))
-        logo = Label(
-            text="◈",
-            font_size=self.suf(18),
-            color=_CTA,
-            halign="center",
-            valign="middle",
-            size_hint=(None, 1),
-            width=self.suh(20),
-        )
-        logo.bind(size=logo.setter("text_size"))
+        left = BoxLayout(orientation="horizontal", size_hint=(None, 1), width=self.ph(220), spacing=self.ph(10))
+        _logo_path = ASSETS_DIR / "welcome" / "LOGO.png"
+        if _logo_path.is_file():
+            logo = Image(
+                source=str(_logo_path),
+                size_hint=(None, 1),
+                width=self.ph(32),
+                fit_mode="contain",
+                allow_stretch=True,
+            )
+        else:
+            logo = Label(
+                text="MB",
+                font_size=self.pf(14),
+                bold=True,
+                color=_CTA,
+                halign="center",
+                valign="middle",
+                size_hint=(None, 1),
+                width=self.ph(32),
+            )
+            logo.bind(size=logo.setter("text_size"))
         left.add_widget(logo)
         brand = Label(
             text="MeetingBox",
-            font_size=self.suf(FONT_SIZES["medium"]),
+            font_size=self.pf(FONT_SIZES["medium"]),
             bold=True,
             color=COLORS["white"],
             halign="left",
@@ -186,16 +297,16 @@ class ProcessingScreen(BaseScreen):
         left.add_widget(brand)
         header.add_widget(left)
         header.add_widget(Widget())
-        right = BoxLayout(orientation="horizontal", size_hint=(None, 1), width=self.suh(146), spacing=self.suh(12))
-        for idx, sym in enumerate(("⚙", "?", "◉")):
+        right = BoxLayout(orientation="horizontal", size_hint=(None, 1), width=self.ph(146), spacing=self.ph(10))
+        for idx, sym in enumerate(("\u2699", "?", "\u25CF")):
             b = Label(
                 text=sym,
-                font_size=self.suf(FONT_SIZES["small"] + 1),
+                font_size=self.pf(FONT_SIZES["small"] + 1),
                 color=(200 / 255.0, 213 / 255.0, 230 / 255.0, 1),
                 halign="center",
                 valign="middle",
                 size_hint=(None, None),
-                size=(self.suh(40), self.suv(40)),
+                size=(self.ph(36), self.pv(36)),
             )
             b.bind(size=b.setter("text_size"))
             with b.canvas.before:
@@ -225,76 +336,75 @@ class ProcessingScreen(BaseScreen):
         root.add_widget(header)
 
         body = AnchorLayout(anchor_x="center", anchor_y="center", size_hint=(1, 1))
+        col_w = min(self.ph(720), max(self.ph(480), DISPLAY_WIDTH - self.ph(40)))
+        col_sp = self.pv(6)
+        card_pad_v = self.pv(12)
+        r1, r2, r3 = self.pv(68), self.pv(68), self.pv(44)
+        card_sp = self.pv(6)
+        card_inner_h = card_pad_v * 2 + r1 + r2 + r3 + card_sp * 2
+        card_wrap_h = card_inner_h + self.pv(2)
+
+        sub_h = self.pv(48)
+        hero_h = self.pv(218)
+        cta_h = self.pv(48)
+        link_h = self.pv(20)
+        col_h = (
+            hero_h
+            + card_wrap_h
+            + self.pv(2)
+            + cta_h
+            + link_h
+            + 4 * col_sp
+        )
         col = BoxLayout(
             orientation="vertical",
             size_hint=(None, None),
-            width=min(self.suh(760), max(self.suh(520), int(DISPLAY_WIDTH * 0.92))),
-            height=self.suv(690),
-            spacing=self.suv(14),
+            width=col_w,
+            height=col_h,
+            spacing=col_sp,
         )
 
         # Hero
-        hero = AnchorLayout(size_hint=(1, None), height=self.suv(258), anchor_x="center", anchor_y="center")
+        hero = AnchorLayout(size_hint=(1, None), height=hero_h, anchor_x="center", anchor_y="center")
         with hero.canvas.before:
             Color(34 / 255.0, 197 / 255.0, 94 / 255.0, 0.18)
             self._hero_glow = Ellipse(
-                pos=(hero.center_x - self.suh(170), hero.center_y - self.suv(120)),
-                size=(self.suh(340), self.suv(240)),
+                pos=(hero.center_x - self.ph(140), hero.center_y - self.pv(90)),
+                size=(self.ph(280), self.pv(180)),
             )
         hero.bind(
             pos=lambda w, *_: setattr(
                 self._hero_glow,
                 "pos",
-                (w.center_x - self.suh(170), w.center_y - self.suv(120)),
+                (w.center_x - self.ph(140), w.center_y - self.pv(90)),
             ),
-            size=lambda w, *_: setattr(self._hero_glow, "size", (self.suh(340), self.suv(240))),
+            size=lambda w, *_: setattr(self._hero_glow, "size", (self.ph(280), self.pv(180))),
         )
         hero_col = BoxLayout(
             orientation="vertical",
             size_hint=(None, None),
-            width=self.suh(560),
-            height=self.suv(258),
-            spacing=self.suv(8),
+            width=min(col_w, self.ph(560)),
+            height=hero_h,
+            spacing=self.pv(4),
         )
 
-        check_wrap = AnchorLayout(size_hint=(1, None), height=self.suv(126), anchor_x="center", anchor_y="center")
-        check = Label(
-            text="✓",
-            font_size=self.suf(52),
-            color=_SUCCESS,
-            halign="center",
-            valign="middle",
-            size_hint=(None, None),
-            size=(self.suh(128), self.suv(128)),
-        )
-        check.bind(size=check.setter("text_size"))
-        with check.canvas.before:
-            Color(34 / 255.0, 197 / 255.0, 94 / 255.0, 0.12)
-            self._check_ring = Ellipse(pos=check.pos, size=check.size)
-            Color(34 / 255.0, 197 / 255.0, 94 / 255.0, 0.35)
-            self._check_border = Line(circle=(check.center_x, check.center_y, check.width / 2), width=2)
-        check.bind(
-            pos=lambda w, *_: setattr(self._check_ring, "pos", w.pos),
-            size=lambda w, *_: setattr(self._check_ring, "size", w.size),
-        )
-        check.bind(
-            center=lambda w, *_: setattr(self._check_border, "circle", (w.center_x, w.center_y, max(1, w.width / 2 - 1))),
-            size=lambda w, *_: setattr(self._check_border, "circle", (w.center_x, w.center_y, max(1, w.width / 2 - 1))),
-        )
+        check_sz = self.ph(84)
+        check_wrap = AnchorLayout(size_hint=(1, None), height=self.pv(92), anchor_x="center", anchor_y="center")
+        check = _HeroCheckCircle(size_px=check_sz)
         check_wrap.add_widget(check)
         hero_col.add_widget(check_wrap)
 
         self.success_badge = Label(
             text="Success",
-            font_size=self.suf(FONT_SIZES["tiny"]),
+            font_size=self.pf(FONT_SIZES["tiny"]),
             color=_SUCCESS,
             halign="center",
             valign="middle",
             size_hint=(None, None),
-            size=(self.suh(72), self.suv(20)),
+            size=(self.ph(64), self.pv(18)),
         )
         self.success_badge.bind(size=self.success_badge.setter("text_size"))
-        success_badge_wrap = AnchorLayout(size_hint=(1, None), height=self.suv(20))
+        success_badge_wrap = AnchorLayout(size_hint=(1, None), height=self.pv(20))
         with success_badge_wrap.canvas.before:
             Color(34 / 255.0, 197 / 255.0, 94 / 255.0, 0.10)
             self._success_badge_bg = RoundedRectangle(
@@ -331,41 +441,45 @@ class ProcessingScreen(BaseScreen):
 
         self.title_label = Label(
             text="Preparing Analysis...",
-            font_size=self.suf(48),
+            font_size=self.pf(34),
             bold=True,
             color=COLORS["white"],
             halign="center",
             valign="middle",
             size_hint=(1, None),
-            height=self.suv(56),
+            height=self.pv(40),
         )
         self.title_label.bind(size=self.title_label.setter("text_size"))
         hero_col.add_widget(self.title_label)
 
         self.subtitle_label = Label(
             text="Please wait while transcript and action items are prepared.",
-            font_size=self.suf(FONT_SIZES["body"] + 2),
+            font_size=self.pf(FONT_SIZES["small"] + 1),
             color=_MUTED,
             halign="center",
             valign="middle",
             size_hint=(1, None),
-            height=self.suv(52),
+            height=sub_h,
         )
-        self.subtitle_label.bind(size=self.subtitle_label.setter("text_size"))
+        def _subtitle_text_width(*_a):
+            self.subtitle_label.text_size = (self.subtitle_label.width, None)
+
+        self.subtitle_label.bind(size=_subtitle_text_width)
+        self.subtitle_label.bind(width=_subtitle_text_width)
         hero_col.add_widget(self.subtitle_label)
 
         hero.add_widget(hero_col)
         col.add_widget(hero)
 
         # Stage card
-        card_wrap = AnchorLayout(size_hint=(1, None), height=self.suv(282), anchor_x="center", anchor_y="center")
+        card_wrap = AnchorLayout(size_hint=(1, None), height=card_wrap_h, anchor_x="center", anchor_y="center")
         card = BoxLayout(
             orientation="vertical",
             size_hint=(None, None),
-            width=self.suh(672),
-            height=self.suv(252),
-            padding=[self.suh(26), self.suv(24), self.suh(26), self.suv(18)],
-            spacing=self.suv(16),
+            width=min(self.ph(640), col_w - self.ph(8)),
+            height=card_inner_h,
+            padding=[self.ph(18), card_pad_v, self.ph(18), card_pad_v],
+            spacing=card_sp,
         )
         with card.canvas.before:
             Color(15 / 255.0, 23 / 255.0, 42 / 255.0, 0.50)
@@ -394,17 +508,17 @@ class ProcessingScreen(BaseScreen):
         card_wrap.add_widget(card)
         col.add_widget(card_wrap)
 
-        col.add_widget(Widget(size_hint=(1, None), height=self.suv(4)))
+        col.add_widget(Widget(size_hint=(1, None), height=self.pv(2)))
 
         # CTA
-        cta_wrap = AnchorLayout(size_hint=(1, None), height=self.suv(62), anchor_x="center", anchor_y="center")
+        cta_wrap = AnchorLayout(size_hint=(1, None), height=cta_h, anchor_x="center", anchor_y="center")
         self.summary_btn = Button(
             text="View Meeting Summary →",
-            font_size=self.suf(FONT_SIZES["medium"] + 1),
+            font_size=self.pf(FONT_SIZES["medium"]),
             bold=True,
             color=COLORS["white"],
             size_hint=(None, None),
-            size=(self.suh(448), self.suv(56)),
+            size=(min(self.ph(420), col_w - self.ph(16)), self.pv(48)),
             background_normal="",
             background_down="",
             background_color=(0, 0, 0, 0),
@@ -421,7 +535,7 @@ class ProcessingScreen(BaseScreen):
         with self.summary_btn.canvas.after:
             self._cta_shadow_color = Color(74 / 255.0, 143 / 255.0, 217 / 255.0, 0.24)
             self._cta_shadow = RoundedRectangle(
-                pos=(self.summary_btn.x, self.summary_btn.y - self.suv(3)),
+                pos=(self.summary_btn.x, self.summary_btn.y - self.pv(2)),
                 size=self.summary_btn.size,
                 radius=[999],
             )
@@ -431,7 +545,7 @@ class ProcessingScreen(BaseScreen):
             opacity=lambda _, a: setattr(self._cta_color, "rgba", (*_CTA[:3], a)),
         )
         self.summary_btn.bind(
-            pos=lambda w, *_: setattr(self._cta_shadow, "pos", (w.x, w.y - self.suv(3))),
+            pos=lambda w, *_: setattr(self._cta_shadow, "pos", (w.x, w.y - self.pv(2))),
             size=lambda w, *_: setattr(self._cta_shadow, "size", w.size),
             opacity=lambda _, a: setattr(self._cta_shadow_color, "rgba", (74 / 255.0, 143 / 255.0, 217 / 255.0, 0.24 * a)),
         )
@@ -441,12 +555,12 @@ class ProcessingScreen(BaseScreen):
 
         self.home_link = _TextLink(
             text="Back to Home",
-            font_size=self.suf(FONT_SIZES["small"] + 1),
+            font_size=self.pf(FONT_SIZES["small"]),
             color=_MUTED,
             halign="center",
             valign="middle",
             size_hint=(1, None),
-            height=self.suv(24),
+            height=link_h,
         )
         self.home_link.bind(size=self.home_link.setter("text_size"))
         self.home_link.bind(on_press=lambda *_: self.goto("home", transition="fade"))
@@ -459,8 +573,8 @@ class ProcessingScreen(BaseScreen):
         footer = BoxLayout(
             orientation="horizontal",
             size_hint=(1, None),
-            height=self.suv(56),
-            padding=[self.suh(20), self.suv(8), self.suh(20), self.suv(8)],
+            height=self.pv(48),
+            padding=[self.ph(20), self.pv(6), self.ph(20), self.pv(6)],
         )
         with footer.canvas.before:
             Color(*_BG)
@@ -478,9 +592,9 @@ class ProcessingScreen(BaseScreen):
         left_footer = BoxLayout(
             orientation="horizontal",
             size_hint=(0.6, 1),
-            spacing=self.suh(8),
+            spacing=self.ph(8),
         )
-        dot = Widget(size_hint=(None, None), size=(self.suh(8), self.suv(8)))
+        dot = Widget(size_hint=(None, None), size=(self.ph(8), self.pv(8)))
         with dot.canvas:
             Color(*_SUCCESS)
             self._footer_dot = Ellipse(pos=dot.pos, size=dot.size)
@@ -488,12 +602,12 @@ class ProcessingScreen(BaseScreen):
             pos=lambda w, *_: setattr(self._footer_dot, "pos", w.pos),
             size=lambda w, *_: setattr(self._footer_dot, "size", w.size),
         )
-        dot_holder = AnchorLayout(size_hint=(None, 1), width=self.suh(12), anchor_x="center", anchor_y="center")
+        dot_holder = AnchorLayout(size_hint=(None, 1), width=self.ph(12), anchor_x="center", anchor_y="center")
         dot_holder.add_widget(dot)
         left_footer.add_widget(dot_holder)
         self.footer_left = Label(
             text="SYSTEM ONLINE",
-            font_size=self.suf(FONT_SIZES["tiny"]),
+            font_size=self.pf(FONT_SIZES["tiny"]),
             bold=True,
             color=_MUTED,
             halign="left",
@@ -505,7 +619,7 @@ class ProcessingScreen(BaseScreen):
         footer.add_widget(left_footer)
         self.footer_right = Label(
             text="Analysis in progress...",
-            font_size=self.suf(FONT_SIZES["small"]),
+            font_size=self.pf(FONT_SIZES["small"]),
             color=_MUTED,
             halign="right",
             valign="middle",
