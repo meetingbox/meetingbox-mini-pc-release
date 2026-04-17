@@ -46,8 +46,10 @@ AUDIO_SERVICE=/etc/systemd/system/meetingbox-docker-audio.service
 cat >"$AUDIO_SERVICE" <<EOF
 [Unit]
 Description=MeetingBox Redis + audio (Docker, no display required)
-After=docker.service network-online.target
-Wants=docker.service network-online.target
+# Use network.target only — After=network-online.target can stall boot for minutes
+# (systemd-networkd-wait-online / bad DNS) while the panel already shows a desktop.
+After=docker.service network.target
+Wants=docker.service
 
 [Service]
 Type=oneshot
@@ -68,9 +70,10 @@ cat >"$SERVICE_PATH" <<EOF
 [Unit]
 Description=MeetingBox appliance (Docker Compose + UI)
 Documentation=https://github.com/ (see mini-pc/README.md)
-After=docker.service network-online.target display-manager.service meetingbox-docker-audio.service
-Wants=docker.service network-online.target
-After=graphical.target
+# Do not order After=network-online.target — it can delay the kiosk UI for minutes with no
+# user-visible progress. Docker / BACKEND_URL retries inside the app are enough for WAN.
+After=docker.service network.target display-manager.service meetingbox-docker-audio.service graphical.target
+Wants=docker.service
 
 [Service]
 Type=oneshot

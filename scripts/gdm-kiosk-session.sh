@@ -23,16 +23,22 @@ if command -v openbox >/dev/null 2>&1; then
   sleep 0.2
 fi
 
-echo "meetingbox-gdm-kiosk: waiting for Docker..."
-for _ in $(seq 1 120); do
+echo "meetingbox-gdm-kiosk: waiting for Docker (max ~15s)..."
+for _ in $(seq 1 60); do
   docker info &>/dev/null && break
-  sleep 0.5
+  sleep 0.25
 done
 
 KOISK="$RELEASE/scripts/kiosk-compose-up.sh"
 if [[ -f "$KOISK" ]]; then
+  # Run compose in the background so this X session reaches a steady state immediately
+  # (black + Openbox). First-time image pulls can take minutes; blocking here does not
+  # speed Docker up and can make GDM look "stuck" before tail -f.
   # shellcheck disable=SC1090
-  bash "$KOISK" "$RELEASE" || logger -t meetingbox-kiosk "kiosk-compose-up exited $?"
+  (
+    bash "$KOISK" "$RELEASE" 2>&1 | logger -t meetingbox-kiosk-compose
+  ) &
+  disown "$!" 2>/dev/null || true
 else
   logger -t meetingbox-kiosk "missing $KOISK — set path in /etc/meetingbox/release"
 fi

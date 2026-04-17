@@ -2,6 +2,17 @@
 
 Goal: power on → **MeetingBox fullscreen** in Docker, **without** GNOME (no dock, Activities, or normal Ubuntu desktop). Under the hood it is still Linux + Docker (like many car head units).
 
+## Why the device showed “Ubuntu” for minutes
+
+Two separate issues are easy to confuse:
+
+1. **Full Ubuntu / GNOME session** — If you only ran `install-boot-service.sh` and auto-login still uses the **Ubuntu** session, the machine spends a long time loading the full desktop before anything looks appliance-like. Fix: use the **MeetingBox kiosk** session (this doc) so boot goes **GDM flash → black screen → MeetingBox**, not the purple wallpaper and dock.
+
+2. **`network-online.target` stalls** — Older appliance units waited on systemd’s “network is fully online” step, which can sit for **minutes** on slow DNS or misconfigured networks **before** `kiosk-compose-up.sh` even ran. Current `scripts/install-boot-service.sh` uses **`network.target` only** for ordering. **Re-run** that installer once after upgrading this repo so `/etc/systemd/system/meetingbox-*.service` picks up the change:  
+   `sudo bash scripts/install-boot-service.sh`
+
+To see what blocked boot: `systemd-analyze critical-chain meetingbox-appliance.service` (after a reboot).
+
 ## One command (after `.env` exists)
 
 ```bash

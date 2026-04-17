@@ -11,14 +11,17 @@ xsetroot -solid '#000000' 2>/dev/null || true
 command -v openbox >/dev/null 2>&1 && openbox >/dev/null 2>&1 &
 sleep 0.25
 
-echo "xinit-meetingbox: waiting for Docker..."
-for _ in $(seq 1 120); do
+echo "xinit-meetingbox: waiting for Docker (max ~15s)..."
+for _ in $(seq 1 60); do
   docker info >/dev/null 2>&1 && break
-  sleep 0.5
+  sleep 0.25
 done
 
 if [[ -f "$RELEASE/scripts/kiosk-compose-up.sh" ]]; then
-  bash "$RELEASE/scripts/kiosk-compose-up.sh" "$RELEASE" || true
+  (
+    bash "$RELEASE/scripts/kiosk-compose-up.sh" "$RELEASE" 2>&1 | logger -t meetingbox-xinit-compose
+  ) &
+  disown "$!" 2>/dev/null || true
 else
   logger -t meetingbox-xinit "missing $RELEASE/scripts/kiosk-compose-up.sh"
 fi

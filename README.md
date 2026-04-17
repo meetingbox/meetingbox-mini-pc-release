@@ -22,6 +22,8 @@ This folder contains everything that normally runs on the **meeting room device*
 
 ## Quick start (mini PC only)
 
+**Appliance on real hardware (firmware-like, no Ubuntu desktop):** after `.env` exists and the GUI user is in the `docker` group, run **`sudo bash scripts/setup-infotainment-kiosk.sh`** then reboot — see **`INFOTAINMENT.md`**. Skipping this and staying on the default Ubuntu session is why many installs show the normal desktop for a long time before MeetingBox appears.
+
 ```bash
 cd mini-pc
 cp .env.example .env
@@ -90,7 +92,7 @@ Install **`install-boot-service.sh`** to register two units: **`meetingbox-docke
 
 Configure **automatic login** so GDM creates that session at boot; otherwise log in once on the panel after each reboot before the wait window (about two minutes) expires.
 
-For a “single app” feel, hide or disable the host desktop panel/taskbar in your distro settings (MeetingBox still runs fullscreen in its own window). You will still see the Ubuntu desktop **briefly** while GNOME starts; that is normal unless you replace the session with a minimal window manager.
+For a “single app” feel, **do not rely on hiding GNOME panels** — use **`setup-infotainment-kiosk.sh`** so the device never loads the full Ubuntu session. You will still see a **brief** vendor/GDM/kernel moment; hiding **all** of that needs OEM boot splash / custom image (see **`INFOTAINMENT.md`**).
 
 The boot script runs **`docker compose up -d` once** (no immediate `--force-recreate` of the UI) so the fullscreen app is not stopped and restarted a second time on every boot.
 
