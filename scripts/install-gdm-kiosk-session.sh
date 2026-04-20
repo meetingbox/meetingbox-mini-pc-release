@@ -66,9 +66,14 @@ apt-get update -qq
 DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends openbox x11-xserver-utils
 
 install -m 0755 "$MINI_PC_ROOT/scripts/gdm-kiosk-session.sh" /usr/local/bin/meetingbox-gdm-kiosk-session
+install -m 0755 "$MINI_PC_ROOT/scripts/apply-kiosk-display-orientation.sh" /usr/local/bin/meetingbox-apply-kiosk-display-orientation
 install -m 0644 "$MINI_PC_ROOT/kiosk-desktop/meetingbox-kiosk.desktop" /usr/share/xsessions/meetingbox-kiosk.desktop
 
 mkdir -p /etc/meetingbox
+if [[ ! -f /etc/meetingbox/panel-xrandr.env ]]; then
+  install -m 0644 "$MINI_PC_ROOT/kiosk-desktop/panel-xrandr.env.example" /etc/meetingbox/panel-xrandr.env
+  echo "Installed /etc/meetingbox/panel-xrandr.env (DSI-1 800x1280 rotate right). Edit to change panel."
+fi
 echo "$APPLIANCE_DIR" >/etc/meetingbox/release
 chmod 644 /etc/meetingbox/release
 

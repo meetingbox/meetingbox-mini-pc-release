@@ -2,6 +2,10 @@
 
 Goal: power on → **MeetingBox fullscreen** in Docker, **without** GNOME (no dock, Activities, or normal Ubuntu desktop). Under the hood it is still Linux + Docker (like many car head units).
 
+### Panel rotation / DSI mode (permanent)
+
+At kiosk login, **`meetingbox-gdm-kiosk-session`** runs **`/usr/local/bin/meetingbox-apply-kiosk-display-orientation`**, which reads **`/etc/meetingbox/panel-xrandr.env`** (installed once by **`install-gdm-kiosk-session.sh`** from **`kiosk-desktop/panel-xrandr.env.example`**). Defaults: **`DSI-1`**, **`800x1280`**, **`rotate right`**. Edit that file to match your **`xrandr`** output, then reboot. Set **`MEETINGBOX_SKIP_PANEL_XRANDR=1`** there to disable. For Docker UI scaling, set **`MEETINGBOX_SYNC_DISPLAY_FROM_XRANDR=1`** or **`DISPLAY_WIDTH` / `DISPLAY_HEIGHT`** in **`.env`** to match **`xrandr`** after rotation.
+
 ## Why the device showed “Ubuntu” for minutes
 
 Two separate issues are easy to confuse:

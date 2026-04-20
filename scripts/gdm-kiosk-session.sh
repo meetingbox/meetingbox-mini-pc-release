@@ -14,6 +14,13 @@ RELEASE=$(cd "$RELEASE" 2>/dev/null && pwd || echo "$RELEASE")
 
 export PATH="/usr/sbin:/usr/bin:/usr/local/bin:$PATH"
 
+# Lock panel mode + rotation (DSI / HDMI) — see /etc/meetingbox/panel-xrandr.env
+if [[ -x /usr/local/bin/meetingbox-apply-kiosk-display-orientation ]]; then
+  /usr/local/bin/meetingbox-apply-kiosk-display-orientation
+elif [[ -f "$RELEASE/scripts/apply-kiosk-display-orientation.sh" ]]; then
+  bash "$RELEASE/scripts/apply-kiosk-display-orientation.sh"
+fi
+
 # Solid black while Docker / UI start (no Ubuntu wallpaper or dock).
 xsetroot -solid '#000000' 2>/dev/null || true
 
