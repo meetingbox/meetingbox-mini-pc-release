@@ -6,6 +6,8 @@ Goal: power on → **MeetingBox fullscreen** in Docker, **without** GNOME (no do
 
 At kiosk login, **`meetingbox-gdm-kiosk-session`** runs **`/usr/local/bin/meetingbox-apply-kiosk-display-orientation`**, which reads **`/etc/meetingbox/panel-xrandr.env`** (installed once by **`install-gdm-kiosk-session.sh`** from **`kiosk-desktop/panel-xrandr.env.example`**). Defaults: **`DSI-1`**, **`800x1280`**, **`rotate right`**. Edit that file to match your **`xrandr`** output, then reboot. Set **`MEETINGBOX_SKIP_PANEL_XRANDR=1`** there to disable. For Docker UI scaling, set **`MEETINGBOX_SYNC_DISPLAY_FROM_XRANDR=1`** or **`DISPLAY_WIDTH` / `DISPLAY_HEIGHT`** in **`.env`** to match **`xrandr`** after rotation.
 
+**Touch misaligned or not working after rotation:** the same script runs **`xinput map-to-output`** so the touchscreen is tied to the same output as the panel. **`xinput`** is installed with **`install-gdm-kiosk-session.sh`**. If auto-detection misses your chip, on the panel run **`xinput list --name-only`**, then set **`MEETINGBOX_TOUCH_XINPUT_DEVICE='Exact device name'`** in **`/etc/meetingbox/panel-xrandr.env`**. Add the GUI user to the **`input`** group: **`sudo usermod -aG input meetingbox`**, then log out/in. Test raw input with **`sudo evtest`**.
+
 ## Why the device showed “Ubuntu” for minutes
 
 Two separate issues are easy to confuse:

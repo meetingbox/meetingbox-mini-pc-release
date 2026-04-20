@@ -63,7 +63,7 @@ wait_for_apt_idle() {
 
 wait_for_apt_idle
 apt-get update -qq
-DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends openbox x11-xserver-utils
+DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends openbox x11-xserver-utils xinput
 
 install -m 0755 "$MINI_PC_ROOT/scripts/gdm-kiosk-session.sh" /usr/local/bin/meetingbox-gdm-kiosk-session
 install -m 0755 "$MINI_PC_ROOT/scripts/apply-kiosk-display-orientation.sh" /usr/local/bin/meetingbox-apply-kiosk-display-orientation
