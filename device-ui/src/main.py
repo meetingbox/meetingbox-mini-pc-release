@@ -892,15 +892,17 @@ class MeetingBoxApp(App):
         self.recording_state.update(active=True, paused=False, elapsed=0)
         Clock.schedule_once(lambda _: self.goto_screen('recording', 'fade'), 0)
 
+    def _kick_post_stop_meeting_polls(self, sid):
+        """HTTP fallbacks so processing screen gets transcript + summary without relying on WS."""
+        if not sid:
+            return
+        Clock.schedule_once(lambda _dt, mid=sid: self._start_transcript_cta_poll(mid), 0)
+        Clock.schedule_once(lambda _dt, mid=sid: self._start_summary_poll(mid), 0)
+
     def on_recording_stopped(self, data):
         self.recording_state['active'] = False
         sid = data.get('session_id') or self.current_session_id
-        if sid:
-            # Appliance often misses Redis→WS `transcription_complete` (reconnect,
-            # multi-hop Redis). Poll the HTTP API so the processing CTA still appears.
-            Clock.schedule_once(lambda _dt, mid=sid: self._start_transcript_cta_poll(mid), 0)
-            # Summary poll used to start only from that WS event — start it here too.
-            Clock.schedule_once(lambda _dt, mid=sid: self._start_summary_poll(mid), 0)
+        self._kick_post_stop_meeting_polls(sid)
         Clock.schedule_once(lambda _: self.goto_screen('processing', 'fade'), 0)
 
     def on_recording_paused(self, data):
@@ -1259,9 +1261,12 @@ class MeetingBoxApp(App):
         logger.info("stop_recording called, session_id=%s", self.current_session_id)
         async def _stop():
             try:
-                await self.backend.stop_recording(self.current_session_id)
+                sid = self.current_session_id
+                await self.backend.stop_recording(sid)
                 self.recording_state['active'] = False
                 logger.info("Recording stopped successfully")
+                # Device-initiated stop never goes through on_recording_stopped (Redis/WS).
+                self._kick_post_stop_meeting_polls(sid)
                 Clock.schedule_once(
                     lambda _: self.goto_screen('processing', 'fade'), 0)
             except Exception as e:
