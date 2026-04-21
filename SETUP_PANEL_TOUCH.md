@@ -109,13 +109,19 @@ Edit the panel file again:
 sudo nano /etc/meetingbox/panel-xrandr.env
 ```
 
-Add **only this line** (try after Step 6):
+Add **one** of these (try after Step 6). **Always quote values with spaces.**
 
 ```bash
 MEETINGBOX_TOUCH_MATRIX_PRESET=right
 ```
 
-Reboot. If it gets **worse**, change `right` to `left`, or **delete** that line and reboot again.
+Or nine explicit numbers (quotes are **required**):
+
+```bash
+MEETINGBOX_TOUCH_COORD_MATRIX="0 1 0 -1 0 1 0 0 1"
+```
+
+Save and reboot. If it gets **worse**, change `right` to `left`, or **delete** the line and reboot again.
 
 ---
 
