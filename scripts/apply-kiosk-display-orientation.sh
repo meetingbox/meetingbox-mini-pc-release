@@ -3,8 +3,8 @@
 # Config: /etc/meetingbox/panel-xrandr.env (installed from panel-xrandr.env.example).
 # Disable: MEETINGBOX_SKIP_PANEL_XRANDR=1 in that file.
 #
-# After rotation, map touchscreen devices to the same output (otherwise touch stays
-# in the panel's native coordinates). Requires: xinput (apt install xinput).
+# After rotation, map touchscreen to the same output + optional Coordinate Transformation
+# Matrix (when taps hit the wrong place). Requires: xinput (apt install xinput).
 
 set +e
 
@@ -40,6 +40,41 @@ else
   logger -t meetingbox-kiosk "xrandr: could not apply orientation for output '$OUT' (edit $ENV_FILE)"
 fi
 
+# Apply libinput-style 3x3 matrix to a device (fixes offset when map-to-output is not enough).
+_touch_apply_matrix() {
+  local dev="$1"
+  [[ -z "$dev" ]] && return 0
+  local m=()
+  if [[ -n "${MEETINGBOX_TOUCH_COORD_MATRIX:-}" ]]; then
+    read -r -a m <<< "${MEETINGBOX_TOUCH_COORD_MATRIX}"
+  elif [[ -n "${MEETINGBOX_TOUCH_MATRIX_PRESET:-}" ]]; then
+    case "${MEETINGBOX_TOUCH_MATRIX_PRESET}" in
+      right) m=(0 1 0 -1 0 1 0 0 1) ;;   # 90° CW — try when panel uses --rotate right
+      left) m=(0 -1 1 1 0 0 0 0 1) ;;    # 90° CCW
+      inverted) m=(-1 0 1 0 -1 1 0 0 1) ;;
+      normal) m=(1 0 0 0 1 0 0 0 1) ;;
+    esac
+  fi
+  if [[ ${#m[@]} -eq 9 ]]; then
+    if xinput set-prop "$dev" "Coordinate Transformation Matrix" "${m[@]}" 2>/dev/null; then
+      logger -t meetingbox-kiosk "xinput: Coordinate Transformation Matrix on '$dev': ${m[*]}"
+    else
+      logger -t meetingbox-kiosk "xinput: set Coordinate Transformation Matrix failed for '$dev' (check xinput list-props)"
+    fi
+  fi
+}
+
+_map_one() {
+  local devname="$1"
+  [[ -z "$devname" ]] && return 1
+  if xinput map-to-output "$devname" "$OUT" 2>/dev/null; then
+    logger -t meetingbox-kiosk "xinput: map-to-output '$devname' -> $OUT"
+    _touch_apply_matrix "$devname"
+    return 0
+  fi
+  return 1
+}
+
 # Map touchscreen XInput devices to the same output as the panel (critical after --rotate).
 _map_touch_to_output() {
   if [[ "${MEETINGBOX_MAP_TOUCH_TO_OUTPUT:-1}" != "1" ]]; then
@@ -50,23 +85,10 @@ _map_touch_to_output() {
     return 0
   }
   local devname mapped=0
-  # Primary: common touchscreen vendor / product name substrings
-  while IFS= read -r devname; do
-    [[ -z "$devname" ]] && continue
-    case "$devname" in
-      'Virtual core pointer'|'Virtual core XTEST pointer'|'Virtual core keyboard') continue ;;
-    esac
-    if xinput map-to-output "$devname" "$OUT" 2>/dev/null; then
-      logger -t meetingbox-kiosk "xinput: map-to-output '$devname' -> $OUT"
-      mapped=1
-    fi
-  done < <(xinput list --name-only 2>/dev/null | grep -iE 'touch|touchscreen|goodix|ilitek|elan|stylus|digitizer|wacom|atmel|zeafte|hid|finger' | grep -viE 'keyboard|video bus' || true)
 
-  # Optional explicit names from `xinput list --name-only`. One device: MEETINGBOX_TOUCH_XINPUT_DEVICE='ILITEK ILITEK-TP'
-  # Multiple: MEETINGBOX_TOUCH_XINPUT_NAMES='first device|second device' (pipe-separated).
+  # 1) Explicit device first (most reliable — get exact name from: xinput list --name-only)
   if [[ -n "${MEETINGBOX_TOUCH_XINPUT_DEVICE:-}" ]]; then
-    if xinput map-to-output "${MEETINGBOX_TOUCH_XINPUT_DEVICE}" "$OUT" 2>/dev/null; then
-      logger -t meetingbox-kiosk "xinput: map-to-output '${MEETINGBOX_TOUCH_XINPUT_DEVICE}' -> $OUT (MEETINGBOX_TOUCH_XINPUT_DEVICE)"
+    if _map_one "${MEETINGBOX_TOUCH_XINPUT_DEVICE}"; then
       mapped=1
     fi
   fi
@@ -76,15 +98,27 @@ _map_touch_to_output() {
       devname="${devname#"${devname%%[![:space:]]*}"}"
       devname="${devname%"${devname##*[![:space:]]}"}"
       [[ -z "$devname" ]] && continue
-      if xinput map-to-output "$devname" "$OUT" 2>/dev/null; then
-        logger -t meetingbox-kiosk "xinput: map-to-output '$devname' -> $OUT (MEETINGBOX_TOUCH_XINPUT_NAMES)"
+      if _map_one "$devname"; then
         mapped=1
       fi
     done
   fi
 
+  # 2) Heuristic match (skip if we already mapped explicitly — avoids double-mapping mouse)
   if [[ "$mapped" -eq 0 ]]; then
-    logger -t meetingbox-kiosk "touch: no device mapped — on the panel: xinput list --name-only ; add MEETINGBOX_TOUCH_XINPUT_NAMES to /etc/meetingbox/panel-xrandr.env ; sudo usermod -aG input \$USER"
+    while IFS= read -r devname; do
+      [[ -z "$devname" ]] && continue
+      case "$devname" in
+        'Virtual core pointer'|'Virtual core XTEST pointer'|'Virtual core keyboard') continue ;;
+      esac
+      if _map_one "$devname"; then
+        mapped=1
+      fi
+    done < <(xinput list --name-only 2>/dev/null | grep -iE 'touch|touchscreen|goodix|ilitek|elan|stylus|digitizer|wacom|atmel|zeafte|finger' | grep -viE 'keyboard|video bus' || true)
+  fi
+
+  if [[ "$mapped" -eq 0 ]]; then
+    logger -t meetingbox-kiosk "touch: no device mapped — on the panel: xinput list --name-only ; set MEETINGBOX_TOUCH_XINPUT_DEVICE in /etc/meetingbox/panel-xrandr.env"
   fi
 }
 
