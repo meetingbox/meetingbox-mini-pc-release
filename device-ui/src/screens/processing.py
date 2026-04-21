@@ -369,6 +369,7 @@ class ProcessingScreen(BaseScreen):
         self._meeting_id = None
         self._summary_data = None
         self._summary_ready = False
+        self._transcript_ready = False
         self._pulse_event = None
         self._pulse_alpha = 0.20
         self._pulse_dir = 1
@@ -1059,6 +1060,15 @@ class ProcessingScreen(BaseScreen):
             f"Meeting '{title}' ({dur_min} min) is being transcribed and analysed."
         )
 
+    def on_transcription_ready(self, meeting_id: str):
+        """Transcript is saved server-side — enable View Meeting Summary CTA."""
+        if meeting_id:
+            self._meeting_id = meeting_id
+        self._transcript_ready = True
+        self.summary_btn.disabled = False
+        self.summary_btn.opacity = 1.0
+        self.set_processing_status("Transcription done. Building meeting report…")
+
     def set_processing_status(self, text: str):
         if not text:
             return
@@ -1108,24 +1118,16 @@ class ProcessingScreen(BaseScreen):
         self.summary_btn.opacity = 1.0
 
     def _open_summary(self, _inst):
-        # Never fail silently. If the summary isn't ready yet, give the user
-        # visible feedback instead of a dead tap.
-        if not self._summary_ready or not self._meeting_id:
+        if not self._meeting_id:
+            logger.info("Summary CTA pressed but meeting_id is not set")
+            return
+        if not (self._transcript_ready or self._summary_ready):
             logger.info(
-                "Summary CTA pressed but not ready (summary_ready=%s, meeting_id=%s)",
-                self._summary_ready,
+                "Summary CTA pressed before transcript was ready (meeting_id=%s)",
                 self._meeting_id,
             )
             try:
-                self.footer_right.text = "Still processing — please wait…"
-            except Exception:
-                pass
-            # Bump opacity briefly so the tap is acknowledged.
-            try:
-                self.summary_btn.opacity = 0.35
-                Clock.schedule_once(
-                    lambda *_: setattr(self.summary_btn, "opacity", 0.60), 0.18
-                )
+                self.footer_right.text = "Still transcribing — please wait…"
             except Exception:
                 pass
             return
@@ -1134,26 +1136,34 @@ class ProcessingScreen(BaseScreen):
         except Exception as e:
             logger.warning("summary_review screen missing: %s", e)
             return
+        payload = self._summary_data if self._summary_ready else {}
         if hasattr(scr, "set_meeting_data"):
             try:
-                scr.set_meeting_data(self._meeting_id, self._summary_data or {})
+                scr.set_meeting_data(self._meeting_id, payload or {})
             except Exception as e:
                 logger.warning("set_meeting_data failed: %s", e)
         self.goto("summary_review", transition="fade")
 
     def on_enter(self):
         self._started_ts = time.monotonic()
-        self._meeting_id = None
         self._summary_data = None
         self._summary_ready = False
+        mid = getattr(self.app, "current_session_id", None)
+        self._meeting_id = mid
+        done_for = getattr(self.app, "_transcription_done_for_session", None)
+        self._transcript_ready = bool(mid and done_for == mid)
         self.title_label.text = "Preparing Analysis..."
         self.subtitle_label.text = "Please wait while transcript and action items are prepared."
         self.footer_right.text = "Analysis in progress..."
-        # Hide the CTA entirely until analysis is fully complete. The vertical
-        # space stays reserved so the reveal doesn't shift the layout.
-        self.summary_btn.disabled = True
-        self.summary_btn.opacity = 0.0
-        self._set_stage_progress(0)
+        # CTA appears once transcription is complete (WS or app flag).
+        if self._transcript_ready:
+            self.summary_btn.disabled = False
+            self.summary_btn.opacity = 1.0
+            self.set_processing_status("Transcription done. Building meeting report…")
+        else:
+            self.summary_btn.disabled = True
+            self.summary_btn.opacity = 0.0
+            self._set_stage_progress(0)
         self._pulse_alpha = 0.20
         self._pulse_dir = 1
         self._spin_angle = 0.0

@@ -365,6 +365,10 @@ class MeetingBoxApp(App):
             'elapsed': 0,
             'speaker_count': 0,
         }
+        # Set when WS `transcription_complete` fires; cleared on new recording.
+        # Lets the processing screen enable the summary CTA even if that event
+        # arrived before navigation to `processing`.
+        self._transcription_done_for_session = None
         self.privacy_mode = DEFAULT_PRIVACY_MODE
         self.device_name = 'MeetingBox'
         self.auto_record = False
@@ -877,6 +881,7 @@ class MeetingBoxApp(App):
         if sid and self.current_session_id == sid and self.recording_state.get('active'):
             return
         self.current_session_id = sid
+        self._transcription_done_for_session = None
         self.recording_state.update(active=True, paused=False, elapsed=0)
         Clock.schedule_once(lambda _: self.goto_screen('recording', 'fade'), 0)
 
@@ -946,6 +951,16 @@ class MeetingBoxApp(App):
                 screen.set_processing_status('Transcription done. Building meeting report…')
 
         Clock.schedule_once(_update_status, 0)
+
+        if meeting_id:
+            self._transcription_done_for_session = meeting_id
+
+            def _enable_processing_cta(_dt):
+                screen = self.screen_manager.get_screen("processing")
+                if hasattr(screen, "on_transcription_ready"):
+                    screen.on_transcription_ready(meeting_id)
+
+            Clock.schedule_once(_enable_processing_cta, 0)
 
         # Safety net: if `summary_complete` WS packet never arrives (network
         # hiccup, WS disconnected during the window, server emit dropped), we
