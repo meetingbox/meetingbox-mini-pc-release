@@ -388,6 +388,11 @@ class MeetingBoxApp(App):
         self._summary_poll_meeting_id = None
         self._summary_poll_done = False
 
+        # Transcript CTA fallback: enable "View Meeting Summary" when segments
+        # exist in the API even if `transcription_complete` never hits the WS.
+        self._transcript_cta_poll_meeting_id = None
+        self._transcript_cta_satisfied_meeting_id = None
+
         # WebSocket
         self.ws_task = None
         self._pairing_poll = None
@@ -882,11 +887,20 @@ class MeetingBoxApp(App):
             return
         self.current_session_id = sid
         self._transcription_done_for_session = None
+        self._transcript_cta_satisfied_meeting_id = None
+        self._transcript_cta_poll_meeting_id = None
         self.recording_state.update(active=True, paused=False, elapsed=0)
         Clock.schedule_once(lambda _: self.goto_screen('recording', 'fade'), 0)
 
     def on_recording_stopped(self, data):
         self.recording_state['active'] = False
+        sid = data.get('session_id') or self.current_session_id
+        if sid:
+            # Appliance often misses Redis→WS `transcription_complete` (reconnect,
+            # multi-hop Redis). Poll the HTTP API so the processing CTA still appears.
+            Clock.schedule_once(lambda _dt, mid=sid: self._start_transcript_cta_poll(mid), 0)
+            # Summary poll used to start only from that WS event — start it here too.
+            Clock.schedule_once(lambda _dt, mid=sid: self._start_summary_poll(mid), 0)
         Clock.schedule_once(lambda _: self.goto_screen('processing', 'fade'), 0)
 
     def on_recording_paused(self, data):
@@ -942,7 +956,7 @@ class MeetingBoxApp(App):
                 lambda _: screen.on_backend_progress(progress, status, eta), 0)
 
     def on_transcription_complete(self, data):
-        meeting_id = data.get('meeting_id')
+        meeting_id = data.get('meeting_id') or data.get('session_id')
         logger.info("Transcription complete for meeting %s", meeting_id)
 
         def _update_status(_dt):
@@ -1079,6 +1093,69 @@ class MeetingBoxApp(App):
                 return
         logger.warning(
             "Summary poll gave up for meeting %s (no summary within 5 min)",
+            meeting_id,
+        )
+
+    def _start_transcript_cta_poll(self, meeting_id: str):
+        if not meeting_id:
+            return
+        self._transcript_cta_poll_meeting_id = meeting_id
+        run_async(self._poll_transcript_cta_until_ready(meeting_id))
+
+    def _deliver_transcript_cta_from_poll(self, meeting_id: str):
+        """Main-thread: reveal CTA once HTTP confirms transcript (or summary) rows exist."""
+        if self._transcript_cta_satisfied_meeting_id == meeting_id:
+            return
+        self._transcript_cta_satisfied_meeting_id = meeting_id
+        self._transcription_done_for_session = meeting_id
+        try:
+            proc = self.screen_manager.get_screen('processing')
+        except Exception as e:
+            logger.debug("Processing screen missing for transcript CTA poll: %s", e)
+            return
+        if hasattr(proc, 'on_transcription_ready'):
+            proc.on_transcription_ready(meeting_id)
+
+    async def _poll_transcript_cta_until_ready(self, meeting_id: str):
+        """Poll GET /api/meetings/{id} until segments or summary exist (WS fallback)."""
+        logger.info("Transcript CTA poll starting for meeting %s", meeting_id)
+        for attempt in range(120):
+            if self._transcript_cta_poll_meeting_id != meeting_id:
+                return
+            if self._transcript_cta_satisfied_meeting_id == meeting_id:
+                return
+            if attempt > 0:
+                await asyncio.sleep(3.0)
+            if self._transcript_cta_poll_meeting_id != meeting_id:
+                return
+            if self._transcript_cta_satisfied_meeting_id == meeting_id:
+                return
+            try:
+                detail = await self.backend.get_meeting_detail(meeting_id)
+            except Exception as e:
+                logger.debug(
+                    "Transcript CTA poll attempt %d failed for %s: %s",
+                    attempt + 1, meeting_id, e,
+                )
+                continue
+            segments = (detail or {}).get('segments') or []
+            summary_blob = (detail or {}).get('summary') or {}
+            has_segments = len(segments) > 0
+            has_summary = isinstance(summary_blob, dict) and bool(summary_blob)
+            if has_segments or has_summary:
+                logger.info(
+                    "Transcript CTA poll: content ready for %s (segments=%d summary=%s)",
+                    meeting_id,
+                    len(segments),
+                    has_summary,
+                )
+                Clock.schedule_once(
+                    lambda _dt, _mid=meeting_id: self._deliver_transcript_cta_from_poll(_mid),
+                    0,
+                )
+                return
+        logger.warning(
+            "Transcript CTA poll gave up for meeting %s (no segments within ~6 min)",
             meeting_id,
         )
 

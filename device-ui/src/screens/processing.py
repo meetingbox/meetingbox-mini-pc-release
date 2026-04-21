@@ -1062,6 +1062,11 @@ class ProcessingScreen(BaseScreen):
 
     def on_transcription_ready(self, meeting_id: str):
         """Transcript is saved server-side — enable View Meeting Summary CTA."""
+        try:
+            if meeting_id:
+                self.app._transcript_cta_satisfied_meeting_id = meeting_id
+        except Exception:
+            pass
         if meeting_id:
             self._meeting_id = meeting_id
         self._transcript_ready = True
