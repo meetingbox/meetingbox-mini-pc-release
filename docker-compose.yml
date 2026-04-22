@@ -92,6 +92,8 @@ services:
       - KIVY_NO_CONSOLELOG=1
       # Default 1 = kiosk / single-app panel (borderless fullscreen). Set FULLSCREEN=0 in .env for windowed dev.
       - FULLSCREEN=${FULLSCREEN:-1}
+      # 1 = show mouse pointer in fullscreen (USB mouse / trackball). Default 0 = pointer hidden (touch-only).
+      - SHOW_MOUSE_CURSOR=${SHOW_MOUSE_CURSOR:-0}
       - MOCK_BACKEND=${MOCK_BACKEND:-0}
       - AUDIO_INPUT_DEVICE_INDEX=${AUDIO_INPUT_DEVICE_INDEX:-}
       - AUDIO_INPUT_DEVICE_NAME=${AUDIO_INPUT_DEVICE_NAME:-}

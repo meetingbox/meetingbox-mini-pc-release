@@ -620,4 +620,7 @@ except OSError as e:
 
 DEV_MODE = os.getenv('DEV_MODE', '0') == '1'
 SHOW_FPS = DEV_MODE or os.getenv('SHOW_FPS', '0') == '1'
+# SDL mouse pointer in borderless fullscreen (USB mouse / trackball on a touch kiosk).
+# When False, the pointer is hidden in FULLSCREEN=1; windowed (FULLSCREEN=0) always shows it.
+SHOW_MOUSE_CURSOR = os.getenv("SHOW_MOUSE_CURSOR", "0") == "1"
 DEBUG_BORDERS = DEV_MODE and os.getenv('DEBUG_BORDERS', '0') == '1'

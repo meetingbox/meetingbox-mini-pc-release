@@ -114,6 +114,7 @@ from config import (
     LOG_FILE,
     LOG_TO_CONSOLE,
     SHOW_FPS,
+    SHOW_MOUSE_CURSOR,
     TRANSITION_DURATION,
     DEFAULT_PRIVACY_MODE,
     LOCAL_REDIS_HOST,
@@ -418,11 +419,11 @@ class MeetingBoxApp(App):
         # module load time (before Window was imported), so no runtime
         # Window.size / Window.fullscreen calls needed here.
 
-        # Show cursor in windowed mode (mouse/desktop).
-        # Hide it only in fullscreen kiosk mode (touchscreen, no mouse).
+        # Show cursor in windowed mode (mouse/desktop). In fullscreen, hide it unless
+        # SHOW_MOUSE_CURSOR=1 (USB mouse on a touch panel) or SHOW_FPS (dev overlay).
         # If X11 auth failed, SDL never creates a window — show_cursor crashes internally.
         try:
-            Window.show_cursor = (not FULLSCREEN) or SHOW_FPS
+            Window.show_cursor = (not FULLSCREEN) or SHOW_FPS or SHOW_MOUSE_CURSOR
         except (AttributeError, TypeError) as e:
             # Do not crash the process: Docker restart loops look like a flickering panel with no UI.
             logger.error(
@@ -1377,6 +1378,10 @@ def main():
     disp = os.environ.get('DISPLAY', '(not set)')
     print(f"[MeetingBox] DISPLAY={disp}", flush=True)
     print(f"[MeetingBox] FULLSCREEN={os.environ.get('FULLSCREEN', '(not set)')}", flush=True)
+    print(
+        f"[MeetingBox] SHOW_MOUSE_CURSOR={os.environ.get('SHOW_MOUSE_CURSOR', '(not set)')}",
+        flush=True,
+    )
     print(f"[MeetingBox] BACKEND_URL={os.environ.get('BACKEND_URL', '(not set)')}", flush=True)
     print(f"[MeetingBox] MOCK_BACKEND={os.environ.get('MOCK_BACKEND', '(not set)')}", flush=True)
 
