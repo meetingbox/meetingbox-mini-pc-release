@@ -28,6 +28,8 @@ _FALLBACK = "—"
 
 _INET = re.compile(r"inet (\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})/", re.MULTILINE)
 
+# Interfaces we never use for "SSH / browser on the room LAN" when a better
+# address exists. VPN/overlay (172.16/…) often sort before 192.168 in naive picks.
 _KNOWN_NOISE_IFACES = (
     "lo",
     "docker0",
@@ -40,6 +42,26 @@ _KNOWN_NOISE_IFACES = (
     "tap",
     "vnet",
     "waydroid",
+    "tailscale",
+    "wg",
+    "zt",
+    "zerotier",
+    "gretap",
+    "isatap",
+    "lxdbr",
+    "lxcbr",
+    "cni-",
+    "flannel",
+    "cilium",
+    "kubetunnel",
+    "nodelocal",
+    "hologram",
+    "vboxnet",
+    "virbr0",
+    "vboxnet0",
+    "tunl",
+    "nflog",
+    "xfrm",
 )
 
 _BR_LINE = re.compile(
@@ -64,7 +86,11 @@ def _is_rfc1918(ipv4: str) -> bool:
 
 
 def _lan_preference_score(ipv4: str) -> int | None:
-    """Lower is better. None = ignore."""
+    """Lower is better. None = ignore.
+
+    172.16.0.0/16 (second octet == 16) is often a VPN/overlay, not the office LAN
+    (192.168.x); score it so real LAN always wins in multi-homed picks.
+    """
     try:
         ip = ipaddress.IPv4Address(ipv4)
     except (ipaddress.AddressValueError, ValueError):
@@ -84,6 +110,10 @@ def _lan_preference_score(ipv4: str) -> int | None:
             return 200
         if b == 18:
             return 150
+        if b == 16:
+            # 172.16.0.0/12 (second octet 16) — very often Tailscale/WireGuard/ZT, not
+            # the Ethernet/WiFi IP others use to SSH in on the same switch.
+            return 120
         return 20 + b
     return 40
 
@@ -105,6 +135,8 @@ def _iface_skip(name: str) -> bool:
                 return True
         elif n == p or n.startswith(p):
             return True
+    if re.match(r"^zt", n):  # ZeroTier: ztly…
+        return True
     return False
 
 
@@ -155,6 +187,29 @@ def _best_ip_from_rows(rows: List[Tuple[str, str, str]]) -> str | None:
     return None
 
 
+def _best_on_physical_lan_first(rows: List[Tuple[str, str, str]]) -> str | None:
+    """
+    IPv4 on Ethernet/Wi-Fi (en|eth|wl|*) first — not VPN/overlay 172.16 on tun/wg/zt*.
+
+    ``scope global`` can omit a valid ``en*`` line; a broad row list is used before the
+    combined heuristic on all interfaces.
+    """
+    for require_up in (True, False):
+        pruned: list[tuple[str, str, str]] = []
+        for ifname, state, ip in rows:
+            if not _iface_is_physical_or_wifi(ifname) or _iface_skip(ifname):
+                continue
+            stu = (state or "").upper()
+            if require_up and stu not in ("UP", "UNKNOWN"):
+                continue
+            pruned.append((ifname, state, ip))
+        if pruned:
+            b = _best_ip_from_rows(pruned)
+            if b:
+                return b
+    return None
+
+
 def _host_lan_from_nsenter() -> str | None:
     """
     True host addresses when the app runs in Docker with ``pid: host`` and
@@ -167,8 +222,8 @@ def _host_lan_from_nsenter() -> str | None:
     if not ipbin:
         return None
     for args in (
-        (ns, "-t", "1", "-n", ipbin, "-4", "-br", "addr", "show", "up", "scope", "global"),
         (ns, "-t", "1", "-n", ipbin, "-4", "-br", "addr", "show", "up"),
+        (ns, "-t", "1", "-n", ipbin, "-4", "-br", "addr", "show", "up", "scope", "global"),
     ):
         try:
             p = subprocess.run(
@@ -181,7 +236,13 @@ def _host_lan_from_nsenter() -> str | None:
             if p.returncode != 0:
                 logger.debug("nsenter ip rc=%s stderr=%s", p.returncode, p.stderr)
                 continue
-            best = _best_ip_from_rows(_parse_ip_br_text(p.stdout or ""))
+            rows = _parse_ip_br_text(p.stdout or "")
+            # 1) Real LAN (enp*/wlp*/usb*) with 192.168.x / 10.x before any VPN 172.16 on tun0.
+            phys = _best_on_physical_lan_first(rows)
+            if phys:
+                return phys
+            # 2) All non-loopback, skipping docker/veth/tun/…
+            best = _best_ip_from_rows(rows)
             if best:
                 return best
         except (OSError, subprocess.SubprocessError, ValueError) as e:
