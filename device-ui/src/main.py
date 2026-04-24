@@ -416,9 +416,10 @@ class MeetingBoxApp(App):
         self._voice_indicator_override = None
         self._voice_indicator_reset_ev = None
         self._voice_start_in_flight = False
+        self._voice_start_confirmation_pending = False
         self.voice_confirmation_text = (
-            (os.getenv("VOICE_ASSISTANT_CONFIRMATION_TEXT") or "Meeting start").strip()
-            or "Meeting start"
+            (os.getenv("VOICE_ASSISTANT_CONFIRMATION_TEXT") or "Meeting started").strip()
+            or "Meeting started"
         )
 
         # Local voice control (wake phrase + command).
@@ -928,6 +929,7 @@ class MeetingBoxApp(App):
         self._transcript_cta_satisfied_meeting_id = None
         self._transcript_cta_poll_meeting_id = None
         self.recording_state.update(active=True, paused=False, elapsed=0)
+        self._announce_voice_start_success()
         Clock.schedule_once(lambda _: self._sync_voice_assistant_state(), 0)
         Clock.schedule_once(lambda _: self.goto_screen('recording', 'fade'), 0)
 
@@ -1271,6 +1273,7 @@ class MeetingBoxApp(App):
                     self.current_session_id = result['session_id']
                     self.recording_state.update(active=True, paused=False, elapsed=0)
                     self._voice_start_in_flight = False
+                    Clock.schedule_once(lambda _: self._announce_voice_start_success(), 0)
                     Clock.schedule_once(lambda _: self._sync_voice_assistant_state(), 0)
                     Clock.schedule_once(
                         lambda _: self.goto_screen('recording', 'fade'), 0)
@@ -1290,6 +1293,7 @@ class MeetingBoxApp(App):
                         continue
                     break
             self._voice_start_in_flight = False
+            self._voice_start_confirmation_pending = False
             Clock.schedule_once(lambda _: self._clear_voice_indicator_override(), 0)
             Clock.schedule_once(lambda _: self._sync_voice_assistant_state(), 0)
             title, message = _recording_start_error_screen_args(
@@ -1507,16 +1511,20 @@ class MeetingBoxApp(App):
         logger.warning("Voice feedback unavailable: no espeak command found")
         return False
 
-    def _run_voice_start_sequence(self) -> None:
-        self._speak_text_blocking(self.voice_confirmation_text)
-        Clock.schedule_once(
-            lambda _dt: self._continue_voice_start_after_feedback(),
-            0,
-        )
+    def _speak_text_async(self, text: str) -> None:
+        threading.Thread(
+            target=self._speak_text_blocking,
+            args=(text,),
+            name="voice-feedback",
+            daemon=True,
+        ).start()
 
-    def _continue_voice_start_after_feedback(self) -> None:
-        self._set_voice_indicator_override("starting", "Starting meeting", 3.0)
-        self.start_recording()
+    def _announce_voice_start_success(self) -> None:
+        if not self._voice_start_confirmation_pending:
+            return
+        self._voice_start_confirmation_pending = False
+        self._set_voice_indicator_override("speaking", self.voice_confirmation_text, 3.0)
+        self._speak_text_async(self.voice_confirmation_text)
 
     def _handle_voice_start_meeting(self) -> None:
         def _start_from_voice(_dt):
@@ -1528,14 +1536,11 @@ class MeetingBoxApp(App):
                 return
             logger.info('Voice trigger accepted ("hey tony" -> "start meeting")')
             self._voice_start_in_flight = True
+            self._voice_start_confirmation_pending = True
             self._reset_idle_timer()
             self._sync_voice_assistant_state()
-            self._set_voice_indicator_override("speaking", self.voice_confirmation_text, 4.0)
-            threading.Thread(
-                target=self._run_voice_start_sequence,
-                name="voice-start-sequence",
-                daemon=True,
-            ).start()
+            self._set_voice_indicator_override("starting", "Starting meeting", 4.0)
+            self.start_recording()
 
         Clock.schedule_once(_start_from_voice, 0)
 
