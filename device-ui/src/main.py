@@ -128,6 +128,7 @@ from api_client import BackendClient
 from mock_backend import MockBackendClient
 from hardware import set_brightness, screen_off, screen_on
 from profile_store import get_active_profile, clear_active_profile_selection
+from voice_assistant import VoiceAssistant
 
 # Boot-flow screens
 from screens.splash import SplashScreen
@@ -407,6 +408,9 @@ class MeetingBoxApp(App):
         self._idle_event = None
         self._screen_is_off = False
 
+        # Local voice control (wake phrase + command).
+        self.voice_assistant = VoiceAssistant(self._handle_voice_start_meeting)
+
     # ==================================================================
     # BUILD
     # ==================================================================
@@ -477,6 +481,7 @@ class MeetingBoxApp(App):
         # Start local Redis listener for real-time audio levels from the audio
         # container (both on the same Docker network).
         self._start_local_redis_listener()
+        self._sync_voice_assistant_state()
 
         if SHOW_FPS:
             Clock.schedule_interval(self._log_fps, 1.0)
@@ -597,6 +602,8 @@ class MeetingBoxApp(App):
 
     def on_start(self):
         logger.info("MeetingBox UI started")
+        self.voice_assistant.start()
+        self._sync_voice_assistant_state()
         if not USE_MOCK_BACKEND:
             # Always align the HTTP client Bearer with persisted token (file may differ from __init__).
             tok = get_device_auth_token().strip()
@@ -649,6 +656,7 @@ class MeetingBoxApp(App):
 
     def on_stop(self):
         logger.info("MeetingBox UI stopping")
+        self.voice_assistant.stop()
         self._local_redis_stop.set()
         if getattr(self, '_setup_poll', None):
             self._setup_poll.cancel()
@@ -720,6 +728,7 @@ class MeetingBoxApp(App):
         new_screen = self.screen_manager.current_screen
         if hasattr(new_screen, 'on_enter'):
             new_screen.on_enter()
+        self._sync_voice_assistant_state()
 
     def go_back(self):
         """Pop navigation stack and slide back."""
@@ -740,6 +749,7 @@ class MeetingBoxApp(App):
             new = self.screen_manager.current_screen
             if hasattr(new, 'on_enter'):
                 new.on_enter()
+            self._sync_voice_assistant_state()
         else:
             self.goto_screen('home', transition='fade')
 
@@ -891,6 +901,7 @@ class MeetingBoxApp(App):
         self._transcript_cta_satisfied_meeting_id = None
         self._transcript_cta_poll_meeting_id = None
         self.recording_state.update(active=True, paused=False, elapsed=0)
+        self._sync_voice_assistant_state()
         Clock.schedule_once(lambda _: self.goto_screen('recording', 'fade'), 0)
 
     def _kick_post_stop_meeting_polls(self, sid):
@@ -904,6 +915,7 @@ class MeetingBoxApp(App):
         self.recording_state['active'] = False
         sid = data.get('session_id') or self.current_session_id
         self._kick_post_stop_meeting_polls(sid)
+        self._sync_voice_assistant_state()
         Clock.schedule_once(lambda _: self.goto_screen('processing', 'fade'), 0)
 
     def on_recording_paused(self, data):
@@ -1230,6 +1242,7 @@ class MeetingBoxApp(App):
                     result = await self.backend.start_recording()
                     self.current_session_id = result['session_id']
                     self.recording_state.update(active=True, paused=False, elapsed=0)
+                    self._sync_voice_assistant_state()
                     Clock.schedule_once(
                         lambda _: self.goto_screen('recording', 'fade'), 0)
                     return
@@ -1265,6 +1278,7 @@ class MeetingBoxApp(App):
                 sid = self.current_session_id
                 await self.backend.stop_recording(sid)
                 self.recording_state['active'] = False
+                self._sync_voice_assistant_state()
                 logger.info("Recording stopped successfully")
                 # Device-initiated stop never goes through on_recording_stopped (Redis/WS).
                 self._kick_post_stop_meeting_polls(sid)
@@ -1360,6 +1374,43 @@ class MeetingBoxApp(App):
         logger.info("Screen timeout — turning off display")
         self._screen_is_off = True
         screen_off()
+
+    def _voice_assistant_should_listen(self) -> bool:
+        if self.screen_manager is None:
+            return False
+        if self.recording_state.get('active'):
+            return False
+        blocked = {
+            'splash',
+            'welcome',
+            'room_name',
+            'network_choice',
+            'wifi_setup',
+            'wifi_connected',
+            'pair_device',
+            'meetingbox_ready',
+            'setup_progress',
+            'all_set',
+            'recording',
+            'mic_test',
+        }
+        return self.screen_manager.current not in blocked
+
+    def _sync_voice_assistant_state(self) -> None:
+        if not getattr(self, 'voice_assistant', None):
+            return
+        self.voice_assistant.set_paused(not self._voice_assistant_should_listen())
+
+    def _handle_voice_start_meeting(self) -> None:
+        def _start_from_voice(_dt):
+            if self.recording_state.get('active'):
+                logger.info("Voice start ignored: already recording")
+                return
+            logger.info('Voice trigger accepted ("hey tony" -> "start meeting")')
+            self._reset_idle_timer()
+            self.start_recording()
+
+        Clock.schedule_once(_start_from_voice, 0)
 
     # ==================================================================
     # UTILITIES
