@@ -124,6 +124,12 @@ class VoiceCommandInterpreter:
     def _heard_start_command(self, text: str) -> bool:
         return any(_best_phrase_similarity(text, cmd) >= 0.78 for cmd in self.start_commands)
 
+    def heard_wake_phrase(self, text: str) -> bool:
+        return self._heard_wake_phrase(_normalize_text(text))
+
+    def heard_start_command(self, text: str) -> bool:
+        return self._heard_start_command(_normalize_text(text))
+
     def handle_transcript(self, text: str, now: float | None = None) -> str | None:
         now = time.monotonic() if now is None else now
         norm = _normalize_text(text)
@@ -165,8 +171,13 @@ class VoiceAssistant:
     meeting recording.
     """
 
-    def __init__(self, on_start_meeting: Callable[[], None]):
+    def __init__(
+        self,
+        on_start_meeting: Callable[[], None],
+        on_wake_phrase: Callable[[str], None] | None = None,
+    ):
         self._on_start_meeting = on_start_meeting
+        self._on_wake_phrase = on_wake_phrase
         self.enabled = _env_flag("VOICE_ASSISTANT_ENABLED", True)
         self.wake_phrase = (os.getenv("VOICE_ASSISTANT_WAKE_PHRASE") or "hey tony").strip() or "hey tony"
         self.start_commands = [
@@ -206,6 +217,10 @@ class VoiceAssistant:
         self._model = None
         self._model_lock = threading.Lock()
         self._warned_unavailable = False
+
+    @property
+    def available(self) -> bool:
+        return self.enabled and sd is not None and Model is not None and KaldiRecognizer is not None
 
     def start(self) -> bool:
         if not self._can_run():
@@ -288,6 +303,15 @@ class VoiceAssistant:
         if not norm:
             return
         logger.debug("Voice assistant heard: %s", norm)
+        if (
+            self._on_wake_phrase is not None
+            and self._interpreter.heard_wake_phrase(norm)
+            and not self._interpreter.heard_start_command(norm)
+        ):
+            try:
+                self._on_wake_phrase(norm)
+            except Exception:
+                logger.exception("Voice assistant wake callback failed")
         action = self._interpreter.handle_transcript(norm)
         if action == "start_meeting":
             logger.info('Voice command accepted: "%s" -> start meeting', norm)

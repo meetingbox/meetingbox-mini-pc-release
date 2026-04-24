@@ -47,6 +47,7 @@ from kivy.uix.screenmanager import (
 )
 from kivy.clock import Clock
 from kivy.config import Config
+from kivy.uix.floatlayout import FloatLayout
 
 # All graphics Config.set() calls must happen BEFORE 'from kivy.core.window import Window'
 # because Window is instantiated at import time in Kivy.
@@ -128,6 +129,7 @@ from api_client import BackendClient
 from mock_backend import MockBackendClient
 from hardware import set_brightness, screen_off, screen_on
 from profile_store import get_active_profile, clear_active_profile_selection
+from components.voice_indicator import VoiceAssistantIndicator
 from voice_assistant import VoiceAssistant
 
 # Boot-flow screens
@@ -408,8 +410,22 @@ class MeetingBoxApp(App):
         self._idle_event = None
         self._screen_is_off = False
 
+        # Voice UI / feedback
+        self.root_layout = None
+        self.voice_indicator = None
+        self._voice_indicator_override = None
+        self._voice_indicator_reset_ev = None
+        self._voice_start_in_flight = False
+        self.voice_confirmation_text = (
+            (os.getenv("VOICE_ASSISTANT_CONFIRMATION_TEXT") or "Meeting start").strip()
+            or "Meeting start"
+        )
+
         # Local voice control (wake phrase + command).
-        self.voice_assistant = VoiceAssistant(self._handle_voice_start_meeting)
+        self.voice_assistant = VoiceAssistant(
+            self._handle_voice_start_meeting,
+            on_wake_phrase=self._handle_voice_wake_phrase,
+        )
 
     # ==================================================================
     # BUILD
@@ -436,9 +452,13 @@ class MeetingBoxApp(App):
                 e,
             )
 
+        self.root_layout = FloatLayout()
+
         # Screen manager – default to fade transition
         self.screen_manager = ScreenManager(
             transition=FadeTransition(duration=TRANSITION_DURATION['fade']))
+        self.screen_manager.size_hint = (1, 1)
+        self.root_layout.add_widget(self.screen_manager)
 
         # Register ALL screens
         self.screen_manager.add_widget(SplashScreen(name='splash'))
@@ -481,7 +501,12 @@ class MeetingBoxApp(App):
         # Start local Redis listener for real-time audio levels from the audio
         # container (both on the same Docker network).
         self._start_local_redis_listener()
+        self.voice_indicator = VoiceAssistantIndicator(
+            pos_hint={"right": 0.985, "y": 0.035},
+        )
+        self.root_layout.add_widget(self.voice_indicator)
         self._sync_voice_assistant_state()
+        self._refresh_voice_indicator()
 
         if SHOW_FPS:
             Clock.schedule_interval(self._log_fps, 1.0)
@@ -494,7 +519,7 @@ class MeetingBoxApp(App):
         Clock.schedule_once(lambda *_: self._ensure_window_visible(), 0.3)
 
         logger.info("UI built – starting on splash screen")
-        return self.screen_manager
+        return self.root_layout
 
     def _ensure_window_visible(self):
         try:
@@ -729,6 +754,7 @@ class MeetingBoxApp(App):
         if hasattr(new_screen, 'on_enter'):
             new_screen.on_enter()
         self._sync_voice_assistant_state()
+        self._refresh_voice_indicator()
 
     def go_back(self):
         """Pop navigation stack and slide back."""
@@ -750,6 +776,7 @@ class MeetingBoxApp(App):
             if hasattr(new, 'on_enter'):
                 new.on_enter()
             self._sync_voice_assistant_state()
+            self._refresh_voice_indicator()
         else:
             self.goto_screen('home', transition='fade')
 
@@ -901,7 +928,7 @@ class MeetingBoxApp(App):
         self._transcript_cta_satisfied_meeting_id = None
         self._transcript_cta_poll_meeting_id = None
         self.recording_state.update(active=True, paused=False, elapsed=0)
-        self._sync_voice_assistant_state()
+        Clock.schedule_once(lambda _: self._sync_voice_assistant_state(), 0)
         Clock.schedule_once(lambda _: self.goto_screen('recording', 'fade'), 0)
 
     def _kick_post_stop_meeting_polls(self, sid):
@@ -915,7 +942,8 @@ class MeetingBoxApp(App):
         self.recording_state['active'] = False
         sid = data.get('session_id') or self.current_session_id
         self._kick_post_stop_meeting_polls(sid)
-        self._sync_voice_assistant_state()
+        self._voice_start_in_flight = False
+        Clock.schedule_once(lambda _: self._sync_voice_assistant_state(), 0)
         Clock.schedule_once(lambda _: self.goto_screen('processing', 'fade'), 0)
 
     def on_recording_paused(self, data):
@@ -1242,7 +1270,8 @@ class MeetingBoxApp(App):
                     result = await self.backend.start_recording()
                     self.current_session_id = result['session_id']
                     self.recording_state.update(active=True, paused=False, elapsed=0)
-                    self._sync_voice_assistant_state()
+                    self._voice_start_in_flight = False
+                    Clock.schedule_once(lambda _: self._sync_voice_assistant_state(), 0)
                     Clock.schedule_once(
                         lambda _: self.goto_screen('recording', 'fade'), 0)
                     return
@@ -1260,6 +1289,9 @@ class MeetingBoxApp(App):
                     ):
                         continue
                     break
+            self._voice_start_in_flight = False
+            Clock.schedule_once(lambda _: self._clear_voice_indicator_override(), 0)
+            Clock.schedule_once(lambda _: self._sync_voice_assistant_state(), 0)
             title, message = _recording_start_error_screen_args(
                 last_exc or RuntimeError("Unknown error")
             )
@@ -1278,7 +1310,8 @@ class MeetingBoxApp(App):
                 sid = self.current_session_id
                 await self.backend.stop_recording(sid)
                 self.recording_state['active'] = False
-                self._sync_voice_assistant_state()
+                self._voice_start_in_flight = False
+                Clock.schedule_once(lambda _: self._sync_voice_assistant_state(), 0)
                 logger.info("Recording stopped successfully")
                 # Device-initiated stop never goes through on_recording_stopped (Redis/WS).
                 self._kick_post_stop_meeting_polls(sid)
@@ -1378,6 +1411,8 @@ class MeetingBoxApp(App):
     def _voice_assistant_should_listen(self) -> bool:
         if self.screen_manager is None:
             return False
+        if self._voice_start_in_flight:
+            return False
         if self.recording_state.get('active'):
             return False
         blocked = {
@@ -1400,15 +1435,107 @@ class MeetingBoxApp(App):
         if not getattr(self, 'voice_assistant', None):
             return
         self.voice_assistant.set_paused(not self._voice_assistant_should_listen())
+        self._refresh_voice_indicator()
+
+    def _refresh_voice_indicator(self) -> None:
+        if not self.voice_indicator:
+            return
+        if self._voice_indicator_override:
+            state, message = self._voice_indicator_override
+            self.voice_indicator.set_state(state, message)
+            return
+        if self.voice_assistant.available and self._voice_assistant_should_listen():
+            self.voice_indicator.set_state("idle", 'Say "Hey Tony"')
+            return
+        self.voice_indicator.set_state("hidden")
+
+    def _clear_voice_indicator_override(self, *_args) -> None:
+        if self._voice_indicator_reset_ev:
+            self._voice_indicator_reset_ev.cancel()
+            self._voice_indicator_reset_ev = None
+        self._voice_indicator_override = None
+        self._refresh_voice_indicator()
+
+    def _set_voice_indicator_override(
+        self,
+        state: str,
+        message: str | None = None,
+        duration: float | None = None,
+    ) -> None:
+        self._voice_indicator_override = (state, message)
+        if self._voice_indicator_reset_ev:
+            self._voice_indicator_reset_ev.cancel()
+            self._voice_indicator_reset_ev = None
+        self._refresh_voice_indicator()
+        if duration:
+            self._voice_indicator_reset_ev = Clock.schedule_once(
+                self._clear_voice_indicator_override, duration
+            )
+
+    def _handle_voice_wake_phrase(self, _text: str) -> None:
+        Clock.schedule_once(
+            lambda _dt: self._set_voice_indicator_override(
+                "wake",
+                'Heard "Hey Tony"',
+                max(2.0, self.voice_assistant.command_timeout_seconds),
+            ),
+            0,
+        )
+
+    def _speak_text_blocking(self, text: str) -> bool:
+        phrase = (text or "").strip()
+        if not phrase:
+            return False
+        for cmd in (
+            ["espeak-ng", "-s", "165", "-a", "180", phrase],
+            ["espeak", "-s", "165", "-a", "180", phrase],
+        ):
+            exe = shutil.which(cmd[0])
+            if not exe:
+                continue
+            try:
+                subprocess.run(
+                    [exe, *cmd[1:]],
+                    check=False,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    timeout=15,
+                )
+                return True
+            except Exception as e:
+                logger.warning("Voice feedback via %s failed: %s", exe, e)
+        logger.warning("Voice feedback unavailable: no espeak command found")
+        return False
+
+    def _run_voice_start_sequence(self) -> None:
+        self._speak_text_blocking(self.voice_confirmation_text)
+        Clock.schedule_once(
+            lambda _dt: self._continue_voice_start_after_feedback(),
+            0,
+        )
+
+    def _continue_voice_start_after_feedback(self) -> None:
+        self._set_voice_indicator_override("starting", "Starting meeting", 3.0)
+        self.start_recording()
 
     def _handle_voice_start_meeting(self) -> None:
         def _start_from_voice(_dt):
             if self.recording_state.get('active'):
                 logger.info("Voice start ignored: already recording")
                 return
+            if self._voice_start_in_flight:
+                logger.info("Voice start ignored: request already in flight")
+                return
             logger.info('Voice trigger accepted ("hey tony" -> "start meeting")')
+            self._voice_start_in_flight = True
             self._reset_idle_timer()
-            self.start_recording()
+            self._sync_voice_assistant_state()
+            self._set_voice_indicator_override("speaking", self.voice_confirmation_text, 4.0)
+            threading.Thread(
+                target=self._run_voice_start_sequence,
+                name="voice-start-sequence",
+                daemon=True,
+            ).start()
 
         Clock.schedule_once(_start_from_voice, 0)
 
