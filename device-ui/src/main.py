@@ -27,6 +27,8 @@ _src_dir = Path(__file__).resolve().parent
 if str(_src_dir) not in sys.path:
     sys.path.insert(0, str(_src_dir))
 
+from xauthority_util import display_refers_to_screen_zero, xauthority_list_has_display_zero
+
 # Before importing Kivy: stable clipboard provider on Linux (see kivy_options).
 if sys.platform.startswith("linux"):
     os.environ.setdefault("KIVY_CLIPBOARD", "sdl2")
@@ -272,21 +274,6 @@ def _recording_start_error_screen_args(exc: BaseException) -> tuple[str, str]:
     return ("Recording failed", msg)
 
 
-def _xauthority_has_display_zero(cookie_text: str) -> bool:
-    """True if xauth list output likely includes authority for local display :0."""
-    low = cookie_text.lower()
-    if "unix:0" in low:
-        return True
-    for line in cookie_text.splitlines():
-        parts = line.split()
-        if not parts:
-            continue
-        fam = parts[0].lower()
-        if fam.endswith(":0") and ":10" not in fam and ":11" not in fam:
-            return True
-    return False
-
-
 def _diagnose_xauthority_for_docker():
     """Log hints when the mounted cookie cannot authorize DISPLAY=:0 (Docker + local X11)."""
     if not sys.platform.startswith("linux"):
@@ -331,7 +318,7 @@ def _diagnose_xauthority_for_docker():
                 flush=True,
             )
             return
-        if disp.endswith(":0") and not _xauthority_has_display_zero(out):
+        if display_refers_to_screen_zero(disp) and not xauthority_list_has_display_zero(out):
             print(
                 "[MeetingBox] WARNING: this Xauthority file has no :0 / unix:0 entry but "
                 "DISPLAY is :0 (SSH or wrong file often only has :10). "
