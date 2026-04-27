@@ -24,7 +24,7 @@ MEETINGBOX_PANEL_ROTATE=right
 MEETINGBOX_MAP_TOUCH_TO_OUTPUT=1
 ```
 
-**A2.** If the panel must use **rotate left** (90° CCW), set the **same** rotation for the **touch matrix** — add **`MEETINGBOX_TOUCH_MATRIX_PRESET=left`** (or the explicit matrix below). Example:
+**A2.** If the panel must use **rotate left** (90° CCW), use **`MEETINGBOX_TOUCH_MATRIX_PRESET=left`** (default MeetingBox DSI stack):
 
 ```bash
 MEETINGBOX_PANEL_OUTPUT=DSI-1
@@ -34,11 +34,13 @@ MEETINGBOX_MAP_TOUCH_TO_OUTPUT=1
 MEETINGBOX_TOUCH_MATRIX_PRESET=left
 ```
 
-Equivalent to the preset `left` (nine numbers):
+If taps are **~90° wrong** (e.g. control at **bottom-center** only works when you tap **right-center** or **left-center**), try **swap X/Y** instead — remove the preset line and use:
 
 ```bash
-MEETINGBOX_TOUCH_COORD_MATRIX="0 -1 1 1 0 0 0 0 1"
+MEETINGBOX_TOUCH_COORD_MATRIX="0 1 0 1 0 0 0 0 1"
 ```
+
+(or **`MEETINGBOX_TOUCH_MATRIX_PRESET=swap_xy`**). Equivalent 90° CCW as nine numbers: **`MEETINGBOX_TOUCH_COORD_MATRIX="0 -1 1 1 0 0 0 0 1"`**
 
 **A3.** If the **whole UI is upside down** (180°, top and bottom swapped), use **`inverted`** for both the panel and touch:
 
@@ -136,16 +138,22 @@ sudo nano /etc/meetingbox/panel-xrandr.env
 ```
 
 Add **one** of these (try after Step 6). **Always quote values with spaces.**  
-The touch preset must **match** `MEETINGBOX_PANEL_ROTATE`: **`right`** with `rotate right`, **`left`** with `rotate left`.
+For **`MEETINGBOX_PANEL_ROTATE=right`**, use preset **`right`** (or the **Right** matrix below). For **`rotate=left`**, start with **`MEETINGBOX_TOUCH_MATRIX_PRESET=left`**; if taps hit the wrong edge (~90° off), try **swap X/Y** below.
 
 ```bash
 MEETINGBOX_TOUCH_MATRIX_PRESET=right
 ```
 
-Or for **rotate left** panels:
+**Rotate left — 90° CCW** (default):
 
 ```bash
 MEETINGBOX_TOUCH_MATRIX_PRESET=left
+```
+
+**Rotate left — swap X/Y** if preset `left` gives wrong-edge taps (same as `MEETINGBOX_TOUCH_MATRIX_PRESET=swap_xy`):
+
+```bash
+MEETINGBOX_TOUCH_COORD_MATRIX="0 1 0 1 0 0 0 0 1"
 ```
 
 Or nine explicit numbers (quotes are **required**). **Right** (same as preset `right`):
@@ -154,13 +162,13 @@ Or nine explicit numbers (quotes are **required**). **Right** (same as preset `r
 MEETINGBOX_TOUCH_COORD_MATRIX="0 1 0 -1 0 1 0 0 1"
 ```
 
-**Left** (same as preset `left`):
+**Left** (same as preset `left`, 90° CCW — not the same as swap X/Y above):
 
 ```bash
 MEETINGBOX_TOUCH_COORD_MATRIX="0 -1 1 1 0 0 0 0 1"
 ```
 
-Save and reboot. If it gets **worse**, swap `right` ↔ `left`, or **delete** the matrix line and reboot again.
+Save and reboot. If it gets **worse**, try the other **left** option (swap X/Y vs preset `left`), swap `right` ↔ `left` for right-rotated panels, or **delete** the matrix line and reboot again.
 
 **If the matrix “does not apply”**, common causes are:
 
@@ -196,23 +204,23 @@ xinput test 15
 
 **C.** If `xinput test` shows nothing, the kernel may not see touch — try `sudo evtest` and pick the Goodix event node.
 
-**D.** Remove **matrix** if you added it and things got worse — edit `panel-xrandr.env`, delete `MEETINGBOX_TOUCH_MATRIX_PRESET`, reboot.
+**D.** Remove **matrix** if you added it and things got worse — edit `panel-xrandr.env`, delete `MEETINGBOX_TOUCH_MATRIX_PRESET` / `MEETINGBOX_TOUCH_COORD_MATRIX`, reboot.
 
 **E.** In **mini-pc `.env`**, keep **`MEETINGBOX_SYNC_DISPLAY_FROM_XRANDR=1`** so Kivy’s window size matches the real screen (wrong size = wrong button positions).
 
 ---
 
-## Taps ~90° wrong (e.g. control at **bottom-center** only works if you tap **left-center**)
+## Taps ~90° wrong (e.g. control at **bottom-center** only works if you tap **left-center** or **right-center**)
 
 That usually means the **touch preset does not match** the panel/firmware, or **X/Y are swapped**.
 
 Do this **on the mini PC** in order (edit `/etc/meetingbox/panel-xrandr.env`, reboot or re-login after each try):
 
-1. **Match rotation** — If `MEETINGBOX_PANEL_ROTATE=right`, start with `MEETINGBOX_TOUCH_MATRIX_PRESET=right`. If `rotate=left`, use preset `left`.
+1. **Match rotation** — If `MEETINGBOX_PANEL_ROTATE=right`, start with `MEETINGBOX_TOUCH_MATRIX_PRESET=right`. If `rotate=left`, start with **`MEETINGBOX_TOUCH_MATRIX_PRESET=left`**; if you get wrong-edge taps, switch to **swap X/Y**: **`MEETINGBOX_TOUCH_COORD_MATRIX="0 1 0 1 0 0 0 0 1"`** (remove preset `left` when using the matrix line).
 
-2. **Flip 90°** — If the symptom is “tap on the wrong edge” (bottom vs left), switch to the **other** preset: `right` ↔ `left` (only one line; remove the other).
+2. **Flip 90°** — If the symptom is “tap on the wrong edge” (bottom vs left or **bottom vs right**), for **rotate=right** switch preset `right` ↔ `left`. For **rotate=left**, switch **swap X/Y** ↔ preset **`left`**.
 
-3. **Swap axes** — Try **`MEETINGBOX_TOUCH_MATRIX_PRESET=swap_xy`** (same as matrix `"0 1 0 1 0 0 0 0 1"`).
+3. **Swap axes** — **`MEETINGBOX_TOUCH_MATRIX_PRESET=swap_xy`** or matrix **`"0 1 0 1 0 0 0 0 1"`** when preset **`left`** misaligns (~90° off).
 
 4. **Reset to identity on touch** — Try **`MEETINGBOX_TOUCH_MATRIX_PRESET=normal`** (sometimes `map-to-output` alone is enough; remove custom `MEETINGBOX_TOUCH_COORD_MATRIX` if set).
 
@@ -235,7 +243,7 @@ Then reinstall the orientation helper if you updated the repo:
 | ☐ | `MEETINGBOX_SYNC_DISPLAY_FROM_XRANDR=1` in `mini-pc/.env` |
 | ☐ | `/usr/local/bin/meetingbox-apply-kiosk-display-orientation` installed from repo |
 | ☐ | `device-ui` restarted or full reboot |
-| ☐ | Optional: `MEETINGBOX_TOUCH_MATRIX_PRESET=right` |
+| ☐ | With rotate left: `MEETINGBOX_TOUCH_MATRIX_PRESET=left` (see **`kiosk-desktop/panel-xrandr.env.example`**); use swap X/Y matrix if taps are ~90° wrong |
 
 More detail: **`INFOTAINMENT.md`**, template: **`kiosk-desktop/panel-xrandr.env.example`**.
 

@@ -24,7 +24,7 @@ fi
 
 OUT="${MEETINGBOX_PANEL_OUTPUT:-DSI-1}"
 MODE="${MEETINGBOX_PANEL_MODE:-800x1280}"
-ROT="${MEETINGBOX_PANEL_ROTATE:-right}"
+ROT="${MEETINGBOX_PANEL_ROTATE:-left}"
 
 # Try several xrandr forms; return 0 if one succeeds.
 _xrandr_try_once() {
@@ -108,7 +108,7 @@ _touch_resolve_matrix() {
         logger -t meetingbox-kiosk "touch: unknown MEETINGBOX_TOUCH_MATRIX_PRESET='${MEETINGBOX_TOUCH_MATRIX_PRESET}' (use right|left|inverted|normal|swap_xy)"
         ;;
     esac
-  # map-to-output alone often leaves touch unrotated vs xrandr; match panel rotation unless overridden above.
+  # map-to-output alone often leaves touch unrotated vs xrandr; match panel unless overridden above.
   elif [[ -n "${MEETINGBOX_PANEL_ROTATE:-}" ]]; then
     case "${MEETINGBOX_PANEL_ROTATE}" in
       right) _out=(0 1 0 -1 0 1 0 0 1) ;;
