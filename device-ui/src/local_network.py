@@ -343,8 +343,56 @@ def _read_lan_file() -> str | None:
     return raw.split("%")[0].strip()
 
 
+def _first_ipv4_from_hostname_i_text(text: str) -> str | None:
+    for tok in (text or "").split():
+        raw = tok.split("%")[0].strip()
+        if not raw or raw.startswith("127."):
+            continue
+        try:
+            ipaddress.IPv4Address(raw)
+        except (ipaddress.AddressValueError, ValueError):
+            continue
+        return raw
+    return None
+
+
+def _hostname_i_first_on_host_via_nsenter() -> str | None:
+    """``hostname -I`` in the **host** netns (PID 1), not the container's."""
+    ns = shutil.which("nsenter")
+    hostbin = shutil.which("hostname")
+    if not ns or not hostbin:
+        return None
+    try:
+        p = subprocess.run(
+            [ns, "-t", "1", "-n", "--", hostbin, "-I"],
+            capture_output=True,
+            text=True,
+            timeout=4,
+            check=False,
+        )
+        if p.returncode != 0:
+            logger.debug(
+                "nsenter hostname -I rc=%s stderr=%s", p.returncode, p.stderr
+            )
+            return None
+    except (OSError, subprocess.SubprocessError, ValueError) as e:
+        logger.debug("nsenter hostname -I failed: %s", e)
+        return None
+    return _first_ipv4_from_hostname_i_text(p.stdout or "")
+
+
 def get_hostname_i_first_ipv4() -> str:
-    """First IPv4 listed by ``hostname -I`` (same order as on the host shell)."""
+    """First IPv4 from ``hostname -I``, matching what you see on the **host** shell.
+
+    In Docker (bridge network), plain ``hostname -I`` is the container's addresses
+    (e.g. ``172.18.x``) — not SSH-reachable from the LAN. When ``nsenter`` is
+    available (appliance compose: ``pid: host``, privileged), we run
+    ``hostname -I`` in the host network namespace first.
+    """
+    host_first = _hostname_i_first_on_host_via_nsenter()
+    if host_first:
+        return host_first
+
     if not shutil.which("hostname"):
         return _FALLBACK
     try:
@@ -358,16 +406,8 @@ def get_hostname_i_first_ipv4() -> str:
     except (subprocess.SubprocessError, OSError, ValueError) as e:
         logger.debug("hostname -I (first) failed: %s", e)
         return _FALLBACK
-    for tok in (p.stdout or "").split():
-        raw = tok.split("%")[0].strip()
-        if not raw or raw.startswith("127."):
-            continue
-        try:
-            ipaddress.IPv4Address(raw)
-        except (ipaddress.AddressValueError, ValueError):
-            continue
-        return raw
-    return _FALLBACK
+    first = _first_ipv4_from_hostname_i_text(p.stdout or "")
+    return first if first else _FALLBACK
 
 
 def get_primary_ipv4() -> str:
