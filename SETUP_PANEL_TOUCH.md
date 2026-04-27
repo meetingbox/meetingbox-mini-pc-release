@@ -123,6 +123,17 @@ MEETINGBOX_TOUCH_COORD_MATRIX="0 1 0 -1 0 1 0 0 1"
 
 Save and reboot. If it gets **worse**, change `right` to `left`, or **delete** the line and reboot again.
 
+**If the matrix “does not apply”**, common causes are:
+
+1. **`xrandr` failed** (wrong `MEETINGBOX_PANEL_OUTPUT` / mode) — older scripts **skipped all touch steps** when `xrandr` failed. Update `scripts/apply-kiosk-display-orientation.sh` from the repo and reinstall it to `/usr/local/bin/meetingbox-apply-kiosk-display-orientation` (Step 5). Touch mapping now runs even when `xrandr` fails, and the matrix is applied even when `map-to-output` fails.
+2. **`map-to-output` failed** — the matrix is still applied to your device after an attempted map (same script update).
+3. **Unquoted matrix in `panel-xrandr.env`** — without quotes, only the first number is used. It must be exactly **nine** numbers:
+   `MEETINGBOX_TOUCH_COORD_MATRIX="0 1 0 -1 0 1 0 0 1"`
+4. **No pointer device** — set **`MEETINGBOX_TOUCH_XINPUT_ID`** to the **slave pointer** id from `xinput list` (Step 2).
+5. **Confirm the script ran** — after login: `journalctl -t meetingbox-kiosk -b --no-pager | tail -30`  
+   You should see either `Coordinate Transformation Matrix on '15': ...` or a clear `set ... failed` line.  
+   On the panel: `xinput list-props 15 | grep -i Coordinate` (use your id).
+
 ---
 
 ## Step 8 — Still broken?

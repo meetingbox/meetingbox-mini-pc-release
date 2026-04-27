@@ -274,6 +274,28 @@ def _recording_start_error_screen_args(exc: BaseException) -> tuple[str, str]:
     return ("Recording failed", msg)
 
 
+def _xauth_cookie_has_display(xauth_bin: str, auth_path: str, disp: str) -> bool:
+    """True if xauth reports a cookie for this DISPLAY (matches X11, not our string heuristics)."""
+    variants = [disp]
+    if disp == ":0":
+        variants.append(":0.0")
+    elif disp.startswith(":0.") and len(disp) > 3 and disp[3:].isdigit():
+        variants.append(":0")
+    for d in variants:
+        try:
+            r = subprocess.run(
+                [xauth_bin, "-f", auth_path, "list", d],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+        except Exception:
+            return False
+        if r.returncode == 0 and (r.stdout or "").strip():
+            return True
+    return False
+
+
 def _diagnose_xauthority_for_docker():
     """Log hints when the mounted cookie cannot authorize DISPLAY=:0 (Docker + local X11)."""
     if not sys.platform.startswith("linux"):
@@ -317,6 +339,10 @@ def _diagnose_xauthority_for_docker():
                 "mount the desktop user's cookie (see XAUTHORITY_HOST in .env).",
                 flush=True,
             )
+            return
+        if display_refers_to_screen_zero(disp) and _xauth_cookie_has_display(
+            xauth_bin, path, disp
+        ):
             return
         if display_refers_to_screen_zero(disp) and not xauthority_list_has_display_zero(out):
             print(
