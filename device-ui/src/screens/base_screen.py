@@ -155,16 +155,16 @@ class BaseScreen(Screen):
     ):
         """Update footer labels if footer exists.
 
-        *local_ip* — optional non-loopback IPv4 (e.g. from
-        :func:`local_network.get_primary_ipv4`); shown between link and storage
-        on the home screen.
+        *local_ip* — optional non-loopback IPv4 (e.g. first address from
+        ``hostname -I`` via :func:`local_network.get_hostname_i_first_ipv4`);
+        shown between link and storage on the home screen.
         """
         if not hasattr(self, '_footer_left'):
             return
         ip = (local_ip or "").strip() if local_ip is not None else ""
         if ip in ("", "—"):
             ip = ""
-        ip_seg = f"   Hostname: {ip}" if ip else ""
+        ip_seg = f"   IP: {ip}" if ip else ""
 
         if privacy_mode:
             self._footer_left.text = (

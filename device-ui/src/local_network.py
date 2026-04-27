@@ -343,6 +343,33 @@ def _read_lan_file() -> str | None:
     return raw.split("%")[0].strip()
 
 
+def get_hostname_i_first_ipv4() -> str:
+    """First IPv4 listed by ``hostname -I`` (same order as on the host shell)."""
+    if not shutil.which("hostname"):
+        return _FALLBACK
+    try:
+        p = subprocess.run(
+            ["hostname", "-I"],
+            capture_output=True,
+            text=True,
+            timeout=2,
+            check=False,
+        )
+    except (subprocess.SubprocessError, OSError, ValueError) as e:
+        logger.debug("hostname -I (first) failed: %s", e)
+        return _FALLBACK
+    for tok in (p.stdout or "").split():
+        raw = tok.split("%")[0].strip()
+        if not raw or raw.startswith("127."):
+            continue
+        try:
+            ipaddress.IPv4Address(raw)
+        except (ipaddress.AddressValueError, ValueError):
+            continue
+        return raw
+    return _FALLBACK
+
+
 def get_primary_ipv4() -> str:
     """
     A usable LAN IPv4** for** “open this in a browser on the same network”.
