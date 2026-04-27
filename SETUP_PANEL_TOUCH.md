@@ -202,6 +202,30 @@ xinput test 15
 
 ---
 
+## Taps ~90° wrong (e.g. control at **bottom-center** only works if you tap **left-center**)
+
+That usually means the **touch preset does not match** the panel/firmware, or **X/Y are swapped**.
+
+Do this **on the mini PC** in order (edit `/etc/meetingbox/panel-xrandr.env`, reboot or re-login after each try):
+
+1. **Match rotation** — If `MEETINGBOX_PANEL_ROTATE=right`, start with `MEETINGBOX_TOUCH_MATRIX_PRESET=right`. If `rotate=left`, use preset `left`.
+
+2. **Flip 90°** — If the symptom is “tap on the wrong edge” (bottom vs left), switch to the **other** preset: `right` ↔ `left` (only one line; remove the other).
+
+3. **Swap axes** — Try **`MEETINGBOX_TOUCH_MATRIX_PRESET=swap_xy`** (same as matrix `"0 1 0 1 0 0 0 0 1"`).
+
+4. **Reset to identity on touch** — Try **`MEETINGBOX_TOUCH_MATRIX_PRESET=normal`** (sometimes `map-to-output` alone is enough; remove custom `MEETINGBOX_TOUCH_COORD_MATRIX` if set).
+
+5. **Kivy size must match X11** — In **`mini-pc/.env`** use **`MEETINGBOX_SYNC_DISPLAY_FROM_XRANDR=1`**, or set **`DISPLAY_WIDTH` / `DISPLAY_HEIGHT`** to the same **rotated** size **`xrandr`** reports. If the UI thinks the window is a different shape than X11, **buttons draw in the wrong place** relative to touch even when the matrix is correct.
+
+6. **Confirm one matrix** — Use **either** `MEETINGBOX_TOUCH_MATRIX_PRESET` **or** `MEETINGBOX_TOUCH_COORD_MATRIX`, not conflicting pairs.
+
+Then reinstall the orientation helper if you updated the repo:
+
+`sudo install -m 0755 …/scripts/apply-kiosk-display-orientation.sh /usr/local/bin/meetingbox-apply-kiosk-display-orientation`
+
+---
+
 ## One-page checklist
 
 | Done | Task |
@@ -263,3 +287,32 @@ More detail: **`INFOTAINMENT.md`**, template: **`kiosk-desktop/panel-xrandr.env.
    ```
 
    Then reboot.
+
+---
+
+## It used to work — something changed (regression)
+
+Touch/rotation rarely “drifts” by itself. After an update or config edit, check these **in order**:
+
+1. **Touch `xinput` id shifted** (very common after kernel/driver or USB reorder).  
+   Run `xinput list` on the panel and compare **`slave  pointer`** id to **`MEETINGBOX_TOUCH_XINPUT_ID`** in `/etc/meetingbox/panel-xrandr.env`. If the id changed, **update the number** and reboot. Mapping the wrong id applies matrix to the wrong device.
+
+2. **System packages** — `apt upgrade` can change **libinput**, **Xorg**, or **kernel** touch behavior. Note date of last upgrade: `grep " install \| upgrade " /var/log/dpkg.log | tail -20`. If it lines up with the break, search for touch-related packages or try booting an older kernel from the GRUB **Advanced options** menu once to confirm.
+
+3. **Kivy / Docker `.env`** — If **`DISPLAY_WIDTH`**, **`DISPLAY_HEIGHT`**, or **`MEETINGBOX_SYNC_DISPLAY_FROM_XRANDR`** changed, the **UI size** may no longer match X11. Restore previous values or set **`MEETINGBOX_SYNC_DISPLAY_FROM_XRANDR=1`** and restart **device-ui**.
+
+4. **`panel-xrandr.env` changed** — Compare to a backup or git:  
+   `sudo diff -u /etc/meetingbox/panel-xrandr.env ~/meetingbox-mini-pc-release/kiosk-desktop/panel-xrandr.env.example`  
+   Revert accidental edits to **`MEETINGBOX_PANEL_ROTATE`**, **`MEETINGBOX_TOUCH_*`**, or **`MEETINGBOX_PANEL_OUTPUT`**.
+
+5. **Repo script updated** — If you **`git pull`**’d MeetingBox, reinstall **`meetingbox-apply-kiosk-display-orientation`** (see Step 5 in the main guide) so the box matches the repo; then reboot.
+
+6. **Collect a snapshot** (attach to a ticket or compare after fixes):
+
+   ```bash
+   export DISPLAY=:0
+   bash ~/meetingbox-mini-pc-release/scripts/diagnose-touch-panel.sh | tee /tmp/meetingbox-touch.txt
+   xinput list-props "$(grep MEETINGBOX_TOUCH_XINPUT_ID /etc/meetingbox/panel-xrandr.env | cut -d= -f2)" 2>/dev/null | grep -i Coordinate
+   ```
+
+If you find the **pointer id** was wrong, fixing only that often restores “like before” without chasing new matrix values.

@@ -102,6 +102,19 @@ _touch_resolve_matrix() {
       left) _out=(0 -1 1 1 0 0 0 0 1) ;;    # 90° CCW
       inverted) _out=(-1 0 1 0 -1 1 0 0 1) ;;
       normal) _out=(1 0 0 0 1 0 0 0 1) ;;
+      # Swap touch X↔Y (no mirror). Use when taps land ~90° off (e.g. must tap left-mid to hit bottom-mid).
+      swap_xy|swap_axes) _out=(0 1 0 1 0 0 0 0 1) ;;
+      *)
+        logger -t meetingbox-kiosk "touch: unknown MEETINGBOX_TOUCH_MATRIX_PRESET='${MEETINGBOX_TOUCH_MATRIX_PRESET}' (use right|left|inverted|normal|swap_xy)"
+        ;;
+    esac
+  # map-to-output alone often leaves touch unrotated vs xrandr; match panel rotation unless overridden above.
+  elif [[ -n "${MEETINGBOX_PANEL_ROTATE:-}" ]]; then
+    case "${MEETINGBOX_PANEL_ROTATE}" in
+      right) _out=(0 1 0 -1 0 1 0 0 1) ;;
+      left) _out=(0 -1 1 1 0 0 0 0 1) ;;
+      inverted) _out=(-1 0 1 0 -1 1 0 0 1) ;;
+      normal) _out=(1 0 0 0 1 0 0 0 1) ;;
     esac
   fi
 }
