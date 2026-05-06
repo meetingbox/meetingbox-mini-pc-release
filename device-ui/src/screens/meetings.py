@@ -59,7 +59,7 @@ class MeetingsScreen(BaseScreen):
         self.hero_title.bind(size=self.hero_title.setter('text_size'))
         title_box.add_widget(self.hero_title)
         self.hero_subtitle = Label(
-            text='Search and review reports from the web dashboard. Tap any meeting to open details here.',
+            text='Browse synced summaries, transcripts, decisions, and action items. Tap any meeting to open details.',
             font_size=sf(FONT_SIZES['small']),
             color=COLORS['gray_300'],
             halign='left',

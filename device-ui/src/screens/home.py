@@ -107,6 +107,7 @@ class HomeScreen(BaseScreen):
         self._footer_ip_event = None
         self._voice_state_event = None
         self._footer_kwargs = {}
+        self._latest_meeting_id = None
         self._build_ui()
 
     def _build_ui(self):
@@ -185,7 +186,7 @@ class HomeScreen(BaseScreen):
         top_cards = BoxLayout(orientation='horizontal', size_hint=(1, 0.52), spacing=sv(12))
         summary = _GlassCard(orientation='vertical', size_hint=(0.48, 1), padding=[sv(16), sv(14)], spacing=sv(8), radius=sv(22))
         summary.add_widget(Label(text='📄  Meeting Library', font_size=sf(FONT_SIZES['small']), color=COLORS['gray_300'], halign='left', valign='middle', size_hint=(1, None), height=sv(28)))
-        self.last_title_label = Label(text='Open saved meetings', font_size=sf(FONT_SIZES['large']), bold=True, color=COLORS['white'], halign='left', valign='middle', size_hint=(1, None), height=sv(48), shorten=True)
+        self.last_title_label = Label(text='Loading recent meeting…', font_size=sf(FONT_SIZES['large']), bold=True, color=COLORS['white'], halign='left', valign='middle', size_hint=(1, None), height=sv(48), shorten=True)
         self.last_title_label.bind(size=self.last_title_label.setter('text_size'))
         summary.add_widget(self.last_title_label)
         self.last_meta_label = Label(text='Summaries, transcripts, decisions', font_size=sf(FONT_SIZES['small']), color=COLORS['gray_300'], halign='left', valign='middle', size_hint=(1, None), height=sv(34))
@@ -195,7 +196,7 @@ class HomeScreen(BaseScreen):
         self.last_actions_label.bind(size=self.last_actions_label.setter('text_size'))
         summary.add_widget(self.last_actions_label)
         summary.add_widget(Widget())
-        summary.bind(on_touch_up=lambda inst, touch: self.goto('meetings', transition='slide_left') if inst.collide_point(*touch.pos) else None)
+        summary.bind(on_touch_up=lambda inst, touch: self._open_latest_meeting() if inst.collide_point(*touch.pos) else None)
         top_cards.add_widget(summary)
 
         brief = _GlassCard(orientation='vertical', size_hint=(0.52, 1), padding=[sv(16), sv(14)], spacing=sv(8), radius=sv(22))
@@ -303,6 +304,14 @@ class HomeScreen(BaseScreen):
     def _on_start_recording(self, _inst):
         self.app.start_recording()
 
+    def _open_latest_meeting(self):
+        if self._latest_meeting_id:
+            detail = self.app.screen_manager.get_screen('meeting_detail')
+            detail.set_meeting_id(self._latest_meeting_id)
+            self.goto('meeting_detail', transition='slide_left')
+        else:
+            self.goto('meetings', transition='slide_left')
+
     def _refresh_voice_pill(self):
         assistant = getattr(self.app, 'voice_assistant', None)
         should_listen = getattr(self.app, '_voice_assistant_should_listen', lambda: False)()
@@ -345,6 +354,12 @@ class HomeScreen(BaseScreen):
         async def _fetch():
             try:
                 data = await self.backend.get_home_summary()
+                meetings = []
+                try:
+                    meetings = await self.backend.get_meetings(limit=1)
+                except Exception:
+                    meetings = []
+                latest = meetings[0] if meetings else None
                 today_n = int(data.get('pending_actions_today') or 0)
                 total_n = int(data.get('pending_actions_total') or 0)
                 next_title, next_time = _format_home_next_meeting(data.get('next_meeting'))
@@ -354,6 +369,24 @@ class HomeScreen(BaseScreen):
                     self.more_label.text = f'+{max(0, today_n)} more'
                     self.schedule_card.value_label.text = next_time.split(' ')[0] if next_time else '—'
                     self.schedule_card.text_label.text = f'Now: {next_title}'
+                    if latest:
+                        self._latest_meeting_id = latest.get('id')
+                        self.last_title_label.text = latest.get('title') or 'Untitled meeting'
+                        try:
+                            raw = latest.get('start_time') or latest.get('created_at') or ''
+                            dt = datetime.fromisoformat(raw.replace('Z', '+00:00'))
+                            when = to_display_local(dt).strftime('%b %d · %I:%M %p').replace(' 0', ' ')
+                        except Exception:
+                            when = 'Recent meeting'
+                        dur = int(latest.get('duration') or 0) // 60
+                        self.last_meta_label.text = f'{when} · {dur} min' if dur else when
+                        pa = int(latest.get('pending_actions') or 0)
+                        self.last_actions_label.text = f'{pa} pending actions  ›' if pa else 'Open summary  ›'
+                    else:
+                        self._latest_meeting_id = None
+                        self.last_title_label.text = 'No saved meetings yet'
+                        self.last_meta_label.text = 'Start a recording to build memory'
+                        self.last_actions_label.text = 'Open meeting library  ›'
                     self.assistant_card.value_label.text = 'Tony'
                     self.assistant_card.text_label.text = 'Assistant commands'
                     self.tasks_card.value_label.text = str(total_n)
