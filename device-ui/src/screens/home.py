@@ -228,7 +228,7 @@ class HomeScreen(BaseScreen):
         t1 = Label(text='Try saying', font_size=sf(FONT_SIZES['medium']), bold=True, color=COLORS['blue'], halign='left', valign='bottom', size_hint=(1, .45))
         t1.bind(size=t1.setter('text_size'))
         say_text.add_widget(t1)
-        t2 = Label(text='“Schedule a meeting tomorrow at 4 PM”', font_size=sf(FONT_SIZES['body']), color=COLORS['gray_300'], halign='left', valign='top', size_hint=(1, .55))
+        t2 = Label(text='“Hey Tony, start recording” or “next meeting”', font_size=sf(FONT_SIZES['body']), color=COLORS['gray_300'], halign='left', valign='top', size_hint=(1, .55))
         t2.bind(size=t2.setter('text_size'))
         say_text.add_widget(t2)
         say.add_widget(say_text)
