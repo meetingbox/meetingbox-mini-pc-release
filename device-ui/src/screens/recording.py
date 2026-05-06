@@ -6,7 +6,6 @@ Two visual states driven by self._is_paused:
 """
 
 import logging
-import random
 import time
 from collections import deque
 from datetime import datetime
@@ -87,13 +86,6 @@ class _Waveform(Widget):
 
     def set_levels(self, levels: list):
         self._levels = levels
-        self._draw()
-
-    def update_random(self):
-        if self._active:
-            self._levels = [random.randint(6, self.MAX_H) for _ in range(self.NUM_BARS)]
-        else:
-            self._levels = [2] * self.NUM_BARS
         self._draw()
 
     def _draw(self, *_args):
