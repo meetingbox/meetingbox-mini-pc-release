@@ -1,4 +1,4 @@
-"""Premium MeetingBox home screen — command-center layout."""
+"""Premium MeetingBox home screen — reference-style AI dashboard."""
 
 from __future__ import annotations
 
@@ -19,71 +19,77 @@ from network_util import linux_ethernet_ready
 from screens.base_screen import BaseScreen
 
 
-_DATEISH_TAIL_RE = None  # kept only to make old imports/state irrelevant after redesign
-
-
-def _format_home_next_meeting(next_meeting) -> str:
+def _format_home_next_meeting(next_meeting) -> tuple[str, str]:
     if not next_meeting:
-        return 'No calendar focus loaded yet'
+        return 'No focus loaded', 'Ask Tony for a briefing'
     title = (next_meeting.get('title') or 'Calendar event').strip() or 'Calendar event'
     start = (next_meeting.get('start') or '').strip()
     if not start:
-        return title
+        return title, 'Time not set'
     try:
         if 'T' in start:
             dt = datetime.fromisoformat(start.replace('Z', '+00:00'))
-            line = to_display_local(dt).strftime('%a %b %d · %I:%M %p')
+            line = to_display_local(dt).strftime('%I:%M %p').lstrip('0')
         else:
             d = datetime.strptime(start[:10], '%Y-%m-%d')
-            line = d.strftime('%a %b %d · all day')
-        return f'{title}\n{line}'
+            line = d.strftime('%b %d · all day')
+        return title, line
     except Exception:
-        return f'{title}\n{start}'
+        return title, start
 
 
-class _TonyOrb(FloatLayout):
-    """Large calm assistant orb on the home screen."""
+def _greeting_name(name: str) -> str:
+    hour = display_now().hour
+    greet = 'Good morning' if hour < 12 else 'Good afternoon' if hour < 17 else 'Good evening'
+    return f'{greet}, {name or "Stark"}'
 
+
+class _VoiceOrb(FloatLayout):
     def __init__(self, **kwargs):
         kwargs.setdefault('size_hint', (None, None))
         super().__init__(**kwargs)
         self._phase = 0.0
         with self.canvas.before:
-            self._glow_color = Color(0.10, 0.45, 0.95, 0.18)
+            self._glow_color = Color(0.12, 0.42, 1.0, 0.24)
             self._glow = Ellipse(pos=self.pos, size=self.size)
-            self._ring_color = Color(0.55, 0.78, 1.0, 0.38)
-            self._ring = Line(circle=(self.center_x, self.center_y, self.width / 2.25), width=2)
-            self._inner_color = Color(0.18, 0.50, 0.95, 0.94)
+            self._ring_color = Color(0.28, 0.60, 1.0, 0.70)
+            self._ring = Line(circle=(self.center_x, self.center_y, self.width / 2.2), width=2)
+            self._inner_color = Color(0.04, 0.10, 0.22, 1)
             self._inner = Ellipse(pos=self.pos, size=self.size)
+        self.label = Label(text='🎙', font_size=28, color=COLORS['white'], halign='center', valign='middle')
+        self.label.bind(size=self.label.setter('text_size'))
+        self.add_widget(self.label)
         self.bind(pos=self._sync, size=self._sync)
         Clock.schedule_interval(self._tick, 1 / 24)
 
     def _sync(self, *_args):
-        pad = min(self.width, self.height) * 0.28
+        pad = min(self.width, self.height) * 0.18
         self._glow.pos = self.pos
         self._glow.size = self.size
         self._inner.pos = (self.x + pad, self.y + pad)
         self._inner.size = (max(1, self.width - pad * 2), max(1, self.height - pad * 2))
         self._ring.circle = (self.center_x, self.center_y, max(1, self.width / 2.35))
+        self.label.pos = self.pos
+        self.label.size = self.size
 
     def _tick(self, dt):
         self._phase = (self._phase + dt) % 2.0
         pulse = 0.5 + 0.5 * abs(1.0 - self._phase)
-        self._glow_color.a = 0.12 + pulse * 0.14
-        self._ring_color.a = 0.24 + pulse * 0.20
+        self._glow_color.a = 0.15 + pulse * 0.20
+        self._ring_color.a = 0.45 + pulse * 0.30
 
 
 class _GlassCard(BoxLayout):
-    def __init__(self, radius=24, fill=(0.10, 0.14, 0.22, 0.86), **kwargs):
+    def __init__(self, radius=24, fill=(0.035, 0.075, 0.14, 0.88), **kwargs):
         super().__init__(**kwargs)
+        self._radius = radius
         with self.canvas.before:
-            Color(0, 0, 0, 0.18)
+            Color(0, 0, 0, 0.20)
             self._shadow = RoundedRectangle(pos=(self.x + 1, self.y - 3), size=self.size, radius=[radius])
             Color(*fill)
             self._bg = RoundedRectangle(pos=self.pos, size=self.size, radius=[radius])
-            Color(1, 1, 1, 0.08)
+            Color(0.22, 0.48, 0.95, 0.20)
             self._stroke = Line(rounded_rectangle=(self.x, self.y, self.width, self.height, radius), width=1)
-        self._radius = radius
         self.bind(pos=self._sync, size=self._sync)
 
     def _sync(self, *_args):
@@ -95,122 +101,170 @@ class _GlassCard(BoxLayout):
 
 
 class HomeScreen(BaseScreen):
-    """Touch-first home command center."""
-
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         self._clock_event = None
         self._footer_ip_event = None
         self._footer_kwargs = {}
-        self._wifi_ok = False
-        self._mic_connected = True
         self._build_ui()
 
     def _build_ui(self):
         sv = self.suv
         sf = self.suf
-        root = BoxLayout(orientation='vertical')
+        root = BoxLayout(orientation='vertical', padding=[sv(26), sv(18), sv(26), sv(14)], spacing=sv(12))
         with root.canvas.before:
-            Color(0.025, 0.035, 0.060, 1)
+            Color(0.008, 0.015, 0.035, 1)
             self._bg = Rectangle(pos=root.pos, size=root.size)
-            Color(0.08, 0.32, 0.72, 0.22)
-            self._glow_a = Ellipse(pos=(-120, 260), size=(520, 520))
-            Color(0.55, 0.30, 0.95, 0.12)
-            self._glow_b = Ellipse(pos=(DISPLAY_WIDTH - 260, -180), size=(500, 500))
+            Color(0.00, 0.18, 0.55, 0.22)
+            self._glow_a = Ellipse(pos=(-160, 160), size=(620, 620))
+            Color(0.00, 0.42, 1.00, 0.14)
+            self._glow_b = Ellipse(pos=(DISPLAY_WIDTH - 360, 40), size=(620, 420))
         root.bind(pos=self._sync_bg, size=self._sync_bg)
 
-        top = BoxLayout(orientation='horizontal', size_hint=(1, None), height=sv(70), padding=[sv(22), sv(12)], spacing=sv(12))
-        left = BoxLayout(orientation='vertical', spacing=0)
-        self.room_label = Label(text='MeetingBox', font_size=sf(FONT_SIZES['title']), color=COLORS['white'], bold=True, halign='left', valign='bottom', size_hint=(1, .6))
-        self.room_label.bind(size=self.room_label.setter('text_size'))
-        left.add_widget(self.room_label)
-        self.connection_label = Label(text='Checking appliance health…', font_size=sf(FONT_SIZES['tiny']), color=COLORS['gray_400'], halign='left', valign='top', size_hint=(1, .4))
-        self.connection_label.bind(size=self.connection_label.setter('text_size'))
-        left.add_widget(self.connection_label)
-        top.add_widget(left)
-        settings_btn = SecondaryButton(text='Settings', size_hint=(None, None), width=sv(128), height=sv(46), font_size=sf(FONT_SIZES['small']))
-        settings_btn.bind(on_release=lambda *_: self.goto('settings', transition='slide_left'))
-        top.add_widget(settings_btn)
-        root.add_widget(top)
+        # Header: greeting + listening pill + gear
+        header = BoxLayout(orientation='horizontal', size_hint=(1, None), height=sv(58), spacing=sv(12))
+        self.greeting_label = Label(text='Good morning, Stark', font_size=sf(FONT_SIZES['large']), bold=True, color=COLORS['white'], halign='left', valign='middle', size_hint=(1, 1))
+        self.greeting_label.bind(size=self.greeting_label.setter('text_size'))
+        header.add_widget(self.greeting_label)
+        self.listening_pill = _GlassCard(orientation='horizontal', size_hint=(None, None), width=sv(214), height=sv(52), padding=[sv(18), 0], spacing=sv(10), radius=sv(28), fill=(0.035, 0.070, 0.14, 0.92))
+        self.listening_pill.add_widget(Label(text='●', font_size=sf(FONT_SIZES['small']), color=COLORS['blue'], size_hint=(None, 1), width=sv(22)))
+        lp = Label(text='Listening   ≋', font_size=sf(FONT_SIZES['medium']), bold=True, color=COLORS['white'], halign='left', valign='middle')
+        lp.bind(size=lp.setter('text_size'))
+        self.listening_pill.add_widget(lp)
+        header.add_widget(self.listening_pill)
+        settings = SecondaryButton(text='⚙', size_hint=(None, None), width=sv(54), height=sv(52), font_size=sf(FONT_SIZES['title']))
+        settings.bind(on_release=lambda *_: self.goto('settings', transition='slide_left'))
+        header.add_widget(settings)
+        root.add_widget(header)
 
-        body = BoxLayout(orientation='horizontal', padding=[sv(22), sv(6), sv(22), sv(10)], spacing=sv(16))
+        # Main dashboard grid
+        main = BoxLayout(orientation='horizontal', size_hint=(1, 1), spacing=sv(12))
+        left_col = BoxLayout(orientation='vertical', size_hint=(0.49, 1), spacing=sv(12))
+        right_col = BoxLayout(orientation='vertical', size_hint=(0.51, 1), spacing=sv(12))
 
-        left_panel = _GlassCard(orientation='vertical', size_hint=(0.52, 1), padding=[sv(22), sv(18)], spacing=sv(10), radius=sv(30), fill=(0.07, 0.11, 0.19, 0.88))
-        orb_row = BoxLayout(orientation='horizontal', size_hint=(1, None), height=sv(110), spacing=sv(14))
-        orb_row.add_widget(_TonyOrb(size=(sv(96), sv(96))))
-        orb_text = BoxLayout(orientation='vertical')
-        kicker = Label(text='TONY ASSISTANT', font_size=sf(FONT_SIZES['tiny']), bold=True, color=COLORS['blue'], halign='left', valign='bottom', size_hint=(1, .34))
-        kicker.bind(size=kicker.setter('text_size'))
-        orb_text.add_widget(kicker)
-        self.assistant_status = Label(text='Ready to brief, record, and recall.', font_size=sf(FONT_SIZES['medium']), bold=True, color=COLORS['white'], halign='left', valign='top', size_hint=(1, .66))
-        self.assistant_status.bind(size=self.assistant_status.setter('text_size'))
-        orb_text.add_widget(self.assistant_status)
-        orb_row.add_widget(orb_text)
-        left_panel.add_widget(orb_row)
-
-        clock_card = _GlassCard(orientation='vertical', size_hint=(1, None), height=sv(138), padding=[sv(18), sv(10)], spacing=0, radius=sv(26), fill=(0.11, 0.16, 0.25, 0.92))
-        self._big_clock_hm = Label(text='--:--', font_size=sf(60), bold=True, color=COLORS['white'], halign='left', valign='bottom', size_hint=(1, .68))
+        hero = _GlassCard(orientation='vertical', size_hint=(1, 1), padding=[sv(20), sv(16)], spacing=sv(8), radius=sv(24), fill=(0.018, 0.055, 0.125, 0.93))
+        time_row = BoxLayout(orientation='horizontal', size_hint=(1, None), height=sv(86))
+        clock_box = BoxLayout(orientation='vertical', size_hint=(1, 1))
+        self._big_clock_hm = Label(text='--:--', font_size=sf(56), bold=True, color=COLORS['white'], halign='left', valign='bottom', size_hint=(1, .70))
         self._big_clock_hm.bind(size=self._big_clock_hm.setter('text_size'))
-        clock_card.add_widget(self._big_clock_hm)
-        self.date_label = Label(text='', font_size=sf(FONT_SIZES['body']), color=COLORS['gray_300'], halign='left', valign='top', size_hint=(1, .32))
+        clock_box.add_widget(self._big_clock_hm)
+        self.date_label = Label(text='', font_size=sf(FONT_SIZES['body']), color=COLORS['white'], halign='left', valign='top', size_hint=(1, .30))
         self.date_label.bind(size=self.date_label.setter('text_size'))
-        clock_card.add_widget(self.date_label)
-        left_panel.add_widget(clock_card)
+        clock_box.add_widget(self.date_label)
+        time_row.add_widget(clock_box)
+        self.health_label = Label(text='Ready\nOnline', font_size=sf(FONT_SIZES['small']), color=COLORS['gray_300'], bold=True, halign='right', valign='middle', size_hint=(None, 1), width=sv(110))
+        self.health_label.bind(size=self.health_label.setter('text_size'))
+        time_row.add_widget(self.health_label)
+        hero.add_widget(time_row)
 
-        self.upcoming_label = Label(text='Loading next focus…', font_size=sf(FONT_SIZES['body']), color=COLORS['gray_300'], halign='left', valign='top', size_hint=(1, None), height=sv(64), line_height=1.18)
-        self.upcoming_label.bind(size=self.upcoming_label.setter('text_size'))
-        left_panel.add_widget(self.upcoming_label)
-        body.add_widget(left_panel)
-
-        right_panel = BoxLayout(orientation='vertical', size_hint=(0.48, 1), spacing=sv(12))
-        self.start_btn = PrimaryButton(text='Start Meeting', size_hint=(1, None), height=sv(82), font_size=sf(FONT_SIZES['large']))
+        hero.add_widget(Widget(size_hint=(1, None), height=sv(8)))
+        next_label = Label(text='Next up', font_size=sf(FONT_SIZES['medium']), color=COLORS['blue'], halign='left', valign='middle', size_hint=(1, None), height=sv(34))
+        next_label.bind(size=next_label.setter('text_size'))
+        hero.add_widget(next_label)
+        self.next_time_label = Label(text='📅  —', font_size=sf(FONT_SIZES['medium']), color=COLORS['blue'], halign='left', valign='middle', size_hint=(1, None), height=sv(32))
+        self.next_time_label.bind(size=self.next_time_label.setter('text_size'))
+        hero.add_widget(self.next_time_label)
+        self.next_title_label = Label(text='Now: No meeting selected', font_size=sf(FONT_SIZES['large']), bold=True, color=COLORS['white'], halign='left', valign='middle', size_hint=(1, None), height=sv(42), shorten=True)
+        self.next_title_label.bind(size=self.next_title_label.setter('text_size'))
+        hero.add_widget(self.next_title_label)
+        self.more_label = Label(text='+0 more', font_size=sf(FONT_SIZES['medium']), bold=True, color=COLORS['blue'], halign='left', valign='middle', size_hint=(1, None), height=sv(30))
+        self.more_label.bind(size=self.more_label.setter('text_size'))
+        hero.add_widget(self.more_label)
+        hero.add_widget(Widget(size_hint=(1, 1)))
+        start_row = BoxLayout(orientation='horizontal', size_hint=(1, None), height=sv(86))
+        start_row.add_widget(Widget(size_hint=(0.38, 1)))
+        self.start_btn = PrimaryButton(text='🎙  Start Recording\n[size=12]Tap or say “start recording”[/size]', markup=True, size_hint=(0.62, 1), font_size=sf(FONT_SIZES['medium']))
         self.start_btn.bind(on_release=self._on_start_recording)
-        right_panel.add_widget(self.start_btn)
+        start_row.add_widget(self.start_btn)
+        hero.add_widget(start_row)
+        left_col.add_widget(hero)
 
-        self.briefing_btn = SecondaryButton(text='Tony Assistant\n[size=12]Briefing · Calendar · Inbox · Memory[/size]', markup=True, size_hint=(1, None), height=sv(76), font_size=sf(FONT_SIZES['medium']))
-        self.briefing_btn.bind(on_release=lambda *_: self.goto('briefing', transition='slide_left'))
-        right_panel.add_widget(self.briefing_btn)
+        # Top right: summary + morning brief
+        top_cards = BoxLayout(orientation='horizontal', size_hint=(1, 0.52), spacing=sv(12))
+        summary = _GlassCard(orientation='vertical', size_hint=(0.48, 1), padding=[sv(16), sv(14)], spacing=sv(8), radius=sv(22))
+        summary.add_widget(Label(text='📄  Last Meeting Summary', font_size=sf(FONT_SIZES['small']), color=COLORS['gray_300'], halign='left', valign='middle', size_hint=(1, None), height=sv(28)))
+        self.last_title_label = Label(text='Product Sync', font_size=sf(FONT_SIZES['large']), bold=True, color=COLORS['white'], halign='left', valign='middle', size_hint=(1, None), height=sv(48), shorten=True)
+        self.last_title_label.bind(size=self.last_title_label.setter('text_size'))
+        summary.add_widget(self.last_title_label)
+        self.last_meta_label = Label(text='Today · 30 min', font_size=sf(FONT_SIZES['small']), color=COLORS['gray_300'], halign='left', valign='middle', size_hint=(1, None), height=sv(26))
+        self.last_meta_label.bind(size=self.last_meta_label.setter('text_size'))
+        summary.add_widget(self.last_meta_label)
+        self.last_actions_label = Label(text='2 action items', font_size=sf(FONT_SIZES['small']), color=COLORS['blue'], halign='left', valign='middle', size_hint=(1, None), height=sv(30))
+        self.last_actions_label.bind(size=self.last_actions_label.setter('text_size'))
+        summary.add_widget(self.last_actions_label)
+        summary.add_widget(Widget())
+        top_cards.add_widget(summary)
 
-        quick = _GlassCard(orientation='vertical', size_hint=(1, 1), padding=[sv(16), sv(14)], spacing=sv(10), radius=sv(28), fill=(0.10, 0.14, 0.22, 0.84))
-        quick_title = Label(text='Quick access', font_size=sf(FONT_SIZES['medium']), bold=True, color=COLORS['white'], halign='left', valign='middle', size_hint=(1, None), height=sv(30))
-        quick_title.bind(size=quick_title.setter('text_size'))
-        quick.add_widget(quick_title)
-        row1 = BoxLayout(orientation='horizontal', spacing=sv(10))
-        meetings_btn = SecondaryButton(text='Meetings', font_size=sf(FONT_SIZES['small']))
-        meetings_btn.bind(on_release=lambda *_: self.goto('meetings', transition='slide_left'))
-        row1.add_widget(meetings_btn)
-        system_btn = SecondaryButton(text='System', font_size=sf(FONT_SIZES['small']))
-        system_btn.bind(on_release=lambda *_: self.goto('system', transition='slide_left'))
-        row1.add_widget(system_btn)
-        quick.add_widget(row1)
-        row2 = BoxLayout(orientation='horizontal', spacing=sv(10))
-        wifi_btn = SecondaryButton(text='Network', font_size=sf(FONT_SIZES['small']))
-        wifi_btn.bind(on_release=lambda *_: self.goto('wifi', transition='slide_left'))
-        row2.add_widget(wifi_btn)
-        mic_btn = SecondaryButton(text='Mic Test', font_size=sf(FONT_SIZES['small']))
-        mic_btn.bind(on_release=lambda *_: self.goto('mic_test', transition='slide_left'))
-        row2.add_widget(mic_btn)
-        quick.add_widget(row2)
-        self.pending_today_label = Label(text='Today: — pending actions', font_size=sf(FONT_SIZES['small']), color=COLORS['gray_300'], halign='left', valign='middle', size_hint=(1, None), height=sv(30))
-        self.pending_today_label.bind(size=self.pending_today_label.setter('text_size'))
-        quick.add_widget(self.pending_today_label)
-        self.pending_total_label = Label(text='All open: — pending actions', font_size=sf(FONT_SIZES['small']), color=COLORS['gray_500'], halign='left', valign='middle', size_hint=(1, None), height=sv(28))
-        self.pending_total_label.bind(size=self.pending_total_label.setter('text_size'))
-        quick.add_widget(self.pending_total_label)
-        right_panel.add_widget(quick)
-        body.add_widget(right_panel)
-        root.add_widget(body)
+        brief = _GlassCard(orientation='vertical', size_hint=(0.52, 1), padding=[sv(16), sv(14)], spacing=sv(8), radius=sv(22))
+        brief.add_widget(Label(text='☀  Morning Brief', font_size=sf(FONT_SIZES['medium']), color=COLORS['white'], bold=True, halign='left', valign='middle', size_hint=(1, None), height=sv(30)))
+        self.brief_calendar_label = Label(text='📅  — meetings today', font_size=sf(FONT_SIZES['small']), color=COLORS['gray_300'], halign='left', valign='middle', size_hint=(1, None), height=sv(34))
+        self.brief_calendar_label.bind(size=self.brief_calendar_label.setter('text_size'))
+        brief.add_widget(self.brief_calendar_label)
+        self.brief_email_label = Label(text='✉  Inbox ready', font_size=sf(FONT_SIZES['small']), color=COLORS['gray_300'], halign='left', valign='middle', size_hint=(1, None), height=sv(34))
+        self.brief_email_label.bind(size=self.brief_email_label.setter('text_size'))
+        brief.add_widget(self.brief_email_label)
+        brief.add_widget(Widget())
+        view = SecondaryButton(text='View all  ›', size_hint=(1, None), height=sv(40), font_size=sf(FONT_SIZES['small']))
+        view.bind(on_release=lambda *_: self.goto('briefing', transition='slide_left'))
+        brief.add_widget(view)
+        top_cards.add_widget(brief)
+        right_col.add_widget(top_cards)
+
+        bottom_cards = BoxLayout(orientation='horizontal', size_hint=(1, 0.25), spacing=sv(12))
+        self.schedule_card = self._mini_card('📅', '—', 'Now: Loading', lambda *_: self.goto('meetings', transition='slide_left'))
+        bottom_cards.add_widget(self.schedule_card)
+        self.email_card = self._mini_card('✉', '0', 'New emails', lambda *_: self.goto('briefing', transition='slide_left'))
+        bottom_cards.add_widget(self.email_card)
+        self.tasks_card = self._mini_card('✓', '0', 'Tasks due', lambda *_: self.goto('briefing', transition='slide_left'))
+        bottom_cards.add_widget(self.tasks_card)
+        right_col.add_widget(bottom_cards)
+
+        say = _GlassCard(orientation='horizontal', size_hint=(1, 0.23), padding=[sv(18), sv(12)], spacing=sv(14), radius=sv(24), fill=(0.018, 0.055, 0.125, 0.92))
+        say.add_widget(Label(text='✦', font_size=sf(28), color=COLORS['blue'], size_hint=(None, 1), width=sv(36)))
+        say_text = BoxLayout(orientation='vertical')
+        t1 = Label(text='Try saying', font_size=sf(FONT_SIZES['medium']), bold=True, color=COLORS['blue'], halign='left', valign='bottom', size_hint=(1, .45))
+        t1.bind(size=t1.setter('text_size'))
+        say_text.add_widget(t1)
+        t2 = Label(text='“Schedule a meeting tomorrow at 4 PM”', font_size=sf(FONT_SIZES['body']), color=COLORS['gray_300'], halign='left', valign='top', size_hint=(1, .55))
+        t2.bind(size=t2.setter('text_size'))
+        say_text.add_widget(t2)
+        say.add_widget(say_text)
+        say.add_widget(_VoiceOrb(size=(sv(64), sv(64))))
+        keyboard = SecondaryButton(text='⌨', size_hint=(None, None), width=sv(58), height=sv(50), font_size=sf(FONT_SIZES['title']))
+        keyboard.bind(on_release=lambda *_: self.goto('briefing', transition='slide_left'))
+        say.add_widget(keyboard)
+        right_col.add_widget(say)
+
+        main.add_widget(left_col)
+        main.add_widget(right_col)
+        root.add_widget(main)
         root.add_widget(self.build_footer())
         self.add_widget(root)
+
+    def _mini_card(self, icon, value, label, callback):
+        card = _GlassCard(orientation='horizontal', padding=[self.suv(14), self.suv(10)], spacing=self.suv(10), radius=self.suv(22))
+        card.add_widget(Label(text=icon, font_size=self.suf(28), color=COLORS['blue'], size_hint=(None, 1), width=self.suv(42)))
+        txt = BoxLayout(orientation='vertical')
+        v = Label(text=value, font_size=self.suf(FONT_SIZES['large']), bold=True, color=COLORS['white'], halign='left', valign='bottom', size_hint=(1, .55))
+        v.bind(size=v.setter('text_size'))
+        setattr(card, 'value_label', v)
+        txt.add_widget(v)
+        l = Label(text=label, font_size=self.suf(FONT_SIZES['small']), color=COLORS['gray_300'], halign='left', valign='top', size_hint=(1, .45), shorten=True)
+        l.bind(size=l.setter('text_size'))
+        setattr(card, 'text_label', l)
+        txt.add_widget(l)
+        card.add_widget(txt)
+        card.add_widget(Label(text='›', font_size=self.suf(FONT_SIZES['large']), color=COLORS['gray_300'], size_hint=(None, 1), width=self.suv(22)))
+        card.bind(on_touch_up=lambda inst, touch: callback() if inst.collide_point(*touch.pos) else None)
+        return card
 
     def _sync_bg(self, widget, *_args):
         self._bg.pos = widget.pos
         self._bg.size = widget.size
-        self._glow_a.pos = (widget.x - 120, widget.y + widget.height - 360)
-        self._glow_b.pos = (widget.x + widget.width - 300, widget.y - 180)
+        self._glow_a.pos = (widget.x - 160, widget.y + widget.height - 460)
+        self._glow_b.pos = (widget.x + widget.width - 390, widget.y + 20)
 
     def on_enter(self):
-        self.room_label.text = getattr(self.app, 'device_name', 'MeetingBox')
         self._update_clock_labels()
         if self._clock_event:
             self._clock_event.cancel()
@@ -241,7 +295,8 @@ class HomeScreen(BaseScreen):
 
     def _update_clock_labels(self):
         now = display_now()
-        self._big_clock_hm.text = now.strftime('%I:%M %p').lstrip('0')
+        self.greeting_label.text = _greeting_name(getattr(self.app, 'user_name', '') or 'Stark')
+        self._big_clock_hm.text = now.strftime('%I:%M').lstrip('0') + '  ' + now.strftime('%p')
         self.date_label.text = now.strftime('%A, %B ') + str(now.day)
 
     def _load_system_status(self):
@@ -252,17 +307,15 @@ class HomeScreen(BaseScreen):
                 wifi_ok = bool(info.get('wifi_ssid'))
                 wired_ok = linux_ethernet_ready()
                 privacy = getattr(self.app, 'privacy_mode', False)
-
                 def _apply(_dt):
                     online = wifi_ok or wired_ok
-                    self.connection_label.text = 'Online · Ready' if online else 'Offline · Check network'
-                    self.connection_label.color = COLORS['green'] if online else COLORS['red']
+                    self.health_label.text = 'Ready\nOnline' if online else 'Offline\nNetwork'
+                    self.health_label.color = COLORS['gray_300'] if online else COLORS['red']
                     self._footer_kwargs = {'wifi_ok': wifi_ok, 'free_gb': free_gb, 'privacy_mode': privacy, 'wired_lan_ok': wired_ok}
                     self.update_footer(wifi_ok=wifi_ok, free_gb=free_gb, privacy_mode=privacy, wired_lan_ok=wired_ok, local_ip=get_primary_ipv4())
-
                 Clock.schedule_once(_apply, 0)
             except Exception:
-                Clock.schedule_once(lambda _dt: setattr(self.connection_label, 'text', 'Backend unavailable'), 0)
+                Clock.schedule_once(lambda _dt: setattr(self.health_label, 'text', 'Backend\nOffline'), 0)
         run_async(_fetch())
 
     def _load_home_summary(self):
@@ -271,14 +324,20 @@ class HomeScreen(BaseScreen):
                 data = await self.backend.get_home_summary()
                 today_n = int(data.get('pending_actions_today') or 0)
                 total_n = int(data.get('pending_actions_total') or 0)
-                upcoming = _format_home_next_meeting(data.get('next_meeting'))
-
+                next_title, next_time = _format_home_next_meeting(data.get('next_meeting'))
                 def _apply(_dt):
-                    self.upcoming_label.text = f'Next focus\n{upcoming}'
-                    self.pending_today_label.text = f'Today: {today_n} pending action' + ('' if today_n == 1 else 's')
-                    self.pending_total_label.text = f'All open: {total_n} pending action' + ('' if total_n == 1 else 's')
-
+                    self.next_time_label.text = f'📅  {next_time}'
+                    self.next_title_label.text = f'Now: {next_title}'
+                    self.more_label.text = f'+{max(0, today_n)} more'
+                    self.schedule_card.value_label.text = next_time.split(' ')[0] if next_time else '—'
+                    self.schedule_card.text_label.text = f'Now: {next_title}'
+                    self.email_card.value_label.text = '—'
+                    self.email_card.text_label.text = 'Brief available'
+                    self.tasks_card.value_label.text = str(total_n)
+                    self.tasks_card.text_label.text = 'Tasks due'
+                    self.brief_calendar_label.text = f'📅  {today_n} meetings / actions today'
+                    self.brief_email_label.text = '✉  Inbox scan in Tony Assistant'
                 Clock.schedule_once(_apply, 0)
             except Exception:
-                Clock.schedule_once(lambda _dt: setattr(self.upcoming_label, 'text', 'Next focus\nAsk Tony for a briefing when online.'), 0)
+                Clock.schedule_once(lambda _dt: setattr(self.next_title_label, 'text', 'Now: Ask Tony for briefing'), 0)
         run_async(_fetch())
