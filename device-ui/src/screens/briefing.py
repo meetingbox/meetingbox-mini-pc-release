@@ -223,7 +223,7 @@ class BriefingScreen(BaseScreen):
         root.add_widget(bottom)
 
         hint = Label(
-            text="Warm assistant foundation · voice output and richer animations are next.",
+            text="Assistant cards run real backend actions · writes still need web approval.",
             font_size=sf(FONT_SIZES["tiny"]),
             color=COLORS["gray_500"],
             halign="center",

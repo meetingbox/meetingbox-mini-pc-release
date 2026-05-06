@@ -105,6 +105,7 @@ class HomeScreen(BaseScreen):
         super().__init__(**kwargs)
         self._clock_event = None
         self._footer_ip_event = None
+        self._voice_state_event = None
         self._footer_kwargs = {}
         self._build_ui()
 
@@ -127,10 +128,11 @@ class HomeScreen(BaseScreen):
         self.greeting_label.bind(size=self.greeting_label.setter('text_size'))
         header.add_widget(self.greeting_label)
         self.listening_pill = _GlassCard(orientation='horizontal', size_hint=(None, None), width=sv(214), height=sv(52), padding=[sv(18), 0], spacing=sv(10), radius=sv(28), fill=(0.035, 0.070, 0.14, 0.92))
-        self.listening_pill.add_widget(Label(text='●', font_size=sf(FONT_SIZES['small']), color=COLORS['blue'], size_hint=(None, 1), width=sv(22)))
-        lp = Label(text='Listening   ≋', font_size=sf(FONT_SIZES['medium']), bold=True, color=COLORS['white'], halign='left', valign='middle')
-        lp.bind(size=lp.setter('text_size'))
-        self.listening_pill.add_widget(lp)
+        self.voice_dot = Label(text='●', font_size=sf(FONT_SIZES['small']), color=COLORS['gray_300'], size_hint=(None, 1), width=sv(22))
+        self.listening_pill.add_widget(self.voice_dot)
+        self.voice_state_label = Label(text='Voice checking', font_size=sf(FONT_SIZES['medium']), bold=True, color=COLORS['white'], halign='left', valign='middle')
+        self.voice_state_label.bind(size=self.voice_state_label.setter('text_size'))
+        self.listening_pill.add_widget(self.voice_state_label)
         header.add_widget(self.listening_pill)
         settings = SecondaryButton(text='⚙', size_hint=(None, None), width=sv(54), height=sv(52), font_size=sf(FONT_SIZES['title']))
         settings.bind(on_release=lambda *_: self.goto('settings', transition='slide_left'))
@@ -179,20 +181,21 @@ class HomeScreen(BaseScreen):
         hero.add_widget(start_row)
         left_col.add_widget(hero)
 
-        # Top right: summary + morning brief
+        # Top right: real navigation cards, no fabricated meeting/email data.
         top_cards = BoxLayout(orientation='horizontal', size_hint=(1, 0.52), spacing=sv(12))
         summary = _GlassCard(orientation='vertical', size_hint=(0.48, 1), padding=[sv(16), sv(14)], spacing=sv(8), radius=sv(22))
-        summary.add_widget(Label(text='📄  Last Meeting Summary', font_size=sf(FONT_SIZES['small']), color=COLORS['gray_300'], halign='left', valign='middle', size_hint=(1, None), height=sv(28)))
-        self.last_title_label = Label(text='Product Sync', font_size=sf(FONT_SIZES['large']), bold=True, color=COLORS['white'], halign='left', valign='middle', size_hint=(1, None), height=sv(48), shorten=True)
+        summary.add_widget(Label(text='📄  Meeting Library', font_size=sf(FONT_SIZES['small']), color=COLORS['gray_300'], halign='left', valign='middle', size_hint=(1, None), height=sv(28)))
+        self.last_title_label = Label(text='Open saved meetings', font_size=sf(FONT_SIZES['large']), bold=True, color=COLORS['white'], halign='left', valign='middle', size_hint=(1, None), height=sv(48), shorten=True)
         self.last_title_label.bind(size=self.last_title_label.setter('text_size'))
         summary.add_widget(self.last_title_label)
-        self.last_meta_label = Label(text='Today · 30 min', font_size=sf(FONT_SIZES['small']), color=COLORS['gray_300'], halign='left', valign='middle', size_hint=(1, None), height=sv(26))
+        self.last_meta_label = Label(text='Summaries, transcripts, decisions', font_size=sf(FONT_SIZES['small']), color=COLORS['gray_300'], halign='left', valign='middle', size_hint=(1, None), height=sv(34))
         self.last_meta_label.bind(size=self.last_meta_label.setter('text_size'))
         summary.add_widget(self.last_meta_label)
-        self.last_actions_label = Label(text='2 action items', font_size=sf(FONT_SIZES['small']), color=COLORS['blue'], halign='left', valign='middle', size_hint=(1, None), height=sv(30))
+        self.last_actions_label = Label(text='Tap to browse  ›', font_size=sf(FONT_SIZES['small']), color=COLORS['blue'], halign='left', valign='middle', size_hint=(1, None), height=sv(30))
         self.last_actions_label.bind(size=self.last_actions_label.setter('text_size'))
         summary.add_widget(self.last_actions_label)
         summary.add_widget(Widget())
+        summary.bind(on_touch_up=lambda inst, touch: self.goto('meetings', transition='slide_left') if inst.collide_point(*touch.pos) else None)
         top_cards.add_widget(summary)
 
         brief = _GlassCard(orientation='vertical', size_hint=(0.52, 1), padding=[sv(16), sv(14)], spacing=sv(8), radius=sv(22))
@@ -200,7 +203,7 @@ class HomeScreen(BaseScreen):
         self.brief_calendar_label = Label(text='📅  — meetings today', font_size=sf(FONT_SIZES['small']), color=COLORS['gray_300'], halign='left', valign='middle', size_hint=(1, None), height=sv(34))
         self.brief_calendar_label.bind(size=self.brief_calendar_label.setter('text_size'))
         brief.add_widget(self.brief_calendar_label)
-        self.brief_email_label = Label(text='✉  Inbox ready', font_size=sf(FONT_SIZES['small']), color=COLORS['gray_300'], halign='left', valign='middle', size_hint=(1, None), height=sv(34))
+        self.brief_email_label = Label(text='🤖  Runs real assistant actions', font_size=sf(FONT_SIZES['small']), color=COLORS['gray_300'], halign='left', valign='middle', size_hint=(1, None), height=sv(34))
         self.brief_email_label.bind(size=self.brief_email_label.setter('text_size'))
         brief.add_widget(self.brief_email_label)
         brief.add_widget(Widget())
@@ -213,8 +216,8 @@ class HomeScreen(BaseScreen):
         bottom_cards = BoxLayout(orientation='horizontal', size_hint=(1, 0.25), spacing=sv(12))
         self.schedule_card = self._mini_card('📅', '—', 'Now: Loading', lambda *_: self.goto('meetings', transition='slide_left'))
         bottom_cards.add_widget(self.schedule_card)
-        self.email_card = self._mini_card('✉', '0', 'New emails', lambda *_: self.goto('briefing', transition='slide_left'))
-        bottom_cards.add_widget(self.email_card)
+        self.assistant_card = self._mini_card('🤖', 'Tony', 'Assistant commands', lambda *_: self.goto('briefing', transition='slide_left'))
+        bottom_cards.add_widget(self.assistant_card)
         self.tasks_card = self._mini_card('✓', '0', 'Tasks due', lambda *_: self.goto('briefing', transition='slide_left'))
         bottom_cards.add_widget(self.tasks_card)
         right_col.add_widget(bottom_cards)
@@ -230,7 +233,7 @@ class HomeScreen(BaseScreen):
         say_text.add_widget(t2)
         say.add_widget(say_text)
         say.add_widget(_VoiceOrb(size=(sv(64), sv(64))))
-        keyboard = SecondaryButton(text='⌨', size_hint=(None, None), width=sv(58), height=sv(50), font_size=sf(FONT_SIZES['title']))
+        keyboard = SecondaryButton(text='Ask', size_hint=(None, None), width=sv(58), height=sv(50), font_size=sf(FONT_SIZES['title']))
         keyboard.bind(on_release=lambda *_: self.goto('briefing', transition='slide_left'))
         say.add_widget(keyboard)
         right_col.add_widget(say)
@@ -275,6 +278,10 @@ class HomeScreen(BaseScreen):
         Clock.schedule_once(lambda _dt: self._refresh_footer_ip(_dt), 3.0)
         self._load_system_status()
         self._load_home_summary()
+        self._refresh_voice_pill()
+        if self._voice_state_event:
+            self._voice_state_event.cancel()
+        self._voice_state_event = Clock.schedule_interval(lambda _dt: self._refresh_voice_pill(), 2.0)
 
     def on_leave(self):
         if self._clock_event:
@@ -283,6 +290,9 @@ class HomeScreen(BaseScreen):
         if self._footer_ip_event:
             self._footer_ip_event.cancel()
             self._footer_ip_event = None
+        if self._voice_state_event:
+            self._voice_state_event.cancel()
+            self._voice_state_event = None
 
     def _refresh_footer_ip(self, _dt):
         if not self._footer_kwargs:
@@ -292,6 +302,19 @@ class HomeScreen(BaseScreen):
 
     def _on_start_recording(self, _inst):
         self.app.start_recording()
+
+    def _refresh_voice_pill(self):
+        assistant = getattr(self.app, 'voice_assistant', None)
+        should_listen = getattr(self.app, '_voice_assistant_should_listen', lambda: False)()
+        if assistant and getattr(assistant, 'available', False) and should_listen:
+            self.voice_dot.color = COLORS['blue']
+            self.voice_state_label.text = 'Say “Hey Tony”'
+        elif assistant and not getattr(assistant, 'available', False):
+            self.voice_dot.color = COLORS['gray_300']
+            self.voice_state_label.text = 'Voice offline'
+        else:
+            self.voice_dot.color = COLORS['gray_300']
+            self.voice_state_label.text = 'Voice paused'
 
     def _update_clock_labels(self):
         now = display_now()
@@ -331,12 +354,12 @@ class HomeScreen(BaseScreen):
                     self.more_label.text = f'+{max(0, today_n)} more'
                     self.schedule_card.value_label.text = next_time.split(' ')[0] if next_time else '—'
                     self.schedule_card.text_label.text = f'Now: {next_title}'
-                    self.email_card.value_label.text = '—'
-                    self.email_card.text_label.text = 'Brief available'
+                    self.assistant_card.value_label.text = 'Tony'
+                    self.assistant_card.text_label.text = 'Assistant commands'
                     self.tasks_card.value_label.text = str(total_n)
-                    self.tasks_card.text_label.text = 'Tasks due'
-                    self.brief_calendar_label.text = f'📅  {today_n} meetings / actions today'
-                    self.brief_email_label.text = '✉  Inbox scan in Tony Assistant'
+                    self.tasks_card.text_label.text = 'Pending approvals'
+                    self.brief_calendar_label.text = f'📅  {today_n} pending actions today'
+                    self.brief_email_label.text = '🤖  Calendar, inbox, and memory via Tony'
                 Clock.schedule_once(_apply, 0)
             except Exception:
                 Clock.schedule_once(lambda _dt: setattr(self.next_title_label, 'text', 'Now: Ask Tony for briefing'), 0)
