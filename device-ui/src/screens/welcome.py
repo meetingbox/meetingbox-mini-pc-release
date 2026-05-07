@@ -99,23 +99,23 @@ class WelcomeScreen(BaseScreen):
         header = BoxLayout(
             orientation='horizontal',
             size_hint=(None, None),
-            width=self.suh(200),
-            height=self.suv(52),
-            spacing=self.suh(9),
-            padding=[self.suh(20), self.suv(16), 0, 0],
+            width=200,
+            height=52,
+            spacing=9,
+            padding=[20, 16, 0, 0],
             pos_hint={'x': 0, 'top': 1},
         )
         if Path(LOGO_PATH).exists():
             header.add_widget(Image(
                 source=LOGO_PATH,
                 size_hint=(None, None),
-                size=(self.suv(26), self.suv(26)),
+                size=(26, 26),
                 allow_stretch=True,
                 keep_ratio=True,
             ))
         brand = Label(
             text='MeetingBox',
-            font_size=self.suf(FONT_SIZES['medium']),
+            font_size=FONT_SIZES['medium'],
             bold=True,
             color=COLORS['white'],
             halign='left',
@@ -128,8 +128,7 @@ class WelcomeScreen(BaseScreen):
         # ── Layer 3: hero content block (vertically centred) ───────────────
         # Heights:  title(78) + gap(14) + subtitle(28) + gap(32) +
         #           button(70) + gap(16) + footer(26)  = 264 px
-        HERO_H = self.suv(264)
-        cta_h = self.suv(_CTA_TARGET_H)
+        HERO_H = 264
 
         hero = BoxLayout(
             orientation='vertical',
@@ -143,45 +142,45 @@ class WelcomeScreen(BaseScreen):
         # "MeetingBox AI" — match Figma: ~64 px bold white, centred
         title = Label(
             text='MeetingBox AI',
-            font_size=self.suf(64),
+            font_size=64,
             bold=True,
             color=COLORS['white'],
             halign='center',
             valign='middle',
             size_hint=(1, None),
-            height=self.suv(78),
+            height=78,
         )
         title.bind(size=title.setter('text_size'))
         hero.add_widget(title)
 
-        hero.add_widget(Widget(size_hint=(1, None), height=self.suv(14)))
+        hero.add_widget(Widget(size_hint=(1, None), height=14))
 
         # Subtitle — lighter gray, centred
         subtitle = Label(
             text='Your meeting room that remembers everything.',
-            font_size=self.suf(18),
+            font_size=18,
             color=COLORS['gray_400'],
             halign='center',
             valign='middle',
             size_hint=(1, None),
-            height=self.suv(28),
+            height=28,
         )
         subtitle.bind(size=subtitle.setter('text_size'))
         hero.add_widget(subtitle)
 
-        hero.add_widget(Widget(size_hint=(1, None), height=self.suv(32)))
+        hero.add_widget(Widget(size_hint=(1, None), height=32))
 
         # CTA — design Button.png (rounded pill + baked label); size from texture aspect
         btn_anchor = AnchorLayout(
             anchor_x='center',
             anchor_y='center',
             size_hint=(1, None),
-            height=cta_h,
+            height=_CTA_TARGET_H,
         )
         cta = _ImageButton(
             source=BUTTON_PATH,
             size_hint=(None, None),
-            size=(self.suh(260), cta_h),
+            size=(260, _CTA_TARGET_H),
             allow_stretch=False,
             keep_ratio=True,
             fit_mode='contain',
@@ -191,7 +190,7 @@ class WelcomeScreen(BaseScreen):
             if not img.texture or img.texture.width < 2:
                 return
             tw, th = img.texture.size
-            nh = cta_h
+            nh = _CTA_TARGET_H
             nw = max(1, int(tw * nh / th))
             max_w = int(DISPLAY_WIDTH * 0.90)
             if nw > max_w:
@@ -206,29 +205,29 @@ class WelcomeScreen(BaseScreen):
         Clock.schedule_once(lambda _dt: _sync_cta_size(cta), 0)
         hero.add_widget(btn_anchor)
 
-        hero.add_widget(Widget(size_hint=(1, None), height=self.suv(16)))
+        hero.add_widget(Widget(size_hint=(1, None), height=16))
 
         # Security line: Unicode shield + text — both are Labels, no image overlap
         security_row = BoxLayout(
             orientation='horizontal',
             size_hint=(1, None),
-            height=self.suv(26),
-            spacing=self.suh(6),
+            height=26,
+            spacing=6,
         )
         security_row.add_widget(Widget(size_hint=(1, 1)))
         shield_icon = Label(
             text='🛡',
-            font_size=self.suf(14),
+            font_size=14,
             color=COLORS['gray_500'],
             size_hint=(None, 1),
-            width=self.suh(20),
+            width=20,
             halign='center',
             valign='middle',
         )
         security_row.add_widget(shield_icon)
         security_lbl = Label(
             text='Enterprise-grade security included',
-            font_size=self.suf(FONT_SIZES['small']),
+            font_size=FONT_SIZES['small'],
             color=COLORS['gray_500'],
             halign='left',
             valign='middle',

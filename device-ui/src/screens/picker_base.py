@@ -15,30 +15,8 @@ from kivy.graphics import Color, RoundedRectangle
 from kivy.clock import Clock
 from screens.base_screen import BaseScreen
 from components.status_bar import StatusBar
-from config import (
-    BORDER_RADIUS,
-    COLORS,
-    FONT_SIZES,
-    SPACING,
-    other_screen_horizontal_scale,
-    other_screen_vertical_scale,
-)
+from config import COLORS, FONT_SIZES, SPACING, BORDER_RADIUS
 from async_helper import run_async
-
-
-def _pb_suv(px):
-    v = other_screen_vertical_scale()
-    return max(1, int(round(float(px) * v)))
-
-
-def _pb_suh(px):
-    h = other_screen_horizontal_scale()
-    return max(1, int(round(float(px) * h)))
-
-
-def _pb_suf(fs):
-    v = other_screen_vertical_scale()
-    return max(6, int(round(float(fs) * v)))
 
 
 class _RadioRow(ButtonBehavior, BoxLayout):
@@ -47,9 +25,9 @@ class _RadioRow(ButtonBehavior, BoxLayout):
     def __init__(self, label_text, selected=False, **kwargs):
         kwargs.setdefault('orientation', 'horizontal')
         kwargs.setdefault('size_hint_y', None)
-        kwargs.setdefault('height', _pb_suv(60))
-        kwargs.setdefault('padding', [_pb_suh(16), _pb_suv(8)])
-        kwargs.setdefault('spacing', _pb_suh(12))
+        kwargs.setdefault('height', 60)
+        kwargs.setdefault('padding', [16, 8])
+        kwargs.setdefault('spacing', 12)
         super().__init__(**kwargs)
 
         self.label_text = label_text
@@ -65,16 +43,16 @@ class _RadioRow(ButtonBehavior, BoxLayout):
 
         self.radio_label = Label(
             text='●' if selected else '○',
-            font_size=_pb_suf(FONT_SIZES['large']),
+            font_size=FONT_SIZES['large'],
             color=COLORS['blue'] if selected else COLORS['gray_500'],
             size_hint=(None, 1),
-            width=_pb_suh(30),
+            width=30,
         )
         self.add_widget(self.radio_label)
 
         self.text_label = Label(
             text=label_text,
-            font_size=_pb_suf(FONT_SIZES['medium']),
+            font_size=FONT_SIZES['medium'],
             color=COLORS['white'],
             halign='left',
             size_hint=(1, 1),
@@ -129,13 +107,13 @@ class PickerBaseScreen(BaseScreen):
         if self._description:
             desc = Label(
                 text=self._description,
-                font_size=self.suf(14),
+                font_size=14,
                 color=COLORS['gray_500'],
                 halign='left',
                 valign='top',
                 size_hint=(1, None),
-                height=self.suv(40),
-                padding=[self.suh(SPACING['screen_padding']), self.suv(4)],
+                height=40,
+                padding=[SPACING['screen_padding'], 4],
             )
             desc.bind(size=desc.setter('text_size'))
             root.add_widget(desc)
@@ -143,8 +121,8 @@ class PickerBaseScreen(BaseScreen):
         # Options
         options_box = GridLayout(
             cols=1,
-            spacing=self.suv(SPACING['list_item_spacing']),
-            padding=[self.suh(SPACING['screen_padding']), self.suv(8)],
+            spacing=SPACING['list_item_spacing'],
+            padding=[SPACING['screen_padding'], 8],
             size_hint_y=None,
         )
         options_box.bind(minimum_height=options_box.setter('height'))

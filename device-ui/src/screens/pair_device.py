@@ -38,7 +38,7 @@ SCREEN_BG = (0.043, 0.051, 0.067, 1)
 def _field_label(text: str) -> Label:
     lb = Label(
         text=text,
-        font_size=BaseScreen.suf(FONT_SIZES["small"]),
+        font_size=FONT_SIZES["small"],
         bold=True,
         color=COLORS["white"],
         halign="left",
@@ -55,11 +55,11 @@ def _text_input(**kwargs) -> TextInput:
         multiline=False,
         size_hint=(1, None),
         height=48,
-        font_size=BaseScreen.suf(FONT_SIZES["medium"]),
+        font_size=FONT_SIZES["medium"],
         padding=[14, 12],
         background_normal="",
         background_active="",
-        background_color=(0.16, 0.21, 0.30, 1),
+        background_color=COLORS["surface_light"],
         foreground_color=COLORS["white"],
         hint_text_color=COLORS["gray_600"],
         cursor_color=COLORS["white"],
@@ -89,8 +89,8 @@ def _make_qr_image_widget(url: str, px: int = 116):
             pass
     return Label(
         text="[QR]",
-        font_size=BaseScreen.suf(FONT_SIZES["small"]),
-        color=COLORS["blue"],
+        font_size=FONT_SIZES["small"],
+        color=COLORS["gray_500"],
         size_hint=(None, None),
         size=(px, px),
     )
@@ -106,13 +106,19 @@ class PairDeviceScreen(BaseScreen):
     def _build_ui(self):
         root = BoxLayout(
             orientation="vertical",
-            padding=[24, 12, 24, 16],
+            padding=[20, 8, 20, 12],
             spacing=0,
             size_hint=(1, 1),
         )
-        self.make_dark_bg(root)
+        with root.canvas.before:
+            Color(*SCREEN_BG)
+            self._root_bg = Rectangle(pos=root.pos, size=root.size)
+        root.bind(
+            pos=lambda w, *_: setattr(self._root_bg, "pos", w.pos),
+            size=lambda w, *_: setattr(self._root_bg, "size", w.size),
+        )
 
-        header = BoxLayout(orientation="horizontal", size_hint=(1, None), height=56, spacing=12)
+        header = BoxLayout(orientation="horizontal", size_hint=(1, None), height=48, spacing=10)
         if Path(LOGO_PATH).exists():
             header.add_widget(
                 Image(source=LOGO_PATH, size_hint=(None, 1), width=36, fit_mode="contain")
@@ -121,7 +127,7 @@ class PairDeviceScreen(BaseScreen):
             header.add_widget(Widget(size_hint=(None, 1), width=8))
         brand = Label(
             text="MeetingBox",
-            font_size=self.suf(FONT_SIZES["title"]),
+            font_size=FONT_SIZES["title"],
             bold=True,
             color=COLORS["white"],
             halign="left",
@@ -140,14 +146,14 @@ class PairDeviceScreen(BaseScreen):
         body = BoxLayout(
             orientation="vertical",
             size_hint_y=None,
-            spacing=8,
+            spacing=6,
             padding=[0, 4, 0, 8],
         )
         body.bind(minimum_height=body.setter("height"))
 
         title = Label(
-            text="Link this MeetingBox",
-            font_size=self.suf(FONT_SIZES["huge"]),
+            text="Link this device",
+            font_size=FONT_SIZES["huge"],
             bold=True,
             color=COLORS["white"],
             halign="center",
@@ -163,8 +169,8 @@ class PairDeviceScreen(BaseScreen):
                 "Sign in on the dashboard (scan the QR code), open Settings → Devices, "
                 "and generate a pairing code. Enter it below."
             ),
-            font_size=self.suf(FONT_SIZES["small"]),
-            color=COLORS["gray_300"],
+            font_size=FONT_SIZES["small"],
+            color=COLORS["gray_400"],
             halign="center",
             valign="middle",
             size_hint=(1, None),
@@ -176,8 +182,8 @@ class PairDeviceScreen(BaseScreen):
         body.add_widget(Widget(size_hint=(1, None), height=8))
 
         qr_caption = Label(
-            text="SCAN OR OPEN WEB DASHBOARD",
-            font_size=self.suf(FONT_SIZES["small"]),
+            text="Web dashboard",
+            font_size=FONT_SIZES["small"],
             bold=True,
             color=COLORS["gray_500"],
             halign="center",
@@ -194,7 +200,7 @@ class PairDeviceScreen(BaseScreen):
 
         url_lbl = Label(
             text=dash_http,
-            font_size=self.suf(FONT_SIZES["tiny"]),
+            font_size=FONT_SIZES["tiny"],
             color=COLORS["gray_600"],
             halign="center",
             valign="middle",
@@ -215,7 +221,7 @@ class PairDeviceScreen(BaseScreen):
             text="Link device",
             size_hint=(1, None),
             height=52,
-            font_size=self.suf(FONT_SIZES["medium"]),
+            font_size=FONT_SIZES["medium"],
         )
         self._link_btn.bind(on_press=self._on_link)
         body.add_widget(self._link_btn)
@@ -225,12 +231,12 @@ class PairDeviceScreen(BaseScreen):
         scroll.add_widget(body)
         root.add_widget(scroll)
 
-        footer = BoxLayout(orientation="horizontal", size_hint=(1, None), height=56, spacing=12)
+        footer = BoxLayout(orientation="horizontal", size_hint=(1, None), height=48, spacing=10)
         back_btn = SecondaryButton(
             text="Back",
             size_hint=(None, 1),
             width=100,
-            font_size=self.suf(FONT_SIZES["medium"]),
+            font_size=FONT_SIZES["medium"],
         )
         back_btn.bind(on_press=lambda *_: self.go_back())
         footer.add_widget(back_btn)
