@@ -504,15 +504,37 @@ class IdleScreen(BaseScreen):
         card.bind(on_release=self._on_start_recording)
 
         mic_path = _idle_png("mic_orb.png")
+        card_pl, card_pt, card_pr, card_pb = (
+            _idu(27),
+            _idu(32),
+            _idu(36),
+            _idu(32),
+        )
+        mic_slot_w = _hv(101)
+        spacing_h = _idu(18)
+        text_w = max(
+            _hh(160),
+            card_w - card_pl - card_pr - mic_slot_w - spacing_h,
+        )
+        title_h = _hv(40)
+        sub_h = _hv(52)
+        text_stack_h = title_h + _hv(8) + sub_h
+
         card_row = BoxLayout(
             orientation="horizontal",
             size_hint=(1, 1),
-            padding=[_idu(27), _idu(32), _idu(36), _idu(32)],
-            spacing=_idu(18),
+            padding=[card_pl, card_pt, card_pr, card_pb],
+            spacing=spacing_h,
         )
-        mic_wrap = AnchorLayout(size_hint=(None, 1), width=_hv(101))
+
+        mic_slot = AnchorLayout(
+            size_hint=(None, 1),
+            width=mic_slot_w,
+            anchor_x="center",
+            anchor_y="center",
+        )
         if mic_path:
-            mic_wrap.add_widget(
+            mic_slot.add_widget(
                 Image(
                     source=mic_path,
                     size_hint=(None, None),
@@ -521,35 +543,45 @@ class IdleScreen(BaseScreen):
                     allow_stretch=True,
                 ),
             )
-        card_row.add_widget(mic_wrap)
+        card_row.add_widget(mic_slot)
 
-        cta_col = BoxLayout(orientation="vertical", size_hint=(1, 1), spacing=_hv(6))
-        cta_col.add_widget(Widget())
+        text_slot = AnchorLayout(
+            size_hint=(1, 1),
+            anchor_x="left",
+            anchor_y="center",
+        )
+        text_col = BoxLayout(
+            orientation="vertical",
+            size_hint=(None, None),
+            size=(text_w, text_stack_h),
+            spacing=_hv(8),
+        )
         cta_title = Label(
             text="Start Recording",
             font_size=_hf(30),
             bold=True,
             color=COLORS["white"],
             halign="left",
-            valign="middle",
+            valign="bottom",
             size_hint=(1, None),
-            height=_hv(40),
+            height=title_h,
+            text_size=(text_w, title_h),
         )
-        cta_title.bind(size=cta_title.setter("text_size"))
-        cta_col.add_widget(cta_title)
         cta_sub = Label(
             text='Tap or say "start recording"',
             font_size=_hf(18),
             color=COLORS["white"],
             halign="left",
-            valign="middle",
+            valign="top",
             size_hint=(1, None),
-            height=_hv(30),
+            height=sub_h,
+            text_size=(text_w, sub_h),
         )
-        cta_sub.bind(size=cta_sub.setter("text_size"))
-        cta_col.add_widget(cta_sub)
-        cta_col.add_widget(Widget())
-        card_row.add_widget(cta_col)
+        text_col.add_widget(cta_title)
+        text_col.add_widget(cta_sub)
+        text_slot.add_widget(text_col)
+        card_row.add_widget(text_slot)
+
         card.add_widget(card_row)
 
         self._cta_card = card
@@ -628,19 +660,26 @@ class IdleScreen(BaseScreen):
         self._weather.unsubscribe(self._update_weather)
 
     # ------------------------------------------------------------------
-    # Touch anywhere → home (Start Recording card consumes its own tap)
+    # Touch anywhere → home (taps on the recording card start a meeting instead)
     # ------------------------------------------------------------------
     def on_touch_up(self, touch):
-        # Let children process the touch first (e.g. Start Recording button).
+        # Children first (card ButtonBehavior may fire on_release).
         if super().on_touch_up(touch):
             return True
-        if self.collide_point(*touch.pos):
-            try:
-                self.goto("home", transition="fade")
-            except Exception:  # noqa: BLE001
-                logger.debug("idle: goto(home) failed", exc_info=True)
-            return True
-        return False
+        lx, ly = self.to_widget(touch.x, touch.y)
+        if not self.collide_point(lx, ly):
+            return False
+        cc = getattr(self, "_cta_card", None)
+        if cc is not None:
+            cx, cy = cc.to_widget(touch.x, touch.y)
+            if cc.collide_point(cx, cy):
+                self._on_start_recording(None)
+                return True
+        try:
+            self.goto("home", transition="fade")
+        except Exception:  # noqa: BLE001
+            logger.debug("idle: goto(home) failed", exc_info=True)
+        return True
 
     # ------------------------------------------------------------------
     # Live data
