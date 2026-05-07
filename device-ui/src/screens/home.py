@@ -11,7 +11,6 @@ from kivy.uix.button import Button
 from kivy.uix.floatlayout import FloatLayout
 from kivy.uix.image import Image
 from kivy.uix.label import Label
-from kivy.uix.scrollview import ScrollView
 from kivy.uix.widget import Widget
 
 from async_helper import run_async
@@ -195,34 +194,15 @@ class HomeScreen(BaseScreen):
         sv = _hv
         sh = _hh
         sf = _hf
-        # Scroll the main column so the 1024×600 Figma baseline never clips on short panels
-        # or aggressive MEETINGBOX_HOME_CONTENT_SCALE; footer stays pinned.
+        # 1024×600 Figma baseline fits inside ``root`` with home scaling.
+        # A flex spacer right before the footer absorbs any leftover height when
+        # MEETINGBOX_HOME_CONTENT_SCALE shrinks content, so children stay top-aligned
+        # (a ScrollView here would bottom-anchor the body and leave a gap at the top).
         root = BoxLayout(
             orientation='vertical',
             padding=[sh(17), sv(15), sh(17), sv(8)],
             spacing=sv(12),
         )
-        body = BoxLayout(
-            orientation='vertical',
-            size_hint=(1, None),
-            spacing=sv(12),
-        )
-
-        scroll = ScrollView(
-            size_hint=(1, 1),
-            do_scroll_x=False,
-            bar_width=sh(6),
-        )
-
-        def _sync_body_to_viewport(*_args):
-            # Short content in a ScrollView is bottom-aligned in Kivy → empty band at the top.
-            # Stretch the column to at least the viewport height so the layout starts at the top.
-            mh = body.minimum_height
-            h = scroll.height
-            body.height = max(mh, h) if h else mh
-
-        body.bind(minimum_height=_sync_body_to_viewport)
-        scroll.bind(height=_sync_body_to_viewport, width=_sync_body_to_viewport)
         with root.canvas.before:
             Color(*_NAVY_BG)
             self._bg = Rectangle(pos=root.pos, size=root.size)
@@ -284,7 +264,7 @@ class HomeScreen(BaseScreen):
             settings = SecondaryButton(text='Set', size_hint=(None, None), width=sv(54), height=sv(54), font_size=sf(18))
         settings.bind(on_release=lambda *_: self.goto('settings', transition='slide_left'))
         header.add_widget(settings)
-        body.add_widget(header)
+        root.add_widget(header)
 
         top_row = BoxLayout(orientation='horizontal', size_hint=(1, None), height=sv(263), spacing=sh(7))
 
@@ -404,7 +384,7 @@ class HomeScreen(BaseScreen):
         view.bind(on_release=lambda *_: self.goto('briefing', transition='slide_left'))
         brief.add_widget(view)
         top_row.add_widget(brief)
-        body.add_widget(top_row)
+        root.add_widget(top_row)
 
         bottom_cards = BoxLayout(orientation='horizontal', size_hint=(1, None), height=sv(102), spacing=sh(7))
         self.schedule_card = self._mini_card('—', 'Now: Loading', lambda *_: self.goto('meetings', transition='slide_left'), width_hint=0.43, icon_file='icon_calendar_schedule.png', fallback='▣')
@@ -413,7 +393,7 @@ class HomeScreen(BaseScreen):
         bottom_cards.add_widget(self.email_card)
         self.tasks_card = self._mini_card('0', 'Tasks due', lambda *_: self.goto('briefing', transition='slide_left'), width_hint=0.285, icon_file='icon_task_check.png', fallback='✓')
         bottom_cards.add_widget(self.tasks_card)
-        body.add_widget(bottom_cards)
+        root.add_widget(bottom_cards)
 
         say = _GlassCard(
             orientation='horizontal',
@@ -462,13 +442,13 @@ class HomeScreen(BaseScreen):
             keyboard = SecondaryButton(text='Kb', size_hint=(None, None), width=sh(54), height=sv(48), font_size=sf(18))
         keyboard.bind(on_release=lambda *_: self.goto('briefing', transition='slide_left'))
         say.add_widget(keyboard)
-        body.add_widget(say)
+        root.add_widget(say)
 
-        scroll.add_widget(body)
-        root.add_widget(scroll)
+        # Absorbs leftover vertical space below the "Try saying" bar so the rest
+        # of the screen stays top-aligned at any HOME_CONTENT_SCALE value.
+        root.add_widget(Widget(size_hint=(1, 1)))
         root.add_widget(self.build_footer())
         self.add_widget(root)
-        Clock.schedule_once(lambda _dt: _sync_body_to_viewport(), 0)
 
     def _mini_card(self, value, label, callback, width_hint=0.33, *, icon_file: str = '', fallback: str = '?'):
         card = _GlassCard(
