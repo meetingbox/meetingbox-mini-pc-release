@@ -7,7 +7,9 @@ from datetime import datetime
 from kivy.clock import Clock
 from kivy.graphics import Color, Ellipse, Line, Rectangle, RoundedRectangle
 from kivy.uix.boxlayout import BoxLayout
+from kivy.uix.button import Button
 from kivy.uix.floatlayout import FloatLayout
+from kivy.uix.image import Image
 from kivy.uix.label import Label
 from kivy.uix.scrollview import ScrollView
 from kivy.uix.widget import Widget
@@ -29,7 +31,24 @@ from local_network import get_primary_ipv4
 from network_util import linux_ethernet_ready
 from screens.base_screen import BaseScreen
 
-_FIGMA_HERO_IMAGE = ASSETS_DIR / 'home' / 'figma_home_hero.png'
+_FIGMA_DIR = ASSETS_DIR / 'home' / 'figma'
+
+
+def _figma_png(filename: str) -> str:
+    """Return absolute path to PNG in assets/home/figma/ if it exists."""
+    p = _FIGMA_DIR / filename
+    return str(p) if p.is_file() else ''
+
+
+def _hero_background_path() -> str:
+    """Prefer full Figma hero art (figma/hero_background.png), else legacy single export."""
+    p = ASSETS_DIR / 'home' / 'figma' / 'hero_background.png'
+    if p.is_file():
+        return str(p)
+    p2 = ASSETS_DIR / 'home' / 'figma_home_hero.png'
+    return str(p2) if p2.is_file() else ''
+
+
 _NAVY_BG = (0.004, 0.030, 0.102, 1)       # #01081A
 _CARD_TOP = (0.004, 0.067, 0.216, 0.96)   # #011137
 _CARD_BOTTOM = (0.000, 0.039, 0.149, 0.98)
@@ -89,6 +108,16 @@ class _VoiceOrb(FloatLayout):
             self._inner = Ellipse(pos=self.pos, size=self.size)
         self.bind(pos=self._sync, size=self._sync)
         Clock.schedule_interval(self._tick, 1 / 24)
+        src = _figma_png('icon_voice_orb_bar.png')
+        if src:
+            self.add_widget(
+                Image(
+                    source=src,
+                    fit_mode='contain',
+                    size_hint=(0.58, 0.58),
+                    pos_hint={'center_x': 0.5, 'center_y': 0.5},
+                )
+            )
 
     def _sync(self, *_args):
         pad = min(self.width, self.height) * 0.18
@@ -225,20 +254,41 @@ class HomeScreen(BaseScreen):
             radius=sv(28),
             fill=_CARD_INNER,
         )
-        self.voice_dot = Label(text='●', font_size=sf(14), color=COLORS['gray_300'], size_hint=(None, 1), width=sh(22))
+        self.voice_dot = (
+            Image(source=p, size_hint=(None, 1), width=sh(22), fit_mode='contain', color=COLORS['gray_300'])
+            if (p := _figma_png('icon_listening_dot.png'))
+            else Label(text='●', font_size=sf(14), color=COLORS['gray_300'], size_hint=(None, 1), width=sh(22))
+        )
         self.listening_pill.add_widget(self.voice_dot)
         self.voice_state_label = Label(text='Listening', font_size=sf(20), bold=True, color=COLORS['white'], halign='left', valign='middle')
         self.voice_state_label.bind(size=self.voice_state_label.setter('text_size'))
         self.listening_pill.add_widget(self.voice_state_label)
-        self.listening_pill.add_widget(Label(text='▥', font_size=sf(22), color=COLORS['blue'], size_hint=(None, 1), width=sh(30)))
+        sw = _figma_png('icon_soundwave.png')
+        if sw:
+            self.listening_pill.add_widget(
+                Image(source=sw, size_hint=(None, 1), width=sh(30), fit_mode='contain', color=COLORS['blue'])
+            )
+        else:
+            self.listening_pill.add_widget(Label(text='▥', font_size=sf(22), color=COLORS['blue'], size_hint=(None, 1), width=sh(30)))
         header.add_widget(self.listening_pill)
-        settings = SecondaryButton(text='⚙', size_hint=(None, None), width=sv(54), height=sv(54), font_size=sf(26))
+        sg = _figma_png('icon_settings.png')
+        if sg:
+            settings = Button(
+                background_normal=sg,
+                background_down=sg,
+                border=[0, 0, 0, 0],
+                size_hint=(None, None),
+                size=(sv(54), sv(54)),
+            )
+        else:
+            settings = SecondaryButton(text='Set', size_hint=(None, None), width=sv(54), height=sv(54), font_size=sf(18))
         settings.bind(on_release=lambda *_: self.goto('settings', transition='slide_left'))
         header.add_widget(settings)
         body.add_widget(header)
 
         top_row = BoxLayout(orientation='horizontal', size_hint=(1, None), height=sv(263), spacing=sh(7))
 
+        hp = _hero_background_path()
         hero = _GlassCard(
             orientation='vertical',
             size_hint=(0.48, 1),
@@ -246,7 +296,7 @@ class HomeScreen(BaseScreen):
             spacing=sv(4),
             radius=sv(14),
             fill=(0.000, 0.031, 0.086, 0.94),
-            bg_image=_FIGMA_HERO_IMAGE if _FIGMA_HERO_IMAGE.exists() else None,
+            bg_image=hp or None,
             image_opacity=0.72,
         )
         time_row = BoxLayout(orientation='horizontal', size_hint=(1, None), height=sv(105))
@@ -298,7 +348,22 @@ class HomeScreen(BaseScreen):
         top_row.add_widget(hero)
 
         summary = _GlassCard(orientation='vertical', size_hint=(0.255, 1), padding=[sh(19), sv(35), sh(14), sv(18)], spacing=sv(8), radius=sv(12))
-        summary.add_widget(Label(text='▣  Last Meeting Summary', font_size=sf(15), color=COLORS['gray_400'], bold=True, halign='left', valign='middle', size_hint=(1, None), height=sv(34)))
+        sum_head = BoxLayout(orientation='horizontal', size_hint=(1, None), height=sv(34), spacing=sh(8))
+        fd = _figma_png('icon_file_document.png')
+        if fd:
+            sum_head.add_widget(Image(source=fd, size_hint=(None, 1), width=sh(26), fit_mode='contain'))
+        sum_lbl = Label(
+            text='Last Meeting Summary',
+            font_size=sf(15),
+            color=COLORS['gray_400'],
+            bold=True,
+            halign='left',
+            valign='middle',
+            size_hint=(1, 1),
+        )
+        sum_lbl.bind(size=sum_lbl.setter('text_size'))
+        sum_head.add_widget(sum_lbl)
+        summary.add_widget(sum_head)
         self.last_title_label = Label(text='Loading recent meeting...', font_size=sf(23), bold=True, color=COLORS['white'], halign='left', valign='middle', size_hint=(1, None), height=sv(42), shorten=True)
         self.last_title_label.bind(size=self.last_title_label.setter('text_size'))
         summary.add_widget(self.last_title_label)
@@ -313,12 +378,27 @@ class HomeScreen(BaseScreen):
         top_row.add_widget(summary)
 
         brief = _GlassCard(orientation='vertical', size_hint=(0.255, 1), padding=[sh(10), sv(9), sh(10), sv(8)], spacing=sv(6), radius=sv(12))
-        brief.add_widget(Label(text='☀  Morning Brief', font_size=sf(17), color=COLORS['gray_400'], bold=True, halign='center', valign='middle', size_hint=(1, None), height=sv(27)))
-        self.brief_calendar_label = self._brief_item('▣', '3 meetings today', 'First at 11:00 AM')
+        br_h = BoxLayout(orientation='horizontal', size_hint=(1, None), height=sv(27), spacing=sh(6))
+        sun_p = _figma_png('icon_sun_morning_brief.png')
+        if sun_p:
+            br_h.add_widget(Image(source=sun_p, size_hint=(None, 1), width=sh(22), fit_mode='contain'))
+        br_title = Label(
+            text='Morning Brief',
+            font_size=sf(17),
+            color=COLORS['gray_400'],
+            bold=True,
+            halign='left',
+            valign='middle',
+            size_hint=(1, 1),
+        )
+        br_title.bind(size=br_title.setter('text_size'))
+        br_h.add_widget(br_title)
+        brief.add_widget(br_h)
+        self.brief_calendar_label = self._brief_item('3 meetings today', 'First at 11:00 AM', icon_file='icon_calendar_brief.png', fallback='▣')
         brief.add_widget(self.brief_calendar_label)
-        self.brief_weather_label = self._brief_item('☁', 'Weather: 32°C', 'Sunny')
+        self.brief_weather_label = self._brief_item('Weather: 32°C', 'Sunny', icon_file='icon_weather.png', fallback='☁')
         brief.add_widget(self.brief_weather_label)
-        self.brief_email_label = self._brief_item('✉', 'email:  From:', 'Connect Gmail for updates')
+        self.brief_email_label = self._brief_item('email:  From:', 'Connect Gmail for updates', icon_file='icon_email.png', fallback='✉')
         brief.add_widget(self.brief_email_label)
         view = SecondaryButton(text='View all   ›', size_hint=(1, None), height=sv(24), font_size=sf(11))
         view.bind(on_release=lambda *_: self.goto('briefing', transition='slide_left'))
@@ -327,11 +407,11 @@ class HomeScreen(BaseScreen):
         body.add_widget(top_row)
 
         bottom_cards = BoxLayout(orientation='horizontal', size_hint=(1, None), height=sv(102), spacing=sh(7))
-        self.schedule_card = self._mini_card('▣', '—', 'Now: Loading', lambda *_: self.goto('meetings', transition='slide_left'), width_hint=0.43)
+        self.schedule_card = self._mini_card('—', 'Now: Loading', lambda *_: self.goto('meetings', transition='slide_left'), width_hint=0.43, icon_file='icon_calendar_schedule.png', fallback='▣')
         bottom_cards.add_widget(self.schedule_card)
-        self.email_card = self._mini_card('✉', '—', 'New emails', lambda *_: self.goto('briefing', transition='slide_left'), width_hint=0.285)
+        self.email_card = self._mini_card('—', 'New emails', lambda *_: self.goto('briefing', transition='slide_left'), width_hint=0.285, icon_file='icon_email_card.png', fallback='✉')
         bottom_cards.add_widget(self.email_card)
-        self.tasks_card = self._mini_card('✓', '0', 'Tasks due', lambda *_: self.goto('briefing', transition='slide_left'), width_hint=0.285)
+        self.tasks_card = self._mini_card('0', 'Tasks due', lambda *_: self.goto('briefing', transition='slide_left'), width_hint=0.285, icon_file='icon_task_check.png', fallback='✓')
         bottom_cards.add_widget(self.tasks_card)
         body.add_widget(bottom_cards)
 
@@ -344,7 +424,22 @@ class HomeScreen(BaseScreen):
             radius=sv(21),
             fill=_CARD_INNER,
         )
-        say.add_widget(Label(text='+\n', font_size=sf(24), color=COLORS['blue'], size_hint=(None, 1), width=sh(38), halign='center', valign='middle'))
+        spark_stack = BoxLayout(orientation='vertical', size_hint=(None, 1), width=sh(38), spacing=sv(2))
+        spk = _figma_png('icon_sparkle_layer.png')
+        if spk:
+            spark_stack.add_widget(Image(source=spk, size_hint=(1, 0.45), fit_mode='contain', color=COLORS['blue']))
+        plus_lbl = Label(
+            text='+',
+            font_size=sf(18),
+            bold=True,
+            color=COLORS['blue'],
+            halign='center',
+            valign='top',
+            size_hint=(1, 0.55),
+        )
+        plus_lbl.bind(size=plus_lbl.setter('text_size'))
+        spark_stack.add_widget(plus_lbl)
+        say.add_widget(spark_stack)
         say_text = BoxLayout(orientation='vertical')
         t1 = Label(text='Try saying', font_size=sf(19), bold=True, color=COLORS['blue'], halign='left', valign='bottom', size_hint=(1, .42))
         t1.bind(size=t1.setter('text_size'))
@@ -354,7 +449,17 @@ class HomeScreen(BaseScreen):
         say_text.add_widget(t2)
         say.add_widget(say_text)
         say.add_widget(_VoiceOrb(size=(sv(66), sv(66))))
-        keyboard = SecondaryButton(text='⌨', size_hint=(None, None), width=sh(54), height=sv(48), font_size=sf(24))
+        kb_src = _figma_png('icon_keyboard.png')
+        if kb_src:
+            keyboard = Button(
+                background_normal=kb_src,
+                background_down=kb_src,
+                border=[0, 0, 0, 0],
+                size_hint=(None, None),
+                size=(sh(54), sv(48)),
+            )
+        else:
+            keyboard = SecondaryButton(text='Kb', size_hint=(None, None), width=sh(54), height=sv(48), font_size=sf(18))
         keyboard.bind(on_release=lambda *_: self.goto('briefing', transition='slide_left'))
         say.add_widget(keyboard)
         body.add_widget(say)
@@ -365,7 +470,7 @@ class HomeScreen(BaseScreen):
         self.add_widget(root)
         Clock.schedule_once(lambda _dt: _sync_body_to_viewport(), 0)
 
-    def _mini_card(self, icon, value, label, callback, width_hint=0.33):
+    def _mini_card(self, value, label, callback, width_hint=0.33, *, icon_file: str = '', fallback: str = '?'):
         card = _GlassCard(
             orientation='horizontal',
             size_hint=(width_hint, 1),
@@ -381,7 +486,11 @@ class HomeScreen(BaseScreen):
             radius=_hv(36),
             fill=_CARD_INNER,
         )
-        icon_box.add_widget(Label(text=icon, font_size=_hf(31), color=COLORS['blue'], halign='center', valign='middle'))
+        src = _figma_png(icon_file) if icon_file else ''
+        if src:
+            icon_box.add_widget(Image(source=src, size_hint=(1, 1), fit_mode='contain'))
+        else:
+            icon_box.add_widget(Label(text=fallback, font_size=_hf(31), color=COLORS['blue'], halign='center', valign='middle'))
         card.add_widget(icon_box)
         txt = BoxLayout(orientation='vertical')
         v = Label(text=value, font_size=_hf(27), bold=True, color=COLORS['white'], halign='left', valign='bottom', size_hint=(1, .48))
@@ -393,11 +502,15 @@ class HomeScreen(BaseScreen):
         setattr(card, 'text_label', l)
         txt.add_widget(l)
         card.add_widget(txt)
-        card.add_widget(Label(text='›', font_size=_hf(36), color=_FIGMA_TEXT_MUTED, size_hint=(None, 1), width=_hh(24)))
+        arr = _figma_png('icon_arrow_card.png')
+        if arr:
+            card.add_widget(Image(source=arr, size_hint=(None, 1), width=_hh(22), fit_mode='contain', color=_FIGMA_TEXT_MUTED))
+        else:
+            card.add_widget(Label(text='›', font_size=_hf(36), color=_FIGMA_TEXT_MUTED, size_hint=(None, 1), width=_hh(24)))
         card.bind(on_touch_up=lambda inst, touch: callback() if inst.collide_point(*touch.pos) else None)
         return card
 
-    def _brief_item(self, icon, title, subtitle):
+    def _brief_item(self, title, subtitle, *, icon_file: str = '', fallback: str = '?'):
         row = _GlassCard(
             orientation='horizontal',
             size_hint=(1, None),
@@ -407,7 +520,21 @@ class HomeScreen(BaseScreen):
             radius=_hv(12),
             fill=_CARD_INNER,
         )
-        row.add_widget(Label(text=icon, font_size=_hf(27), color=COLORS['blue'], halign='center', valign='middle', size_hint=(None, 1), width=_hh(38)))
+        src = _figma_png(icon_file) if icon_file else ''
+        if src:
+            row.add_widget(Image(source=src, size_hint=(None, None), width=_hh(30), height=_hv(30), fit_mode='contain'))
+        else:
+            row.add_widget(
+                Label(
+                    text=fallback,
+                    font_size=_hf(27),
+                    color=COLORS['blue'],
+                    halign='center',
+                    valign='middle',
+                    size_hint=(None, 1),
+                    width=_hh(38),
+                )
+            )
         text = BoxLayout(orientation='vertical', spacing=0)
         title_label = Label(text=title, font_size=_hf(15), bold=True, color=COLORS['gray_400'], halign='left', valign='bottom', size_hint=(1, .55), shorten=True)
         title_label.bind(size=title_label.setter('text_size'))
