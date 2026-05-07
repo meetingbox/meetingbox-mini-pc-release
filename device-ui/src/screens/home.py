@@ -30,7 +30,6 @@ from config import (
     display_now,
     to_display_local,
 )
-from local_network import get_primary_ipv4
 from network_util import linux_ethernet_ready
 from screens.base_screen import BaseScreen
 from weather_client import get_weather_client
@@ -579,21 +578,23 @@ class HomeScreen(BaseScreen):
             fit_mode="contain",
         ))
         # "Start Recording"  (75.7, 22.5)  101×16  14px Bold
-        rec_card.add_widget(Label(
+        _sr = Label(
             text="Start Recording", font_name=_FONT, font_size=_fs(14), bold=True,
             color=_C_WHITE, halign="left", valign="middle",
             size_hint=(101/190, 16/76.6),
             pos_hint={"x": 75.7/190, "y": 1 - (22.5+16)/76.6},
-            text_size=(1, None),
-        ))
+        )
+        _sr.bind(size=_sr.setter("text_size"))
+        rec_card.add_widget(_sr)
         # 'Tap or say "start recording"'  (67.9, 43.1)
-        rec_card.add_widget(Label(
+        _tap = Label(
             text='Tap or say "start recording"', font_name=_FONT_SB, font_size=_fs(9),
             color=_C_WHITE, halign="left", valign="middle",
             size_hint=(117/190, 11/76.6),
             pos_hint={"x": 67.9/190, "y": 1 - (43.1+11)/76.6},
-            text_size=(1, None),
-        ))
+        )
+        _tap.bind(size=_tap.setter("text_size"))
+        rec_card.add_widget(_tap)
         card.add_widget(rec_card)
 
         root.add_widget(card)
@@ -1053,10 +1054,6 @@ class HomeScreen(BaseScreen):
         should_listen = getattr(self.app, "_voice_assistant_should_listen", lambda: False)()
         if assistant and getattr(assistant, "available", False) and should_listen:
             self.voice_state_label.text = "Listening"
-            with self._voice_dot.canvas.before:
-                Color(0.275, 0.490, 0.996, 1)
-                self._vdot_circle.pos  = self._voice_dot.pos
-                self._vdot_circle.size = self._voice_dot.size
         else:
             self.voice_state_label.text = "Voice paused"
 

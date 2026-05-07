@@ -365,7 +365,7 @@ class IdleScreen(BaseScreen):
         ))
 
         # "Start Recording"  395:171  (165, 49) rel card  219×36
-        card.add_widget(Label(
+        _sr_lbl = Label(
             text="Start Recording",
             font_name="42dotSans",
             font_size=_fs(30),
@@ -375,11 +375,12 @@ class IdleScreen(BaseScreen):
             valign="middle",
             size_hint=(219 / 414, 36 / 167),
             pos_hint={"x": 165 / 414, "y": 1.0 - (49 + 36) / 167},
-            text_size=(1, None),
-        ))
+        )
+        _sr_lbl.bind(size=_sr_lbl.setter("text_size"))
+        card.add_widget(_sr_lbl)
 
         # 'Tap or say "start recording"'  395:172  (148, 94) rel card
-        card.add_widget(Label(
+        _tap_lbl = Label(
             text='Tap or say "start recording"',
             font_name="42dotSansSB",
             font_size=_fs(20),
@@ -388,8 +389,9 @@ class IdleScreen(BaseScreen):
             valign="middle",
             size_hint=(253 / 414, 28 / 167),
             pos_hint={"x": 148 / 414, "y": 1.0 - (94 + 28) / 167},
-            text_size=(1, None),
-        ))
+        )
+        _tap_lbl.bind(size=_tap_lbl.setter("text_size"))
+        card.add_widget(_tap_lbl)
 
         self._cta_card = card
         root.add_widget(card)
