@@ -25,6 +25,7 @@ from kivy.uix.boxlayout import BoxLayout
 from kivy.uix.floatlayout import FloatLayout
 from kivy.uix.image import Image
 from kivy.uix.label import Label
+from kivy.uix.widget import Widget
 
 from async_helper import run_async
 from config import (
@@ -50,19 +51,39 @@ _IDLE_DIR = ASSETS_DIR / "idle"
 # Figma reference frame.
 _REF_W = 1024
 _REF_H = 600
+# Top-left datetime stack: clock column from x=40; greeting text aligns at x=46.
+_DATETIME_BLOCK_LEFT = 40
+_DATETIME_BLOCK_W = 430
+_DATETIME_GREETING_INDENT = 46 - _DATETIME_BLOCK_LEFT
+
+
+def _idle_uniform_scale() -> float:
+    """Single scale for both axes so proportions match Figma on real panels.
+
+    ``home_layout_*`` intentionally uses different width vs height ratios when the
+    physical panel aspect ratio differs from 1024×600. On the idle float layout that
+    made boxes, glyphs, and icon squares subtly mis-sized relative to ``pos_hint``,
+    which reads as “nothing lines up” on kiosk hardware.
+    """
+    return min(home_layout_horizontal_scale(), home_layout_vertical_scale())
 
 
 def _hf(fs):
-    """Font size scaled by the home vertical scale."""
-    return max(6, int(round(float(fs) * home_layout_vertical_scale())))
+    """Font size scaled with the same idle uniform factor as lengths."""
+    return max(6, int(round(float(fs) * _idle_uniform_scale())))
 
 
-def _hh(px):
-    return max(1, int(round(float(px) * home_layout_horizontal_scale())))
+def _idu(px):
+    """Design px → physical px using idle uniform scale (width and height agree)."""
+    return max(1, int(round(float(px) * _idle_uniform_scale())))
+
+
+def _hh(px):  # kept for readability at call sites migrating from split scales
+    return _idu(px)
 
 
 def _hv(px):
-    return max(1, int(round(float(px) * home_layout_vertical_scale())))
+    return _idu(px)
 
 
 def _idle_png(name: str) -> str:
@@ -213,20 +234,58 @@ class IdleScreen(BaseScreen):
                 )
             )
 
-        # ---- Top-left: greeting / clock / date ----
+        # ---- Top-left: single container (wish + time + AM/PM + date) ----
+        dt_w_px = _idu(_DATETIME_BLOCK_W)
+        gr_h = _idu(28)
+        gap_after_greeting = _idu(12)
+        clk_h = _idu(120)
+        gap_clock_date = _idu(3)
+        dt_h_px = gr_h + gap_after_greeting + clk_h + gap_clock_date + _idu(36)
+
+        datetime_block = BoxLayout(
+            orientation="vertical",
+            size_hint=(None, None),
+            size=(dt_w_px, dt_h_px),
+            spacing=0,
+            pos_hint=_phint(_DATETIME_BLOCK_LEFT, 35),
+        )
+        self._datetime_block = datetime_block
+
+        greet_row = BoxLayout(
+            orientation="horizontal",
+            size_hint=(1, None),
+            height=gr_h,
+            spacing=0,
+        )
+        greet_row.add_widget(
+            Widget(
+                size_hint=(None, None),
+                size=(_idu(_DATETIME_GREETING_INDENT), gr_h),
+            ),
+        )
         self.greeting_label = Label(
             text=_greeting(getattr(self.app, "current_display_name", None)),
             font_size=_hf(20),
             bold=True,
             color=COLORS["white"],
             halign="left",
-            valign="top",
-            size_hint=(None, None),
-            size=(_hh(420), _hv(28)),
-            pos_hint=_phint(46, 35),
+            valign="middle",
+            size_hint=(1, None),
+            height=gr_h,
         )
         self.greeting_label.bind(size=self.greeting_label.setter("text_size"))
-        root.add_widget(self.greeting_label)
+        greet_row.add_widget(self.greeting_label)
+        datetime_block.add_widget(greet_row)
+
+        datetime_block.add_widget(
+            Widget(size_hint=(1, None), height=gap_after_greeting),
+        )
+
+        clock_strip = FloatLayout(
+            size_hint=(1, None),
+            height=clk_h,
+        )
+        amp_x = float(312 - _DATETIME_BLOCK_LEFT) / float(_DATETIME_BLOCK_W)
 
         self.time_label = Label(
             text="--:--",
@@ -236,11 +295,11 @@ class IdleScreen(BaseScreen):
             halign="left",
             valign="top",
             size_hint=(None, None),
-            size=(_hh(290), _hv(120)),
-            pos_hint=_phint(40, 55),
+            size=(_hh(290), clk_h),
+            pos_hint={"x": 0, "top": 1},
         )
         self.time_label.bind(size=self.time_label.setter("text_size"))
-        root.add_widget(self.time_label)
+        clock_strip.add_widget(self.time_label)
 
         self.ampm_label = Label(
             text="",
@@ -251,10 +310,15 @@ class IdleScreen(BaseScreen):
             valign="middle",
             size_hint=(None, None),
             size=(_hh(80), _hv(40)),
-            pos_hint=_phint(312, 121),
+            pos_hint={"x": amp_x, "center_y": 0.5},
         )
         self.ampm_label.bind(size=self.ampm_label.setter("text_size"))
-        root.add_widget(self.ampm_label)
+        clock_strip.add_widget(self.ampm_label)
+        datetime_block.add_widget(clock_strip)
+
+        datetime_block.add_widget(
+            Widget(size_hint=(1, None), height=gap_clock_date),
+        )
 
         self.date_label = Label(
             text="",
@@ -262,13 +326,14 @@ class IdleScreen(BaseScreen):
             bold=True,
             color=COLORS["white"],
             halign="left",
-            valign="top",
-            size_hint=(None, None),
-            size=(_hh(420), _hv(36)),
-            pos_hint=_phint(46, 178),
+            valign="middle",
+            size_hint=(1, None),
+            height=_idu(36),
         )
         self.date_label.bind(size=self.date_label.setter("text_size"))
-        root.add_widget(self.date_label)
+        datetime_block.add_widget(self.date_label)
+
+        root.add_widget(datetime_block)
 
         # ---- Top-right: weather block ----
         self.weather_icon = Image(
