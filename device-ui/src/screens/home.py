@@ -87,9 +87,6 @@ class _VoiceOrb(FloatLayout):
             self._ring = Line(circle=(self.center_x, self.center_y, self.width / 2.2), width=2)
             self._inner_color = Color(0.04, 0.10, 0.22, 1)
             self._inner = Ellipse(pos=self.pos, size=self.size)
-        self.label = Label(text='🎙', font_size=28, color=COLORS['white'], halign='center', valign='middle')
-        self.label.bind(size=self.label.setter('text_size'))
-        self.add_widget(self.label)
         self.bind(pos=self._sync, size=self._sync)
         Clock.schedule_interval(self._tick, 1 / 24)
 
@@ -100,8 +97,6 @@ class _VoiceOrb(FloatLayout):
         self._inner.pos = (self.x + pad, self.y + pad)
         self._inner.size = (max(1, self.width - pad * 2), max(1, self.height - pad * 2))
         self._ring.circle = (self.center_x, self.center_y, max(1, self.width / 2.35))
-        self.label.pos = self.pos
-        self.label.size = self.size
 
     def _tick(self, dt):
         self._phase = (self._phase + dt) % 2.0
@@ -183,7 +178,22 @@ class HomeScreen(BaseScreen):
             size_hint=(1, None),
             spacing=sv(12),
         )
-        body.bind(minimum_height=body.setter('height'))
+
+        scroll = ScrollView(
+            size_hint=(1, 1),
+            do_scroll_x=False,
+            bar_width=sh(6),
+        )
+
+        def _sync_body_to_viewport(*_args):
+            # Short content in a ScrollView is bottom-aligned in Kivy → empty band at the top.
+            # Stretch the column to at least the viewport height so the layout starts at the top.
+            mh = body.minimum_height
+            h = scroll.height
+            body.height = max(mh, h) if h else mh
+
+        body.bind(minimum_height=_sync_body_to_viewport)
+        scroll.bind(height=_sync_body_to_viewport, width=_sync_body_to_viewport)
         with root.canvas.before:
             Color(*_NAVY_BG)
             self._bg = Rectangle(pos=root.pos, size=root.size)
@@ -275,7 +285,7 @@ class HomeScreen(BaseScreen):
         next_stack.add_widget(self.more_label)
         bottom_hero.add_widget(next_stack)
         self.start_btn = PrimaryButton(
-            text='🎙  Start Recording\n[size=10]Tap or say “start recording”[/size]',
+            text='Start Recording\n[size=10]Tap or say "start recording"[/size]',
             markup=True,
             size_hint=(None, None),
             width=sh(190),
@@ -289,7 +299,7 @@ class HomeScreen(BaseScreen):
 
         summary = _GlassCard(orientation='vertical', size_hint=(0.255, 1), padding=[sh(19), sv(35), sh(14), sv(18)], spacing=sv(8), radius=sv(12))
         summary.add_widget(Label(text='▣  Last Meeting Summary', font_size=sf(15), color=COLORS['gray_400'], bold=True, halign='left', valign='middle', size_hint=(1, None), height=sv(34)))
-        self.last_title_label = Label(text='Loading recent meeting…', font_size=sf(23), bold=True, color=COLORS['white'], halign='left', valign='middle', size_hint=(1, None), height=sv(42), shorten=True)
+        self.last_title_label = Label(text='Loading recent meeting...', font_size=sf(23), bold=True, color=COLORS['white'], halign='left', valign='middle', size_hint=(1, None), height=sv(42), shorten=True)
         self.last_title_label.bind(size=self.last_title_label.setter('text_size'))
         summary.add_widget(self.last_title_label)
         self.last_meta_label = Label(text='Summaries, transcripts, decisions', font_size=sf(15), color=_FIGMA_TEXT_MUTED, halign='left', valign='top', size_hint=(1, None), height=sv(48))
@@ -334,12 +344,12 @@ class HomeScreen(BaseScreen):
             radius=sv(21),
             fill=_CARD_INNER,
         )
-        say.add_widget(Label(text='✦\n+', font_size=sf(24), color=COLORS['blue'], size_hint=(None, 1), width=sh(38), halign='center', valign='middle'))
+        say.add_widget(Label(text='+\n', font_size=sf(24), color=COLORS['blue'], size_hint=(None, 1), width=sh(38), halign='center', valign='middle'))
         say_text = BoxLayout(orientation='vertical')
         t1 = Label(text='Try saying', font_size=sf(19), bold=True, color=COLORS['blue'], halign='left', valign='bottom', size_hint=(1, .42))
         t1.bind(size=t1.setter('text_size'))
         say_text.add_widget(t1)
-        t2 = Label(text='“Schedule a meeting tomorrow at 4 PM”', font_size=sf(16), color=_FIGMA_TEXT_MUTED, halign='left', valign='top', size_hint=(1, .58))
+        t2 = Label(text='"Schedule a meeting tomorrow at 4 PM"', font_size=sf(16), color=_FIGMA_TEXT_MUTED, halign='left', valign='top', size_hint=(1, .58))
         t2.bind(size=t2.setter('text_size'))
         say_text.add_widget(t2)
         say.add_widget(say_text)
@@ -349,15 +359,11 @@ class HomeScreen(BaseScreen):
         say.add_widget(keyboard)
         body.add_widget(say)
 
-        scroll = ScrollView(
-            size_hint=(1, 1),
-            do_scroll_x=False,
-            bar_width=sh(6),
-        )
         scroll.add_widget(body)
         root.add_widget(scroll)
         root.add_widget(self.build_footer())
         self.add_widget(root)
+        Clock.schedule_once(lambda _dt: _sync_body_to_viewport(), 0)
 
     def _mini_card(self, icon, value, label, callback, width_hint=0.33):
         card = _GlassCard(

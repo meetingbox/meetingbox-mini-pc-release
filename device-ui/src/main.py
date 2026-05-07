@@ -106,6 +106,52 @@ Config.set('input', 'mouse', 'mouse,multitouch_on_demand')
 # On-screen keyboard for TextInput when no system keyboard (touch / kiosk).
 Config.set('kivy', 'keyboard_mode', 'systemanddock')
 
+
+def _configure_kivy_default_font() -> None:
+    """
+    Kivy's bundled Roboto lacks many symbols (and all emoji) used on the home screen,
+    which show as empty boxes on Linux/SDL. Prefer DejaVu Sans when installed
+    (fonts-dejavu-core in the device-ui Docker image), or MEETINGBOX_UI_FONT for one TTF.
+    """
+    from pathlib import Path
+
+    env = os.environ.get("MEETINGBOX_UI_FONT", "").strip()
+    paths: list[str] | None = None
+    if env:
+        ep = Path(env)
+        if ep.is_file():
+            p = str(ep.resolve())
+            paths = [p, p, p, p]
+    else:
+        d = Path("/usr/share/fonts/truetype/dejavu")
+        quad = (
+            d / "DejaVuSans.ttf",
+            d / "DejaVuSans-Oblique.ttf",
+            d / "DejaVuSans-Bold.ttf",
+            d / "DejaVuSans-BoldOblique.ttf",
+        )
+        if all(p.is_file() for p in quad):
+            paths = [str(p) for p in quad]
+    if not paths:
+        return
+    try:
+        Config.set(
+            "kivy",
+            "default_font",
+            [
+                "MeetingBoxSans",
+                paths[0],
+                paths[1],
+                paths[2],
+                paths[3],
+            ],
+        )
+    except Exception:
+        pass
+
+
+_configure_kivy_default_font()
+
 from kivy.core.window import Window  # noqa: E402 — must import after Config
 
 from config import (
