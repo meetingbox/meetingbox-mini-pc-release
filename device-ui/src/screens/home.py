@@ -194,10 +194,11 @@ class HomeScreen(BaseScreen):
         sv = _hv
         sh = _hh
         sf = _hf
-        # 1024×600 Figma baseline fits inside ``root`` with home scaling.
-        # A flex spacer right before the footer absorbs any leftover height when
-        # MEETINGBOX_HOME_CONTENT_SCALE shrinks content, so children stay top-aligned
-        # (a ScrollView here would bottom-anchor the body and leave a gap at the top).
+        # Major sections use ``size_hint_y`` weights matching Figma 390:187
+        # (header 54, top_row 263, bottom_cards 102, say 71). Kivy distributes
+        # whatever vertical space remains after padding/spacings/footer using
+        # those weights, so the home screen fills the panel at any size or
+        # HOME_CONTENT_SCALE — no flex spacer needed.
         root = BoxLayout(
             orientation='vertical',
             padding=[sh(17), sv(15), sh(17), sv(8)],
@@ -212,7 +213,7 @@ class HomeScreen(BaseScreen):
             self._glow_b = Ellipse(pos=(DISPLAY_WIDTH - 360, 40), size=(620, 420))
         root.bind(pos=self._sync_bg, size=self._sync_bg)
 
-        header = BoxLayout(orientation='horizontal', size_hint=(1, None), height=sv(54), spacing=sh(14))
+        header = BoxLayout(orientation='horizontal', size_hint=(1, 54), spacing=sh(14))
         self.greeting_label = Label(
             text='Good morning, Stark',
             font_size=sf(30),
@@ -266,7 +267,7 @@ class HomeScreen(BaseScreen):
         header.add_widget(settings)
         root.add_widget(header)
 
-        top_row = BoxLayout(orientation='horizontal', size_hint=(1, None), height=sv(263), spacing=sh(7))
+        top_row = BoxLayout(orientation='horizontal', size_hint=(1, 263), spacing=sh(7))
 
         hp = _hero_background_path()
         hero = _GlassCard(
@@ -386,7 +387,7 @@ class HomeScreen(BaseScreen):
         top_row.add_widget(brief)
         root.add_widget(top_row)
 
-        bottom_cards = BoxLayout(orientation='horizontal', size_hint=(1, None), height=sv(102), spacing=sh(7))
+        bottom_cards = BoxLayout(orientation='horizontal', size_hint=(1, 102), spacing=sh(7))
         self.schedule_card = self._mini_card('—', 'Now: Loading', lambda *_: self.goto('meetings', transition='slide_left'), width_hint=0.43, icon_file='icon_calendar_schedule.png', fallback='▣')
         bottom_cards.add_widget(self.schedule_card)
         self.email_card = self._mini_card('—', 'New emails', lambda *_: self.goto('briefing', transition='slide_left'), width_hint=0.285, icon_file='icon_email_card.png', fallback='✉')
@@ -397,8 +398,7 @@ class HomeScreen(BaseScreen):
 
         say = _GlassCard(
             orientation='horizontal',
-            size_hint=(1, None),
-            height=sv(71),
+            size_hint=(1, 71),
             padding=[sh(18), sv(10), sh(14), sv(10)],
             spacing=sh(14),
             radius=sv(21),
@@ -444,9 +444,6 @@ class HomeScreen(BaseScreen):
         say.add_widget(keyboard)
         root.add_widget(say)
 
-        # Absorbs leftover vertical space below the "Try saying" bar so the rest
-        # of the screen stays top-aligned at any HOME_CONTENT_SCALE value.
-        root.add_widget(Widget(size_hint=(1, 1)))
         root.add_widget(self.build_footer())
         self.add_widget(root)
 
