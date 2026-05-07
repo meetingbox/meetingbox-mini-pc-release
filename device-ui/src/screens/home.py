@@ -72,6 +72,12 @@ def _hf(fs):
     return max(6, int(round(float(fs) * home_layout_vertical_scale())))
 
 
+def _hmin(px: float) -> int:
+    """Design px scaled by min of home H/V factors so circular icons stay square."""
+    s = min(home_layout_horizontal_scale(), home_layout_vertical_scale())
+    return max(1, int(round(float(px) * s)))
+
+
 def _format_home_next_meeting(next_meeting) -> tuple[str, str]:
     if not next_meeting:
         return 'No focus loaded', 'Ask Tony for a briefing'
@@ -243,7 +249,7 @@ class HomeScreen(BaseScreen):
             fill=_CARD_INNER,
         )
         self.voice_dot = (
-            Image(source=p, size_hint=(None, 1), width=sh(22), fit_mode='contain', color=COLORS['gray_300'])
+            Image(source=p, size_hint=(None, 1), width=sh(22), fit_mode='contain', mipmap=False)
             if (p := _figma_png('icon_listening_dot.png'))
             else Label(text='●', font_size=sf(14), color=COLORS['gray_300'], size_hint=(None, 1), width=sh(22))
         )
@@ -254,7 +260,7 @@ class HomeScreen(BaseScreen):
         sw = _figma_png('icon_soundwave.png')
         if sw:
             self.listening_pill.add_widget(
-                Image(source=sw, size_hint=(None, 1), width=sh(30), fit_mode='contain', color=COLORS['blue'])
+                Image(source=sw, size_hint=(None, 1), width=sh(28), fit_mode='contain', mipmap=False)
             )
         else:
             self.listening_pill.add_widget(Label(text='▥', font_size=sf(22), color=COLORS['blue'], size_hint=(None, 1), width=sh(30)))
@@ -363,7 +369,7 @@ class HomeScreen(BaseScreen):
         sum_head = BoxLayout(orientation='horizontal', size_hint=(1, None), height=sv(34), spacing=sh(8))
         fd = _figma_png('icon_file_document.png')
         if fd:
-            sum_head.add_widget(Image(source=fd, size_hint=(None, 1), width=sh(26), fit_mode='contain'))
+            sum_head.add_widget(Image(source=fd, size_hint=(None, 1), width=sh(26), fit_mode='contain', mipmap=False))
         sum_lbl = Label(
             text='Last Meeting Summary',
             font_size=sf(15),
@@ -393,7 +399,7 @@ class HomeScreen(BaseScreen):
         br_h = BoxLayout(orientation='horizontal', size_hint=(1, None), height=sv(27), spacing=sh(6))
         sun_p = _figma_png('icon_sun_morning_brief.png')
         if sun_p:
-            br_h.add_widget(Image(source=sun_p, size_hint=(None, 1), width=sh(22), fit_mode='contain'))
+            br_h.add_widget(Image(source=sun_p, size_hint=(None, 1), width=sh(22), fit_mode='contain', mipmap=False))
         br_title = Label(
             text='Morning Brief',
             font_size=sf(17),
@@ -444,7 +450,7 @@ class HomeScreen(BaseScreen):
         spark_stack = BoxLayout(orientation='vertical', size_hint=(None, 1), width=sh(38), spacing=sv(2))
         spk = _figma_png('icon_sparkle_layer.png')
         if spk:
-            spark_stack.add_widget(Image(source=spk, size_hint=(1, 0.45), fit_mode='contain', color=COLORS['blue']))
+            spark_stack.add_widget(Image(source=spk, size_hint=(1, 0.45), fit_mode='contain', mipmap=False))
         plus_lbl = Label(
             text='+',
             font_size=sf(18),
@@ -502,17 +508,25 @@ class HomeScreen(BaseScreen):
             spacing=_hh(16),
             radius=_hv(16),
         )
+        side = _hmin(48)
         icon_box = _GlassCard(
             orientation='vertical',
             size_hint=(None, None),
-            width=_hv(66),
-            height=_hv(66),
-            radius=_hv(36),
+            width=side,
+            height=side,
+            radius=max(1, side // 2),
             fill=_CARD_INNER,
         )
         src = _figma_png(icon_file) if icon_file else ''
         if src:
-            icon_box.add_widget(Image(source=src, size_hint=(1, 1), fit_mode='contain'))
+            icon_box.add_widget(
+                Image(
+                    source=src,
+                    size_hint=(1, 1),
+                    fit_mode='contain',
+                    mipmap=False,
+                )
+            )
         else:
             icon_box.add_widget(Label(text=fallback, font_size=_hf(31), color=COLORS['blue'], halign='center', valign='middle'))
         card.add_widget(icon_box)
@@ -528,7 +542,16 @@ class HomeScreen(BaseScreen):
         card.add_widget(txt)
         arr = _figma_png('icon_arrow_card.png')
         if arr:
-            card.add_widget(Image(source=arr, size_hint=(None, 1), width=_hh(22), fit_mode='contain', color=_FIGMA_TEXT_MUTED))
+            card.add_widget(
+                Image(
+                    source=arr,
+                    size_hint=(None, 1),
+                    width=_hh(22),
+                    fit_mode='contain',
+                    color=_FIGMA_TEXT_MUTED,
+                    mipmap=False,
+                )
+            )
         else:
             card.add_widget(Label(text='›', font_size=_hf(36), color=_FIGMA_TEXT_MUTED, size_hint=(None, 1), width=_hh(24)))
         card.bind(on_touch_up=lambda inst, touch: callback() if inst.collide_point(*touch.pos) else None)
@@ -545,8 +568,18 @@ class HomeScreen(BaseScreen):
             fill=_CARD_INNER,
         )
         src = _figma_png(icon_file) if icon_file else ''
+        iz = _hmin(22)
         if src:
-            row.add_widget(Image(source=src, size_hint=(None, None), width=_hh(30), height=_hv(30), fit_mode='contain'))
+            row.add_widget(
+                Image(
+                    source=src,
+                    size_hint=(None, None),
+                    width=iz,
+                    height=iz,
+                    fit_mode='contain',
+                    mipmap=False,
+                )
+            )
         else:
             row.add_widget(
                 Label(
