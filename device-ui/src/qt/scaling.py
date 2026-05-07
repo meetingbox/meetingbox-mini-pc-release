@@ -17,8 +17,8 @@ class DesignFrame:
     h: int
 
 
-# Idle — Figma #338:60 (exported frame 892×573 in MCP; device uses 1024×600 padded content)
-IDLE_FRAME = DesignFrame(892, 573)
+# Idle — same 1024×600 baseline as ``screens/idle.py`` / Figma #338:60 kiosk frame
+IDLE_FRAME = DesignFrame(1024, 600)
 # Home — primary layout proportions from codebase comments (390:187 baseline on 1024×600 canvas)
 HOME_FRAME = DesignFrame(1024, 600)
 
