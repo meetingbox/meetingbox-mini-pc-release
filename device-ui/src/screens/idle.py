@@ -6,20 +6,19 @@ Recording card on the lower-right starts a new meeting in place. Time, date,
 greeting, weather and "next up" all refresh live so the screen never looks
 stale.
 
-Layout follows the Figma frame: full-bleed landscape background, top-left
-greeting + clock, top-right weather, bottom-left "Next up" stack, bottom-right
-Start Recording card. Positions are expressed as fractions of the 1024×600
-Figma baseline so the screen scales cleanly to any panel size.
+Layout: layered background plus four anchored zones — top-left info,
+top-right weather, bottom-left schedule, bottom-right action card (flex internals).
+Margins scale from 1024×600 via ``_idu()`` / ``_idle_uniform_scale``.
 """
 
 from __future__ import annotations
 
 import logging
 from datetime import datetime
-from pathlib import Path
 
 from kivy.clock import Clock
 from kivy.graphics import Color, Line, Rectangle, RoundedRectangle
+from kivy.uix.anchorlayout import AnchorLayout
 from kivy.uix.behaviors import ButtonBehavior
 from kivy.uix.boxlayout import BoxLayout
 from kivy.uix.floatlayout import FloatLayout
@@ -48,13 +47,14 @@ _IDLE_DIR = ASSETS_DIR / "idle"
 # Helpers
 # ---------------------------------------------------------------------------
 
-# Figma reference frame.
-_REF_W = 1024
-_REF_H = 600
-# Top-left datetime stack: clock column from x=40; greeting text aligns at x=46.
-_DATETIME_BLOCK_LEFT = 40
-_DATETIME_BLOCK_W = 430
-_DATETIME_GREETING_INDENT = 46 - _DATETIME_BLOCK_LEFT
+# Figma baseline 1024×600 (used for margin constants above).
+_IDLE_PAD_LEFT = 46
+_IDLE_PAD_TOP = 35
+_IDLE_PAD_RIGHT = 48
+_IDLE_PAD_BOTTOM = 43
+# Maximum width for left-column blocks so content stays readable.
+_ZONE_TOP_LEFT_W = 480
+_ZONE_SCHEDULE_W = 420
 
 
 def _idle_uniform_scale() -> float:
@@ -89,16 +89,6 @@ def _hv(px):
 def _idle_png(name: str) -> str:
     p = _IDLE_DIR / name
     return str(p) if p.is_file() else ""
-
-
-def _phint(left_px: float, top_px: float) -> dict:
-    """Convert Figma top-left pixel position to a Kivy ``pos_hint``.
-
-    Figma uses top-down coordinates within a 1024×600 reference frame. Kivy
-    uses bottom-up. ``pos_hint['x']`` and ``'top'`` are fractions of the
-    parent, so the layout scales with the panel automatically.
-    """
-    return {"x": float(left_px) / _REF_W, "top": float(_REF_H - top_px) / _REF_H}
 
 
 def _greeting(name: str | None) -> str:
@@ -234,34 +224,30 @@ class IdleScreen(BaseScreen):
                 )
             )
 
-        # ---- Top-left: single container (wish + time + AM/PM + date) ----
-        dt_w_px = _idu(_DATETIME_BLOCK_W)
-        gr_h = _idu(28)
-        gap_after_greeting = _idu(12)
-        clk_h = _idu(120)
-        gap_clock_date = _idu(3)
-        dt_h_px = gr_h + gap_after_greeting + clk_h + gap_clock_date + _idu(36)
+        # ---- Four zones over full-screen root (anchors + flex boxes) ----
+        pl, pt = _idu(_IDLE_PAD_LEFT), _idu(_IDLE_PAD_TOP)
+        pr, pb = _idu(_IDLE_PAD_RIGHT), _idu(_IDLE_PAD_BOTTOM)
 
-        datetime_block = BoxLayout(
+        # 1) Top-left: greeting → clock + AM/PM row → tight gap → date
+        zone_tl = AnchorLayout(
+            anchor_x="left",
+            anchor_y="top",
+            size_hint=(1, 1),
+            padding=[pl, pt, 0, 0],
+        )
+        tl_w = _idu(_ZONE_TOP_LEFT_W)
+        gr_h = _idu(28)
+        gap_greet_clock = _idu(10)
+        clk_h = _idu(120)
+        gap_clock_date = _idu(4)
+        date_h = _idu(40)
+        tl_h = gr_h + gap_greet_clock + clk_h + gap_clock_date + date_h
+
+        top_left_stack = BoxLayout(
             orientation="vertical",
             size_hint=(None, None),
-            size=(dt_w_px, dt_h_px),
+            size=(tl_w, tl_h),
             spacing=0,
-            pos_hint=_phint(_DATETIME_BLOCK_LEFT, 35),
-        )
-        self._datetime_block = datetime_block
-
-        greet_row = BoxLayout(
-            orientation="horizontal",
-            size_hint=(1, None),
-            height=gr_h,
-            spacing=0,
-        )
-        greet_row.add_widget(
-            Widget(
-                size_hint=(None, None),
-                size=(_idu(_DATETIME_GREETING_INDENT), gr_h),
-            ),
         )
         self.greeting_label = Label(
             text=_greeting(getattr(self.app, "current_display_name", None)),
@@ -274,19 +260,15 @@ class IdleScreen(BaseScreen):
             height=gr_h,
         )
         self.greeting_label.bind(size=self.greeting_label.setter("text_size"))
-        greet_row.add_widget(self.greeting_label)
-        datetime_block.add_widget(greet_row)
+        top_left_stack.add_widget(self.greeting_label)
+        top_left_stack.add_widget(Widget(size_hint=(1, None), height=gap_greet_clock))
 
-        datetime_block.add_widget(
-            Widget(size_hint=(1, None), height=gap_after_greeting),
-        )
-
-        clock_strip = FloatLayout(
+        clock_row = BoxLayout(
+            orientation="horizontal",
             size_hint=(1, None),
             height=clk_h,
+            spacing=_idu(10),
         )
-        amp_x = float(312 - _DATETIME_BLOCK_LEFT) / float(_DATETIME_BLOCK_W)
-
         self.time_label = Label(
             text="--:--",
             font_size=_hf(100),
@@ -296,11 +278,13 @@ class IdleScreen(BaseScreen):
             valign="top",
             size_hint=(None, None),
             size=(_hh(290), clk_h),
-            pos_hint={"x": 0, "top": 1},
         )
         self.time_label.bind(size=self.time_label.setter("text_size"))
-        clock_strip.add_widget(self.time_label)
-
+        clock_row.add_widget(self.time_label)
+        am_col = AnchorLayout(
+            size_hint=(None, None),
+            size=(_hh(88), clk_h),
+        )
         self.ampm_label = Label(
             text="",
             font_size=_hf(35),
@@ -309,16 +293,13 @@ class IdleScreen(BaseScreen):
             halign="left",
             valign="middle",
             size_hint=(None, None),
-            size=(_hh(80), _hv(40)),
-            pos_hint={"x": amp_x, "center_y": 0.5},
+            size=(_hh(80), _hv(44)),
         )
         self.ampm_label.bind(size=self.ampm_label.setter("text_size"))
-        clock_strip.add_widget(self.ampm_label)
-        datetime_block.add_widget(clock_strip)
-
-        datetime_block.add_widget(
-            Widget(size_hint=(1, None), height=gap_clock_date),
-        )
+        am_col.add_widget(self.ampm_label)
+        clock_row.add_widget(am_col)
+        top_left_stack.add_widget(clock_row)
+        top_left_stack.add_widget(Widget(size_hint=(1, None), height=gap_clock_date))
 
         self.date_label = Label(
             text="",
@@ -326,54 +307,102 @@ class IdleScreen(BaseScreen):
             bold=True,
             color=COLORS["white"],
             halign="left",
-            valign="middle",
+            valign="top",
             size_hint=(1, None),
-            height=_idu(36),
+            height=date_h,
         )
         self.date_label.bind(size=self.date_label.setter("text_size"))
-        datetime_block.add_widget(self.date_label)
+        top_left_stack.add_widget(self.date_label)
 
-        root.add_widget(datetime_block)
+        zone_tl.add_widget(top_left_stack)
+        root.add_widget(zone_tl)
 
-        # ---- Top-right: weather block ----
+        # 2) Top-right: compact column, icon + temperature row; condition underneath
+        zone_tr = AnchorLayout(
+            anchor_x="right",
+            anchor_y="top",
+            size_hint=(1, 1),
+            padding=[0, pt, pr, 0],
+        )
+        wx_w = max(_idu(200), _hh(216))
+        wx_h = _hv(112)
+        wx_col = BoxLayout(
+            orientation="vertical",
+            size_hint=(None, None),
+            size=(wx_w, wx_h),
+            spacing=_idu(8),
+        )
+        wt_row = BoxLayout(
+            orientation="horizontal",
+            size_hint=(1, None),
+            height=_hv(64),
+            spacing=_idu(20),
+        )
+        wx_src = _idle_png("icon_sun.png")
+        if not wx_src:
+            _alt = ASSETS_DIR / "home" / "figma" / "icon_weather.png"
+            wx_src = str(_alt) if _alt.is_file() else ""
         self.weather_icon = Image(
-            source=_idle_png("icon_sun.png"),
+            source=wx_src,
             size_hint=(None, None),
             size=(_hv(64), _hv(64)),
-            pos_hint=_phint(677, 75),
             fit_mode="contain",
             allow_stretch=True,
         )
-        root.add_widget(self.weather_icon)
+        wt_row.add_widget(self.weather_icon)
 
+        wt_right = AnchorLayout(
+            anchor_x="right",
+            anchor_y="center",
+            size_hint=(1, None),
+            height=_hv(64),
+        )
         self.temp_label = Label(
             text="--°C",
             font_size=_hf(35),
             bold=True,
             color=COLORS["white"],
-            halign="left",
+            halign="right",
             valign="middle",
             size_hint=(None, None),
-            size=(_hh(170), _hv(40)),
-            pos_hint=_phint(770, 75),
+            size=(wx_w - _hv(64) - _idu(20), _hv(48)),
         )
         self.temp_label.bind(size=self.temp_label.setter("text_size"))
-        root.add_widget(self.temp_label)
+        wt_right.add_widget(self.temp_label)
+        wt_row.add_widget(wt_right)
+        wx_col.add_widget(wt_row)
 
         self.condition_label = Label(
             text="--",
             font_size=_hf(28),
             color=(0.714, 0.729, 0.949, 1),
-            halign="left",
+            halign="right",
             valign="middle",
-            size_hint=(None, None),
-            size=(_hh(170), _hv(34)),
-            pos_hint=_phint(770, 122),
+            size_hint=(1, None),
+            height=_hv(40),
         )
         self.condition_label.bind(size=self.condition_label.setter("text_size"))
-        root.add_widget(self.condition_label)
+        wx_col.add_widget(self.condition_label)
 
-        # ---- Bottom-left: "Next up" stack ----
+        zone_tr.add_widget(wx_col)
+        root.add_widget(zone_tr)
+
+        # 3) Bottom-left: schedule / “Next up” vertical stack + icon/time row + title + more
+        zone_bl = AnchorLayout(
+            anchor_x="left",
+            anchor_y="bottom",
+            size_hint=(1, 1),
+            padding=[pl, 0, 0, pb],
+        )
+        sched_w = _idu(_ZONE_SCHEDULE_W)
+        row_time_h = max(_idu(38), _hv(38))
+        title_h = _idu(52)
+        sched_stack = BoxLayout(
+            orientation="vertical",
+            size_hint=(None, None),
+            spacing=_idu(12),
+        )
+
         self.next_label = Label(
             text="Next up",
             font_size=_hf(28),
@@ -381,25 +410,30 @@ class IdleScreen(BaseScreen):
             color=(0, 0.420, 0.976, 1),  # #006bf9
             halign="left",
             valign="middle",
-            size_hint=(None, None),
-            size=(_hh(220), _hv(36)),
-            pos_hint=_phint(46, 333),
+            size_hint=(1, None),
+            height=_hv(38),
         )
         self.next_label.bind(size=self.next_label.setter("text_size"))
-        root.add_widget(self.next_label)
+        sched_stack.add_widget(self.next_label)
 
+        sched_time_row = BoxLayout(
+            orientation="horizontal",
+            size_hint=(1, None),
+            height=row_time_h,
+            spacing=_idu(19),
+        )
         cal_path = _idle_png("icon_calendar.png")
         if cal_path:
-            root.add_widget(
-                Image(
-                    source=cal_path,
-                    size_hint=(None, None),
-                    size=(_hv(34), _hv(34)),
-                    pos_hint=_phint(46, 397),
-                    fit_mode="contain",
-                    allow_stretch=True,
-                )
+            cal_img = Image(
+                source=cal_path,
+                size_hint=(None, None),
+                size=(_hv(34), _hv(34)),
+                fit_mode="contain",
+                allow_stretch=True,
             )
+        else:
+            cal_img = Widget(size_hint=(None, None), size=(_hv(34), _hv(34)))
+        sched_time_row.add_widget(cal_img)
 
         self.next_time_label = Label(
             text="--:-- --",
@@ -408,12 +442,12 @@ class IdleScreen(BaseScreen):
             color=(0, 0.420, 0.976, 1),
             halign="left",
             valign="middle",
-            size_hint=(None, None),
-            size=(_hh(280), _hv(36)),
-            pos_hint=_phint(99, 395),
+            size_hint=(1, None),
+            height=row_time_h,
         )
         self.next_time_label.bind(size=self.next_time_label.setter("text_size"))
-        root.add_widget(self.next_time_label)
+        sched_time_row.add_widget(self.next_time_label)
+        sched_stack.add_widget(sched_time_row)
 
         self.next_title_label = Label(
             text="--",
@@ -421,17 +455,16 @@ class IdleScreen(BaseScreen):
             bold=True,
             color=COLORS["white"],
             halign="left",
-            valign="middle",
-            size_hint=(None, None),
-            size=(_hh(370), _hv(40)),
-            text_size=(_hh(370), _hv(40)),
-            pos_hint=_phint(46, 446),
+            valign="top",
+            size_hint=(1, None),
+            height=title_h,
+            text_size=(max(1, sched_w - 4), title_h),
             shorten=True,
             shorten_from="right",
             split_str=" ",
         )
         self.next_title_label.bind(size=self.next_title_label.setter("text_size"))
-        root.add_widget(self.next_title_label)
+        sched_stack.add_widget(self.next_title_label)
 
         self.more_label = Label(
             text="",
@@ -440,40 +473,50 @@ class IdleScreen(BaseScreen):
             color=(0, 0.420, 0.976, 1),
             halign="left",
             valign="middle",
-            size_hint=(None, None),
-            size=(_hh(220), _hv(36)),
-            pos_hint=_phint(46, 497),
+            size_hint=(1, None),
+            height=_hv(38),
         )
         self.more_label.bind(size=self.more_label.setter("text_size"))
-        root.add_widget(self.more_label)
+        sched_stack.add_widget(self.more_label)
 
-        # ---- Bottom-right: Start Recording card ----
+        # Recalculate height from fixed row heights (BoxLayout does not auto-wrap).
+        sh = _hv(38) + _idu(12) + row_time_h + _idu(12) + title_h + _idu(12) + _hv(38)
+        sched_stack.size = (sched_w, sh)
+
+        zone_bl.add_widget(sched_stack)
+        root.add_widget(zone_bl)
+
+        # 4) Bottom-right: action card — horizontal flex: mic (centered) + CTA column (vertically centered)
         card = _StartRecordingCard(
             size=(_hh(414), _hv(167)),
-            pos_hint=_phint(427, 356),
+            size_hint=(None, None),
         )
         card.bind(on_release=self._on_start_recording)
 
         mic_path = _idle_png("mic_orb.png")
-        if mic_path:
-            card.add_widget(
-                Image(
-                    source=mic_path,
-                    size_hint=(None, None),
-                    size=(_hv(101), _hv(101)),
-                    pos_hint={"x": 27 / 414, "center_y": 0.5},
-                    fit_mode="contain",
-                    allow_stretch=True,
-                )
-            )
-
-        text_box = BoxLayout(
-            orientation="vertical",
-            size_hint=(None, None),
-            size=(_hh(248), _hv(90)),
-            pos_hint={"x": 148 / 414, "center_y": 0.5},
-            spacing=_hv(4),
+        card_row = BoxLayout(
+            orientation="horizontal",
+            size_hint=(1, 1),
+            padding=[_idu(27), _idu(32), _idu(36), _idu(32)],
+            spacing=_idu(18),
         )
+        mic_wrap = AnchorLayout(
+            size_hint=(None, 1),
+            width=_hv(101),
+        )
+        if mic_path:
+            mic_img = Image(
+                source=mic_path,
+                size_hint=(None, None),
+                size=(_hv(101), _hv(101)),
+                fit_mode="contain",
+                allow_stretch=True,
+            )
+            mic_wrap.add_widget(mic_img)
+        card_row.add_widget(mic_wrap)
+
+        cta_col = BoxLayout(orientation="vertical", size_hint=(1, 1), spacing=_hv(6))
+        cta_col.add_widget(Widget())
         cta_title = Label(
             text="Start Recording",
             font_size=_hf(30),
@@ -485,7 +528,7 @@ class IdleScreen(BaseScreen):
             height=_hv(40),
         )
         cta_title.bind(size=cta_title.setter("text_size"))
-        text_box.add_widget(cta_title)
+        cta_col.add_widget(cta_title)
         cta_sub = Label(
             text='Tap or say "start recording"',
             font_size=_hf(18),
@@ -493,14 +536,23 @@ class IdleScreen(BaseScreen):
             halign="left",
             valign="middle",
             size_hint=(1, None),
-            height=_hv(28),
+            height=_hv(30),
         )
         cta_sub.bind(size=cta_sub.setter("text_size"))
-        text_box.add_widget(cta_sub)
-        card.add_widget(text_box)
+        cta_col.add_widget(cta_sub)
+        cta_col.add_widget(Widget())
+        card_row.add_widget(cta_col)
+        card.add_widget(card_row)
 
-        root.add_widget(card)
         self._cta_card = card
+        self._recording_cta_anchor = AnchorLayout(
+            anchor_x="right",
+            anchor_y="bottom",
+            size_hint=(1, 1),
+            padding=[0, 0, pr, pb],
+        )
+        self._recording_cta_anchor.add_widget(card)
+        root.add_widget(self._recording_cta_anchor)
 
         self.add_widget(root)
 
