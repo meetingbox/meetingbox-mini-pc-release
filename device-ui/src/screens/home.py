@@ -15,9 +15,12 @@ from kivy.uix.widget import Widget
 
 from async_helper import run_async
 from components.button import PrimaryButton, SecondaryButton
+from components.modal_dialog import ModalDialog
+from components.text_input_dialog import TextInputDialog
 from config import (
     ASSETS_DIR,
     COLORS,
+    DASHBOARD_URL,
     DISPLAY_WIDTH,
     FONT_SIZES,
     SPACING,
@@ -29,6 +32,7 @@ from config import (
 from local_network import get_primary_ipv4
 from network_util import linux_ethernet_ready
 from screens.base_screen import BaseScreen
+from weather_client import get_weather_client
 
 _FIGMA_DIR = ASSETS_DIR / 'home' / 'figma'
 
@@ -188,6 +192,9 @@ class HomeScreen(BaseScreen):
         self._voice_state_event = None
         self._footer_kwargs = {}
         self._latest_meeting_id = None
+        # Set by _load_system_status — when True, weather updates do NOT
+        # overwrite the offline / backend-down message in the health label.
+        self._health_label_offline = False
         self._build_ui()
 
     def _build_ui(self):
@@ -251,6 +258,13 @@ class HomeScreen(BaseScreen):
             )
         else:
             self.listening_pill.add_widget(Label(text='▥', font_size=sf(22), color=COLORS['blue'], size_hint=(None, 1), width=sh(30)))
+        # Tap on the listening pill toggles the wake-word assistant between
+        # paused and listening — privacy "kill switch" without opening Settings.
+        self.listening_pill.bind(
+            on_touch_up=lambda inst, touch: (
+                self._toggle_voice_listening() if inst.collide_point(*touch.pos) else None
+            )
+        )
         header.add_widget(self.listening_pill)
         sg = _figma_png('icon_settings.png')
         if sg:
@@ -294,9 +308,18 @@ class HomeScreen(BaseScreen):
         self.date_label.bind(size=self.date_label.setter('text_size'))
         clock_box.add_widget(self.date_label)
         time_row.add_widget(clock_box)
-        self.health_label = Label(text='☀  28°C\nSunny', font_size=sf(15), color=COLORS['white'], bold=True, halign='right', valign='middle', size_hint=(None, 1), width=sh(118))
+        self.health_label = Label(text='—°C\nLoading…', font_size=sf(15), color=COLORS['white'], bold=True, halign='right', valign='middle', size_hint=(None, 1), width=sh(118))
         self.health_label.bind(size=self.health_label.setter('text_size'))
         time_row.add_widget(self.health_label)
+        # Tap on the weather block opens the same dialog the Settings screen
+        # uses so users can change the city without diving into Settings.
+        time_row.bind(
+            on_touch_up=lambda inst, touch: (
+                self._show_weather_location_dialog()
+                if self.health_label.collide_point(*touch.pos)
+                else None
+            )
+        )
         hero.add_widget(time_row)
 
         hero.add_widget(Widget(size_hint=(1, 1)))
@@ -313,6 +336,14 @@ class HomeScreen(BaseScreen):
         next_stack.add_widget(self.next_title_label)
         self.more_label = Label(text='+0 more', font_size=sf(13), bold=True, color=COLORS['blue'], halign='left', valign='top', size_hint=(1, .50))
         self.more_label.bind(size=self.more_label.setter('text_size'))
+        # Tap "+N more" → open the meetings list (the natural drill-down).
+        next_stack.bind(
+            on_touch_up=lambda inst, touch: (
+                self.goto('meetings', transition='slide_left')
+                if self.more_label.collide_point(*touch.pos)
+                else None
+            )
+        )
         next_stack.add_widget(self.more_label)
         bottom_hero.add_widget(next_stack)
         self.start_btn = PrimaryButton(
@@ -380,6 +411,12 @@ class HomeScreen(BaseScreen):
         self.brief_weather_label = self._brief_item('Weather: 32°C', 'Sunny', icon_file='icon_weather.png', fallback='☁')
         brief.add_widget(self.brief_weather_label)
         self.brief_email_label = self._brief_item('email:  From:', 'Connect Gmail for updates', icon_file='icon_email.png', fallback='✉')
+        # Tap → explain how to connect Gmail via the dashboard.
+        self.brief_email_label.bind(
+            on_touch_up=lambda inst, touch: (
+                self._show_gmail_dashboard_dialog() if inst.collide_point(*touch.pos) else None
+            )
+        )
         brief.add_widget(self.brief_email_label)
         view = SecondaryButton(text='View all   ›', size_hint=(1, None), height=sv(24), font_size=sf(11))
         view.bind(on_release=lambda *_: self.goto('briefing', transition='slide_left'))
@@ -428,6 +465,16 @@ class HomeScreen(BaseScreen):
         t2.bind(size=t2.setter('text_size'))
         say_text.add_widget(t2)
         say.add_widget(say_text)
+        # Tapping the "Try saying" prompt opens the briefing screen — the
+        # closest in-app experience to the example voice command. (We can't
+        # synthetically inject a wake phrase into the voice pipeline.)
+        say.bind(
+            on_touch_up=lambda inst, touch: (
+                self.goto('briefing', transition='slide_left')
+                if inst.collide_point(*touch.pos)
+                else None
+            )
+        )
         say.add_widget(_VoiceOrb(size=(sv(66), sv(66))))
         kb_src = _figma_png('icon_keyboard.png')
         if kb_src:
@@ -545,6 +592,13 @@ class HomeScreen(BaseScreen):
         if self._voice_state_event:
             self._voice_state_event.cancel()
         self._voice_state_event = Clock.schedule_interval(lambda _dt: self._refresh_voice_pill(), 2.0)
+        # Subscribe to live weather; replays the cached snapshot immediately,
+        # then updates again whenever WeatherClient refreshes (every 15 min).
+        try:
+            wc = get_weather_client()
+            wc.subscribe(self._on_weather_snapshot)
+        except Exception:
+            pass
 
     def on_leave(self):
         if self._clock_event:
@@ -556,6 +610,10 @@ class HomeScreen(BaseScreen):
         if self._voice_state_event:
             self._voice_state_event.cancel()
             self._voice_state_event = None
+        try:
+            get_weather_client().unsubscribe(self._on_weather_snapshot)
+        except Exception:
+            pass
 
     def _refresh_footer_ip(self, _dt):
         if not self._footer_kwargs:
@@ -573,6 +631,96 @@ class HomeScreen(BaseScreen):
             self.goto('meeting_detail', transition='slide_left')
         else:
             self.goto('meetings', transition='slide_left')
+
+    # ------------------------------------------------------------------
+    # Listening pill toggle
+    # ------------------------------------------------------------------
+    def _toggle_voice_listening(self):
+        """Flip the user-pause flag for the wake-word assistant.
+
+        ``user_voice_paused`` is also consulted by ``_voice_assistant_should_listen``
+        in main.py, so toggling it here is enough — _sync_voice_assistant_state
+        propagates the new value into the voice assistant + pill UI.
+        """
+        app = self.app
+        if not getattr(app, 'voice_assistant', None) or not getattr(app.voice_assistant, 'available', False):
+            # No mic / wake word is unavailable — nothing meaningful to toggle.
+            self.add_widget(ModalDialog(
+                title='Voice unavailable',
+                message=('No microphone is available, or the wake-word model is '
+                         'missing. Run a Microphone Test from Settings to debug.'),
+                confirm_text='OK',
+                cancel_text='',
+            ))
+            return
+        app.user_voice_paused = not getattr(app, 'user_voice_paused', False)
+        app._sync_voice_assistant_state()
+        self._refresh_voice_pill()
+
+    # ------------------------------------------------------------------
+    # Weather location dialog (shared with Settings)
+    # ------------------------------------------------------------------
+    def _show_weather_location_dialog(self):
+        wc = get_weather_client()
+        cur = wc.location
+        cur_city = (cur and cur.get('city')) or ''
+        self.add_widget(TextInputDialog(
+            title='Weather Location',
+            message=('Enter a city name (e.g. "Bangalore" or "London, UK"). '
+                     'Leave blank to keep auto-detect.'),
+            initial_value=cur_city,
+            placeholder='City name',
+            on_confirm=self._apply_weather_location,
+        ))
+
+    def _apply_weather_location(self, value: str):
+        text = (value or '').strip()
+        if not text:
+            return
+        wc = get_weather_client()
+
+        async def _resolve():
+            resolved = await wc.set_city(text)
+            if resolved is None:
+                Clock.schedule_once(
+                    lambda _dt, t=text: self.add_widget(ModalDialog(
+                        title='City not found',
+                        message=(f'Could not find weather data for "{t}".\n\n'
+                                 'Try the city name in English, or include the '
+                                 'country (e.g. "Bengaluru, IN").'),
+                        confirm_text='OK',
+                        cancel_text='',
+                    )), 0)
+
+        run_async(_resolve())
+
+    # ------------------------------------------------------------------
+    # Gmail dashboard dialog
+    # ------------------------------------------------------------------
+    def _show_gmail_dashboard_dialog(self):
+        self.add_widget(ModalDialog(
+            title='Connect Gmail',
+            message=(f'To see unread email here, open\n{DASHBOARD_URL}\n'
+                     'on your phone or laptop and connect Gmail.'),
+            confirm_text='OK',
+            cancel_text='',
+        ))
+
+    # ------------------------------------------------------------------
+    # Live weather update
+    # ------------------------------------------------------------------
+    def _on_weather_snapshot(self, snap):
+        # Don't override the offline / backend-down state: those are
+        # higher-priority states that the user must be able to see.
+        if getattr(self, '_health_label_offline', False):
+            return
+        try:
+            temp = float(snap.temp_c)
+            label = (snap.label or '--').strip()
+            self.health_label.text = f'{temp:.0f}°C\n{label}'
+            self.health_label.color = COLORS['white']
+        except Exception:
+            pass
 
     def _refresh_voice_pill(self):
         assistant = getattr(self.app, 'voice_assistant', None)
@@ -604,14 +752,26 @@ class HomeScreen(BaseScreen):
                 privacy = getattr(self.app, 'privacy_mode', False)
                 def _apply(_dt):
                     online = wifi_ok or wired_ok
+                    self._health_label_offline = not online
                     if not online:
                         self.health_label.text = 'Offline\nNetwork'
                         self.health_label.color = COLORS['red']
+                    else:
+                        # Online again — re-publish the latest weather snap (if any)
+                        # so the label restores to a real reading instead of staying
+                        # on the last offline message.
+                        snap = get_weather_client().snapshot
+                        if snap is not None:
+                            self._on_weather_snapshot(snap)
                     self._footer_kwargs = {'wifi_ok': wifi_ok, 'free_gb': free_gb, 'privacy_mode': privacy, 'wired_lan_ok': wired_ok}
                     self.update_footer(wifi_ok=wifi_ok, free_gb=free_gb, privacy_mode=privacy, wired_lan_ok=wired_ok, local_ip=get_primary_ipv4())
                 Clock.schedule_once(_apply, 0)
             except Exception:
-                Clock.schedule_once(lambda _dt: setattr(self.health_label, 'text', 'Backend\nOffline'), 0)
+                def _backend_offline(_dt):
+                    self._health_label_offline = True
+                    self.health_label.text = 'Backend\nOffline'
+                    self.health_label.color = COLORS['red']
+                Clock.schedule_once(_backend_offline, 0)
         run_async(_fetch())
 
     def _load_home_summary(self):

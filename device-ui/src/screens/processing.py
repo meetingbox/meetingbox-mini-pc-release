@@ -22,6 +22,7 @@ from kivy.uix.image import Image
 from kivy.uix.label import Label
 from kivy.uix.widget import Widget
 
+from async_helper import run_async
 from config import (
     ASSETS_DIR,
     COLORS,
@@ -40,6 +41,8 @@ _BORDER = (30 / 255.0, 41 / 255.0, 59 / 255.0, 1)
 _MUTED = (148 / 255.0, 163 / 255.0, 184 / 255.0, 1)
 _SUCCESS = (34 / 255.0, 197 / 255.0, 94 / 255.0, 1)
 _CTA = (74 / 255.0, 143 / 255.0, 217 / 255.0, 1)
+# Red used for "SYSTEM OFFLINE" (mirrors COLORS['red'] from config).
+_FOOTER_RED = (1.0, 0.27, 0.23, 1)
 
 # Vertical stack height in design pixels — must match the sum built in _build_ui:
 # hero_h + card_wrap + spacer(2) + cta_h + link(20) + 4*col_sp(6) (see _build_ui).
@@ -375,6 +378,11 @@ class ProcessingScreen(BaseScreen):
         self._pulse_dir = 1
         self._spin_event = None
         self._spin_angle = 0.0
+        # Periodic backend health-check tick. SYSTEM ONLINE / OFFLINE in the
+        # footer reflects whether ``backend.health_check()`` has succeeded
+        # within the last ~30 s. We can't infer this from existing app state
+        # because backend health and WS health drift independently.
+        self._health_event = None
         self._layout_fit = _compute_processing_layout_fit()
         self._build_ui()
 
@@ -952,7 +960,7 @@ class ProcessingScreen(BaseScreen):
         )
         dot = Widget(size_hint=(None, None), size=(self.ph(8), self.pv(8)))
         with dot.canvas:
-            Color(*_SUCCESS)
+            self._footer_dot_color = Color(*_SUCCESS)
             self._footer_dot = Ellipse(pos=dot.pos, size=dot.size)
         dot.bind(
             pos=lambda w, *_: setattr(self._footer_dot, "pos", w.pos),
@@ -1174,7 +1182,55 @@ class ProcessingScreen(BaseScreen):
         self._spin_angle = 0.0
         self._start_pulse()
         self._start_spin()
+        self._start_health_pings()
 
     def on_leave(self):
         self._stop_pulse()
         self._stop_spin()
+        self._stop_health_pings()
+
+    # ------------------------------------------------------------------
+    # SYSTEM ONLINE / OFFLINE pinger
+    # ------------------------------------------------------------------
+    def _start_health_pings(self):
+        """Run a backend health-check immediately, then every 30 s.
+
+        Called from on_enter; cancelled in on_leave. The visual update
+        flips both the colored dot and the text in the footer so users
+        know whether processing is still likely to make progress.
+        """
+        self._stop_health_pings()
+        # Don't wait the full interval to update the footer — kick off the
+        # first ping straight away so the label reflects current state ASAP.
+        self._ping_backend_health()
+        self._health_event = Clock.schedule_interval(
+            lambda _dt: self._ping_backend_health(), 30.0
+        )
+
+    def _stop_health_pings(self):
+        if self._health_event:
+            self._health_event.cancel()
+            self._health_event = None
+
+    def _ping_backend_health(self):
+        async def _check():
+            ok = False
+            try:
+                ok = bool(await self.backend.health_check())
+            except Exception:  # noqa: BLE001
+                ok = False
+            Clock.schedule_once(lambda _dt: self._apply_health(ok), 0)
+
+        run_async(_check())
+
+    def _apply_health(self, ok: bool):
+        if ok:
+            self.footer_left.text = "SYSTEM ONLINE"
+            self.footer_left.color = _MUTED
+            if hasattr(self, "_footer_dot_color"):
+                self._footer_dot_color.rgba = _SUCCESS
+        else:
+            self.footer_left.text = "SYSTEM OFFLINE"
+            self.footer_left.color = _FOOTER_RED
+            if hasattr(self, "_footer_dot_color"):
+                self._footer_dot_color.rgba = _FOOTER_RED
