@@ -2443,7 +2443,10 @@ def main():
         logger.info("Interrupted by user")
         sys.exit(0)
     except Exception as e:
+        import traceback
         print(f"[MeetingBox] FATAL: {e}", flush=True)
+        print("[MeetingBox] TRACEBACK:", flush=True)
+        traceback.print_exc()
         logger.exception(f"Fatal error: {e}")
         sys.exit(1)
 
