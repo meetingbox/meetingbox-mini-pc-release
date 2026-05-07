@@ -117,6 +117,7 @@ def _lbl(text: str, fn: str, fs: float, color: tuple, bold: bool = False,
     return l
 
 
+<<<<<<< HEAD
 def _greeting(name: str | None) -> str:
     h = display_now().hour
     head = "Good morning" if h < 12 else "Good afternoon" if h < 17 else "Good evening"
@@ -133,6 +134,13 @@ def _format_next(nxt: dict | None) -> tuple[str, str]:
         return ("--:--", "No meetings today")
     title = (nxt.get("title") or "Calendar event").strip()
     start = (nxt.get("start") or "").strip()
+=======
+def _format_home_next_meeting(next_meeting) -> tuple[str, str]:
+    if not next_meeting:
+        return 'No focus loaded', 'Ask Tony for a briefing'
+    title = (next_meeting.get('title') or 'Calendar event').strip() or 'Calendar event'
+    start = (next_meeting.get('start') or '').strip()
+>>>>>>> parent of 8e3e83e (ui fix)
     if not start:
         return ("Time not set", title)
     try:
@@ -373,6 +381,7 @@ class HomeScreen(BaseScreen):
             _greeting(user_name), _FONT_SB, 30, _C_WHITE,
             size_hint=sh, pos_hint=ph,
         )
+<<<<<<< HEAD
         root.add_widget(self.greeting_label)
 
         # Listening pill  (570, 15)  214×54  radius 54
@@ -380,6 +389,12 @@ class HomeScreen(BaseScreen):
         self._listening_pill = _CardBg(
             radius=27, fill=_C_CARD_BOT,
             size_hint=sh, pos_hint=ph,
+=======
+        self.voice_dot = (
+            Image(source=p, size_hint=(None, 1), width=sh(22), fit_mode='contain', color=COLORS['gray_300'])
+            if (p := _figma_png('icon_listening_dot.png'))
+            else Label(text='●', font_size=sf(14), color=COLORS['gray_300'], size_hint=(None, 1), width=sh(22))
+>>>>>>> parent of 8e3e83e (ui fix)
         )
         self._listening_pill.bind(on_touch_up=self._on_listening_pill_touch)
         # Green pulsing dot  (0, 9)  14×14
@@ -408,6 +423,7 @@ class HomeScreen(BaseScreen):
         # Soundwave icon  (133, 0)  32×32
         sw = _figma_png("icon_soundwave.png")
         if sw:
+<<<<<<< HEAD
             self._listening_pill.add_widget(Image(
                 source=sw, size_hint=(32/214, 32/54),
                 pos_hint={"x": 133/214, "y": 1-(0+32)/54},
@@ -418,6 +434,22 @@ class HomeScreen(BaseScreen):
         # Settings icon  (821, 15)  54×54
         ph, sh = _ph_sh(821, 15, 54, 54)
         sg = _figma_png("icon_settings.png")
+=======
+            self.listening_pill.add_widget(
+                Image(source=sw, size_hint=(None, 1), width=sh(30), fit_mode='contain', color=COLORS['blue'])
+            )
+        else:
+            self.listening_pill.add_widget(Label(text='▥', font_size=sf(22), color=COLORS['blue'], size_hint=(None, 1), width=sh(30)))
+        # Tap on the listening pill toggles the wake-word assistant between
+        # paused and listening — privacy "kill switch" without opening Settings.
+        self.listening_pill.bind(
+            on_touch_up=lambda inst, touch: (
+                self._toggle_voice_listening() if inst.collide_point(*touch.pos) else None
+            )
+        )
+        header.add_widget(self.listening_pill)
+        sg = _figma_png('icon_settings.png')
+>>>>>>> parent of 8e3e83e (ui fix)
         if sg:
             from kivy.uix.button import Button
             settings_btn = Button(
@@ -436,19 +468,146 @@ class HomeScreen(BaseScreen):
         # ── Mini widget card (390:188)  (17, 81)  410×263 ────────────
         self._build_mini_widget(root)
 
+<<<<<<< HEAD
         # ── Product Sync / Last Meeting card (412:967)  (433, 81)  218×263 ─
         self._build_last_meeting_card(root)
 
         # ── Morning Brief card (412:893)  (657, 81)  218×263 ─────────
         self._build_morning_brief_card(root)
+=======
+        summary = _GlassCard(orientation='vertical', size_hint=(0.255, 1), padding=[sh(19), sv(35), sh(14), sv(18)], spacing=sv(8), radius=sv(12))
+        sum_head = BoxLayout(orientation='horizontal', size_hint=(1, None), height=sv(34), spacing=sh(8))
+        fd = _figma_png('icon_file_document.png')
+        if fd:
+            sum_head.add_widget(Image(source=fd, size_hint=(None, 1), width=sh(26), fit_mode='contain'))
+        sum_lbl = Label(
+            text='Last Meeting Summary',
+            font_size=sf(15),
+            color=COLORS['gray_400'],
+            bold=True,
+            halign='left',
+            valign='middle',
+            size_hint=(1, 1),
+        )
+        sum_lbl.bind(size=sum_lbl.setter('text_size'))
+        sum_head.add_widget(sum_lbl)
+        summary.add_widget(sum_head)
+        self.last_title_label = Label(text='Loading recent meeting...', font_size=sf(23), bold=True, color=COLORS['white'], halign='left', valign='middle', size_hint=(1, None), height=sv(42), shorten=True)
+        self.last_title_label.bind(size=self.last_title_label.setter('text_size'))
+        summary.add_widget(self.last_title_label)
+        self.last_meta_label = Label(text='Summaries, transcripts, decisions', font_size=sf(15), color=_FIGMA_TEXT_MUTED, halign='left', valign='top', size_hint=(1, None), height=sv(48))
+        self.last_meta_label.bind(size=self.last_meta_label.setter('text_size'))
+        summary.add_widget(self.last_meta_label)
+        summary.add_widget(Widget(size_hint=(1, 1)))
+        self.last_actions_label = Label(text='Open summary  ›', font_size=sf(15), color=COLORS['blue'], halign='left', valign='middle', size_hint=(1, None), height=sv(28))
+        self.last_actions_label.bind(size=self.last_actions_label.setter('text_size'))
+        summary.add_widget(self.last_actions_label)
+        summary.bind(on_touch_up=lambda inst, touch: self._open_latest_meeting() if inst.collide_point(*touch.pos) else None)
+        top_row.add_widget(summary)
+
+        brief = _GlassCard(orientation='vertical', size_hint=(0.255, 1), padding=[sh(10), sv(9), sh(10), sv(8)], spacing=sv(6), radius=sv(12))
+        br_h = BoxLayout(orientation='horizontal', size_hint=(1, None), height=sv(27), spacing=sh(6))
+        sun_p = _figma_png('icon_sun_morning_brief.png')
+        if sun_p:
+            br_h.add_widget(Image(source=sun_p, size_hint=(None, 1), width=sh(22), fit_mode='contain'))
+        br_title = Label(
+            text='Morning Brief',
+            font_size=sf(17),
+            color=COLORS['gray_400'],
+            bold=True,
+            halign='left',
+            valign='middle',
+            size_hint=(1, 1),
+        )
+        br_title.bind(size=br_title.setter('text_size'))
+        br_h.add_widget(br_title)
+        brief.add_widget(br_h)
+        self.brief_calendar_label = self._brief_item('3 meetings today', 'First at 11:00 AM', icon_file='icon_calendar_brief.png', fallback='▣')
+        brief.add_widget(self.brief_calendar_label)
+        self.brief_weather_label = self._brief_item('Weather: 32°C', 'Sunny', icon_file='icon_weather.png', fallback='☁')
+        brief.add_widget(self.brief_weather_label)
+        self.brief_email_label = self._brief_item('email:  From:', 'Connect Gmail for updates', icon_file='icon_email.png', fallback='✉')
+        # Tap → explain how to connect Gmail via the dashboard.
+        self.brief_email_label.bind(
+            on_touch_up=lambda inst, touch: (
+                self._show_gmail_dashboard_dialog() if inst.collide_point(*touch.pos) else None
+            )
+        )
+        brief.add_widget(self.brief_email_label)
+        view = SecondaryButton(text='View all   ›', size_hint=(1, None), height=sv(24), font_size=sf(11))
+        view.bind(on_release=lambda *_: self.goto('briefing', transition='slide_left'))
+        brief.add_widget(view)
+        top_row.add_widget(brief)
+        root.add_widget(top_row)
+>>>>>>> parent of 8e3e83e (ui fix)
 
         # ── Middle row cards ─────────────────────────────────────────
         self._build_schedule_card(root)   # (17, 359) 361×102
         self._build_email_card(root)      # (384, 359) 237×102
         self._build_tasks_card(root)      # (627, 359) 248×102
 
+<<<<<<< HEAD
         # ── Bottom voice bar (412:1040)  (27, 476)  838×71 ───────────
         self._build_voice_bar(root)
+=======
+        say = _GlassCard(
+            orientation='horizontal',
+            size_hint=(1, 71),
+            padding=[sh(18), sv(10), sh(14), sv(10)],
+            spacing=sh(14),
+            radius=sv(21),
+            fill=_CARD_INNER,
+        )
+        spark_stack = BoxLayout(orientation='vertical', size_hint=(None, 1), width=sh(38), spacing=sv(2))
+        spk = _figma_png('icon_sparkle_layer.png')
+        if spk:
+            spark_stack.add_widget(Image(source=spk, size_hint=(1, 0.45), fit_mode='contain', color=COLORS['blue']))
+        plus_lbl = Label(
+            text='+',
+            font_size=sf(18),
+            bold=True,
+            color=COLORS['blue'],
+            halign='center',
+            valign='top',
+            size_hint=(1, 0.55),
+        )
+        plus_lbl.bind(size=plus_lbl.setter('text_size'))
+        spark_stack.add_widget(plus_lbl)
+        say.add_widget(spark_stack)
+        say_text = BoxLayout(orientation='vertical')
+        t1 = Label(text='Try saying', font_size=sf(19), bold=True, color=COLORS['blue'], halign='left', valign='bottom', size_hint=(1, .42))
+        t1.bind(size=t1.setter('text_size'))
+        say_text.add_widget(t1)
+        t2 = Label(text='"Schedule a meeting tomorrow at 4 PM"', font_size=sf(16), color=_FIGMA_TEXT_MUTED, halign='left', valign='top', size_hint=(1, .58))
+        t2.bind(size=t2.setter('text_size'))
+        say_text.add_widget(t2)
+        say.add_widget(say_text)
+        # Tapping the "Try saying" prompt opens the briefing screen — the
+        # closest in-app experience to the example voice command. (We can't
+        # synthetically inject a wake phrase into the voice pipeline.)
+        say.bind(
+            on_touch_up=lambda inst, touch: (
+                self.goto('briefing', transition='slide_left')
+                if inst.collide_point(*touch.pos)
+                else None
+            )
+        )
+        say.add_widget(_VoiceOrb(size=(sv(66), sv(66))))
+        kb_src = _figma_png('icon_keyboard.png')
+        if kb_src:
+            keyboard = Button(
+                background_normal=kb_src,
+                background_down=kb_src,
+                border=[0, 0, 0, 0],
+                size_hint=(None, None),
+                size=(sh(54), sv(48)),
+            )
+        else:
+            keyboard = SecondaryButton(text='Kb', size_hint=(None, None), width=sh(54), height=sv(48), font_size=sf(18))
+        keyboard.bind(on_release=lambda *_: self.goto('briefing', transition='slide_left'))
+        say.add_widget(keyboard)
+        root.add_widget(say)
+>>>>>>> parent of 8e3e83e (ui fix)
 
         self.add_widget(root)
 
@@ -476,6 +635,7 @@ class HomeScreen(BaseScreen):
             size_hint=(109/410, 55/263),
             pos_hint={"x": 21/410, "y": 1 - (24+55)/263},
         )
+<<<<<<< HEAD
         self._mini_clock.bind(size=self._mini_clock.setter("text_size"))
         card.add_widget(self._mini_clock)
 
@@ -848,6 +1008,39 @@ class HomeScreen(BaseScreen):
             self.goto("meetings", transition="slide_left") if inst.collide_point(*touch.pos) else None
         ))
         root.add_widget(card)
+=======
+        icon_box = _GlassCard(
+            orientation='vertical',
+            size_hint=(None, None),
+            width=_hv(66),
+            height=_hv(66),
+            radius=_hv(36),
+            fill=_CARD_INNER,
+        )
+        src = _figma_png(icon_file) if icon_file else ''
+        if src:
+            icon_box.add_widget(Image(source=src, size_hint=(1, 1), fit_mode='contain'))
+        else:
+            icon_box.add_widget(Label(text=fallback, font_size=_hf(31), color=COLORS['blue'], halign='center', valign='middle'))
+        card.add_widget(icon_box)
+        txt = BoxLayout(orientation='vertical')
+        v = Label(text=value, font_size=_hf(27), bold=True, color=COLORS['white'], halign='left', valign='bottom', size_hint=(1, .48))
+        v.bind(size=v.setter('text_size'))
+        setattr(card, 'value_label', v)
+        txt.add_widget(v)
+        l = Label(text=label, font_size=_hf(18), color=_FIGMA_TEXT_MUTED, halign='left', valign='top', size_hint=(1, .52), shorten=True)
+        l.bind(size=l.setter('text_size'))
+        setattr(card, 'text_label', l)
+        txt.add_widget(l)
+        card.add_widget(txt)
+        arr = _figma_png('icon_arrow_card.png')
+        if arr:
+            card.add_widget(Image(source=arr, size_hint=(None, 1), width=_hh(22), fit_mode='contain', color=_FIGMA_TEXT_MUTED))
+        else:
+            card.add_widget(Label(text='›', font_size=_hf(36), color=_FIGMA_TEXT_MUTED, size_hint=(None, 1), width=_hh(24)))
+        card.bind(on_touch_up=lambda inst, touch: callback() if inst.collide_point(*touch.pos) else None)
+        return card
+>>>>>>> parent of 8e3e83e (ui fix)
 
     # ------------------------------------------------------------------
     # New Emails card (414:1111)  (384, 359)  237×102
@@ -864,6 +1057,7 @@ class HomeScreen(BaseScreen):
             size_hint=(60/237, 32/102),
             pos_hint={"x": 82/237, "y": 1-(8+32)/102},
         )
+<<<<<<< HEAD
         card.add_widget(self.email_count_label)
         card.add_widget(_lbl(
             "New emails", _FONT_SB, 18, _C_MUTED,
@@ -881,6 +1075,34 @@ class HomeScreen(BaseScreen):
             self.goto("briefing", transition="slide_left") if inst.collide_point(*touch.pos) else None
         ))
         root.add_widget(card)
+=======
+        src = _figma_png(icon_file) if icon_file else ''
+        if src:
+            row.add_widget(Image(source=src, size_hint=(None, None), width=_hh(30), height=_hv(30), fit_mode='contain'))
+        else:
+            row.add_widget(
+                Label(
+                    text=fallback,
+                    font_size=_hf(27),
+                    color=COLORS['blue'],
+                    halign='center',
+                    valign='middle',
+                    size_hint=(None, 1),
+                    width=_hh(38),
+                )
+            )
+        text = BoxLayout(orientation='vertical', spacing=0)
+        title_label = Label(text=title, font_size=_hf(15), bold=True, color=COLORS['gray_400'], halign='left', valign='bottom', size_hint=(1, .55), shorten=True)
+        title_label.bind(size=title_label.setter('text_size'))
+        subtitle_label = Label(text=subtitle, font_size=_hf(12), bold=True, color=_FIGMA_TEXT_MUTED, halign='left', valign='top', size_hint=(1, .45), shorten=True)
+        subtitle_label.bind(size=subtitle_label.setter('text_size'))
+        setattr(row, 'title_label', title_label)
+        setattr(row, 'subtitle_label', subtitle_label)
+        text.add_widget(title_label)
+        text.add_widget(subtitle_label)
+        row.add_widget(text)
+        return row
+>>>>>>> parent of 8e3e83e (ui fix)
 
     # ------------------------------------------------------------------
     # Tasks Due card (414:1101)  (627, 359)  248×102
