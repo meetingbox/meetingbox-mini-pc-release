@@ -9,6 +9,7 @@ from kivy.graphics import Color, Ellipse, Line, Rectangle, RoundedRectangle
 from kivy.uix.boxlayout import BoxLayout
 from kivy.uix.floatlayout import FloatLayout
 from kivy.uix.label import Label
+from kivy.uix.scrollview import ScrollView
 from kivy.uix.widget import Widget
 
 from async_helper import run_async
@@ -170,11 +171,19 @@ class HomeScreen(BaseScreen):
         sv = _hv
         sh = _hh
         sf = _hf
+        # Scroll the main column so the 1024×600 Figma baseline never clips on short panels
+        # or aggressive MEETINGBOX_HOME_CONTENT_SCALE; footer stays pinned.
         root = BoxLayout(
             orientation='vertical',
             padding=[sh(17), sv(15), sh(17), sv(8)],
             spacing=sv(12),
         )
+        body = BoxLayout(
+            orientation='vertical',
+            size_hint=(1, None),
+            spacing=sv(12),
+        )
+        body.bind(minimum_height=body.setter('height'))
         with root.canvas.before:
             Color(*_NAVY_BG)
             self._bg = Rectangle(pos=root.pos, size=root.size)
@@ -216,7 +225,7 @@ class HomeScreen(BaseScreen):
         settings = SecondaryButton(text='⚙', size_hint=(None, None), width=sv(54), height=sv(54), font_size=sf(26))
         settings.bind(on_release=lambda *_: self.goto('settings', transition='slide_left'))
         header.add_widget(settings)
-        root.add_widget(header)
+        body.add_widget(header)
 
         top_row = BoxLayout(orientation='horizontal', size_hint=(1, None), height=sv(263), spacing=sh(7))
 
@@ -305,7 +314,7 @@ class HomeScreen(BaseScreen):
         view.bind(on_release=lambda *_: self.goto('briefing', transition='slide_left'))
         brief.add_widget(view)
         top_row.add_widget(brief)
-        root.add_widget(top_row)
+        body.add_widget(top_row)
 
         bottom_cards = BoxLayout(orientation='horizontal', size_hint=(1, None), height=sv(102), spacing=sh(7))
         self.schedule_card = self._mini_card('▣', '—', 'Now: Loading', lambda *_: self.goto('meetings', transition='slide_left'), width_hint=0.43)
@@ -314,7 +323,7 @@ class HomeScreen(BaseScreen):
         bottom_cards.add_widget(self.email_card)
         self.tasks_card = self._mini_card('✓', '0', 'Tasks due', lambda *_: self.goto('briefing', transition='slide_left'), width_hint=0.285)
         bottom_cards.add_widget(self.tasks_card)
-        root.add_widget(bottom_cards)
+        body.add_widget(bottom_cards)
 
         say = _GlassCard(
             orientation='horizontal',
@@ -338,7 +347,15 @@ class HomeScreen(BaseScreen):
         keyboard = SecondaryButton(text='⌨', size_hint=(None, None), width=sh(54), height=sv(48), font_size=sf(24))
         keyboard.bind(on_release=lambda *_: self.goto('briefing', transition='slide_left'))
         say.add_widget(keyboard)
-        root.add_widget(say)
+        body.add_widget(say)
+
+        scroll = ScrollView(
+            size_hint=(1, 1),
+            do_scroll_x=False,
+            bar_width=sh(6),
+        )
+        scroll.add_widget(body)
+        root.add_widget(scroll)
         root.add_widget(self.build_footer())
         self.add_widget(root)
 
