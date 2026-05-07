@@ -186,7 +186,6 @@ from hardware import (
 )
 from network_util import linux_ethernet_ready
 from profile_store import get_active_profile, clear_active_profile_selection
-from components.voice_indicator import VoiceAssistantIndicator
 from voice_assistant import VoiceAssistant, VoiceIntent
 
 # Boot-flow screens
@@ -578,10 +577,10 @@ class MeetingBoxApp(App):
         # Start local Redis listener for real-time audio levels from the audio
         # container (both on the same Docker network).
         self._start_local_redis_listener()
-        self.voice_indicator = VoiceAssistantIndicator(
-            pos_hint={"right": 0.985, "y": 0.035},
-        )
-        self.root_layout.add_widget(self.voice_indicator)
+        # Voice assistant logic (wake phrase, intents) stays active; the floating
+        # "Tony" overlay is intentionally not mounted. ``self.voice_indicator``
+        # remains None (set in __init__) so existing _refresh/_set helpers no-op
+        # via their ``if not self.voice_indicator`` guards.
         self._sync_voice_assistant_state()
         self._refresh_voice_indicator()
 
