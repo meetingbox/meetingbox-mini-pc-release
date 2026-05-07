@@ -6,9 +6,10 @@ Recording card on the lower-right starts a new meeting in place. Time, date,
 greeting, weather and "next up" all refresh live so the screen never looks
 stale.
 
-Layout: layered background plus four anchored zones — top-left info,
-top-right weather, bottom-left schedule, bottom-right action card (flex internals).
-Margins scale from 1024×600 via ``_idu()`` / ``_idle_uniform_scale``.
+Layout: full-screen background; foreground is a vertical flex column (top band,
+stretch center, bottom band). Top band is a horizontal row (datetime | gap |
+weather). Bottom band is a horizontal row (schedule | gap | recording card) so
+the two bottom regions never overlap.
 """
 
 from __future__ import annotations
@@ -54,7 +55,8 @@ _IDLE_PAD_RIGHT = 48
 _IDLE_PAD_BOTTOM = 43
 # Maximum width for left-column blocks so content stays readable.
 _ZONE_TOP_LEFT_W = 480
-_ZONE_SCHEDULE_W = 420
+# Schedule column ≈ 38% of 1024 design width; keeps center clear for background.
+_ZONE_SCHEDULE_W = 390
 
 
 def _idle_uniform_scale() -> float:
@@ -224,29 +226,24 @@ class IdleScreen(BaseScreen):
                 )
             )
 
-        # ---- Four zones over full-screen root (anchors + flex boxes) ----
+        # Foreground: vertical flex (top row | stretch | bottom row). Schedule and card are siblings.
         pl, pt = _idu(_IDLE_PAD_LEFT), _idu(_IDLE_PAD_TOP)
         pr, pb = _idu(_IDLE_PAD_RIGHT), _idu(_IDLE_PAD_BOTTOM)
 
-        # 1) Top-left: greeting → clock + AM/PM row → tight gap → date
-        zone_tl = AnchorLayout(
-            anchor_x="left",
-            anchor_y="top",
-            size_hint=(1, 1),
-            padding=[pl, pt, 0, 0],
-        )
         tl_w = _idu(_ZONE_TOP_LEFT_W)
         gr_h = _idu(28)
         gap_greet_clock = _idu(10)
         clk_h = _idu(120)
         gap_clock_date = _idu(4)
         date_h = _idu(40)
-        tl_h = gr_h + gap_greet_clock + clk_h + gap_clock_date + date_h
+        tl_inner_h = (
+            gr_h + gap_greet_clock + clk_h + gap_clock_date + date_h
+        )
 
         top_left_stack = BoxLayout(
             orientation="vertical",
             size_hint=(None, None),
-            size=(tl_w, tl_h),
+            size=(tl_w, tl_inner_h),
             spacing=0,
         )
         self.greeting_label = Label(
@@ -261,7 +258,9 @@ class IdleScreen(BaseScreen):
         )
         self.greeting_label.bind(size=self.greeting_label.setter("text_size"))
         top_left_stack.add_widget(self.greeting_label)
-        top_left_stack.add_widget(Widget(size_hint=(1, None), height=gap_greet_clock))
+        top_left_stack.add_widget(
+            Widget(size_hint=(1, None), height=gap_greet_clock),
+        )
 
         clock_row = BoxLayout(
             orientation="horizontal",
@@ -289,7 +288,7 @@ class IdleScreen(BaseScreen):
             text="",
             font_size=_hf(35),
             bold=True,
-            color=(0.714, 0.729, 0.949, 1),  # #b6baf2
+            color=(0.714, 0.729, 0.949, 1),
             halign="left",
             valign="middle",
             size_hint=(None, None),
@@ -299,7 +298,9 @@ class IdleScreen(BaseScreen):
         am_col.add_widget(self.ampm_label)
         clock_row.add_widget(am_col)
         top_left_stack.add_widget(clock_row)
-        top_left_stack.add_widget(Widget(size_hint=(1, None), height=gap_clock_date))
+        top_left_stack.add_widget(
+            Widget(size_hint=(1, None), height=gap_clock_date),
+        )
 
         self.date_label = Label(
             text="",
@@ -314,22 +315,14 @@ class IdleScreen(BaseScreen):
         self.date_label.bind(size=self.date_label.setter("text_size"))
         top_left_stack.add_widget(self.date_label)
 
-        zone_tl.add_widget(top_left_stack)
-        root.add_widget(zone_tl)
-
-        # 2) Top-right: compact column, icon + temperature row; condition underneath
-        zone_tr = AnchorLayout(
-            anchor_x="right",
-            anchor_y="top",
-            size_hint=(1, 1),
-            padding=[0, pt, pr, 0],
-        )
         wx_w = max(_idu(200), _hh(216))
-        wx_h = _hv(112)
+        wx_body_h = _hv(112)
+        top_band_h = max(tl_inner_h, wx_body_h)
+
         wx_col = BoxLayout(
             orientation="vertical",
             size_hint=(None, None),
-            size=(wx_w, wx_h),
+            size=(wx_w, wx_body_h),
             spacing=_idu(8),
         )
         wt_row = BoxLayout(
@@ -384,16 +377,32 @@ class IdleScreen(BaseScreen):
         self.condition_label.bind(size=self.condition_label.setter("text_size"))
         wx_col.add_widget(self.condition_label)
 
-        zone_tr.add_widget(wx_col)
-        root.add_widget(zone_tr)
-
-        # 3) Bottom-left: schedule / “Next up” vertical stack + icon/time row + title + more
-        zone_bl = AnchorLayout(
+        tl_band = AnchorLayout(
             anchor_x="left",
-            anchor_y="bottom",
-            size_hint=(1, 1),
-            padding=[pl, 0, 0, pb],
+            anchor_y="top",
+            size_hint=(None, None),
+            size=(tl_w, top_band_h),
         )
+        tl_band.add_widget(top_left_stack)
+
+        tr_band = AnchorLayout(
+            anchor_x="right",
+            anchor_y="top",
+            size_hint=(None, None),
+            size=(wx_w, top_band_h),
+        )
+        tr_band.add_widget(wx_col)
+
+        top_row = BoxLayout(
+            orientation="horizontal",
+            size_hint=(1, None),
+            spacing=0,
+            height=top_band_h,
+        )
+        top_row.add_widget(tl_band)
+        top_row.add_widget(Widget(size_hint=(1, 1)))
+        top_row.add_widget(tr_band)
+
         sched_w = _idu(_ZONE_SCHEDULE_W)
         row_time_h = max(_idu(38), _hv(38))
         title_h = _idu(52)
@@ -407,7 +416,7 @@ class IdleScreen(BaseScreen):
             text="Next up",
             font_size=_hf(28),
             bold=True,
-            color=(0, 0.420, 0.976, 1),  # #006bf9
+            color=(0, 0.420, 0.976, 1),
             halign="left",
             valign="middle",
             size_hint=(1, None),
@@ -479,18 +488,19 @@ class IdleScreen(BaseScreen):
         self.more_label.bind(size=self.more_label.setter("text_size"))
         sched_stack.add_widget(self.more_label)
 
-        # Recalculate height from fixed row heights (BoxLayout does not auto-wrap).
-        sh = _hv(38) + _idu(12) + row_time_h + _idu(12) + title_h + _idu(12) + _hv(38)
+        sh = (
+            _hv(38)
+            + _idu(12)
+            + row_time_h
+            + _idu(12)
+            + title_h
+            + _idu(12)
+            + _hv(38)
+        )
         sched_stack.size = (sched_w, sh)
 
-        zone_bl.add_widget(sched_stack)
-        root.add_widget(zone_bl)
-
-        # 4) Bottom-right: action card — horizontal flex: mic (centered) + CTA column (vertically centered)
-        card = _StartRecordingCard(
-            size=(_hh(414), _hv(167)),
-            size_hint=(None, None),
-        )
+        card_w, card_h = _hh(414), _hv(167)
+        card = _StartRecordingCard(size=(card_w, card_h), size_hint=(None, None))
         card.bind(on_release=self._on_start_recording)
 
         mic_path = _idle_png("mic_orb.png")
@@ -500,19 +510,17 @@ class IdleScreen(BaseScreen):
             padding=[_idu(27), _idu(32), _idu(36), _idu(32)],
             spacing=_idu(18),
         )
-        mic_wrap = AnchorLayout(
-            size_hint=(None, 1),
-            width=_hv(101),
-        )
+        mic_wrap = AnchorLayout(size_hint=(None, 1), width=_hv(101))
         if mic_path:
-            mic_img = Image(
-                source=mic_path,
-                size_hint=(None, None),
-                size=(_hv(101), _hv(101)),
-                fit_mode="contain",
-                allow_stretch=True,
+            mic_wrap.add_widget(
+                Image(
+                    source=mic_path,
+                    size_hint=(None, None),
+                    size=(_hv(101), _hv(101)),
+                    fit_mode="contain",
+                    allow_stretch=True,
+                ),
             )
-            mic_wrap.add_widget(mic_img)
         card_row.add_widget(mic_wrap)
 
         cta_col = BoxLayout(orientation="vertical", size_hint=(1, 1), spacing=_hv(6))
@@ -545,15 +553,46 @@ class IdleScreen(BaseScreen):
         card.add_widget(card_row)
 
         self._cta_card = card
-        self._recording_cta_anchor = AnchorLayout(
+
+        bottom_band_h = max(sh, card_h)
+        sched_slot = AnchorLayout(
+            anchor_x="left",
+            anchor_y="bottom",
+            size_hint=(None, None),
+            size=(sched_w, bottom_band_h),
+        )
+        sched_slot.add_widget(sched_stack)
+
+        card_slot = AnchorLayout(
             anchor_x="right",
             anchor_y="bottom",
-            size_hint=(1, 1),
-            padding=[0, 0, pr, pb],
+            size_hint=(None, None),
+            size=(card_w, bottom_band_h),
         )
-        self._recording_cta_anchor.add_widget(card)
-        root.add_widget(self._recording_cta_anchor)
+        card_slot.add_widget(card)
 
+        bottom_row = BoxLayout(
+            orientation="horizontal",
+            size_hint=(1, None),
+            height=bottom_band_h,
+            spacing=_idu(24),
+        )
+        bottom_row.add_widget(sched_slot)
+        bottom_row.add_widget(Widget(size_hint=(1, 1)))
+        bottom_row.add_widget(card_slot)
+
+        content = BoxLayout(
+            orientation="vertical",
+            size_hint=(1, 1),
+            pos_hint={"x": 0, "y": 0},
+            padding=[pl, pt, pr, pb],
+            spacing=0,
+        )
+        content.add_widget(top_row)
+        content.add_widget(Widget(size_hint=(1, 1)))
+        content.add_widget(bottom_row)
+
+        root.add_widget(content)
         self.add_widget(root)
 
     def _sync_bg(self, widget, *_args):
