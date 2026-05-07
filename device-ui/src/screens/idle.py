@@ -137,16 +137,16 @@ def _format_meeting_line(next_meeting: dict | None) -> tuple[str, str, int]:
 # Start Recording card (image-driven, tappable)
 # ---------------------------------------------------------------------------
 
-class _StartRecordingCard(ButtonBehavior, FloatLayout):
+class _StartRecordingCard(ButtonBehavior, BoxLayout):
     """Gradient blue card with mic orb + label + subtitle.
 
-    The Figma artwork is composed of three layers (radial gradient body,
-    bordered rounded rect, mic orb PNG). We draw the body with Kivy's
-    canvas instructions so it stays crisp at any scale, and overlay the
-    mic-orb PNG plus two labels.
+    Uses ``BoxLayout`` (not ``FloatLayout``) so the mic + text row is laid out
+    inside the card bounds. A ``FloatLayout`` child with only ``size_hint`` can
+    end up with the wrong origin and draw over the schedule column instead.
     """
 
     def __init__(self, **kwargs):
+        kwargs.setdefault("orientation", "horizontal")
         kwargs.setdefault("size_hint", (None, None))
         super().__init__(**kwargs)
         with self.canvas.before:
@@ -499,11 +499,6 @@ class IdleScreen(BaseScreen):
         )
         sched_stack.size = (sched_w, sh)
 
-        card_w, card_h = _hh(414), _hv(167)
-        card = _StartRecordingCard(size=(card_w, card_h), size_hint=(None, None))
-        card.bind(on_release=self._on_start_recording)
-
-        mic_path = _idle_png("mic_orb.png")
         card_pl, card_pt, card_pr, card_pb = (
             _idu(27),
             _idu(32),
@@ -512,6 +507,7 @@ class IdleScreen(BaseScreen):
         )
         mic_slot_w = _hv(101)
         spacing_h = _idu(18)
+        card_w, card_h = _hh(414), _hv(167)
         text_w = max(
             _hh(160),
             card_w - card_pl - card_pr - mic_slot_w - spacing_h,
@@ -520,12 +516,16 @@ class IdleScreen(BaseScreen):
         sub_h = _hv(52)
         text_stack_h = title_h + _hv(8) + sub_h
 
-        card_row = BoxLayout(
+        card = _StartRecordingCard(
             orientation="horizontal",
-            size_hint=(1, 1),
+            size=(card_w, card_h),
+            size_hint=(None, None),
             padding=[card_pl, card_pt, card_pr, card_pb],
             spacing=spacing_h,
         )
+        card.bind(on_release=self._on_start_recording)
+
+        mic_path = _idle_png("mic_orb.png")
 
         mic_slot = AnchorLayout(
             size_hint=(None, 1),
@@ -543,7 +543,7 @@ class IdleScreen(BaseScreen):
                     allow_stretch=True,
                 ),
             )
-        card_row.add_widget(mic_slot)
+        card.add_widget(mic_slot)
 
         text_slot = AnchorLayout(
             size_hint=(1, 1),
@@ -580,9 +580,7 @@ class IdleScreen(BaseScreen):
         text_col.add_widget(cta_title)
         text_col.add_widget(cta_sub)
         text_slot.add_widget(text_col)
-        card_row.add_widget(text_slot)
-
-        card.add_widget(card_row)
+        card.add_widget(text_slot)
 
         self._cta_card = card
 
