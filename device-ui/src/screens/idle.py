@@ -351,16 +351,19 @@ class IdleScreen(BaseScreen):
         root.add_widget(self.next_time_label)
 
         self.next_title_label = Label(
-            text="Now : --",
-            font_size=_hf(31),
+            text="--",
+            font_size=_hf(28),
             bold=True,
             color=COLORS["white"],
             halign="left",
             valign="middle",
             size_hint=(None, None),
-            size=(_hh(420), _hv(40)),
+            size=(_hh(370), _hv(40)),
+            text_size=(_hh(370), _hv(40)),
             pos_hint=_phint(46, 446),
             shorten=True,
+            shorten_from="right",
+            split_str=" ",
         )
         self.next_title_label.bind(size=self.next_title_label.setter("text_size"))
         root.add_widget(self.next_title_label)
@@ -530,7 +533,7 @@ class IdleScreen(BaseScreen):
 
             def _apply(_dt):
                 self.next_time_label.text = time_str
-                self.next_title_label.text = f"Now : {title}"
+                self.next_title_label.text = title or "--"
                 self.more_label.text = f"+{max(0, today_n)} more" if today_n else ""
 
             Clock.schedule_once(_apply, 0)
