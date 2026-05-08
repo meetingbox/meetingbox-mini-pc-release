@@ -8,8 +8,10 @@ Aligned with the actual backend routes in server/web/.
 import asyncio
 import json
 import logging
-from typing import List, Dict, Optional, AsyncIterator
+import os
 from datetime import datetime
+from typing import AsyncIterator, Dict, List, Optional
+from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
 import httpx
 import websockets
@@ -26,6 +28,31 @@ from config import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def build_websocket_url(base_ws_url: str) -> str:
+    """
+    Match server/web WebSocket auth: optional MEETINGBOX_WS_REQUIRE_AUTH (access_token query)
+    and/or MEETINGBOX_WS_SHARED_SECRET (token query). Harmless extras when server auth is off.
+    """
+    base = (base_ws_url or "").strip()
+    if not base:
+        return base
+    parts = urlparse(base)
+    q = dict(parse_qsl(parts.query, keep_blank_values=False))
+    tok = (get_device_auth_token() or "").strip()
+    if tok:
+        q["access_token"] = tok
+    secret = (
+        (os.getenv("BACKEND_WS_SHARED_SECRET") or os.getenv("MEETINGBOX_WS_SHARED_SECRET") or "")
+        .strip()
+    )
+    if secret:
+        q["token"] = secret
+    new_query = urlencode(q) if q else ""
+    return urlunparse(
+        (parts.scheme, parts.netloc, parts.path, parts.params, new_query, parts.fragment)
+    )
 
 
 class BackendClient:
@@ -50,7 +77,7 @@ class BackendClient:
       WiFi connect:    POST /api/device/wifi/connect       (device route)
       Check updates:   GET  /api/device/check-updates      (device route)
       Install update:  POST /api/device/install-update     (device route)
-      WebSocket:       ws://host:port/ws
+      WebSocket:       ws://host:port/ws (?access_token= / ?token= when server requires it)
       Claim pairing:   POST /api/devices/claim              (no auth)
     """
 
@@ -663,7 +690,8 @@ class BackendClient:
         """
         while True:
             try:
-                async with websockets.connect(self.ws_url) as ws:
+                ws_connect_url = build_websocket_url(self.ws_url)
+                async with websockets.connect(ws_connect_url) as ws:
                     logger.info("WebSocket connected")
                     self._ws_reconnect_attempts = 0
                     self.ws_connection = ws
