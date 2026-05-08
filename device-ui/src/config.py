@@ -147,9 +147,9 @@ def _parse_unit_scale(name: str, default: float) -> float:
 
 
 # Display resolution
-# Figma-aligned default is 1024x600; override via env vars as needed.
-DISPLAY_WIDTH = _parse_display_px("DISPLAY_WIDTH", 1024)
-DISPLAY_HEIGHT = _parse_display_px("DISPLAY_HEIGHT", 600)
+# Figma-aligned default is 1260x800 (landscape); override via env vars as needed.
+DISPLAY_WIDTH = _parse_display_px("DISPLAY_WIDTH", 1260)
+DISPLAY_HEIGHT = _parse_display_px("DISPLAY_HEIGHT", 800)
 
 # Display orientation
 DISPLAY_ORIENTATION = os.getenv('DISPLAY_ORIENTATION', 'landscape')
