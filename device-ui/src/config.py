@@ -629,6 +629,7 @@ try:
     ASSETS_DIR.mkdir(exist_ok=True)
     FONTS_DIR.mkdir(exist_ok=True)
     ICONS_DIR.mkdir(exist_ok=True)
+    (ASSETS_DIR / "welcome").mkdir(exist_ok=True)
 except OSError as e:
     logger.warning("Could not create assets/fonts/icons dirs: %s", e)
 
