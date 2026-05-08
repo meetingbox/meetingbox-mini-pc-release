@@ -211,10 +211,13 @@ def _format_next_meeting(nm) -> tuple[str, str]:
 # ---------------------------------------------------------------------------
 
 class _TappableCard(ButtonBehavior, FloatLayout):
-    """_Card variant that also acts as a button (on_release fires)."""
+    """_Card variant that also acts as a button (on_release fires).
 
-    def __init__(self, top=None, bot=None, border=None, radius=12, **kw):
-        # Accept legacy bg= kwarg so existing call-sites still work
+    draw_bg=False skips the canvas background so callers can supply their own
+    PNG background (avoids double-stacked rounded rectangles).
+    """
+
+    def __init__(self, top=None, bot=None, border=None, radius=12, draw_bg=True, **kw):
         _top = kw.pop("bg", top)
         if _top is None:
             _top = _CARD_TOP
@@ -223,20 +226,28 @@ class _TappableCard(ButtonBehavior, FloatLayout):
         _brd = border if border is not None else _CARD_BORDER
         super().__init__(**kw)
         self._r = radius
-        with self.canvas.before:
-            Color(1, 1, 1, 1)
-            self._bg_rect = RoundedRectangle(
-                pos=self.pos, size=self.size, radius=[radius],
-                texture=_grad(_top, bot),
-            )
-            Color(*_brd)
-            self._line = Line(
-                rounded_rectangle=(self.x, self.y, self.width, self.height, radius),
-                width=1.5,
-            )
-        self.bind(pos=self._sync, size=self._sync)
+        if draw_bg:
+            with self.canvas.before:
+                Color(1, 1, 1, 1)
+                self._bg_rect = RoundedRectangle(
+                    pos=self.pos, size=self.size, radius=[radius],
+                    texture=_grad(_top, bot),
+                )
+            # Border on top of children so it shows over background images
+            with self.canvas.after:
+                Color(*_brd)
+                self._line = Line(
+                    rounded_rectangle=(self.x, self.y, self.width, self.height, radius),
+                    width=0.8,
+                )
+            self.bind(pos=self._sync, size=self._sync)
+        else:
+            self._bg_rect = None
+            self._line = None
 
     def _sync(self, *_):
+        if self._bg_rect is None:
+            return
         r = self._r
         self._bg_rect.pos    = self.pos
         self._bg_rect.size   = self.size
@@ -246,7 +257,6 @@ class _TappableCard(ButtonBehavior, FloatLayout):
 
 class _Card(FloatLayout):
     def __init__(self, top=None, bot=None, border=None, radius=12, **kw):
-        # Accept legacy bg= kwarg so existing call-sites still work
         _top = kw.pop("bg", top)
         if _top is None:
             _top = _CARD_TOP
@@ -261,10 +271,13 @@ class _Card(FloatLayout):
                 pos=self.pos, size=self.size, radius=[radius],
                 texture=_grad(_top, bot),
             )
+        # Border lives in canvas.after → renders on top of child widgets
+        # (e.g. the hero background image won't cover the border line).
+        with self.canvas.after:
             Color(*_brd)
             self._line = Line(
                 rounded_rectangle=(self.x, self.y, self.width, self.height, radius),
-                width=1.5,
+                width=0.8,
             )
         self.bind(pos=self._sync, size=self._sync)
 
@@ -482,8 +495,8 @@ class HomeScreen(BaseScreen):
             ))
 
         # Clock + AM/PM in one markup label so they always appear flush together.
-        # Figma: clock at (29.87, 34.07) 154×77, AM at (202.58, 74.32) 36×27.
-        # Combined container spans from clock top to AM bottom: 77+40=117 px tall.
+        # Figma: clock at (29.87, 34.07) 154×77 Bold 64.93px; AM at 202.58, 74.32.
+        # valign="top" so the text starts exactly at the container top (Figma y=34.07).
         self._big_clock_hm = Label(
             text=(
                 f"[b][size={_ff(64.93)}]--:--[/size][/b]"
@@ -493,9 +506,9 @@ class HomeScreen(BaseScreen):
             font_name=_FONT,
             color=_WHITE,
             halign="left",
-            valign="bottom",
-            size_hint=(250 / CW, 90 / CH),
-            pos_hint={"x": 29.87 / CW, "y": (CH - 34.07 - 90) / CH},
+            valign="top",
+            size_hint=(250 / CW, 80 / CH),
+            pos_hint={"x": 29.87 / CW, "y": (CH - 34.07 - 80) / CH},
         )
         self._big_clock_hm.bind(size=self._big_clock_hm.setter("text_size"))
         card.add_widget(self._big_clock_hm)
@@ -547,18 +560,20 @@ class HomeScreen(BaseScreen):
         BW, BH = 268.39, 108.26
         BX, BY = 277.24, 235.68
 
+        # Use the exact Figma PNG if available — skip canvas gradient so we don't double-stack.
+        bg_src = _fp("recording_btn_bg.png")
+
         btn_card = _TappableCard(
             top=_REC_TOP, bot=_REC_BOT,
             border=(0.012, 0.306, 0.886, 1.0),
             radius=_ff(19.45),
+            draw_bg=(not bool(bg_src)),   # canvas bg only when no PNG
             size_hint=(BW / CW, BH / CH),
             pos_hint={"x": BX / CW, "y": (CH - BY - BH) / CH},
         )
         btn_card.bind(on_release=self._on_start_recording)
         self._rec_btn = btn_card
 
-        # Use exact Figma PNG background if available (has gradient + glow stroke + shadow)
-        bg_src = _fp("recording_btn_bg.png")
         if bg_src:
             btn_card.add_widget(Image(
                 source=bg_src,

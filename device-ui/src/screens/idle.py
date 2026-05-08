@@ -282,16 +282,17 @@ class IdleScreen(BaseScreen):
             ))
 
         # 3. Greeting "Good morning, J.K"  — (64.98, 49.44)  241×34  SemiBold 28.25px
+        # Height set to 38px (Figma=34) so the font line-box is never clipped.
         self.greeting_label = _lbl(
             _greeting(None), _FONT_SB, _ff(28.25), _WHITE,
-            size_hint=(_sw(500), _sh(34)),
-            pos_hint={"x": _x(64.98), "y": _y(49.44, 34)},
+            size_hint=(_sw(500), _sh(38)),
+            pos_hint={"x": _x(64.98), "y": _y(49.44, 38)},
         )
         root.add_widget(self.greeting_label)
 
         # 4 + 5. Big clock + AM/PM in one markup label so they stay flush.
-        # Figma: clock (64.98, 83.34) 334×169 Bold 141px | AM (440.72, 170.92) 77×59 SB 49px.
-        # Combined container: starts at clock top, tall enough for both.
+        # Figma: clock (64.98, 83.34) 334×169 Bold 141px | AM follows inline.
+        # valign="top" → text starts exactly at Figma y=83.34, adjacent to greeting.
         self._clock_combined = Label(
             text=(
                 f"[b][size={_ff(141.26)}]--:--[/size][/b]"
@@ -301,9 +302,9 @@ class IdleScreen(BaseScreen):
             font_name=_FONT,
             color=_WHITE,
             halign="left",
-            valign="bottom",
-            size_hint=(_sw(700), _sh(190)),
-            pos_hint={"x": _x(64.98), "y": _y(83.34, 190)},
+            valign="top",
+            size_hint=(_sw(700), _sh(169)),
+            pos_hint={"x": _x(64.98), "y": _y(83.34, 169)},
         )
         self._clock_combined.bind(size=self._clock_combined.setter("text_size"))
         root.add_widget(self._clock_combined)
