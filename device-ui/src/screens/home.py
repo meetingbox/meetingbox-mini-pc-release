@@ -395,36 +395,37 @@ class HomeScreen(BaseScreen):
     # -----------------------------------------------------------------------
 
     def _build_header(self, root: FloatLayout) -> None:
-        # Avatar badge  (24.01, 21.19)  76.28 × 76.28
-        av_src = _fp("avatar_badge.png")
-        if av_src:
-            root.add_widget(Image(
-                source=av_src,
-                size_hint=(_sw(76.28), _sh(76.28)),
-                pos_hint={"x": _x(24.01), "y": _y(21.19, 76.28)},
-                fit_mode="contain",
-            ))
+        # No back button — home is the root screen; nothing to go back to.
 
-        # Greeting  (122.89, 33.9)  361 × 51  SemiBold 42.38px  #FFF
+        # Greeting  (24.01, 33.9)  — shifted left to fill the space left by the
+        # removed back badge. Figma original x=122.89 assumed a back-badge on the
+        # left; we start from x=24.01 now so the text uses the full left margin.
         self.greeting_label = _lbl(
             _greeting_name(None), _FONT_SB, _ff(42.38), _WHITE,
-            size_hint=(_sw(600), _sh(51)),
-            pos_hint={"x": _x(122.89), "y": _y(33.9, 51)},
+            size_hint=(_sw(700), _sh(51)),
+            pos_hint={"x": _x(24.01), "y": _y(33.9, 51)},
         )
         root.add_widget(self.greeting_label)
 
         # Listening pill  (805.16, 21.19)  302.29 × 76.28
         self._build_listening_pill(root)
 
-        # Settings badge  (1159.71, 21.19)  76.28 × 76.28
+        # Settings badge  (1159.71, 21.19)  76.28 × 76.28  — tappable → settings screen
         sg_src = _fp("icon_settings.png")
         if sg_src:
-            root.add_widget(Image(
-                source=sg_src,
+            sg_btn = _TappableCard(
+                draw_bg=False,
                 size_hint=(_sw(76.28), _sh(76.28)),
                 pos_hint={"x": _x(1159.71), "y": _y(21.19, 76.28)},
+            )
+            sg_btn.add_widget(Image(
+                source=sg_src,
+                size_hint=(1, 1),
+                pos_hint={"x": 0, "y": 0},
                 fit_mode="contain",
             ))
+            sg_btn.bind(on_release=lambda *_: self.goto("settings"))
+            root.add_widget(sg_btn)
 
     def _build_listening_pill(self, root: FloatLayout) -> None:
         """Voice-state pill  (805.16, 21.19)  302.29 × 76.28  r=76.28."""
