@@ -656,6 +656,16 @@ class HomeScreen(BaseScreen):
         )
         card.add_widget(self.more_label)
 
+        # Transparent tappable overlay covering the entire next-up group
+        # (calendar icon + time + title + "+N more" area → navigate to calendar)
+        tap = _TappableCard(
+            draw_bg=False,
+            size_hint=(260 / CW, 140 / CH),
+            pos_hint={"x": GX / CW, "y": (CH - GY - 140) / CH},
+        )
+        tap.bind(on_release=lambda *_: self.goto("calendar", transition="slide_left"))
+        card.add_widget(tap)
+
     # -----------------------------------------------------------------------
     # Meeting summary card  (611.64, 114.42)  307.94 × 371.5
     # -----------------------------------------------------------------------
@@ -1020,6 +1030,14 @@ class HomeScreen(BaseScreen):
                           "y": (CH - 16.95 - 45.2 - 39.55) / CH},
                 fit_mode="contain",
             ))
+
+        def _sched_touch(w, t):
+            lx, ly = w.to_widget(t.x, t.y)
+            if w.collide_point(lx, ly):
+                self.goto("calendar", transition="slide_left")
+                return True
+            return False
+        card.bind(on_touch_up=_sched_touch)
 
         root.add_widget(card)
 

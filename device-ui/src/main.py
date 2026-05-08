@@ -271,6 +271,7 @@ from screens.meetings import MeetingsScreen
 from screens.meeting_detail import MeetingDetailScreen
 from screens.wifi import WiFiScreen
 from screens.system import SystemScreen
+from screens.calendar import CalendarScreen
 
 # ------------------------------------------------------------------
 # Logging
@@ -625,6 +626,7 @@ class MeetingBoxApp(App):
         self.screen_manager.add_widget(MeetingDetailScreen(name='meeting_detail'))
         self.screen_manager.add_widget(WiFiScreen(name='wifi'))
         self.screen_manager.add_widget(SystemScreen(name='system'))
+        self.screen_manager.add_widget(CalendarScreen(name='calendar'))
 
         # BOOT: always start with splash
         self.screen_manager.current = 'splash'

@@ -482,6 +482,32 @@ class BackendClient:
             raise
 
     # ==================================================================
+    # CALENDAR API
+    # ==================================================================
+
+    async def get_calendar_week(self, start_date: str, end_date: str) -> Dict:
+        """GET /api/calendar/week?start=YYYY-MM-DD&end=YYYY-MM-DD
+
+        Returns meetings grouped by date:
+        {
+          "days": {
+            "2026-05-04": {"meetings": [{id, title, start, end, ...}]},
+            ...
+          }
+        }
+        """
+        try:
+            resp = await self.client.get(
+                f"{self.base_url}/api/calendar/week",
+                params={"start": start_date, "end": end_date},
+            )
+            resp.raise_for_status()
+            return resp.json()
+        except Exception as e:
+            logger.debug("get_calendar_week failed: %s", e)
+            return {"days": {}}
+
+    # ==================================================================
     # SYSTEM API
     # ==================================================================
 

@@ -285,6 +285,77 @@ class MockBackendClient:
             "pending_actions_total": 2,
         }
 
+    async def get_calendar_week(self, start_date: str, end_date: str) -> Dict:
+        """Mock weekly calendar data with realistic meeting density."""
+        await asyncio.sleep(0.15)
+        from datetime import date as _date, timedelta as _td
+
+        def _iso(d): return d.isoformat()
+
+        try:
+            ws = _date.fromisoformat(start_date)
+        except Exception:
+            return {"days": {}}
+
+        # Realistic weekly patterns: busy Mon/Wed/Thu, moderate Tue/Fri, free Sat/Sun
+        _templates = [
+            # Monday — 4 meetings (busy)
+            [
+                ("09:00", "Strategy Sync", 60),
+                ("10:30", "Engineering Standup", 30),
+                ("13:00", "Product Review", 90),
+                ("16:00", "1:1 with Manager", 60),
+            ],
+            # Tuesday — 2 meetings (moderate)
+            [
+                ("10:00", "Design Critique", 60),
+                ("15:00", "Sprint Planning", 90),
+            ],
+            # Wednesday — 3 meetings (moderate)
+            [
+                ("09:30", "All-Hands Meeting", 60),
+                ("11:00", "Client Call – Acme", 45),
+                ("14:00", "Roadmap Discussion", 60),
+            ],
+            # Thursday — 4 meetings (busy)
+            [
+                ("09:00", "Architecture Review", 90),
+                ("11:30", "QA Sync", 30),
+                ("14:00", "Stakeholder Update", 60),
+                ("16:30", "Team Retrospective", 60),
+            ],
+            # Friday — 1 meeting (light)
+            [
+                ("10:00", "Weekly Wrap-Up", 30),
+            ],
+            # Saturday — no meetings
+            [],
+            # Sunday — no meetings
+            [],
+        ]
+
+        days: dict = {}
+        for i, template in enumerate(_templates):
+            d  = ws + _td(days=i)
+            ds = _iso(d)
+            meetings = []
+            for j, (hhmm, title, dur_min) in enumerate(template):
+                h, m   = map(int, hhmm.split(":"))
+                start  = d.isoformat() + f"T{h:02d}:{m:02d}:00+05:30"
+                eh, em = divmod(h * 60 + m + dur_min, 60)
+                end    = d.isoformat() + f"T{eh:02d}:{em:02d}:00+05:30"
+                meetings.append({
+                    "id": f"mock-{ds}-{j}",
+                    "title": title,
+                    "start": start,
+                    "end":   end,
+                    "start_time": start,
+                    "duration": dur_min * 60,
+                })
+            days[ds] = {"meetings": meetings}
+
+        return {"days": days}
+
     async def get_system_info(self) -> Dict:
         await asyncio.sleep(0.2)
         return {
