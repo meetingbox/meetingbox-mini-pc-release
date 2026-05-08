@@ -11,11 +11,13 @@ import logging
 from datetime import datetime
 
 from kivy.clock import Clock
-from kivy.graphics import Color, Line, Rectangle, RoundedRectangle
+from kivy.core.image import Image as CoreImage
+from kivy.graphics import Color, Ellipse, Line, Rectangle, RoundedRectangle
 from kivy.uix.behaviors import ButtonBehavior
 from kivy.uix.floatlayout import FloatLayout
 from kivy.uix.image import Image
 from kivy.uix.label import Label
+from kivy.uix.widget import Widget
 
 from async_helper import run_async
 from components.modal_dialog import ModalDialog
@@ -100,6 +102,66 @@ def _fp(name: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Gradient fill helper (creates a 1×2 texture → vertical gradient in Kivy)
+# ---------------------------------------------------------------------------
+
+_GRAD_CACHE: dict = {}
+
+
+def _grad(top: tuple, bot: tuple):
+    """Return a cached 1×2 Texture that produces a vertical gradient fill."""
+    from kivy.graphics.texture import Texture  # local import – Kivy not ready at module load
+    key = (top, bot)
+    if key not in _GRAD_CACHE:
+        tex = Texture.create(size=(1, 2), colorfmt="rgba")
+        def _b(c): return [min(255, max(0, int(x * 255))) for x in c]
+        # Kivy blit_buffer is bottom-up: first row = bottom of shape
+        tex.blit_buffer(bytes(_b(bot) + _b(top)), colorfmt="rgba", bufferfmt="ubyte")
+        tex.mag_filter = "linear"
+        tex.min_filter = "linear"
+        tex.wrap = "clamp_to_edge"
+        _GRAD_CACHE[key] = tex
+    return _GRAD_CACHE[key]
+
+
+# Gradient stop colours (all from Figma)
+_CARD_TOP = (0.00392, 0.06667, 0.21569, 1.0)   # #011137  card gradient top
+_CARD_BOT = (0.0,     0.03922, 0.14902, 1.0)   # #000A26  card gradient bottom
+_PILL_TOP = (0.0,     0.05882, 0.20000, 1.0)   # #000F33  pill top
+_PILL_BOT = (0.0,     0.03922, 0.14902, 1.0)   # #000A26  pill bottom
+_REC_TOP  = (0.0,     0.21961, 0.71373, 1.0)   # #0038B6  recording btn top
+_REC_BOT  = (0.0,     0.13725, 0.46275, 1.0)   # #002376  recording btn bottom
+
+
+# ---------------------------------------------------------------------------
+# Circular image widget (renders an image clipped to an ellipse)
+# ---------------------------------------------------------------------------
+
+class _CircularImg(Widget):
+    """Renders *source* as a circle/ellipse using canvas Ellipse + texture."""
+
+    def __init__(self, source: str, **kw):
+        super().__init__(**kw)
+        self._src = source
+        self._tex = None
+        self.bind(pos=self._draw, size=self._draw)
+        Clock.schedule_once(self._draw, 0)
+
+    def _draw(self, *_):
+        if not self._src:
+            return
+        self.canvas.clear()
+        with self.canvas:
+            try:
+                if self._tex is None:
+                    self._tex = CoreImage(self._src).texture
+                Color(1, 1, 1, 1)
+                Ellipse(pos=self.pos, size=self.size, texture=self._tex)
+            except Exception as exc:
+                logger.debug("_CircularImg load failed %s: %s", self._src, exc)
+
+
+# ---------------------------------------------------------------------------
 # Label factory
 # ---------------------------------------------------------------------------
 
@@ -150,19 +212,27 @@ def _format_next_meeting(nm) -> tuple[str, str]:
 
 class _TappableCard(ButtonBehavior, FloatLayout):
     """_Card variant that also acts as a button (on_release fires)."""
-    def __init__(self, bg=None, border=None, radius=12, **kw):
+
+    def __init__(self, top=None, bot=None, border=None, radius=12, **kw):
+        # Accept legacy bg= kwarg so existing call-sites still work
+        _top = kw.pop("bg", top)
+        if _top is None:
+            _top = _CARD_TOP
+        if bot is None:
+            bot = _CARD_BOT
+        _brd = border if border is not None else _CARD_BORDER
         super().__init__(**kw)
         self._r = radius
-        _bg  = bg     if bg     is not None else _CARD_BG
-        _brd = border if border is not None else _CARD_BORDER
         with self.canvas.before:
-            Color(*_bg)
-            self._bg_rect = RoundedRectangle(pos=self.pos, size=self.size,
-                                             radius=[radius])
+            Color(1, 1, 1, 1)
+            self._bg_rect = RoundedRectangle(
+                pos=self.pos, size=self.size, radius=[radius],
+                texture=_grad(_top, bot),
+            )
             Color(*_brd)
-            self._line    = Line(
+            self._line = Line(
                 rounded_rectangle=(self.x, self.y, self.width, self.height, radius),
-                width=1,
+                width=1.5,
             )
         self.bind(pos=self._sync, size=self._sync)
 
@@ -175,23 +245,33 @@ class _TappableCard(ButtonBehavior, FloatLayout):
 
 
 class _Card(FloatLayout):
-    def __init__(self, bg=_CARD_BG, border=_CARD_BORDER, radius=12, **kw):
+    def __init__(self, top=None, bot=None, border=None, radius=12, **kw):
+        # Accept legacy bg= kwarg so existing call-sites still work
+        _top = kw.pop("bg", top)
+        if _top is None:
+            _top = _CARD_TOP
+        if bot is None:
+            bot = _CARD_BOT
+        _brd = border if border is not None else _CARD_BORDER
         super().__init__(**kw)
         self._r = radius
         with self.canvas.before:
-            Color(*bg)
-            self._bg   = RoundedRectangle(pos=self.pos, size=self.size, radius=[radius])
-            Color(*border)
+            Color(1, 1, 1, 1)
+            self._bg = RoundedRectangle(
+                pos=self.pos, size=self.size, radius=[radius],
+                texture=_grad(_top, bot),
+            )
+            Color(*_brd)
             self._line = Line(
                 rounded_rectangle=(self.x, self.y, self.width, self.height, radius),
-                width=1,
+                width=1.5,
             )
         self.bind(pos=self._sync, size=self._sync)
 
     def _sync(self, *_):
         r = self._r
-        self._bg.pos   = self.pos
-        self._bg.size  = self.size
+        self._bg.pos    = self.pos
+        self._bg.size   = self.size
         self._bg.radius = [r]
         self._line.rounded_rectangle = (self.x, self.y, self.width, self.height, r)
 
@@ -202,7 +282,9 @@ class _Card(FloatLayout):
 
 class _BriefCardRow(_Card):
     def __init__(self, **kw):
-        kw.setdefault("bg",     _ROW_BG)
+        # Brief sub-rows use a solid dark bg (both gradient stops equal)
+        kw.setdefault("top",    _ROW_BG)
+        kw.setdefault("bot",    _ROW_BG)
         kw.setdefault("border", _ROW_BORDER)
         kw.setdefault("radius", _ff(16.82))
         super().__init__(**kw)
@@ -240,7 +322,6 @@ class HomeScreen(BaseScreen):
         # Public label refs (accessed by business-logic helpers)
         self.greeting_label:      Label | None = None
         self._big_clock_hm:       Label | None = None
-        self._clock_ampm:         Label | None = None
         self.date_label:          Label | None = None
         self.health_label:        Label | None = None  # temperature / offline
         self._wx_condition:       Label | None = None
@@ -335,7 +416,7 @@ class HomeScreen(BaseScreen):
     def _build_listening_pill(self, root: FloatLayout) -> None:
         """Voice-state pill  (805.16, 21.19)  302.29 × 76.28  r=76.28."""
         PW, PH = 302.29, 76.28
-        pill = _Card(bg=_PILL_BG,
+        pill = _Card(top=_PILL_TOP, bot=_PILL_BOT,
                      border=(0.129, 0.157, 0.294, 1.0),
                      radius=_ff(38),
                      size_hint=(_sw(PW), _sh(PH)),
@@ -382,7 +463,8 @@ class HomeScreen(BaseScreen):
 
     def _build_hero_card(self, root: FloatLayout) -> None:
         CW, CH = 579.15, 372.03
-        card = _Card(bg=_HERO_BG, border=_CARD_BORDER,
+        # Hero card — Figma fill is solid #010C25; gradient runs only in the border.
+        card = _Card(top=_HERO_BG, bot=_HERO_BG, border=_CARD_BORDER,
                      radius=_ff(19.48),
                      size_hint=(_sw(CW), _sh(CH)),
                      pos_hint={"x": _x(24.01), "y": _y(114.42, CH)})
@@ -399,22 +481,24 @@ class HomeScreen(BaseScreen):
                 keep_ratio=False,
             ))
 
-        # Clock group at (29.87, 34.07) in card
-        # "11:01"  (0, 0) in group → abs (29.87, 34.07)  154 × 77  Bold 64.93px
-        self._big_clock_hm = _lbl(
-            "--:--", _FONT, _ff(64.93), _WHITE, bold=True,
-            size_hint=(240 / CW, 77 / CH),
-            pos_hint={"x": 29.87 / CW, "y": (CH - 34.07 - 77) / CH},
+        # Clock + AM/PM in one markup label so they always appear flush together.
+        # Figma: clock at (29.87, 34.07) 154×77, AM at (202.58, 74.32) 36×27.
+        # Combined container spans from clock top to AM bottom: 77+40=117 px tall.
+        self._big_clock_hm = Label(
+            text=(
+                f"[b][size={_ff(64.93)}]--:--[/size][/b]"
+                f"[size={_ff(22.72)}][color=B6BAF2] --[/color][/size]"
+            ),
+            markup=True,
+            font_name=_FONT,
+            color=_WHITE,
+            halign="left",
+            valign="bottom",
+            size_hint=(250 / CW, 90 / CH),
+            pos_hint={"x": 29.87 / CW, "y": (CH - 34.07 - 90) / CH},
         )
+        self._big_clock_hm.bind(size=self._big_clock_hm.setter("text_size"))
         card.add_widget(self._big_clock_hm)
-
-        # "AM"  (172.71, 40.25) in group → abs (202.58, 74.32)  36 × 27  SemiBold 22.72px
-        self._clock_ampm = _lbl(
-            "--", _FONT_SB, _ff(22.72), _MUTED,
-            size_hint=(60 / CW, 27 / CH),
-            pos_hint={"x": 202.58 / CW, "y": (CH - 74.32 - 27) / CH},
-        )
-        card.add_widget(self._clock_ampm)
 
         # Date  (0, 77.26) in group → abs (29.87, 111.33)  150 × 23  SemiBold 19.48px
         self.date_label = _lbl(
@@ -464,7 +548,7 @@ class HomeScreen(BaseScreen):
         BX, BY = 277.24, 235.68
 
         btn_card = _TappableCard(
-            bg=(0.0, 0.22, 0.714, 1.0),
+            top=_REC_TOP, bot=_REC_BOT,
             border=(0.012, 0.306, 0.886, 1.0),
             radius=_ff(19.45),
             size_hint=(BW / CW, BH / CH),
@@ -472,6 +556,18 @@ class HomeScreen(BaseScreen):
         )
         btn_card.bind(on_release=self._on_start_recording)
         self._rec_btn = btn_card
+
+        # Use exact Figma PNG background if available (has gradient + glow stroke + shadow)
+        bg_src = _fp("recording_btn_bg.png")
+        if bg_src:
+            btn_card.add_widget(Image(
+                source=bg_src,
+                size_hint=(1, 1),
+                pos_hint={"x": 0, "y": 0},
+                fit_mode="fill",
+                allow_stretch=True,
+                keep_ratio=False,
+            ))
 
         # Mic orb  (17.5, 20.74) in button  65.48 × 65.48
         orb_src = _fp("mic_orb_mini.png")
@@ -603,26 +699,22 @@ class HomeScreen(BaseScreen):
         )
         card.add_widget(self.last_actions_label)
 
-        # Avatar 1  (28.25, 274.04)  46.19 × 46.04
+        # Avatar 1  (28.25, 274.04)  46.19 × 46.04  — circular via Ellipse texture
         av1_src = _fp("avatar_1.png") or _fp("avatar_photo_1.png")
         if av1_src:
-            card.add_widget(Image(
+            card.add_widget(_CircularImg(
                 source=av1_src,
                 size_hint=(46.19 / CW, 46.04 / CH),
                 pos_hint={"x": 28.25 / CW, "y": (CH - 274.04 - 46.04) / CH},
-                fit_mode="cover",
-                allow_stretch=True,
             ))
 
-        # Avatar 2  (85.26, 274.99)  46.19 × 46.04
+        # Avatar 2  (85.26, 274.99)  46.19 × 46.04  — circular
         av2_src = _fp("avatar_2.png") or _fp("avatar_photo_2.png")
         if av2_src:
-            card.add_widget(Image(
+            card.add_widget(_CircularImg(
                 source=av2_src,
                 size_hint=(46.19 / CW, 46.04 / CH),
                 pos_hint={"x": 85.26 / CW, "y": (CH - 274.99 - 46.04) / CH},
-                fit_mode="cover",
-                allow_stretch=True,
             ))
 
         # "+2 badge"  (142.27, 274.04)  45.61 × 45.61
@@ -1279,9 +1371,14 @@ class HomeScreen(BaseScreen):
         self.greeting_label.text = _greeting_name(
             getattr(self.app, "user_name", "") or ""
         )
-        self._big_clock_hm.text  = now.strftime("%I:%M").lstrip("0") or "12:00"
-        self._clock_ampm.text    = now.strftime("%p")
-        self.date_label.text     = now.strftime("%A, %B ") + str(now.day)
+        hm = now.strftime("%I:%M").lstrip("0") or "12:00"
+        ap = now.strftime("%p")
+        # Combined markup keeps time and AM/PM flush regardless of time width
+        self._big_clock_hm.text = (
+            f"[b][size={_ff(64.93)}]{hm}[/size][/b]"
+            f"[size={_ff(22.72)}][color=B6BAF2] {ap}[/color][/size]"
+        )
+        self.date_label.text = now.strftime("%A, %B ") + str(now.day)
 
     # -----------------------------------------------------------------------
     # System status

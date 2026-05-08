@@ -17,6 +17,30 @@ from kivy.uix.floatlayout import FloatLayout
 from kivy.uix.image import Image
 from kivy.uix.label import Label
 
+# ---------------------------------------------------------------------------
+# Gradient fill helper (see home.py for docs; duplicated to keep files independent)
+# ---------------------------------------------------------------------------
+
+_GRAD_CACHE: dict = {}
+
+
+def _grad(top: tuple, bot: tuple):
+    from kivy.graphics.texture import Texture
+    key = (top, bot)
+    if key not in _GRAD_CACHE:
+        tex = Texture.create(size=(1, 2), colorfmt="rgba")
+        def _b(c): return [min(255, max(0, int(x * 255))) for x in c]
+        tex.blit_buffer(bytes(_b(bot) + _b(top)), colorfmt="rgba", bufferfmt="ubyte")
+        tex.mag_filter = "linear"
+        tex.min_filter = "linear"
+        tex.wrap = "clamp_to_edge"
+        _GRAD_CACHE[key] = tex
+    return _GRAD_CACHE[key]
+
+
+_REC_TOP = (0.0, 0.21961, 0.71373, 1.0)   # #0038B6
+_REC_BOT = (0.0, 0.13725, 0.46275, 1.0)   # #002376
+
 from async_helper import run_async
 from config import (
     ASSETS_DIR,
@@ -146,21 +170,39 @@ class _RecordingCard(ButtonBehavior, FloatLayout):
         super().__init__(**kwargs)
 
         CW, CH = self._CW, self._CH
+        r = _ff(42.38)
 
-        # Gradient background — drawn with canvas.before
-        with self.canvas.before:
-            # Top colour of Figma gradient: rgba(0,56,182)
-            Color(0.0, 0.220, 0.714, 1.0)
-            self._bg = RoundedRectangle(
-                pos=self.pos, size=self.size, radius=[_ff(42.38)]
-            )
-        self.bind(
-            pos=lambda *_: setattr(self._bg, "pos", self.pos),
-            size=lambda *_: (
-                setattr(self._bg, "size", self.size),
-                setattr(self._bg, "radius", [_ff(42.38)]),
-            ),
-        )
+        # Background: use exact Figma PNG if available (gradient fill + glow stroke)
+        bg_src = _asset("recording_btn_bg.png")
+        if bg_src:
+            self.add_widget(Image(
+                source=bg_src,
+                size_hint=(1, 1),
+                pos_hint={"x": 0, "y": 0},
+                fit_mode="fill",
+                allow_stretch=True,
+                keep_ratio=False,
+            ))
+        else:
+            # Gradient fallback via texture
+            with self.canvas.before:
+                Color(1, 1, 1, 1)
+                self._bg = RoundedRectangle(
+                    pos=self.pos, size=self.size, radius=[r],
+                    texture=_grad(_REC_TOP, _REC_BOT),
+                )
+                Color(0.012, 0.306, 0.886, 1.0)
+                self._line = Line(
+                    rounded_rectangle=(self.x, self.y, self.width, self.height, r),
+                    width=1.5,
+                )
+            def _sync(*_):
+                self._bg.pos  = self.pos
+                self._bg.size = self.size
+                self._line.rounded_rectangle = (
+                    self.x, self.y, self.width, self.height, r
+                )
+            self.bind(pos=_sync, size=_sync)
 
         # Mic orb — at (38.14, 45.2) in card, 142.67×142.67
         orb_src = _asset("mic_orb.png")
@@ -197,13 +239,14 @@ class IdleScreen(BaseScreen):
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
-        self._clock_event       = None
+        self._clock_event        = None
         self._home_summary_event = None
-        self._weather           = get_weather_client()
-        self.greeting_label     = None
-        self.time_label         = None
-        self.ampm_label         = None
-        self.date_label         = None
+        self._weather            = get_weather_client()
+        self.greeting_label      = None
+        self._clock_combined     = None
+        self.time_label          = None   # alias → _clock_combined after _build_ui
+        self.ampm_label          = None   # no longer a separate widget
+        self.date_label          = None
         self.temp_label         = None
         self.condition_label    = None
         self.weather_icon       = None
@@ -246,21 +289,27 @@ class IdleScreen(BaseScreen):
         )
         root.add_widget(self.greeting_label)
 
-        # 4. Big clock "11:01"  — (64.98, 83.34)  334×169  Bold 141.26px
-        self.time_label = _lbl(
-            "--:--", _FONT, _ff(141.26), _WHITE, bold=True,
-            size_hint=(_sw(520), _sh(169)),
-            pos_hint={"x": _x(64.98), "y": _y(83.34, 169)},
+        # 4 + 5. Big clock + AM/PM in one markup label so they stay flush.
+        # Figma: clock (64.98, 83.34) 334×169 Bold 141px | AM (440.72, 170.92) 77×59 SB 49px.
+        # Combined container: starts at clock top, tall enough for both.
+        self._clock_combined = Label(
+            text=(
+                f"[b][size={_ff(141.26)}]--:--[/size][/b]"
+                f"[size={_ff(49.44)}][color=B6BAF2] --[/color][/size]"
+            ),
+            markup=True,
+            font_name=_FONT,
+            color=_WHITE,
+            halign="left",
+            valign="bottom",
+            size_hint=(_sw(700), _sh(190)),
+            pos_hint={"x": _x(64.98), "y": _y(83.34, 190)},
         )
-        root.add_widget(self.time_label)
-
-        # 5. "AM" / "PM"  — (440.72, 170.92)  77×59  SemiBold 49.44px  #B6BAF2
-        self.ampm_label = _lbl(
-            "", _FONT_SB, _ff(49.44), _MUTED,
-            size_hint=(_sw(120), _sh(59)),
-            pos_hint={"x": _x(440.72), "y": _y(170.92, 59)},
-        )
-        root.add_widget(self.ampm_label)
+        self._clock_combined.bind(size=self._clock_combined.setter("text_size"))
+        root.add_widget(self._clock_combined)
+        # Keep legacy refs alive in case any caller checks them
+        self.time_label = self._clock_combined
+        self.ampm_label = None
 
         # 6. Date "Tuesday, May 21"  — (64.98, 251.44)  325×51  SemiBold 42.38px
         self.date_label = _lbl(
@@ -425,8 +474,13 @@ class IdleScreen(BaseScreen):
         self.greeting_label.text = _greeting(
             getattr(self.app, "current_display_name", None)
         )
-        self.time_label.text = now.strftime("%I:%M").lstrip("0") or "12:00"
-        self.ampm_label.text = now.strftime("%p")
+        hm = now.strftime("%I:%M").lstrip("0") or "12:00"
+        ap = now.strftime("%p")
+        # Combined markup keeps time and AM/PM flush regardless of digit count
+        self._clock_combined.text = (
+            f"[b][size={_ff(141.26)}]{hm}[/size][/b]"
+            f"[size={_ff(49.44)}][color=B6BAF2] {ap}[/color][/size]"
+        )
         self.date_label.text = now.strftime("%A, %B ") + str(now.day)
 
     def _update_weather(self, snapshot) -> None:
