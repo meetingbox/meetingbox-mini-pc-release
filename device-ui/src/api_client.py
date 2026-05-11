@@ -406,6 +406,47 @@ class BackendClient:
             logger.error("Assistant intent failed: %s", e)
             raise
 
+    async def approve_assistant_pending(self, pending_id: str) -> Dict:
+        """POST /api/assistant/pending-actions/{id}/approve"""
+        try:
+            resp = await self.client.post(
+                f"{self.base_url}/api/assistant/pending-actions/{pending_id}/approve",
+                timeout=120.0,
+            )
+            resp.raise_for_status()
+            return resp.json()
+        except Exception as e:
+            logger.error("approve_assistant_pending failed: %s", e)
+            raise
+
+    async def reject_assistant_pending(self, pending_id: str) -> Dict:
+        """POST /api/assistant/pending-actions/{id}/reject"""
+        try:
+            resp = await self.client.post(
+                f"{self.base_url}/api/assistant/pending-actions/{pending_id}/reject",
+                timeout=60.0,
+            )
+            resp.raise_for_status()
+            return resp.json()
+        except Exception as e:
+            logger.error("reject_assistant_pending failed: %s", e)
+            raise
+
+    async def patch_assistant_pending_payload(
+            self, pending_id: str, payload: Dict) -> Dict:
+        """PATCH /api/assistant/pending-actions/{id} (email or calendar draft)."""
+        try:
+            resp = await self.client.patch(
+                f"{self.base_url}/api/assistant/pending-actions/{pending_id}",
+                json={"payload": payload},
+                timeout=60.0,
+            )
+            resp.raise_for_status()
+            return resp.json()
+        except Exception as e:
+            logger.error("patch_assistant_pending_payload failed: %s", e)
+            raise
+
     # ==================================================================
     # SETTINGS API (device route)
     # ==================================================================

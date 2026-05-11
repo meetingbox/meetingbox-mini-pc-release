@@ -515,6 +515,9 @@ class MeetingBoxApp(App):
         self._transcript_cta_poll_meeting_id = None
         self._transcript_cta_satisfied_meeting_id = None
 
+        # Restore processing UI if summary/transcript-ready arrived before the processing screen.
+        self._processing_summary_cache = {}
+
         # WebSocket
         self.ws_task = None
         self._pairing_poll = None
@@ -1121,6 +1124,10 @@ class MeetingBoxApp(App):
 
     def on_recording_stopped(self, data):
         self.recording_state['active'] = False
+        try:
+            self._processing_summary_cache.clear()
+        except Exception:
+            pass
         sid = data.get('session_id') or self.current_session_id
         self._kick_post_stop_meeting_polls(sid)
         self._voice_start_in_flight = False
@@ -1258,15 +1265,27 @@ class MeetingBoxApp(App):
     def on_summary_complete(self, data):
         """Handle summary_complete event from AI service (if it fires separately)."""
         meeting_id = data.get('meeting_id')
-        summary = data.get('summary', {})
-        if meeting_id:
+        summary = data.get('summary') or {}
+        if not meeting_id:
+            return
+        if isinstance(summary, dict) and summary.get('status') == 'failed':
+            err = str(summary.get('error') or 'Report could not be generated.')
             Clock.schedule_once(
-                lambda _dt: self._show_processing_summary_ready(meeting_id, summary),
+                lambda _dt, mid=meeting_id, msg=err: self._show_processing_summary_failed(mid, msg),
                 0,
             )
+            return
+        Clock.schedule_once(
+            lambda _dt, mid=meeting_id, sm=summary: self._show_processing_summary_ready(mid, sm),
+            0,
+        )
 
     def _show_processing_summary_ready(self, meeting_id: str, summary: dict):
         """Keep user on processing screen and enable CTA once summary is ready."""
+        try:
+            self._processing_summary_cache[meeting_id] = {'ok': True, 'summary': summary or {}}
+        except Exception:
+            pass
         # Any path reaching here is the authoritative "summary ready" signal —
         # silence the fallback poll so we don't duplicate work.
         if self._summary_poll_meeting_id == meeting_id:
@@ -1278,6 +1297,25 @@ class MeetingBoxApp(App):
             return
         if hasattr(processing, 'on_summary_ready'):
             processing.on_summary_ready(meeting_id, summary or {})
+
+    def _show_processing_summary_failed(self, meeting_id: str, message: str):
+        """Summary/report failed — still allow transcript-only review when available."""
+        if self._summary_poll_meeting_id == meeting_id:
+            self._summary_poll_done = True
+        try:
+            self._processing_summary_cache[meeting_id] = {
+                'ok': False,
+                'error': message or 'Report unavailable.',
+            }
+        except Exception:
+            pass
+        try:
+            processing = self.screen_manager.get_screen('processing')
+        except Exception as e:
+            logger.debug('Processing screen unavailable for summary-failed update: %s', e)
+            return
+        if hasattr(processing, 'on_summary_failed'):
+            processing.on_summary_failed(meeting_id, message or 'Report unavailable.')
 
     def _start_summary_poll(self, meeting_id: str):
         """Kick off the HTTP fallback poll that watches for a saved summary.
@@ -1326,6 +1364,28 @@ class MeetingBoxApp(App):
             "Summary poll gave up for meeting %s (no summary within 5 min)",
             meeting_id,
         )
+        detail = None
+        try:
+            detail = await self.backend.get_meeting_detail(meeting_id)
+        except Exception as e:
+            logger.debug('Summary poll final detail fetch failed: %s', e)
+        segments = (detail or {}).get('segments') or []
+        if segments:
+            Clock.schedule_once(
+                lambda _dt, mid=meeting_id: self._show_processing_summary_failed(
+                    mid,
+                    'Full report is still unavailable — you can open the transcript.',
+                ),
+                0,
+            )
+        else:
+            Clock.schedule_once(
+                lambda _dt: self.show_error_screen(
+                    'Processing timeout',
+                    'No transcript or summary appeared. Check your connection and try again.',
+                ),
+                0,
+            )
 
     def _start_transcript_cta_poll(self, meeting_id: str):
         if not meeting_id:
@@ -1389,6 +1449,24 @@ class MeetingBoxApp(App):
             "Transcript CTA poll gave up for meeting %s (no segments within ~6 min)",
             meeting_id,
         )
+        detail = None
+        try:
+            detail = await self.backend.get_meeting_detail(meeting_id)
+        except Exception as e:
+            logger.debug('Transcript CTA poll final detail fetch failed: %s', e)
+        if (detail or {}).get('segments'):
+            Clock.schedule_once(
+                lambda _dt, mid=meeting_id: self._deliver_transcript_cta_from_poll(mid),
+                0,
+            )
+        else:
+            Clock.schedule_once(
+                lambda _dt: self.show_error_screen(
+                    'Processing timeout',
+                    'Transcript was not saved in time. Check your connection and try again.',
+                ),
+                0,
+            )
 
     def _auto_summarize(self, meeting_id: str):
         """After transcription completes, auto-trigger summarization then show review screen."""

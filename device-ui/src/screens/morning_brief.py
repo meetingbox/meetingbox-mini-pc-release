@@ -678,6 +678,22 @@ class MorningBriefScreen(BaseScreen):
             if self._hdr_subtitle:
                 self._hdr_subtitle.text = f"Here's your overview for today, {nice}"
 
+            pa = data.get("pending_assistant") or {}
+            try:
+                pend_n = int(pa.get("count_pending", pa.get("count") or 0) or 0)
+            except (TypeError, ValueError):
+                pend_n = 0
+            items = pa.get("items") or []
+            if pend_n > 0 and self._hdr_subtitle:
+                first = ""
+                if items and isinstance(items[0], dict):
+                    first = str(items[0].get("brief_label") or items[0].get("title") or "").strip()
+                tail = f" — e.g. {first[:56]}" if first else ""
+                self._hdr_subtitle.text = (
+                    self._hdr_subtitle.text
+                    + f"\n{pend_n} assistant approval(s) waiting{tail}."
+                )
+
             meetings = ((data.get("days") or {}).get(today_s) or {}).get("meetings") or []
             # schedule rows (max 3)
             for idx, row in enumerate(self._sched_rows):
