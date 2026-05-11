@@ -199,6 +199,37 @@ class _TapZone(ButtonBehavior, Widget):
     pass
 
 
+class _GlowDot(Widget):
+    """White filled circle with a coloured stroke and soft outer glow,
+    matching the Figma timeline dot design (white + blue stroke + blur glow)."""
+
+    def __init__(self, stroke_rgba: tuple, glow_mult: float = 1.7, **kw):
+        super().__init__(**kw)
+        self._stroke = stroke_rgba
+        self._gm = glow_mult
+        self.bind(pos=self._draw, size=self._draw)
+        Clock.schedule_once(self._draw, 0)
+
+    def _draw(self, *_):
+        self.canvas.clear()
+        x, y, w, h = self.x, self.y, self.width, self.height
+        sr, sg, sb = self._stroke[:3]
+        gm = self._gm
+        with self.canvas:
+            # Soft glow rings (outer → inner, increasing opacity)
+            for scale, alpha in [(gm * 1.35, 0.08), (gm, 0.18), (gm * 0.75, 0.12)]:
+                gw, gh = w * scale, h * scale
+                gx, gy = x + (w - gw) / 2, y + (h - gh) / 2
+                Color(sr, sg, sb, alpha)
+                Ellipse(pos=(gx, gy), size=(gw, gh))
+            # White fill
+            Color(1.0, 1.0, 1.0, 1.0)
+            Ellipse(pos=(x, y), size=(w, h))
+            # Coloured stroke
+            Color(sr, sg, sb, 1.0)
+            Line(ellipse=(x, y, w, h), width=1.5)
+
+
 # ── Column layout data (from Figma dev mode) ──────────────────────────────────
 #
 # Grid frame: GX=24.02, GY=105.94, GW=1210.56, GH=151.14
@@ -330,16 +361,24 @@ class CalendarScreen(BaseScreen):
             **_ph(118.66, 14.13, 200.0, 46.0))
         root.add_widget(self._heading_lbl)
 
-        # Date string
+        # Date string — Figma fill_WIL9L0 = #006BF9 (blue), size +20%
         self._datestr_lbl = _lbl(
-            _fmt_date(display_now().date()), _FSB, _ff(27.52), _WHITE,
-            **_ph(118.66, 60.36, 250.0, 33.0))
+            _fmt_date(display_now().date()), _FSB, _ff(27.52 * 1.2), _BLUE_A,
+            **_ph(118.66, 60.36, 280.0, 40.0))
         root.add_widget(self._datestr_lbl)
 
-        # Calendar icon  241.93, 20.49  36.98×33
-        root.add_widget(_lbl(
-            "📅", _FSB, _ff(28), _WHITE, ha="center", va="middle",
-            **_ph(241.93, 20.49, 36.98, 33.0)))
+        # Calendar icon  241.93, 20.49  36.98×33 — use PNG asset
+        _cal_icon_path = ASSETS_DIR / "home" / "figma" / "icon_calendar_row.png"
+        if _cal_icon_path.is_file():
+            root.add_widget(Image(
+                source=str(_cal_icon_path), fit_mode="contain",
+                **_ph(241.93, 20.49, 36.98, 33.0)))
+        else:
+            _brief_cal = ASSETS_DIR / "brief" / "figma" / "icon_calendar.png"
+            if _brief_cal.is_file():
+                root.add_widget(Image(
+                    source=str(_brief_cal), fit_mode="contain",
+                    **_ph(241.93, 20.49, 36.98, 33.0)))
 
         # Spark / intelligence icon  851.77, 38.24  39.38×40.89
         spark_src = _asset("icon_spark.png")
@@ -351,15 +390,15 @@ class CalendarScreen(BaseScreen):
                 "✦", _FSB, _ff(30), _MUTED, ha="center", va="middle",
                 **_ph(851.77, 28.0, 42.0, 42.0)))
 
-        # Busy text  905.91, 19.78  299×29
+        # Busy text  905.91, 19.78  299×29  (+20% size)
         root.add_widget(_lbl(
-            "This Week Busy: Wed, Thu", _FSB, _ff(24.61), _MUTED,
-            **_ph(905.91, 19.78, 299.0, 29.0)))
+            "This Week Busy: Wed, Thu", _FSB, _ff(24.61 * 1.2), _MUTED,
+            **_ph(905.91, 19.78, 340.0, 36.0)))
 
-        # Free text  905.91, 55.46  207×29
+        # Free text  905.91, 55.46  207×29  (+20% size)
         root.add_widget(_lbl(
-            "Free: Fri afternoon", _FSB, _ff(24.61), _MUTED,
-            **_ph(905.91, 55.46, 207.0, 29.0)))
+            "Free: Fri afternoon", _FSB, _ff(24.61 * 1.2), _MUTED,
+            **_ph(905.91, 55.46, 260.0, 36.0)))
 
     # ── Week grid ──────────────────────────────────────────────────────────────
 
@@ -535,30 +574,26 @@ class CalendarScreen(BaseScreen):
             size=lambda w, v: setattr(_sr, "size", v))
         root.add_widget(sep)
 
+        # Timeline dots — white fill + coloured stroke + glow (Figma SVG design)
         for (sx, sy, dw, dh, r, g, b) in [
-            (187.87, 412.46, 33.9,  33.9,  0.0, 0.565, 1.0),
-            (192.11, 529.71, 25.43, 25.43, 0.0, 0.314, 1.0),
-            (192.11, 642.71, 25.43, 25.43, 0.0, 0.314, 1.0),
+            (187.87, 412.46, 33.9,  33.9,  0.0, 0.565, 1.0),   # #0090FF large
+            (192.11, 529.71, 25.43, 25.43, 0.0, 0.314, 1.0),   # #0050FF mid
+            (192.11, 642.71, 25.43, 25.43, 0.0, 0.314, 1.0),   # #0050FF mid
         ]:
-            dw2 = Widget(**_ph(sx, sy, dw, dh))
-            with dw2.canvas:
-                Color(r, g, b, 1.0)
-                _e2 = Ellipse(pos=dw2.pos, size=dw2.size)
-            def _mk2(e):
-                def _s(w, *_): e.pos = w.pos; e.size = w.size
-                return _s
-            dw2.bind(pos=_mk2(_e2), size=_mk2(_e2))
-            root.add_widget(dw2)
+            root.add_widget(_GlowDot(
+                stroke_rgba=(r, g, b, 1.0),
+                glow_mult=1.7,
+                **_ph(sx, sy, dw, dh)))
 
-        for (gx, gy, gw, time_s, ampm_s, ampm_dx, ampm_dy) in [
-            (48.02,  405.40, 71.0,  "11:00", "AM", 35.31, 33.90),
-            (59.33,  509.93, 59.0,  "2:00",  "PM", 24.02, 33.90),
-            (56.50,  622.94, 60.84, "5:30",  "PM", 26.84, 33.90),
+        # Time labels — single line, size +20%
+        for (gx, gy, combined) in [
+            (48.02,  405.40, "11:00 AM"),
+            (59.33,  509.93,  "2:00 PM"),
+            (56.50,  622.94,  "5:30 PM"),
         ]:
-            root.add_widget(_lbl(time_s, _FB, _ff(28.25), _WHITE,
-                                 **_ph(gx, gy, gw, 34.0)))
-            root.add_widget(_lbl(ampm_s, _FSB, _ff(22.6), _MUTED,
-                                 **_ph(gx + ampm_dx, gy + ampm_dy, 35.0, 27.0)))
+            root.add_widget(_lbl(
+                combined, _FB, _ff(28.25 * 1.2), _WHITE,
+                **_ph(gx, gy, 120.0, 40.0)))
 
     # ── Meeting cards ──────────────────────────────────────────────────────────
     # Card '21' Product Sync  276.86, 377.15  954.89×104.53
@@ -666,32 +701,33 @@ class CalendarScreen(BaseScreen):
             size_hint=(DW / cw, DH / ch),
             pos_hint={"x": 778.32 / cw, "y": (ch - 24.01 - DH) / ch})
 
+        # "Details" label — font +30%
+        _det_h = 32
         db.add_widget(_lbl(
-            "Details", _FB, _ff(21.19), _WHITE,
+            "Details", _FB, _ff(21.19 * 1.3), _WHITE,
             va="middle",
-            size_hint=(68 / DW, 25 / DH),
-            pos_hint={"x": 24.02 / DW, "y": (DH - 15.54 - 25) / DH}))
+            size_hint=(85 / DW, _det_h / DH),
+            pos_hint={"x": 14.02 / DW, "y": (DH - _det_h) / 2 / DH}))
 
-        # Arrow icon — "›" is not in the 42dot font; use icon_arrow.png from
-        # home assets (already downloaded) or fall back to ASCII ">".
+        # Arrow — larger, from Figma home assets
         arr_src = _asset("icon_arrow.png")
         if not arr_src:
             _home_arr = ASSETS_DIR / "home" / "figma" / "icon_arrow.png"
             if _home_arr.is_file():
                 arr_src = str(_home_arr)
         if arr_src:
-            AW, AH = 19.78, 19.78
+            AW, AH = 26.0, 26.0
             arr_y_kivy = (DH / 2 - AH / 2) / DH
             db.add_widget(Image(
                 source=arr_src, fit_mode="contain",
                 size_hint=(AW / DW, AH / DH),
-                pos_hint={"x": 110.18 / DW, "y": arr_y_kivy}))
+                pos_hint={"x": 108.0 / DW, "y": arr_y_kivy}))
         else:
             db.add_widget(_lbl(
-                ">", _FB, _ff(22), _WHITE,
+                ">", _FB, _ff(28), _WHITE,
                 ha="center", va="middle",
-                size_hint=(22 / DW, 30 / DH),
-                pos_hint={"x": 110.18 / DW, "y": (DH - 13 - 30) / DH}))
+                size_hint=(28 / DW, 34 / DH),
+                pos_hint={"x": 108.0 / DW, "y": (DH - 34) / 2 / DH}))
 
         card.add_widget(db)
         root.add_widget(card)
