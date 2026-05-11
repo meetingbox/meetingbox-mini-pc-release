@@ -55,7 +55,7 @@ _GREY  = (0.643, 0.643, 0.675, 1.0)   # #A4A4AC  section headers
 
 # Card backgrounds / borders (approximated from Figma gradients)
 _CARD_BG     = (0.004, 0.067, 0.216, 1.0)   # #011137 (top of gradient)
-_CARD_BORDER = (0.247, 0.259, 0.325, 1.0)   # #3F4253 (gradient start)
+_CARD_BORDER = (0.086, 0.106, 0.208, 1.0)   # #161B35 (Figma gradient dominant dark end)
 _HERO_BG     = (0.004, 0.047, 0.145, 1.0)   # #010C25 (solid fill)
 _PILL_BG     = (0.0,   0.059, 0.200, 1.0)   # #000F33 (pill gradient start)
 _ROW_BG      = (0.004, 0.043, 0.149, 1.0)   # #010B26 (brief row bg)
