@@ -83,11 +83,11 @@ def _ph(fx: float, fy: float, fw: float, fh: float) -> dict:
 
 
 def _ff(fs: float) -> float:
-    """Return the Figma font size scaled to the actual display.
-    On the standard 1260×800 device the scale is 1.0 and this returns
-    the exact Figma float value, preserving sub-pixel precision."""
+    """Return the Figma font size scaled to the actual display, plus 20%
+    user-requested boost.  On the standard 1260×800 device the display
+    scale is 1.0, so this returns fs * 1.2."""
     scale = min(DISPLAY_WIDTH / FW, DISPLAY_HEIGHT / FH)
-    return max(6.0, fs * scale)
+    return max(6.0, fs * scale * 1.2)
 
 
 _GC: dict = {}
@@ -243,7 +243,7 @@ class MorningBriefScreen(BaseScreen):
             **_ph(118.66, 21.19, 320.0, 50.0)))
 
         root.add_widget(_lbl(
-            "Good morning, J.K", _FSB, _ff(22.6), _BLUE2,
+            "Good morning, J.K", _FSB, 22.6, _BLUE2,
             **_ph(118.66, 63.0, 280.0, 32.0)))
 
         root.add_widget(_lbl(
