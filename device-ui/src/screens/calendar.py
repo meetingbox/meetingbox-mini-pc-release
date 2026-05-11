@@ -8,19 +8,21 @@ construction time (no deferred _build_once timing issues).
 from __future__ import annotations
 
 import logging
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 from kivy.clock import Clock
 from kivy.graphics import Color, Ellipse, Line, Rectangle, RoundedRectangle
 from kivy.uix.behaviors import ButtonBehavior
+from kivy.uix.boxlayout import BoxLayout
 from kivy.uix.floatlayout import FloatLayout
 from kivy.uix.image import Image
 from kivy.uix.label import Label
+from kivy.uix.scrollview import ScrollView
 from kivy.uix.widget import Widget
 
 from async_helper import run_async
-from config import ASSETS_DIR, DISPLAY_HEIGHT, DISPLAY_WIDTH, display_now
+from config import ASSETS_DIR, DISPLAY_HEIGHT, DISPLAY_WIDTH, display_now, to_display_local
 from screens.base_screen import BaseScreen
 
 logger = logging.getLogger(__name__)
@@ -200,13 +202,18 @@ class _TapZone(ButtonBehavior, Widget):
 
 
 class _GlowDot(Widget):
-    """White filled circle with a coloured stroke and soft outer glow,
-    matching the Figma timeline dot design (white + blue stroke + blur glow)."""
+    """White filled circle with a coloured stroke and optional soft outer glow,
+    matching the Figma timeline dot design (white + blue stroke + blur glow).
 
-    def __init__(self, stroke_rgba: tuple, glow_mult: float = 1.7, **kw):
+    Pass ``glow=False`` for past meetings (dot shown without the glow rings).
+    """
+
+    def __init__(self, stroke_rgba: tuple, glow_mult: float = 1.7,
+                 glow: bool = True, **kw):
         super().__init__(**kw)
         self._stroke = stroke_rgba
         self._gm = glow_mult
+        self._glow = glow
         self.bind(pos=self._draw, size=self._draw)
         Clock.schedule_once(self._draw, 0)
 
@@ -216,18 +223,57 @@ class _GlowDot(Widget):
         sr, sg, sb = self._stroke[:3]
         gm = self._gm
         with self.canvas:
-            # Soft glow rings (outer → inner, increasing opacity)
-            for scale, alpha in [(gm * 1.35, 0.08), (gm, 0.18), (gm * 0.75, 0.12)]:
-                gw, gh = w * scale, h * scale
-                gx, gy = x + (w - gw) / 2, y + (h - gh) / 2
-                Color(sr, sg, sb, alpha)
-                Ellipse(pos=(gx, gy), size=(gw, gh))
+            if self._glow:
+                # Soft glow rings (outer → inner, increasing opacity)
+                for scale, alpha in [(gm * 1.35, 0.08), (gm, 0.18), (gm * 0.75, 0.12)]:
+                    gw, gh = w * scale, h * scale
+                    gx, gy = x + (w - gw) / 2, y + (h - gh) / 2
+                    Color(sr, sg, sb, alpha)
+                    Ellipse(pos=(gx, gy), size=(gw, gh))
             # White fill
             Color(1.0, 1.0, 1.0, 1.0)
             Ellipse(pos=(x, y), size=(w, h))
-            # Coloured stroke
-            Color(sr, sg, sb, 1.0)
+            # Coloured stroke (dimmer when no glow = past meeting)
+            stroke_alpha = 1.0 if self._glow else 0.35
+            Color(sr, sg, sb, stroke_alpha)
             Line(ellipse=(x, y, w, h), width=1.5)
+
+
+# ── Meeting datetime helpers ─────────────────────────────────────────────────
+
+_IST = timezone(timedelta(hours=5, minutes=30))
+
+
+def _parse_dt(iso: str):
+    """Parse an ISO datetime string and return a timezone-aware datetime in the
+    display timezone.  Returns None on failure."""
+    if not iso:
+        return None
+    try:
+        s = iso.replace("Z", "+00:00")
+        dt = datetime.fromisoformat(s)
+        if dt.tzinfo is None:
+            # Mock backend emits local (+05:30) times without offset tag
+            dt = dt.replace(tzinfo=_IST)
+        return to_display_local(dt)
+    except Exception:
+        return None
+
+
+def _m_state(m: dict, now) -> str:
+    """Return the meeting state relative to *now* (tz-aware).
+
+    Returns one of ``'active'``, ``'upcoming'``, or ``'past'``.
+    """
+    start = _parse_dt(m.get("start", ""))
+    end = _parse_dt(m.get("end", ""))
+    if start is None or end is None:
+        return "upcoming"
+    if now >= end:
+        return "past"
+    if now >= start:
+        return "active"
+    return "upcoming"
 
 
 # ── Column layout data (from Figma dev mode) ──────────────────────────────────
@@ -305,12 +351,20 @@ class CalendarScreen(BaseScreen):
         self._date_lbls: list[Label] = []
         self._highlights: list[_Highlight] = []
         self._col_dates: list[date] = []
+
+        # Dynamic day-view state
+        self._week_data: dict = {}          # ISO date str -> {"meetings": [...]}
+        self._root_layout: FloatLayout | None = None
+        self._day_widgets: list = []        # cleared on every day-view rebuild
+        self._refresh_event = None          # Clock handle for per-minute refresh
+
         self._build_ui()
 
     # ── Build ──────────────────────────────────────────────────────────────────
 
     def _build_ui(self) -> None:
         root = FloatLayout(size_hint=(1, 1))
+        self._root_layout = root
 
         with root.canvas.before:
             Color(*_BG)
@@ -322,10 +376,10 @@ class CalendarScreen(BaseScreen):
 
         self._build_header(root)
         self._build_grid(root)
-        self._build_free_card(root)
-        self._build_timeline(root)
-        self._build_meeting_cards(root)
         self._build_add_button(root)
+
+        # Dynamic day view — populated on first on_enter / day tap
+        self._update_day_view(self._sel_date)
 
         self.add_widget(root)
 
@@ -499,21 +553,79 @@ class CalendarScreen(BaseScreen):
                     dw2.bind(pos=_mk_el(_el), size=_mk_el(_el))
                 root.add_widget(dw2)
 
-    # ── Free-time card ─────────────────────────────────────────────────────────
-    # Frame '20':  25.43, 268.39  1210.56×100.29  r=29.66
-    #   clock icon 927:131  31.08, 24.02  53.68×53.68
-    #   free text  927:130  97.47, 31.08  356×39   Bold 32.49
-    #   sun icon   927:135 884.26, 28.25  49.44×49.44
-    #   mtg count  927:136 943.59, 35.32  236×37   Bold 31.08
+    # ── Dynamic day view ───────────────────────────────────────────────────────
 
-    def _build_free_card(self, root: FloatLayout) -> None:
+    def _update_day_view(self, d: date) -> None:
+        """Clear and rebuild the free-card + meeting area for *d*."""
+        root = self._root_layout
+        if root is None:
+            return
+        for w in self._day_widgets:
+            root.remove_widget(w)
+        self._day_widgets.clear()
+
+        day_key = d.isoformat()
+        meetings = self._week_data.get(day_key, {}).get("meetings", []) if self._week_data else []
+        meetings = sorted(meetings, key=lambda m: m.get("start", ""))
+        now = display_now()
+        is_today = (d == now.date())
+
+        self._build_day_free_card(meetings, now, is_today)
+        self._build_day_meetings(meetings, now, is_today)
+
+    # ── Free-time card (dynamic) ───────────────────────────────────────────────
+    # Frame '20':  25.43, 268.39  1210.56×100.29  r=29.66
+
+    def _build_day_free_card(self, meetings: list, now, is_today: bool) -> None:
         CW, CH = 1210.56, 100.29
         CX, CY = 25.43, 268.39
 
+        # ── Determine display text ─────────────────────────────────────────────
+        if not meetings:
+            free_text = "No meetings scheduled for this day"
+            mtg_text = ""
+            show_sun = False
+        else:
+            n = len(meetings)
+            mtg_noun = f"{n} meeting{'s' if n > 1 else ''}"
+            if is_today:
+                states = [_m_state(m, now) for m in meetings]
+                if all(s == "past" for s in states):
+                    free_text = "All meetings for today are done  ✓"
+                    mtg_text = f"{mtg_noun} completed"
+                    show_sun = True
+                else:
+                    upcoming = [m for m, s in zip(meetings, states)
+                                if s == "upcoming"]
+                    active = [m for m, s in zip(meetings, states)
+                              if s == "active"]
+                    if active:
+                        end_dt = _parse_dt(active[0].get("end", ""))
+                        end_str = (end_dt.strftime("%I:%M %p").lstrip("0")
+                                   if end_dt else "")
+                        in_txt = active[0].get("title", "meeting")
+                        free_text = (f"In meeting: {in_txt}"
+                                     + (f"  (till {end_str})" if end_str else ""))
+                    elif upcoming:
+                        nxt = _parse_dt(upcoming[0].get("start", ""))
+                        nxt_str = (nxt.strftime("%I:%M %p").lstrip("0")
+                                   if nxt else "")
+                        free_text = (f"You're free till {nxt_str}"
+                                     if nxt_str else f"{mtg_noun} today")
+                    else:
+                        free_text = f"{mtg_noun} today"
+                    mtg_text = f"{mtg_noun} today"
+                    show_sun = True
+            else:
+                free_text = f"{mtg_noun} scheduled"
+                mtg_text = ""
+                show_sun = False
+
+        # ── Build card ─────────────────────────────────────────────────────────
         card = _Card(ct=_CARD_T, cb=_CARD_B, bdr=_BDR_CARD,
                      r=_ff(29.66), **_ph(CX, CY, CW, CH))
 
-        # Clock icon — use Figma asset, fall back to emoji
+        # Clock icon (left)
         clock_src = _asset("icon_clock.png")
         if clock_src:
             card.add_widget(Image(
@@ -526,94 +638,172 @@ class CalendarScreen(BaseScreen):
                 size_hint=(53.68 / CW, 53.68 / CH),
                 pos_hint={"x": 31.08 / CW, "y": (CH - 24.02 - 53.68) / CH}))
 
-        # "You're free till …" text
+        # Free / status text
         card.add_widget(_lbl(
-            "You're free till 11:00 AM", _FB, _ff(32.49), _WHITE,
+            free_text, _FB, _ff(32.49), _WHITE,
             va="middle",
-            size_hint=(356 / CW, 39 / CH),
+            size_hint=(700 / CW, 39 / CH),
             pos_hint={"x": 97.47 / CW, "y": (CH - 31.08 - 39) / CH}))
 
-        # Sun icon — use Figma asset
-        sun_src = _asset("icon_sun.png")
-        if sun_src:
-            card.add_widget(Image(
-                source=sun_src, fit_mode="contain",
-                size_hint=(49.44 / CW, 49.44 / CH),
-                pos_hint={"x": 884.26 / CW, "y": (CH - 28.25 - 49.44) / CH}))
-        else:
+        # Sun icon + meeting count (right side) — only if there are meetings
+        if show_sun and mtg_text:
+            sun_src = _asset("icon_sun.png")
+            if sun_src:
+                card.add_widget(Image(
+                    source=sun_src, fit_mode="contain",
+                    size_hint=(49.44 / CW, 49.44 / CH),
+                    pos_hint={"x": 884.26 / CW, "y": (CH - 28.25 - 49.44) / CH}))
             card.add_widget(_lbl(
-                "☀", _FSB, _ff(34), _MUTED, ha="center", va="middle",
-                size_hint=(49.44 / CW, 49.44 / CH),
-                pos_hint={"x": 884.26 / CW, "y": (CH - 28.25 - 49.44) / CH}))
+                mtg_text, _FB, _ff(31.08), _WHITE,
+                va="middle",
+                size_hint=(280 / CW, 37 / CH),
+                pos_hint={"x": 943.59 / CW, "y": (CH - 35.32 - 37) / CH}))
 
-        # Meeting count
-        card.add_widget(_lbl(
-            "3 meeting today", _FB, _ff(31.08), _WHITE,
-            va="middle",
-            size_hint=(236 / CW, 37 / CH),
-            pos_hint={"x": 943.59 / CW, "y": (CH - 35.32 - 37) / CH}))
+        self._root_layout.add_widget(card)
+        self._day_widgets.append(card)
 
-        root.add_widget(card)
+    # ── Scrollable meeting area (dynamic) ─────────────────────────────────────
+    # Scroll area: x=24.02, y=377.15  w=1210.56  h≈329 (stops above Add button)
 
-    # ── Timeline ───────────────────────────────────────────────────────────────
-    # Rectangle 31 separator:  203.41, 377.15  2.83×355.96  fill #9ABDFF
-    # Group 58 large dot:       187.87, 412.46  33.9×33.9   #0090FF
-    # Group 59 mid dot:         192.11, 529.71  25.43×25.43 #0050FF
-    # Group 60 mid dot:         192.11, 642.71  25.43×25.43 #0050FF
-    # Group 61  11:00 AM:        48.02, 405.40  71×60.9
-    # Group 62   2:00 PM:        59.33, 509.93  59×60.9
-    # Group 63   5:30 PM:        56.50, 622.94  60.84×60.9
+    # Figma row geometry constants (in Figma coord space)
+    _ROW_W   = 1210.56   # matches scroll container width
+    _CARD_H  = 104.53    # meeting card height
+    _CARD_X  = 252.84    # card x within row  (= 276.86 - 24.02)
+    _CARD_W  = 954.89    # card width
+    _SEP_X   = 179.39    # separator x within row (= 203.41 - 24.02)
+    _TIME_X  = 24.0      # time-label x within row
 
-    def _build_timeline(self, root: FloatLayout) -> None:
-        sep = Widget(**_ph(203.41, 377.15, 2.83, 355.96))
+    def _build_day_meetings(self, meetings: list, now, is_today: bool) -> None:
+        """Build the vertical separator + scrollable meeting-card list."""
+        # Separator line behind the scroll area (fixed height covering the zone)
+        SEP_VIS_H = 329.01
+        sep = Widget(**_ph(203.41, 377.15, 2.83, SEP_VIS_H))
         with sep.canvas.before:
-            Color(154/255, 189/255, 255/255, 0.75)  # #9ABDFF
+            Color(154 / 255, 189 / 255, 255 / 255, 0.6)  # #9ABDFF
             _sr = Rectangle(pos=sep.pos, size=sep.size)
         sep.bind(
             pos=lambda w, v: setattr(_sr, "pos", v),
             size=lambda w, v: setattr(_sr, "size", v))
-        root.add_widget(sep)
+        self._root_layout.add_widget(sep)
+        self._day_widgets.append(sep)
 
-        # Timeline dots — white fill + coloured stroke + glow (Figma SVG design)
-        for (sx, sy, dw, dh, r, g, b) in [
-            (187.87, 412.46, 33.9,  33.9,  0.0, 0.565, 1.0),   # #0090FF large
-            (192.11, 529.71, 25.43, 25.43, 0.0, 0.314, 1.0),   # #0050FF mid
-            (192.11, 642.71, 25.43, 25.43, 0.0, 0.314, 1.0),   # #0050FF mid
-        ]:
-            root.add_widget(_GlowDot(
-                stroke_rgba=(r, g, b, 1.0),
+        if not meetings:
+            # "No meetings" placeholder label in the scroll zone
+            no_mtg = _lbl(
+                "No meetings scheduled for this day",
+                _FSB, _ff(28), _MUTED,
+                ha="center", va="middle",
+                **_ph(24.02, 377.15, 1210.56, SEP_VIS_H))
+            self._root_layout.add_widget(no_mtg)
+            self._day_widgets.append(no_mtg)
+            return
+
+        # Determine glow target (index of first non-past meeting, today only)
+        glow_idx = None
+        if is_today:
+            for i, m in enumerate(meetings):
+                if _m_state(m, now) != "past":
+                    glow_idx = i
+                    break
+
+        SCALE = min(DISPLAY_WIDTH / FW, DISPLAY_HEIGHT / FH)
+        CARD_H_PX = max(70, round(self._CARD_H * SCALE))
+        ROW_SPACING = max(4, round(8 * SCALE))
+
+        scroll = ScrollView(
+            do_scroll_x=False,
+            bar_width=4,
+            bar_color=(154 / 255, 189 / 255, 255 / 255, 0.5),
+            bar_inactive_color=(154 / 255, 189 / 255, 255 / 255, 0.2),
+            **_ph(24.02, 377.15, 1210.56, SEP_VIS_H),
+        )
+        content = BoxLayout(
+            orientation="vertical",
+            size_hint_y=None,
+            spacing=ROW_SPACING,
+            padding=[0, 0, 0, ROW_SPACING],
+        )
+        content.bind(minimum_height=content.setter("height"))
+
+        for i, m in enumerate(meetings):
+            state = _m_state(m, now) if is_today else "upcoming"
+            has_glow = (not is_today) or (i == glow_idx)
+            row = self._make_meeting_row(m, state, has_glow, CARD_H_PX)
+            content.add_widget(row)
+
+        scroll.add_widget(content)
+        self._root_layout.add_widget(scroll)
+        self._day_widgets.append(scroll)
+
+    def _make_meeting_row(self, m: dict, state: str, has_glow: bool,
+                          card_h_px: int) -> Widget:
+        """One row: timeline dot + time label (left) + meeting card (right)."""
+        CW = self._ROW_W
+        CH = self._CARD_H
+
+        row = FloatLayout(size_hint=(1, None), height=card_h_px)
+
+        # ── Timeline dot ──────────────────────────────────────────────────────
+        if state in ("active", "upcoming"):
+            if state == "active":
+                ds, stroke = 33.9, (0.0, 0.565, 1.0, 1.0)   # #0090FF
+            else:
+                ds, stroke = 25.43, (0.0, 0.314, 1.0, 1.0)  # #0050FF
+            row.add_widget(_GlowDot(
+                stroke_rgba=stroke,
                 glow_mult=1.7,
-                **_ph(sx, sy, dw, dh)))
+                glow=has_glow,
+                size_hint=(ds / CW, ds / CH),
+                pos_hint={
+                    "x": (self._SEP_X - ds / 2) / CW,
+                    "y": (CH / 2 - ds / 2) / CH,
+                },
+            ))
+        else:
+            # Past meeting — small dim dot without glow
+            ds = 18.0
+            dim = _GlowDot(
+                stroke_rgba=(0.6, 0.7, 1.0, 1.0),
+                glow_mult=1.4,
+                glow=False,
+                size_hint=(ds / CW, ds / CH),
+                pos_hint={
+                    "x": (self._SEP_X - ds / 2) / CW,
+                    "y": (CH / 2 - ds / 2) / CH,
+                },
+            )
+            row.add_widget(dim)
 
-        # Time labels — single line, size +20%
-        for (gx, gy, combined) in [
-            (48.02,  405.40, "11:00 AM"),
-            (59.33,  509.93,  "2:00 PM"),
-            (56.50,  622.94,  "5:30 PM"),
-        ]:
-            root.add_widget(_lbl(
-                combined, _FB, _ff(28.25 * 1.2), _WHITE,
-                **_ph(gx, gy, 120.0, 40.0)))
+        # ── Time label ────────────────────────────────────────────────────────
+        start_dt = _parse_dt(m.get("start", ""))
+        time_str = (start_dt.strftime("%I:%M %p").lstrip("0")
+                    if start_dt is not None else "--:--")
+        tcol = _MUTED if state == "past" else _WHITE
+        row.add_widget(_lbl(
+            time_str, _FB, _ff(28.25 * 1.2), tcol,
+            va="middle",
+            size_hint=(130 / CW, 40 / CH),
+            pos_hint={
+                "x": self._TIME_X / CW,
+                "y": (CH / 2 - 20) / CH,
+            },
+        ))
 
-    # ── Meeting cards ──────────────────────────────────────────────────────────
-    # Card '21' Product Sync  276.86, 377.15  954.89×104.53
-    # Card '25' Client Call   281.10, 490.16  954.89×104.53
-    # Card '22' Review        281.10, 603.16  954.89×104.53
+        # ── Meeting card ──────────────────────────────────────────────────────
+        card = _Card(
+            ct=_MTG_T, cb=_MTG_B, bdr=_BDR_MTG,
+            r=_ff(25.43),
+            size_hint=(self._CARD_W / CW, 1.0),
+            pos_hint={"x": self._CARD_X / CW, "y": 0.0},
+        )
+        self._fill_meeting_card(card, m, state, self._CARD_W, CH)
+        row.add_widget(card)
+        return row
 
-    def _build_meeting_cards(self, root: FloatLayout) -> None:
-        for (cx, cy, title, dur, show_join) in [
-            (276.86, 377.15, "Product Sync", "30 min", True),
-            (281.10, 490.16, "Client Call",  "45 min", False),
-            (281.10, 603.16, "Review",       "30 min", False),
-        ]:
-            self._add_meeting_card(root, cx, cy, 954.89, 104.53,
-                                   title, dur, show_join)
-
-    def _add_meeting_card(self, root: FloatLayout,
-                          cx: float, cy: float, cw: float, ch: float,
-                          title: str, dur: str, show_join: bool) -> None:
-        card = _Card(ct=_MTG_T, cb=_MTG_B, bdr=_BDR_MTG,
-                     r=_ff(25.43), **_ph(cx, cy, cw, ch))
+    def _fill_meeting_card(self, card, m: dict, state: str,
+                           cw: float, ch: float) -> None:
+        """Populate meeting card contents (icon, title, duration, details btn)."""
+        title = m.get("title", "—")
 
         # Icon circle  32.49, 16.95  70.63×70.63
         IW, IH, IX, IY = 70.63, 70.63, 32.49, 16.95
@@ -634,65 +824,40 @@ class CalendarScreen(BaseScreen):
                 size_hint=(1, 1), pos_hint={"x": 0, "y": 0}))
             card.add_widget(ic)
 
-        # Title  129.95, 16.95  176×34
+        # Title
+        title_col = _MUTED if state == "past" else _WHITE
         card.add_widget(_lbl(
-            title, _FB, _ff(28.25), _WHITE,
+            title, _FB, _ff(28.25), title_col,
             va="middle",
             size_hint=(300 / cw, 34 / ch),
             pos_hint={"x": 129.95 / cw, "y": (ch - 16.95 - 34) / ch}))
 
-        # Duration row: small clock icon + text.
-        # Emoji / special chars don't render in the 42dot custom font, so use
-        # icon_clock.png as a separate Image widget.
+        # Duration row: clock icon + text
+        dur_min = (m.get("duration") or 0) // 60
+        if not dur_min:
+            s = _parse_dt(m.get("start", ""))
+            e = _parse_dt(m.get("end", ""))
+            if s and e:
+                dur_min = int((e - s).total_seconds() / 60)
+        dur_str = f"{dur_min} min" if dur_min else ""
+
         clock_src = _asset("icon_clock.png")
-        # Vertical centre of the duration text row (Figma top = 56.5, h = 31.08)
-        dur_row_cy_kivy = (ch - 56.50 - 31.08) / ch + (31.08 / ch) / 2  # centre
+        dur_row_cy = (ch - 56.50 - 31.08) / ch + (31.08 / ch) / 2
         ICON_SZ = 20.0
-        icon_y_kivy = dur_row_cy_kivy - (ICON_SZ / ch) / 2
+        icon_y = dur_row_cy - (ICON_SZ / ch) / 2
         if clock_src:
             card.add_widget(Image(
                 source=clock_src, fit_mode="contain",
                 size_hint=(ICON_SZ / cw, ICON_SZ / ch),
-                pos_hint={"x": 129.95 / cw, "y": icon_y_kivy}))
+                pos_hint={"x": 129.95 / cw, "y": icon_y}))
         dur_x = 155.0 if clock_src else 129.95
         card.add_widget(_lbl(
-            dur, _FSB, _ff(22.6), _MUTED,
+            dur_str, _FSB, _ff(22.6), _MUTED,
             va="middle",
             size_hint=(175 / cw, 31.08 / ch),
             pos_hint={"x": dur_x / cw, "y": (ch - 56.50 - 31.08) / ch}))
 
-        # Join button  607.4, 24.01  144.08×56.5
-        if show_join:
-            JW, JH = 144.08, 56.5
-            jb = _TapCard(
-                ct=_JOIN_T, cb=_JOIN_B, bdr=_BDR_BTN,
-                r=_ff(12.71),
-                size_hint=(JW / cw, JH / ch),
-                pos_hint={"x": 607.4 / cw, "y": (ch - 24.01 - JH) / ch})
-
-            vid_src = _asset("icon_video.png")
-            if vid_src:
-                jb.add_widget(Image(
-                    source=vid_src, fit_mode="contain",
-                    size_hint=(33.9 / JW, 33.9 / JH),
-                    pos_hint={"x": 21.19 / JW, "y": (JH - 11.3 - 33.9) / JH}))
-            else:
-                jb.add_widget(_lbl(
-                    "▶", _FB, _ff(20), _WHITE,
-                    ha="center", va="middle",
-                    size_hint=(33.9 / JW, 33.9 / JH),
-                    pos_hint={"x": 21.19 / JW, "y": (JH - 11.3 - 33.9) / JH}))
-
-            jb.add_widget(_lbl(
-                "Join", _FB, _ff(26.84), _WHITE,
-                va="middle",
-                size_hint=(53 / JW, 32 / JH),
-                pos_hint={"x": 69.21 / JW, "y": (JH - 11.3 - 32) / JH}))
-            card.add_widget(jb)
-
-        # Details button — always at the right slot (778.32), regardless of
-        # whether the Join button is present.  Figma shows all three Details
-        # buttons right-aligned at the same horizontal position.
+        # Details button (right-aligned, no Join button)
         DW, DH = 144.08, 56.5
         db = _TapCard(
             ct=(0, 0, 0, 0), cb=(0, 0, 0, 0),
@@ -701,7 +866,6 @@ class CalendarScreen(BaseScreen):
             size_hint=(DW / cw, DH / ch),
             pos_hint={"x": 778.32 / cw, "y": (ch - 24.01 - DH) / ch})
 
-        # "Details" label — font +30%
         _det_h = 32
         db.add_widget(_lbl(
             "Details", _FB, _ff(21.19 * 1.3), _WHITE,
@@ -709,7 +873,6 @@ class CalendarScreen(BaseScreen):
             size_hint=(85 / DW, _det_h / DH),
             pos_hint={"x": 14.02 / DW, "y": (DH - _det_h) / 2 / DH}))
 
-        # Arrow — larger, from Figma home assets
         arr_src = _asset("icon_arrow.png")
         if not arr_src:
             _home_arr = ASSETS_DIR / "home" / "figma" / "icon_arrow.png"
@@ -717,11 +880,10 @@ class CalendarScreen(BaseScreen):
                 arr_src = str(_home_arr)
         if arr_src:
             AW, AH = 26.0, 26.0
-            arr_y_kivy = (DH / 2 - AH / 2) / DH
             db.add_widget(Image(
                 source=arr_src, fit_mode="contain",
                 size_hint=(AW / DW, AH / DH),
-                pos_hint={"x": 108.0 / DW, "y": arr_y_kivy}))
+                pos_hint={"x": 108.0 / DW, "y": (DH / 2 - AH / 2) / DH}))
         else:
             db.add_widget(_lbl(
                 ">", _FB, _ff(28), _WHITE,
@@ -730,7 +892,6 @@ class CalendarScreen(BaseScreen):
                 pos_hint={"x": 108.0 / DW, "y": (DH - 34) / 2 / DH}))
 
         card.add_widget(db)
-        root.add_widget(card)
 
     # ── Add-event button ───────────────────────────────────────────────────────
     # Frame '27':  440.72, 716.16  378.57×60.74  r=16.95
@@ -777,6 +938,8 @@ class CalendarScreen(BaseScreen):
         if self._datestr_lbl:
             self._datestr_lbl.text = _fmt_date(d)
 
+        self._update_day_view(d)
+
     # ── Lifecycle ──────────────────────────────────────────────────────────────
 
     def on_enter(self) -> None:
@@ -797,6 +960,19 @@ class CalendarScreen(BaseScreen):
             self._datestr_lbl.text = _fmt_date(today)
 
         Clock.schedule_once(lambda _dt: self._load_week(), 0)
+        # Refresh meeting states every minute so glow follows the clock
+        if self._refresh_event:
+            self._refresh_event.cancel()
+        self._refresh_event = Clock.schedule_interval(self._tick, 60)
+
+    def on_leave(self) -> None:
+        if self._refresh_event:
+            self._refresh_event.cancel()
+            self._refresh_event = None
+
+    def _tick(self, _dt) -> None:
+        """Called every minute — re-renders the day view to update glow/state."""
+        self._update_day_view(self._sel_date)
 
     def _load_week(self) -> None:
         async def _fetch():
@@ -804,10 +980,16 @@ class CalendarScreen(BaseScreen):
                 today = display_now().date()
                 week_mon = today - timedelta(days=today.weekday())
                 end_d = week_mon + timedelta(days=6)
-                await self.backend.get_calendar_week(
+                data = await self.backend.get_calendar_week(
                     week_mon.isoformat(),
                     end_d.isoformat(),
                 )
+
+                def _apply(_dt):
+                    self._week_data = data.get("days", {}) if data else {}
+                    self._update_day_view(self._sel_date)
+
+                Clock.schedule_once(_apply, 0)
             except Exception as exc:
                 logger.debug("CalendarScreen: get_calendar_week failed: %s", exc)
         run_async(_fetch())
