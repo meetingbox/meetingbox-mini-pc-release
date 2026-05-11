@@ -8,7 +8,7 @@ Set environment variable: MOCK_BACKEND=1
 import asyncio
 import logging
 from typing import List, Dict, Optional, AsyncIterator
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 import random
 
 logger = logging.getLogger(__name__)
@@ -355,6 +355,26 @@ class MockBackendClient:
             days[ds] = {"meetings": meetings}
 
         return {"days": days}
+
+    async def get_briefing_context(self, days_ahead: int = 1) -> Dict:
+        await asyncio.sleep(0.1)
+        today = date.today()
+        mon = today - timedelta(days=today.weekday())
+        sun = mon + timedelta(days=6)
+        week = await self.get_calendar_week(mon.isoformat(), sun.isoformat())
+        return {
+            "greeting": "Good morning",
+            "user_display_name": "Guest",
+            "today": today.isoformat(),
+            "timezone": "Asia/Kolkata",
+            "calendar_connected": True,
+            "days": week.get("days") or {},
+            "commitments": [],
+            "meetings_recent": [],
+            "mem0_snippet": None,
+            "pending_assistant": {"count": 0, "items": []},
+            "gmail_preview": {"connected": False, "top": None},
+        }
 
     async def get_system_info(self) -> Dict:
         await asyncio.sleep(0.2)

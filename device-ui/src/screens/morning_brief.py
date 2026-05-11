@@ -13,7 +13,9 @@ All coordinates are Figma absolute px, converted with _ph() to Kivy fractions.
 from __future__ import annotations
 
 import logging
+from datetime import date, datetime
 
+from kivy.clock import Clock
 from kivy.graphics import Color, Ellipse, Line, Rectangle, RoundedRectangle
 from kivy.uix.behaviors import ButtonBehavior
 from kivy.uix.floatlayout import FloatLayout
@@ -21,8 +23,10 @@ from kivy.uix.image import Image
 from kivy.uix.label import Label
 from kivy.uix.widget import Widget
 
+from async_helper import run_async
 from config import ASSETS_DIR, DISPLAY_HEIGHT, DISPLAY_WIDTH, display_now
 from screens.base_screen import BaseScreen
+from weather_client import WeatherSnapshot, get_weather_client
 
 logger = logging.getLogger(__name__)
 
@@ -203,6 +207,24 @@ class MorningBriefScreen(BaseScreen):
 
     def __init__(self, **kw):
         super().__init__(**kw)
+        self._hdr_greeting = None
+        self._hdr_subtitle = None
+        self._wx_temp = None
+        self._wx_condition = None
+        self._wx_city = None
+        self._wx_hi_lo = None
+        self._wx_hum = None
+        self._wx_wind = None
+        self._wx_aqi = None
+        self._wx_aqi_lbl = None
+        self._sched_rows = []
+        self._task_nums = []
+        self._task_titles = []
+        self._task_subs = []
+        self._em_sender = None
+        self._em_subject = None
+        self._em_time = None
+        self._weather_unsub = None
         self._build_ui()
 
     # ── Top-level build ────────────────────────────────────────────────────────
@@ -242,14 +264,15 @@ class MorningBriefScreen(BaseScreen):
             "Morning Brief", _FSB, _ff(38.14), _WHITE,
             **_ph(118.66, 21.19, 320.0, 50.0)))
 
-        root.add_widget(_lbl(
-            "Good morning, J.K", _FSB, 22.6, _BLUE2,
-            **_ph(118.66, 63.0, 280.0, 32.0)))
+        self._hdr_greeting = _lbl(
+            "Good morning", _FSB, 22.6, _BLUE2,
+            **_ph(118.66, 63.0, 380.0, 32.0))
+        root.add_widget(self._hdr_greeting)
 
-        root.add_widget(_lbl(
-            "Here's your overview for today, 20 May",
-            _FSB, _ff(21.19), _MUTED,
-            **_ph(118.66, 98.0, 560.0, 32.0)))
+        self._hdr_subtitle = _lbl(
+            "Loading your overview…", _FSB, _ff(21.19), _MUTED,
+            **_ph(118.66, 98.0, 560.0, 32.0))
+        root.add_widget(self._hdr_subtitle)
 
     # ── Weather card (Frame 19) ────────────────────────────────────────────────
     # Figma: (22.6, 132.78)  1214.8 × 185.04  r=22.6
@@ -276,25 +299,28 @@ class MorningBriefScreen(BaseScreen):
             card.add_widget(_img(cloud_src, CW, CH, 29.66, 72.04, 79.1, 79.1))
 
         # ── Main temperature  (128.54, 62.15)  58 × 42  Bold 35.31
-        card.add_widget(_lbl(
-            "24°", _FB, _ff(35.31), _WHITE,
+        self._wx_temp = _lbl(
+            "—°", _FB, _ff(35.31), _WHITE,
             size_hint=(80 / CW, 42 / CH),
-            pos_hint={"x": 128.54 / CW, "y": (CH - 62.15 - 42) / CH}))
+            pos_hint={"x": 128.54 / CW, "y": (CH - 62.15 - 42) / CH})
+        card.add_widget(self._wx_temp)
 
         # ── "partly cloudy"  (128.54, 104.53)
-        card.add_widget(_lbl(
-            "partly cloudy", _FSB, _ff(21.19), _DIM,
-            size_hint=(145 / CW, 32 / CH),
-            pos_hint={"x": 128.54 / CW, "y": (CH - 104.53 - 32) / CH}))
+        self._wx_condition = _lbl(
+            "…", _FSB, _ff(21.19), _DIM,
+            size_hint=(190 / CW, 32 / CH),
+            pos_hint={"x": 128.54 / CW, "y": (CH - 104.53 - 32) / CH})
+        card.add_widget(self._wx_condition)
 
         # ── Location icon + city  (128.54, 137.01)
         loc_src = _asset("icon_location.png")
         if loc_src:
             card.add_widget(_img(loc_src, CW, CH, 128.54, 137.01, 19.78, 19.78))
-        card.add_widget(_lbl(
-            "Hyderabad, India", _FSB, _ff(21.19), _MUTED,
-            size_hint=(190 / CW, 32 / CH),
-            pos_hint={"x": 151.14 / CW, "y": (CH - 134.19 - 32) / CH}))
+        self._wx_city = _lbl(
+            "…", _FSB, _ff(21.19), _MUTED,
+            size_hint=(240 / CW, 32 / CH),
+            pos_hint={"x": 151.14 / CW, "y": (CH - 134.19 - 32) / CH})
+        card.add_widget(self._wx_city)
 
         # ── Four vertical dividers
         for div_x in (387.04, 591.86, 796.68, 1001.5):
@@ -314,10 +340,11 @@ class MorningBriefScreen(BaseScreen):
         tmp_src = _asset("icon_temperature.png")
         if tmp_src:
             card.add_widget(_img(tmp_src, CW, CH, 413.88, 64.98, 31.08, 31.08))
-        card.add_widget(_lbl(
-            "28° / 18°", _FB, _ff(26.84), _WHITE,
-            size_hint=(120 / CW, 38 / CH),
-            pos_hint={"x": 450.61 / CW, "y": (CH - 63.57 - 38) / CH}))
+        self._wx_hi_lo = _lbl(
+            "— / —", _FB, _ff(26.84), _WHITE,
+            size_hint=(140 / CW, 38 / CH),
+            pos_hint={"x": 450.61 / CW, "y": (CH - 63.57 - 38) / CH})
+        card.add_widget(self._wx_hi_lo)
         card.add_widget(_lbl(
             "High / Low", _FSB, _ff(16.95), _MUTED,
             size_hint=(90 / CW, 26 / CH),
@@ -327,10 +354,11 @@ class MorningBriefScreen(BaseScreen):
         hum_src = _asset("icon_humidity.png")
         if hum_src:
             card.add_widget(_img(hum_src, CW, CH, 644.13, 66.39, 28.25, 28.25))
-        card.add_widget(_lbl(
-            "62%", _FB, _ff(26.84), _WHITE,
+        self._wx_hum = _lbl(
+            "—%", _FB, _ff(26.84), _WHITE,
             size_hint=(70 / CW, 38 / CH),
-            pos_hint={"x": 678.03 / CW, "y": (CH - 63.57 - 38) / CH}))
+            pos_hint={"x": 678.03 / CW, "y": (CH - 63.57 - 38) / CH})
+        card.add_widget(self._wx_hum)
         card.add_widget(_lbl(
             "Humidity", _FSB, _ff(16.95), _MUTED,
             size_hint=(80 / CW, 26 / CH),
@@ -340,10 +368,11 @@ class MorningBriefScreen(BaseScreen):
         wind_src = _asset("icon_wind.png")
         if wind_src:
             card.add_widget(_img(wind_src, CW, CH, 827.76, 64.28, 35.31, 35.31))
-        card.add_widget(_lbl(
-            "12 km/h", _FB, _ff(26.84), _WHITE,
-            size_hint=(110 / CW, 38 / CH),
-            pos_hint={"x": 875.08 / CW, "y": (CH - 63.57 - 38) / CH}))
+        self._wx_wind = _lbl(
+            "—", _FB, _ff(26.84), _WHITE,
+            size_hint=(120 / CW, 38 / CH),
+            pos_hint={"x": 875.08 / CW, "y": (CH - 63.57 - 38) / CH})
+        card.add_widget(self._wx_wind)
         card.add_widget(_lbl(
             "Wind", _FSB, _ff(16.95), _MUTED,
             size_hint=(50 / CW, 26 / CH),
@@ -351,15 +380,17 @@ class MorningBriefScreen(BaseScreen):
 
         # ── AQI column  (group at 1063.66, 66.39)
         # "42" rendered in #19D385 via Kivy markup
-        card.add_widget(_mlbl(
-            'AQl   [color=#19D385]42[/color]',
+        self._wx_aqi = _mlbl(
+            "AQI —",
             _FB, _ff(26.84), _WHITE,
-            size_hint=(120 / CW, 38 / CH),
-            pos_hint={"x": 1063.66 / CW, "y": (CH - 66.39 - 38) / CH}))
-        card.add_widget(_lbl(
-            "Good", _FSB, _ff(16.95), _MUTED,
-            size_hint=(50 / CW, 26 / CH),
-            pos_hint={"x": 1091.91 / CW, "y": (CH - 105.94 - 26) / CH}))
+            size_hint=(140 / CW, 38 / CH),
+            pos_hint={"x": 1063.66 / CW, "y": (CH - 66.39 - 38) / CH})
+        card.add_widget(self._wx_aqi)
+        self._wx_aqi_lbl = _lbl(
+            "—", _FSB, _ff(16.95), _MUTED,
+            size_hint=(80 / CW, 26 / CH),
+            pos_hint={"x": 1091.91 / CW, "y": (CH - 105.94 - 26) / CH})
+        card.add_widget(self._wx_aqi_lbl)
 
         root.add_widget(card)
 
@@ -401,24 +432,30 @@ class MorningBriefScreen(BaseScreen):
 
         # Schedule rows
         # Each row: time (left, blue) · dot (centre) · title · duration (right)
-        for (time_s, title_s, dur_s, row_y, dot_y) in [
+        self._sched_rows = []
+        for row_meta in [
             ("10:00 AM", "Product Roadmap Sync",  "45 min", 111.59, 118.65),
             ("1:00 PM",  "Client Review Meeting", "60 min", 193.52, 200.58),
             ("4:00 PM",  "Design Discussion",     "30 min", 271.21, 278.27),
         ]:
-            card.add_widget(_lbl(
+            time_s, title_s, dur_s, row_y, dot_y = row_meta
+            lt = _lbl(
                 time_s, _FMD, _ff(21.19), _BLUE,
                 size_hint=(145 / CW, 32 / CH),
-                pos_hint={"x": 15.0 / CW, "y": (CH - row_y - 32) / CH}))
+                pos_hint={"x": 15.0 / CW, "y": (CH - row_y - 32) / CH})
+            card.add_widget(lt)
             _add_dot(card, CW, CH, 158.2, dot_y)
-            card.add_widget(_lbl(
+            tit = _lbl(
                 title_s, _FSB, _ff(21.19), _WHITE,
                 size_hint=(360 / CW, 32 / CH),
-                pos_hint={"x": 182.22 / CW, "y": (CH - row_y - 32) / CH}))
-            card.add_widget(_lbl(
+                pos_hint={"x": 182.22 / CW, "y": (CH - row_y - 32) / CH})
+            card.add_widget(tit)
+            du = _lbl(
                 dur_s, _FSB, _ff(21.19), _MUTED,
                 size_hint=(75 / CW, 32 / CH),
-                pos_hint={"x": 548.07 / CW, "y": (CH - row_y - 32) / CH}))
+                pos_hint={"x": 548.07 / CW, "y": (CH - row_y - 32) / CH})
+            card.add_widget(du)
+            self._sched_rows.append((lt, tit, du))
 
         root.add_widget(card)
 
@@ -458,37 +495,43 @@ class MorningBriefScreen(BaseScreen):
         for div_y in (81.93, 162.44, 242.96):
             _add_divider(card, CW, CH, 24.02, div_y, 505.68, 2.83)
 
-        # Task rows — labels updated per Figma 927:288:
-        #   Row 1 label: "Due Today"  (927:296)
-        #   Row 2 label: "Upcoming"   (927:299, was "Due Today")
-        #   Row 3 label: "Unplanned"  (927:302, was "Due Today")
+        self._task_nums = []
+        self._task_titles = []
+        self._task_subs = []
+        # Task rows — labels updated from commitments / briefing API
         for (icon_file, num_s, num_col, label_s, sub_s,
              icon_y, num_y, grp_y) in [
-            ("icon_task_1.png", "2", _BLUE,   "Due Today", "2 high priority",
+            ("icon_task_1.png", "—", _BLUE,   "Due Today", "—",
              93.23,  103.12, 98.88),
-            ("icon_task_2.png", "1", _PURPLE, "Upcoming",  "Next: Tomorrow",
+            ("icon_task_2.png", "—", _PURPLE, "Upcoming",  "—",
              173.74, 183.63, 179.39),
-            ("icon_task_3.png", "2", _GREEN,  "Unplanned", "In Inbox",
+            ("icon_task_3.png", "—", _GREEN,  "Unplanned", "—",
              252.85, 262.73, 259.91),
         ]:
             task_src = _asset(icon_file)
             if task_src:
                 card.add_widget(_img(
                     task_src, CW, CH, 31.08, icon_y, 70.63, 62.15))
-            card.add_widget(_lbl(
+            num_l = _lbl(
                 num_s, _FB, _ff(35.31), num_col,
                 ha="center", va="middle",
                 size_hint=(40 / CW, 48 / CH),
-                pos_hint={"x": 120.0 / CW, "y": (CH - num_y - 48) / CH}))
-            card.add_widget(_lbl(
+                pos_hint={"x": 120.0 / CW, "y": (CH - num_y - 48) / CH})
+            card.add_widget(num_l)
+            self._task_nums.append(num_l)
+            t1 = _lbl(
                 label_s, _FSB, _ff(21.19), _WHITE,
                 size_hint=(180 / CW, 32 / CH),
-                pos_hint={"x": 217.53 / CW, "y": (CH - grp_y - 32) / CH}))
-            card.add_widget(_lbl(
+                pos_hint={"x": 217.53 / CW, "y": (CH - grp_y - 32) / CH})
+            card.add_widget(t1)
+            self._task_titles.append(t1)
+            t2 = _lbl(
                 sub_s, _FMD, _ff(16.95), _MUTED,
-                size_hint=(200 / CW, 26 / CH),
+                size_hint=(280 / CW, 26 / CH),
                 pos_hint={"x": 217.53 / CW,
-                          "y": (CH - grp_y - 31.07 - 26) / CH}))
+                          "y": (CH - grp_y - 31.07 - 26) / CH})
+            card.add_widget(t2)
+            self._task_subs.append(t2)
 
         root.add_widget(card)
 
@@ -530,27 +573,186 @@ class MorningBriefScreen(BaseScreen):
         _add_dot(card, CW, CH, 59.33, 80.51)
 
         # Sender name  (93.23, 73.45)
-        card.add_widget(_lbl(
-            "Neha Sharma", _FSB, _ff(21.19), _WHITE,
-            size_hint=(160 / CW, 30 / CH),
-            pos_hint={"x": 93.23 / CW, "y": (CH - 70.0 - 30) / CH}))
+        self._em_sender = _lbl(
+            "—", _FSB, _ff(21.19), _WHITE,
+            size_hint=(220 / CW, 30 / CH),
+            pos_hint={"x": 93.23 / CW, "y": (CH - 70.0 - 30) / CH})
+        card.add_widget(self._em_sender)
 
         # Email subject  (372.91, 76.28)
-        card.add_widget(_lbl(
-            "Client follow-up from Product Sync",
+        self._em_subject = _lbl(
+            "—",
             _FMD, _ff(18.36), _MUTED,
-            size_hint=(310 / CW, 28 / CH),
-            pos_hint={"x": 372.91 / CW, "y": (CH - 73.0 - 28) / CH}))
+            size_hint=(480 / CW, 28 / CH),
+            pos_hint={"x": 372.91 / CW, "y": (CH - 73.0 - 28) / CH})
+        card.add_widget(self._em_subject)
 
         # Timestamp  (1084.84, 76.28)
-        card.add_widget(_lbl(
-            "10:45 AM", _FMD, _ff(18.36), _MUTED,
-            size_hint=(90 / CW, 28 / CH),
-            pos_hint={"x": 1084.84 / CW, "y": (CH - 73.0 - 28) / CH}))
+        self._em_time = _lbl(
+            "—", _FMD, _ff(18.36), _MUTED,
+            size_hint=(120 / CW, 28 / CH),
+            pos_hint={"x": 1084.84 / CW, "y": (CH - 73.0 - 28) / CH})
+        card.add_widget(self._em_time)
 
         root.add_widget(card)
 
     # ── Lifecycle ──────────────────────────────────────────────────────────────
 
+    @staticmethod
+    def _first_name(display_name: str | None) -> str:
+        if not (display_name or "").strip():
+            return "there"
+        part = display_name.strip().split()[0]
+        return part if part else "there"
+
+    @staticmethod
+    def _fmt_ampm(dt: datetime) -> str:
+        h24 = dt.hour
+        m = dt.minute
+        am = "AM" if h24 < 12 else "PM"
+        h12 = h24 % 12
+        if h12 == 0:
+            h12 = 12
+        return f"{h12}:{m:02d} {am}"
+
+    def _on_weather_snapshot(self, snap: WeatherSnapshot) -> None:
+        def _apply(_dt):
+            try:
+                if self._wx_temp:
+                    self._wx_temp.text = f"{round(snap.temp_c):.0f}°"
+                if self._wx_condition:
+                    self._wx_condition.text = (snap.label or "—").lower()
+                if self._wx_city:
+                    self._wx_city.text = snap.city or "—"
+            except Exception:
+                logger.debug("morning_brief weather UI apply failed", exc_info=True)
+        Clock.schedule_once(_apply, 0)
+
     def on_enter(self) -> None:
-        pass
+        wc = get_weather_client()
+        self._weather_unsub = self._on_weather_snapshot
+        wc.subscribe(self._weather_unsub)
+        wc.start(refresh_seconds=900)
+        if wc.snapshot:
+            self._on_weather_snapshot(wc.snapshot)
+        else:
+            wc.refresh_now()
+        Clock.schedule_once(lambda _dt: self._load_briefing_backend(), 0)
+
+    def on_leave(self) -> None:
+        if self._weather_unsub:
+            try:
+                get_weather_client().unsubscribe(self._weather_unsub)
+            except Exception:
+                pass
+            self._weather_unsub = None
+
+    def _load_briefing_backend(self) -> None:
+        async def _go():
+            try:
+                data = await self.backend.get_briefing_context(days_ahead=1)
+            except Exception as exc:
+                logger.debug("get_briefing_context failed: %s", exc)
+                data = {}
+            Clock.schedule_once(lambda dt: self._apply_briefing_data(data or {}), 0)
+        run_async(_go())
+
+    def _apply_briefing_data(self, data: dict) -> None:
+        try:
+            dn = data.get("user_display_name")
+            greet = (data.get("greeting") or "Hello").strip()
+            if self._hdr_greeting:
+                self._hdr_greeting.text = f"{greet}, {self._first_name(dn)}"
+            today_s = (data.get("today") or "").strip()
+            if not today_s:
+                today_s = display_now().date().isoformat()
+            try:
+                td = date.fromisoformat(today_s)
+                months = (
+                    "Jan", "Feb", "Mar", "Apr", "May", "Jun",
+                    "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+                )
+                nice = f"{td.day} {months[td.month - 1]}"
+            except ValueError:
+                nice = today_s
+            if self._hdr_subtitle:
+                self._hdr_subtitle.text = f"Here's your overview for today, {nice}"
+
+            meetings = ((data.get("days") or {}).get(today_s) or {}).get("meetings") or []
+            # schedule rows (max 3)
+            for idx, row in enumerate(self._sched_rows):
+                t_l, tit_l, d_l = row
+                if idx < len(meetings):
+                    ev = meetings[idx]
+                    start_s = ev.get("start") or ev.get("start_time") or ""
+                    try:
+                        sdt = datetime.fromisoformat(start_s.replace("Z", "+00:00"))
+                        t_l.text = self._fmt_ampm(sdt)
+                    except Exception:
+                        t_l.text = "—"
+                    tit_l.text = (ev.get("title") or "—")[:48]
+                    dur = int(ev.get("duration") or 0)
+                    if dur > 0:
+                        d_l.text = f"{max(1, dur // 60)} min"
+                    else:
+                        d_l.text = "—"
+                else:
+                    t_l.text = "—"
+                    tit_l.text = "Free" if idx == 0 else ""
+                    d_l.text = ""
+
+            rows = data.get("commitments") or []
+            today_d = date.fromisoformat(today_s)
+            due_today = 0
+            upcoming = 0
+            unplanned = 0
+            next_line = "No upcoming"
+            for r in rows:
+                if (r.get("status") or "") not in ("active", "snoozed"):
+                    continue
+                da = (r.get("due_at") or r.get("remind_at") or "").strip()
+                if not da:
+                    unplanned += 1
+                    continue
+                try:
+                    if "T" in da:
+                        dpart = datetime.fromisoformat(da.replace("Z", "+00:00")).date()
+                    else:
+                        dpart = date.fromisoformat(da[:10])
+                except Exception:
+                    unplanned += 1
+                    continue
+                if dpart == today_d:
+                    due_today += 1
+                elif dpart > today_d:
+                    upcoming += 1
+                    if next_line == "No upcoming":
+                        next_line = (r.get("title") or "Task")[:40]
+                else:
+                    upcoming += 1
+
+            if self._task_nums and len(self._task_nums) >= 3:
+                self._task_nums[0].text = str(due_today)
+                self._task_nums[1].text = str(upcoming)
+                self._task_nums[2].text = str(unplanned)
+            if self._task_subs and len(self._task_subs) >= 3:
+                self._task_subs[0].text = f"{due_today} due today"
+                self._task_subs[1].text = f"Next: {next_line}"
+                self._task_subs[2].text = f"{unplanned} without date"
+
+            gprev = data.get("gmail_preview") or {}
+            top = gprev.get("top") if isinstance(gprev, dict) else None
+            if top and self._em_sender and self._em_subject:
+                self._em_sender.text = (top.get("from") or "—")[:42]
+                self._em_subject.text = (top.get("subject") or top.get("snippet") or "—")[:64]
+                self._em_time.text = (top.get("date") or "")[-12:] or "—"
+            elif self._em_sender:
+                self._em_sender.text = "No recent mail"
+                if self._em_subject:
+                    self._em_subject.text = (
+                        "Connect Gmail in settings" if not gprev.get("connected") else "—"
+                    )
+                if self._em_time:
+                    self._em_time.text = ""
+        except Exception:
+            logger.debug("apply briefing data failed", exc_info=True)

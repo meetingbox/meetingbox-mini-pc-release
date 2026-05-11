@@ -534,6 +534,35 @@ class BackendClient:
             logger.debug("get_calendar_week failed: %s", e)
             return {"days": {}}
 
+    async def get_briefing_context(self, days_ahead: int = 1) -> Dict:
+        """GET /api/briefing/context — calendar slice, tasks, mem0, Gmail preview."""
+        try:
+            resp = await self.client.get(
+                f"{self.base_url}/api/briefing/context",
+                params={"days_ahead": int(days_ahead)},
+            )
+            resp.raise_for_status()
+            return resp.json()
+        except Exception as e:
+            logger.debug("get_briefing_context failed: %s", e)
+            return {}
+
+    async def get_commitments(self, status: str = "", limit: int = 40) -> Dict:
+        """GET /api/commitments"""
+        try:
+            params: Dict = {"limit": int(limit)}
+            if (status or "").strip():
+                params["status"] = status.strip()
+            resp = await self.client.get(
+                f"{self.base_url}/api/commitments",
+                params=params,
+            )
+            resp.raise_for_status()
+            return resp.json()
+        except Exception as e:
+            logger.debug("get_commitments failed: %s", e)
+            return {"commitments": [], "count": 0}
+
     # ==================================================================
     # SYSTEM API
     # ==================================================================

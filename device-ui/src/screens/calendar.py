@@ -765,7 +765,13 @@ class CalendarScreen(BaseScreen):
     def _load_week(self) -> None:
         async def _fetch():
             try:
-                await self.backend.get_calendar_week()
+                today = display_now().date()
+                week_mon = today - timedelta(days=today.weekday())
+                end_d = week_mon + timedelta(days=6)
+                await self.backend.get_calendar_week(
+                    week_mon.isoformat(),
+                    end_d.isoformat(),
+                )
             except Exception as exc:
                 logger.debug("CalendarScreen: get_calendar_week failed: %s", exc)
         run_async(_fetch())
