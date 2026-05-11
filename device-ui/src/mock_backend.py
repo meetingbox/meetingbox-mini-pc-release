@@ -372,7 +372,7 @@ class MockBackendClient:
             "commitments": [],
             "meetings_recent": [],
             "mem0_snippet": None,
-            "pending_assistant": {"count": 0, "items": []},
+            "pending_assistant": {"count_pending": 0, "count": 0, "items": []},
             "gmail_preview": {"connected": False, "top": None},
         }
 
