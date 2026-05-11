@@ -869,12 +869,18 @@ class HomeScreen(BaseScreen):
         card.add_widget(em_row)
         self.brief_email_label = _BriefRowData(brief_em_title, brief_em_sub)
 
-        # "View all"  (114.42, 346.08)  56 × 19  SemiBold 15.54px  #006BF9
-        card.add_widget(_lbl(
+        # "View all"  (114.42, 346.08)  tappable → opens morning_brief screen
+        view_all_tap = _TappableCard(
+            size_hint=(90 / CW, 28 / CH),
+            pos_hint={"x": 107.0 / CW, "y": (CH - 344.0 - 28) / CH},
+        )
+        view_all_tap.add_widget(_lbl(
             "View all", _FONT_SB, _ff(15.54), _BLUE,
-            size_hint=(80 / CW, 19 / CH),
-            pos_hint={"x": 114.42 / CW, "y": (CH - 346.08 - 19) / CH},
+            size_hint=(1, 1), pos_hint={"x": 0, "y": 0},
         ))
+        view_all_tap.bind(
+            on_release=lambda *_: self.goto("morning_brief", transition="slide_left"))
+        card.add_widget(view_all_tap)
 
         # Arrow icon  (193.52, 344.66)  11.3 × 22.6
         arr_src = _fp("icon_arrow.png")
