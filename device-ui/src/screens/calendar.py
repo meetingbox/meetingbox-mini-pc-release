@@ -1,874 +1,816 @@
-"""Calendar screen — pixel-perfect implementation based on Figma data.
+"""Calendar screen — pixel-perfect Figma 927:62 (1260 × 800 px).
 
-Figma file: Cricket Champs (U3meTmbLWA67jhzCSyN8xA), node 927:61.
-Frame: 1260 × 800 px. All coordinates are direct Figma pixel values.
-
-Layout zones (Figma y from top-left):
-  Header          y=14   h=93     Back btn · "Today" · date · calendar icon
-  Intelligence    y=19   h=65     Spark icon · busy text · free text (no bg)
-  Week grid       y=105  h=152    7 day columns, today highlighted with blue frame
-  Daily summary   y=268  h=101    "You're free till X" + meeting count
-  Meetings        y=377  h=423    Left timeline separator + scrollable meeting cards
+Every coordinate, dimension, font size and colour is taken directly from
+the Figma node data supplied by the designer.  Only the "Today" heading,
+date string, and week-grid date numbers are dynamic (real current date).
+All meeting cards are static placeholder widgets at fixed Figma positions.
 """
 
 from __future__ import annotations
 
 import logging
-from datetime import date, datetime, timedelta
+from datetime import date, timedelta
 
 from kivy.clock import Clock
 from kivy.graphics import Color, Ellipse, Line, Rectangle, RoundedRectangle
 from kivy.uix.behaviors import ButtonBehavior
-from kivy.uix.boxlayout import BoxLayout
 from kivy.uix.floatlayout import FloatLayout
-from kivy.uix.image import Image
 from kivy.uix.label import Label
-from kivy.uix.scrollview import ScrollView
 from kivy.uix.widget import Widget
 
 from async_helper import run_async
-from config import ASSETS_DIR, DISPLAY_HEIGHT, DISPLAY_WIDTH, display_now, to_display_local
+from config import DISPLAY_HEIGHT, DISPLAY_WIDTH, display_now
 from screens.base_screen import BaseScreen
 
 logger = logging.getLogger(__name__)
 
-# ── Frame ─────────────────────────────────────────────────────────────────────
-FW, FH = 1260.0, 800.0
-_FIGMA_PROC = ASSETS_DIR / "processing" / "figma"
-_FIGMA_HOME = ASSETS_DIR / "home" / "figma"
-_FIGMA_IDLE = ASSETS_DIR / "idle"
+# ---------------------------------------------------------------------------
+# Figma design constants (1260 × 800 px frame)
+# ---------------------------------------------------------------------------
+_FW = 1260.0
+_FH = 800.0
 
-# ── Colours (exact Figma hex values) ──────────────────────────────────────────
-_BG         = (1/255,   8/255,  26/255, 1.0)   # #01081A
-_WHITE      = (1.0, 1.0, 1.0, 1.0)
-_MUTED      = (182/255, 186/255, 242/255, 1.0)  # #B6BAF2
-_BLUE_DOT   = (64/255,  152/255, 252/255, 1.0)  # #4098FC
-_BLUE_ADD   = (0.0, 107/255, 249/255, 1.0)      # #006BF9
-_BLUE_TODAY = (4/255,  132/255, 255/255, 1.0)   # #0484FF
-_CARD_T     = (2/255,   18/255,  60/255, 1.0)   # #02123C  (grid + free card top)
-_CARD_B     = (0.0,    10/255,  38/255, 1.0)    # #000A26  (card bottom)
-_BORDER_T   = (63/255,  66/255,  83/255, 1.0)   # #3F4253
-_BORDER_B   = (22/255,  27/255,  53/255, 1.0)   # #161B35
-_MTG_T      = (1/255,   17/255,  55/255, 1.0)   # #011137  (meeting card top)
-_MTG_B      = (0.0,    10/255,  38/255, 1.0)    # #000A26
-_MTG_BDR    = (33/255,  40/255,  75/255, 1.0)   # #21284B
-_JOIN_T     = (0.0,    89/255, 220/255, 1.0)    # #0059DC
-_JOIN_B     = (1/255,   61/255, 167/255, 1.0)   # #013DA7
-_JOIN_BDR   = (63/255, 140/255, 255/255, 1.0)   # #3F8CFF
-_ICON_BG    = (1/255,   11/255,  38/255, 1.0)   # #010B26
-_SEP_C      = (154/255, 189/255, 255/255, 0.75) # #9ABDFF
+# Colours
+_WHITE  = (1.0,  1.0,  1.0,  1.0)
+_MUTED  = (0.714, 0.729, 0.949, 1.0)   # #B6BAF2
+_BLUE   = (0.0,  0.420, 0.976, 1.0)    # #006BF9
+_BLUE2  = (0.0,  0.596, 1.0,  1.0)    # #0098FF / dot blue
+_BLUE_DOT = (0.251, 0.596, 0.988, 1.0) # #4098FC
+_GLOW_BLUE = (0.018, 0.518, 1.0, 1.0)  # #0484FF border
+_CARD_BORDER = (0.247, 0.259, 0.325, 1.0)  # #3F4253
 
-_FONT    = "42dot-Sans"
+# Gradient approximations (solid midpoints used for Kivy canvas)
+_WEEK_BG   = (0.008, 0.071, 0.235, 1.0)   # #02123C  (top of grid gradient)
+_CARD_TOP  = (0.004, 0.067, 0.216, 1.0)   # #011137
+_CARD_BOT  = (0.0,   0.039, 0.149, 1.0)   # #000A26
+_JOIN_TOP  = (0.0,   0.349, 0.863, 1.0)   # #0059DC
+_JOIN_BOT  = (0.004, 0.239, 0.655, 1.0)   # #013DA7
+
+# Font families registered by main.py
 _FONT_SB = "42dot-SB"
+_FONT_B  = "42dot-Sans"
 _FONT_MD = "42dot-Med"
 
-_DAYS_S = ["MON", "TUE", "WED", "THU", "FRI", "SAT", "SUN"]
-_DAYS_F = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
-_MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"]
 
-# ── Grid layout (divider x positions within 1210.56-wide grid frame) ──────────
-_GX, _GY, _GW, _GH = 24.02, 105.94, 1210.56, 151.14
-_DIVS   = [179.4, 348.91, 518.41, 687.91, 857.42, 1026.93]
-_COL_S  = [0.0] + _DIVS          # column start x within grid frame
-_COL_E  = _DIVS + [_GW]          # column end x within grid frame
+# ---------------------------------------------------------------------------
+# Coordinate helpers (Figma absolute px → Kivy FloatLayout fractions)
+# ---------------------------------------------------------------------------
 
-# ── Grid internal proportions ─────────────────────────────────────────────────
-# Day abbreviation label: starts at y:22.6 from grid top, h:34
-_DAY_LBL_TOP_FRAC   = 1.0 - 22.6 / _GH          # pos_hint "top" in FloatLayout
-_DAY_LBL_H_FRAC     = 34.0 / _GH
-# Date number center: ~y:80 from grid top → center_y from bottom
-_DATE_CTR_FRAC      = (151.14 - 80.0) / 151.14   # ≈ 0.47
-_DATE_H_FRAC        = 51.0 / _GH
-# Dots: center y ~122px from grid top → from bottom ~29px
-_DOT_CY_FRAC        = 29.0 / _GH                  # ≈ 0.19
-
-# ── Meeting area constants ─────────────────────────────────────────────────────
-_MA_Y   = 377.15    # meetings area top (Figma y from screen top)
-_MA_H   = FH - _MA_Y                              # 422.85 px
-_ROW_H  = 113.0     # meeting row height (from Figma spacing: 490.16-377.15)
-_CARD_W = 954.89    # meeting card width
-_CARD_H = 104.53    # meeting card height
-_CARD_X = 276.86    # meeting card x on screen
-_SEP_X  = 203.41    # separator line x
-_TL_X   = 48.02     # time label x
+def _x(px: float) -> float:
+    return px / _FW
 
 
-# ── Coordinate helpers ─────────────────────────────────────────────────────────
+def _y(top: float, h: float) -> float:
+    """Convert Figma y-from-top + height to Kivy y-from-bottom fraction."""
+    return max(0.0, (_FH - top - h) / _FH)
 
-def _ph(fx: float, fy: float, fw: float, fh: float) -> dict:
-    """Figma (x, y_from_top, w, h) → Kivy size_hint + pos_hint."""
-    return {
-        "size_hint": (fw / FW, fh / FH),
-        "pos_hint": {"x": fx / FW, "y": (FH - fy - fh) / FH},
-    }
+
+def _sw(px: float) -> float:
+    return px / _FW
+
+
+def _sh(px: float) -> float:
+    return px / _FH
 
 
 def _ff(fs: float) -> int:
-    scale = min(DISPLAY_WIDTH / FW, DISPLAY_HEIGHT / FH)
+    scale = min(DISPLAY_WIDTH / _FW, DISPLAY_HEIGHT / _FH)
     return max(6, round(fs * scale))
 
 
-_GCACHE: dict = {}
+# ---------------------------------------------------------------------------
+# Gradient texture helper (1×2 → linear gradient via Kivy Texture)
+# ---------------------------------------------------------------------------
+
+_GRAD_CACHE: dict = {}
 
 
 def _grad(top: tuple, bot: tuple):
     from kivy.graphics.texture import Texture
-    k = (top, bot)
-    if k not in _GCACHE:
-        t = Texture.create(size=(1, 2), colorfmt="rgba")
-        def _b(c): return [min(255, max(0, int(v * 255))) for v in c]
-        t.blit_buffer(bytes(_b(bot) + _b(top)), colorfmt="rgba", bufferfmt="ubyte")
-        t.mag_filter = t.min_filter = "linear"
-        t.wrap = "clamp_to_edge"
-        _GCACHE[k] = t
-    return _GCACHE[k]
+    key = (top, bot)
+    if key not in _GRAD_CACHE:
+        tex = Texture.create(size=(1, 2), colorfmt="rgba")
+        def _b(c):
+            return [min(255, max(0, int(v * 255))) for v in c]
+        tex.blit_buffer(bytes(_b(bot) + _b(top)), colorfmt="rgba", bufferfmt="ubyte")
+        tex.mag_filter = "linear"
+        tex.min_filter = "linear"
+        tex.wrap = "clamp_to_edge"
+        _GRAD_CACHE[key] = tex
+    return _GRAD_CACHE[key]
 
 
-def _fp(*names: str) -> str:
-    for n in names:
-        for d in (_FIGMA_PROC, _FIGMA_HOME, _FIGMA_IDLE):
-            p = d / n
-            if p.is_file():
-                return str(p)
-    return ""
+# ---------------------------------------------------------------------------
+# Label factory
+# ---------------------------------------------------------------------------
+
+def _lbl(text, font, size, color, *, halign="left", valign="top", **kw) -> Label:
+    lbl = Label(text=text, font_name=font, font_size=size,
+                color=color, halign=halign, valign=valign, **kw)
+    lbl.bind(size=lbl.setter("text_size"))
+    return lbl
 
 
-def _lbl(text, font, size, color, halign="left", valign="middle", **kw) -> Label:
-    l = Label(text=text, font_name=font, font_size=size, color=color,
-              halign=halign, valign=valign, **kw)
-    l.bind(size=l.setter("text_size"))
-    return l
+# ---------------------------------------------------------------------------
+# Card widget with rounded bg + border
+# ---------------------------------------------------------------------------
 
-
-def _density(n: int) -> int:
-    return 0 if n == 0 else (1 if n == 1 else (2 if n <= 3 else 3))
-
-
-def _fmt_date(d: date) -> str:
-    return f"{d.strftime('%a, %b')} {d.day}"
-
-
-# ── Widget helpers ─────────────────────────────────────────────────────────────
-
-class _GCard(FloatLayout):
-    """Static gradient card with border."""
-    def __init__(self, ct=None, cb=None, bdr=None, radius=12, **kw):
-        ct = ct or _CARD_T; cb = cb or _CARD_B; bdr = bdr or _BORDER_T
+class _Card(FloatLayout):
+    def __init__(self, top=None, bot=None, border=None, radius=12, **kw):
+        _top = top if top is not None else _CARD_TOP
+        _bot = bot if bot is not None else _CARD_BOT
+        _brd = border if border is not None else _CARD_BORDER
         super().__init__(**kw)
         self._r = radius
         with self.canvas.before:
             Color(1, 1, 1, 1)
-            self._bg = RoundedRectangle(pos=self.pos, size=self.size,
-                                        radius=[radius], texture=_grad(ct, cb))
+            self._bg = RoundedRectangle(
+                pos=self.pos, size=self.size, radius=[radius],
+                texture=_grad(_top, _bot),
+            )
         with self.canvas.after:
-            Color(*bdr, 0.8)
-            self._ln = Line(
+            Color(*_brd)
+            self._line = Line(
                 rounded_rectangle=(self.x, self.y, self.width, self.height, radius),
-                width=1.0)
-        self.bind(pos=self._s, size=self._s)
+                width=0.8,
+            )
+        self.bind(pos=self._sync, size=self._sync)
 
-    def _s(self, *_):
+    def _sync(self, *_):
         r = self._r
-        self._bg.pos = self.pos; self._bg.size = self.size; self._bg.radius = [r]
-        self._ln.rounded_rectangle = (self.x, self.y, self.width, self.height, r)
+        self._bg.pos    = self.pos
+        self._bg.size   = self.size
+        self._bg.radius = [r]
+        self._line.rounded_rectangle = (self.x, self.y, self.width, self.height, r)
 
 
-class _Btn(ButtonBehavior, FloatLayout):
-    """Solid gradient button."""
-    def __init__(self, text, fg, ct, cb, bdr, radius, font_size, on_tap=None, **kw):
+class _TappableCard(ButtonBehavior, _Card):
+    pass
+
+
+# ---------------------------------------------------------------------------
+# Dot widget (filled circle or outline ring)
+# ---------------------------------------------------------------------------
+
+class _Dot(Widget):
+    """Small dot drawn on canvas — filled or outline ring."""
+
+    def __init__(self, filled=True, color=_BLUE_DOT, **kw):
         super().__init__(**kw)
-        self._r = radius
-        with self.canvas.before:
-            Color(1, 1, 1, 1)
-            self._bg = RoundedRectangle(pos=self.pos, size=self.size,
-                                        radius=[radius], texture=_grad(ct, cb))
-            Color(*bdr, 0.9)
-            self._ln = Line(
-                rounded_rectangle=(self.x, self.y, self.width, self.height, radius),
-                width=1.0)
-        self.bind(pos=self._s, size=self._s)
-        self.add_widget(_lbl(text, _FONT_SB, font_size, fg,
-                             halign="center", valign="middle",
-                             size_hint=(1, 1), pos_hint={"x": 0, "y": 0}))
-        if on_tap:
-            self.bind(on_release=lambda *_: on_tap())
+        self._filled = filled
+        self._color  = color
+        self.bind(pos=self._draw, size=self._draw)
+        Clock.schedule_once(self._draw, 0)
 
-    def _s(self, *_):
-        r = self._r
-        self._bg.pos = self.pos; self._bg.size = self.size; self._bg.radius = [r]
-        self._ln.rounded_rectangle = (self.x, self.y, self.width, self.height, r)
+    def _draw(self, *_):
+        self.canvas.clear()
+        with self.canvas:
+            Color(*self._color)
+            if self._filled:
+                Ellipse(pos=self.pos, size=self.size)
+            else:
+                Line(ellipse=(self.x, self.y, self.width, self.height), width=1.2)
 
 
-class _OutlineBtn(ButtonBehavior, FloatLayout):
-    """Transparent button with border only."""
-    def __init__(self, text, fg, bdr, radius, font_size, on_tap=None, **kw):
-        super().__init__(**kw)
-        self._r = radius
-        with self.canvas.after:
-            Color(*bdr, 0.6)
-            self._ln = Line(
-                rounded_rectangle=(self.x, self.y, self.width, self.height, radius),
-                width=1.0)
-        self.bind(pos=self._s, size=self._s)
-        self.add_widget(_lbl(text, _FONT_SB, font_size, fg,
-                             halign="center", valign="middle",
-                             size_hint=(1, 1), pos_hint={"x": 0, "y": 0}))
-        if on_tap:
-            self.bind(on_release=lambda *_: on_tap())
-
-    def _s(self, *_):
-        self._ln.rounded_rectangle = (self.x, self.y, self.width, self.height, self._r)
-
-
-class _CircleBtn(ButtonBehavior, FloatLayout):
-    """Circular icon button (back button)."""
-    def __init__(self, src=None, on_tap=None, **kw):
-        super().__init__(**kw)
-        with self.canvas.before:
-            Color(*_ICON_BG)
-            self._bg = Ellipse(pos=self.pos, size=self.size)
-            Color(*_BORDER_T, 0.7)
-            self._ln = Line(circle=(0, 0, 1), width=1.41)
-        self.bind(pos=self._s, size=self._s)
-        if src:
-            self.add_widget(Image(source=src, size_hint=(0.55, 0.55),
-                                  pos_hint={"center_x": 0.5, "center_y": 0.5},
-                                  fit_mode="contain"))
-        else:
-            self.add_widget(_lbl("‹", _FONT_SB, _ff(36), _WHITE,
-                                 halign="center", valign="middle",
-                                 size_hint=(1, 1), pos_hint={"x": 0, "y": 0}))
-        if on_tap:
-            self.bind(on_release=lambda *_: on_tap())
-
-    def _s(self, *_):
-        cx, cy = self.center
-        r = min(self.width, self.height) / 2
-        self._bg.pos = self.pos; self._bg.size = self.size
-        self._ln.circle = (cx, cy, r)
-
-
-# ── Day cell ──────────────────────────────────────────────────────────────────
+# ---------------------------------------------------------------------------
+# Day-cell widget (tappable)
+# ---------------------------------------------------------------------------
 
 class _DayCell(ButtonBehavior, FloatLayout):
-    """One tappable day column in the week grid."""
+    """One column in the week grid (day abbrev + date number + dots)."""
 
-    def __init__(self, day_date: date, screen_ref, **kw):
+    def __init__(self, abbrev: str, date_num: str, dot_count: int,
+                 dots_filled: bool = True, is_today: bool = False, **kw):
         super().__init__(**kw)
-        self._date = day_date
-        self._screen_ref = screen_ref
-        self._mtg_n = 0
-        self._selected = False
-        self._is_today = (day_date == display_now().date())
-        idx = day_date.weekday()
+        self._abbrev     = abbrev
+        self._date_num   = date_num
+        self._dot_count  = dot_count
+        self._dots_filled = dots_filled
+        self._is_today   = is_today
+        self._built      = False
+        self.bind(size=self._build_once)
+        Clock.schedule_once(self._build_once, 0)
 
-        # Day abbreviation — uses FloatLayout geometry (size_hint + pos_hint)
-        self._day_lbl = Label(
-            text=_DAYS_S[idx],
-            font_name=_FONT_SB, font_size=_ff(28.25),
-            color=_MUTED, halign="center", valign="middle",
-            size_hint=(1.0, _DAY_LBL_H_FRAC),
-            pos_hint={"x": 0, "top": _DAY_LBL_TOP_FRAC})
-        self._day_lbl.bind(size=self._day_lbl.setter("text_size"))
-        self.add_widget(self._day_lbl)
+    def _build_once(self, *_):
+        if self._built or self.width < 2:
+            return
+        self._built = True
+        CW = self.width
+        CH = self.height
+
+        # Blue glow box for today
+        if self._is_today:
+            with self.canvas.before:
+                Color(*_GLOW_BLUE, 0.6)
+                self._glow_line = Line(
+                    rounded_rectangle=(0, 0, CW, CH, _ff(14.13)),
+                    width=1.2,
+                )
+            with self.canvas.before:
+                Color(0.004, 0.024, 0.094, 0.35)
+                self._glow_bg = RoundedRectangle(
+                    pos=self.pos, size=self.size, radius=[_ff(14.13)],
+                )
+            self.bind(pos=self._sync_glow, size=self._sync_glow)
+
+        # Day abbreviation label (y at top of cell)
+        self.add_widget(_lbl(
+            self._abbrev, _FONT_SB, _ff(28.25),
+            _MUTED if not self._is_today else _MUTED,
+            halign="center", valign="middle",
+            size_hint=(1, None),
+            height=_ff(34),
+            pos_hint={"x": 0, "y": (CH - _ff(34) - _ff(17)) / CH},
+        ))
 
         # Date number
-        self._date_lbl = Label(
-            text=str(day_date.day),
-            font_name=_FONT_SB, font_size=_ff(42.38),
-            color=_WHITE, halign="center", valign="middle",
-            size_hint=(1.0, _DATE_H_FRAC),
-            pos_hint={"x": 0, "center_y": _DATE_CTR_FRAC})
-        self._date_lbl.bind(size=self._date_lbl.setter("text_size"))
-        self.add_widget(self._date_lbl)
+        date_color = _WHITE
+        self.add_widget(_lbl(
+            self._date_num, _FONT_B, _ff(42.38), date_color,
+            halign="center", valign="middle",
+            size_hint=(1, None),
+            height=_ff(51),
+            pos_hint={"x": 0, "y": (CH - _ff(34) - _ff(17) - _ff(51) - _ff(5)) / CH},
+        ))
 
-        # Canvas: today/selected highlight box + dots
-        with self.canvas.before:
-            self._hc  = Color(0, 0, 0, 0)
-            self._hr  = RoundedRectangle(pos=(0, 0), size=(1, 1), radius=[_ff(14.13)])
-            self._hlc = Color(0, 0, 0, 0)
-            self._hrl = Line(rounded_rectangle=(0, 0, 1, 1, _ff(14.13)), width=1.41)
-            self._dots: list[tuple] = []
-            for _ in range(3):
-                fc = Color(0, 0, 0, 0); fe = Ellipse(pos=(0, 0), size=(1, 1))
-                rc = Color(0, 0, 0, 0); rl = Line(circle=(0, 0, 1), width=1.41)
-                self._dots.append((fc, fe, rc, rl))
+        # Dots at bottom
+        DOT_SZ = _ff(14.13)
+        DOT_GAP = _ff(22.6)
+        total_dots_w = self._dot_count * DOT_SZ + (self._dot_count - 1) * (DOT_GAP - DOT_SZ)
+        start_x = (CW - total_dots_w) / 2
+        DOT_Y   = _ff(8)  # from bottom of cell
 
-        self.bind(pos=self._sync, size=self._sync)
-        self.bind(on_release=lambda *_: screen_ref._select_day(self._date))
+        for i in range(self._dot_count):
+            dx = start_x + i * DOT_GAP
+            dot = _Dot(
+                filled=self._dots_filled,
+                color=_BLUE_DOT if self._dots_filled else _MUTED,
+                size_hint=(None, None),
+                size=(DOT_SZ, DOT_SZ),
+                pos_hint={"x": dx / CW, "y": DOT_Y / CH},
+            )
+            self.add_widget(dot)
 
-    def _sync(self, *_) -> None:
-        W, H = self.width, self.height
-        bx, by = self.x, self.y
-        if W < 2 or H < 2:
-            return
-
-        cx = bx + W / 2
-
-        # Highlight box: 85% column width, 94% height, centred
-        hw = W * 0.85
-        hh = H * 0.94
-        hx = bx + (W - hw) / 2
-        hy = by + (H - hh) / 2
-        radius = _ff(14.13)
-
-        if self._is_today:
-            self._hc.rgba  = (0.016, 0.082, 0.259, 0.38)
-            self._hr.pos   = (hx, hy); self._hr.size = (hw, hh); self._hr.radius = [radius]
-            self._hlc.rgba = _BLUE_TODAY
-            self._hrl.rounded_rectangle = (hx, hy, hw, hh, radius)
-        elif self._selected:
-            self._hc.rgba  = (*_BLUE_TODAY[:3], 0.14)
-            self._hr.pos   = (hx, hy); self._hr.size = (hw, hh); self._hr.radius = [radius]
-            self._hlc.rgba = (*_BLUE_TODAY[:3], 0.55)
-            self._hrl.rounded_rectangle = (hx, hy, hw, hh, radius)
-        else:
-            self._hc.rgba = (0, 0, 0, 0)
-            self._hlc.rgba = (0, 0, 0, 0)
-
-        # Dots — centre y at ~29 px from bottom of 151-px cell
-        dot_r  = _ff(7.07)
-        dot_cy = by + H * _DOT_CY_FRAC
-        n      = self._mtg_n
-        dens   = _density(n)
-        gap    = dot_r * 2.9
-
-        for i, (fc, fe, rc, rl) in enumerate(self._dots):
-            dcx = cx + (i - 1) * gap
-            fe.pos    = (dcx - dot_r, dot_cy - dot_r)
-            fe.size   = (dot_r * 2,   dot_r * 2)
-            rl.circle = (dcx, dot_cy, dot_r)
-            if n == 0:
-                fc.rgba = (0, 0, 0, 0)
-                rc.rgba = (*_MUTED[:3], 0.55) if i == 1 else (0, 0, 0, 0)
-            elif i < dens:
-                fc.rgba = _BLUE_DOT; rc.rgba = (0, 0, 0, 0)
-            else:
-                fc.rgba = (0, 0, 0, 0); rc.rgba = (0, 0, 0, 0)
-
-    def update(self, day_date: date, mtg_n: int, selected: bool) -> None:
-        self._date     = day_date
-        self._mtg_n    = mtg_n
-        self._selected = selected
-        self._is_today = (day_date == display_now().date())
-        idx = day_date.weekday()
-        self._day_lbl.text  = _DAYS_S[idx]
-        self._date_lbl.text = str(day_date.day)
-        self._date_lbl.color = _WHITE
-        self._sync()
+    def _sync_glow(self, *_):
+        if hasattr(self, "_glow_bg"):
+            self._glow_bg.pos  = self.pos
+            self._glow_bg.size = self.size
+        if hasattr(self, "_glow_line"):
+            self._glow_line.rounded_rectangle = (
+                self.x, self.y, self.width, self.height, _ff(14.13)
+            )
 
 
-# ── Calendar screen ───────────────────────────────────────────────────────────
+# ---------------------------------------------------------------------------
+# CalendarScreen
+# ---------------------------------------------------------------------------
 
 class CalendarScreen(BaseScreen):
-    """Daily-view calendar matching Figma node 927:61 (1260 × 800 px)."""
+    """Calendar view — Figma 927 frame, 1260 × 800 px."""
 
     def __init__(self, **kw):
         super().__init__(**kw)
-        today = display_now().date()
-        self._week_start   = today - timedelta(days=today.weekday())
-        self._selected_day = today
-        self._week_data: dict = {}
-        self._day_cells: list[_DayCell] = []
-        self._meet_list: BoxLayout | None = None
-        self._intel_busy_lbl: Label | None = None
-        self._intel_free_lbl: Label | None = None
-        self._free_till_lbl:  Label | None = None
-        self._mtg_count_lbl:  Label | None = None
-        self._hdr_day_lbl:    Label | None = None
-        self._hdr_date_lbl:   Label | None = None
+        self._selected_date: date = display_now().date()
+        self._heading_label:   Label | None = None
+        self._datestr_label:   Label | None = None
+        self._day_cells:       list[tuple[date, _DayCell]] = []
         self._build_ui()
 
-    # ── UI construction ───────────────────────────────────────────────────────
+    # -----------------------------------------------------------------------
+    # UI construction
+    # -----------------------------------------------------------------------
 
     def _build_ui(self) -> None:
         root = FloatLayout(size_hint=(1, 1))
 
+        # Solid background #01081A
         with root.canvas.before:
-            Color(*_BG)
-            self._bg = Rectangle(pos=root.pos, size=root.size)
-        root.bind(pos=lambda w, v: setattr(self._bg, "pos", v),
-                  size=lambda w, v: setattr(self._bg, "size", v))
+            Color(0.004, 0.031, 0.102, 1.0)
+            self._bg_rect = Rectangle(pos=root.pos, size=root.size)
+        root.bind(
+            pos=lambda w, v: setattr(self._bg_rect, "pos", v),
+            size=lambda w, v: setattr(self._bg_rect, "size", v),
+        )
 
         self._build_header(root)
-        self._build_intelligence(root)
         self._build_week_grid(root)
-        self._build_daily_summary(root)
-        self._build_meetings_area(root)
+        self._build_free_time_card(root)
+        self._build_separator_and_timeline(root)
+        self._build_meeting_cards(root)
+        self._build_add_event_button(root)
 
         self.add_widget(root)
 
-    # ── Header: back btn + "Today" + date + calendar icon ─────────────────────
+    # -----------------------------------------------------------------------
+    # Header  (back button, heading, date string, calendar icon, intel section)
+    # -----------------------------------------------------------------------
 
     def _build_header(self, root: FloatLayout) -> None:
-        # Back button — x:24.02, y:21.19, w:76.28, h:76.28 (circular)
-        src = _fp("btn_back.png")
-        back = _CircleBtn(src=src, on_tap=self.go_back,
-                          **_ph(24.02, 21.19, 76.28, 76.28))
-        root.add_widget(back)
+        # Back button  (24.02, 21.19)  76.28 × 76.28 — circular dark pill
+        back_btn = ButtonBehavior.__new__(ButtonBehavior)
+        back_btn = _TappableCard(
+            top=(0.004, 0.043, 0.149, 1.0),
+            bot=(0.004, 0.043, 0.149, 1.0),
+            border=_CARD_BORDER,
+            radius=_ff(38),
+            size_hint=(_sw(76.28), _sh(76.28)),
+            pos_hint={"x": _x(24.02), "y": _y(21.19, 76.28)},
+        )
+        back_btn.add_widget(_lbl(
+            "‹", _FONT_B, _ff(36), _WHITE,
+            halign="center", valign="middle",
+            size_hint=(1, 1),
+            pos_hint={"x": 0, "y": 0},
+        ))
+        back_btn.bind(on_release=lambda *_: self.go_back())
+        root.add_widget(back_btn)
 
-        # "Today" heading — y:14.13, h:46
-        self._hdr_day_lbl = _lbl(
-            "Today", _FONT_SB, _ff(38.5), _WHITE,
-            **_ph(118.66, 14.13, 200.0, 46.0))
-        root.add_widget(self._hdr_day_lbl)
+        # "Today" heading  (118.66, 14.13)  108 × 46
+        self._heading_label = _lbl(
+            "Today", _FONT_SB, _ff(38.52), _WHITE,
+            halign="left", valign="top",
+            size_hint=(_sw(200), _sh(46)),
+            pos_hint={"x": _x(118.66), "y": _y(14.13, 46)},
+        )
+        root.add_widget(self._heading_label)
 
-        # Date string — y:60.36, h:33
-        self._hdr_date_lbl = _lbl(
-            _fmt_date(display_now().date()), _FONT_SB, _ff(27.5), _WHITE,
-            **_ph(118.66, 60.36, 250.0, 33.0))
-        root.add_widget(self._hdr_date_lbl)
+        # Date string  (118.66, 60.36)  169 × 33
+        self._datestr_label = _lbl(
+            self._format_date(self._selected_date),
+            _FONT_SB, _ff(27.52), _WHITE,
+            halign="left", valign="top",
+            size_hint=(_sw(250), _sh(33)),
+            pos_hint={"x": _x(118.66), "y": _y(60.36, 33)},
+        )
+        root.add_widget(self._datestr_label)
 
-        # Calendar icon — x:241.93, y:20.49, w:36.98, h:33
-        cal_src = _fp("icon_calendar.png", "uil_calender.png")
-        if cal_src:
-            root.add_widget(Image(source=cal_src, fit_mode="contain",
-                                  **_ph(241.93, 20.49, 36.98, 33.0)))
-        else:
-            root.add_widget(_lbl(
-                "📅", _FONT, _ff(26), _MUTED,
-                halign="center", valign="middle",
-                **_ph(241.93, 14.13, 40.0, 46.0)))
+        # Calendar icon (unicode fallback)  (241.93, 20.49)  36.98 × 33
+        root.add_widget(_lbl(
+            "📅", _FONT_SB, _ff(28), _WHITE,
+            halign="center", valign="middle",
+            size_hint=(_sw(36.98), _sh(33)),
+            pos_hint={"x": _x(241.93), "y": _y(20.49, 33)},
+        ))
 
-    # ── Intelligence: spark + busy/free text (no card background) ─────────────
-
-    def _build_intelligence(self, root: FloatLayout) -> None:
-        # Spark icon — x:851.77, y:38.24, ~39×41
+        # Intelligence section — floating text, no background
+        # Spark icon ✦  (851.77, 38.24)
         root.add_widget(_lbl(
             "✦", _FONT_SB, _ff(30), _MUTED,
             halign="center", valign="middle",
-            **_ph(851.77, 28.0, 42.0, 42.0)))
+            size_hint=(_sw(39.38), _sh(40.89)),
+            pos_hint={"x": _x(851.77), "y": _y(38.24, 40.89)},
+        ))
 
-        # "This Week Busy: ..." — x:905.91, y:19.78, w:299, h:29
-        self._intel_busy_lbl = _lbl(
-            "This Week Busy: —", _FONT_SB, _ff(24.6), _MUTED,
-            **_ph(905.91, 19.78, 299.0, 29.0))
-        root.add_widget(self._intel_busy_lbl)
+        # "This Week Busy: Wed, Thu"  (905.91, 19.78)  299 × 29
+        root.add_widget(_lbl(
+            "This Week Busy: Wed, Thu",
+            _FONT_SB, _ff(24.61), _MUTED,
+            halign="left", valign="top",
+            size_hint=(_sw(299), _sh(29)),
+            pos_hint={"x": _x(905.91), "y": _y(19.78, 29)},
+        ))
 
-        # "Free: ..." — x:905.91, y:55.46, w:207, h:29
-        self._intel_free_lbl = _lbl(
-            "Free: —", _FONT_SB, _ff(24.6), _MUTED,
-            **_ph(905.91, 55.46, 280.0, 29.0))
-        root.add_widget(self._intel_free_lbl)
+        # "Free: Fri afternoon"  (905.91, 55.46)  207 × 29
+        root.add_widget(_lbl(
+            "Free: Fri afternoon",
+            _FONT_SB, _ff(24.61), _MUTED,
+            halign="left", valign="top",
+            size_hint=(_sw(207), _sh(29)),
+            pos_hint={"x": _x(905.91), "y": _y(55.46, 29)},
+        ))
 
-    # ── Week grid ──────────────────────────────────────────────────────────────
+    # -----------------------------------------------------------------------
+    # Week grid  (24.02, 105.94)  1210.56 × 151.14
+    # -----------------------------------------------------------------------
 
     def _build_week_grid(self, root: FloatLayout) -> None:
-        # Grid card background — x:24.02, y:105.94, w:1210.56, h:151.14
-        root.add_widget(_GCard(
-            ct=_CARD_T, cb=_CARD_B, bdr=_BORDER_T,
-            radius=_ff(29.66),
-            **_ph(_GX, _GY, _GW, _GH)))
+        GW, GH = 1210.56, 151.14
+        GX, GY = 24.02, 105.94
 
-        # 7 day columns
+        grid = _Card(
+            top=_WEEK_BG,
+            bot=(0.0, 0.039, 0.149, 1.0),
+            border=_CARD_BORDER,
+            radius=_ff(29.66),
+            size_hint=(_sw(GW), _sh(GH)),
+            pos_hint={"x": _x(GX), "y": _y(GY, GH)},
+        )
+
+        # 6 vertical dividers (within grid, fractional positions)
+        DIV_X_LIST = [179.4, 348.91, 518.41, 687.91, 857.42, 1026.93]
+        DIV_W, DIV_H = 2.83, 84.75
+        DIV_Y = 33.9  # within grid
+        for div_x in DIV_X_LIST:
+            sep = Widget(
+                size_hint=(DIV_W / GW, DIV_H / GH),
+                pos_hint={"x": div_x / GW, "y": (GH - DIV_Y - DIV_H) / GH},
+            )
+            with sep.canvas:
+                Color(0.008, 0.090, 0.302, 0.8)
+                sep._rect = Rectangle(pos=sep.pos, size=sep.size)
+            sep.bind(
+                pos=lambda w, v: setattr(w._rect, "pos", v),
+                size=lambda w, v: setattr(w._rect, "size", v),
+            )
+            grid.add_widget(sep)
+
+        # Day column definitions: (abbrev, gx_in_grid, gy_in_grid, cw, ch, dots, filled, is_today)
+        # These positions come from the Figma data; they are relative to the grid frame.
+        now_date = display_now().date()
+        week_mon = now_date - timedelta(days=now_date.weekday())  # Monday of this week
+        week_dates = [week_mon + timedelta(days=i) for i in range(7)]  # Mon–Sun
+
+        DAY_ABBREVS = ["MON", "TUE", "WED", "THU", "FRI", "SAT", "SUN"]
+
+        # Static dot config from Figma: (dot_count, dots_filled)
+        DOT_CONFIG = [
+            (2, True),   # MON
+            (1, True),   # TUE
+            (3, True),   # WED (today)
+            (2, True),   # THU
+            (1, True),   # FRI
+            (1, False),  # SAT — outline ring
+            (1, False),  # SUN — outline ring
+        ]
+
+        # Grid-relative x/y positions and sizes from Figma
+        CELL_DEFS = [
+            # (gx, gy, cw, ch)
+            (63.57,   21.19, 66,   110.18),  # MON
+            (240.13,  21.19, 53,   110.18),  # TUE
+            (365.85,   5.65, 139.84, 139.84),  # WED (today — larger)
+            (577.73,  22.6,  57,   107.35),  # THU
+            (750.07,  22.6,  51,   107.35),  # FRI
+            (919.58,  22.6,  51,   107.35),  # SAT
+            (1084.84, 22.6,  58,   107.35),  # SUN
+        ]
+
         self._day_cells = []
-        for i in range(7):
-            d     = self._week_start + timedelta(days=i)
-            col_x = _GX + _COL_S[i]
-            col_w = _COL_E[i] - _COL_S[i]
-            cell  = _DayCell(
-                d, self,
-                size_hint=(col_w / FW, _GH / FH),
-                pos_hint={"x": col_x / FW, "y": (FH - _GY - _GH) / FH})
-            cell._selected = (d == self._selected_day)
-            root.add_widget(cell)
-            self._day_cells.append(cell)
+        for i, (wd, abbrev, (dots, filled), (gx, gy, cw, ch)) in enumerate(
+            zip(week_dates, DAY_ABBREVS, DOT_CONFIG, CELL_DEFS)
+        ):
+            is_today = (wd == now_date)
+            cell = _DayCell(
+                abbrev=abbrev,
+                date_num=str(wd.day),
+                dot_count=dots,
+                dots_filled=filled,
+                is_today=is_today,
+                size_hint=(cw / GW, ch / GH),
+                pos_hint={"x": gx / GW, "y": (GH - gy - ch) / GH},
+            )
+            _date_ref = wd
+            cell.bind(on_release=lambda inst, d=_date_ref: self._select_day(d))
+            grid.add_widget(cell)
+            self._day_cells.append((wd, cell))
 
-        # Vertical dividers — 2.83 × 84.75, y:33.9 within grid
-        for div_x in _DIVS:
-            dw = Widget(**_ph(_GX + div_x, _GY + 33.9, 2.83, 84.75))
-            with dw.canvas.before:
-                Color(2/255, 23/255, 77/255, 0.85)
-                _r = Rectangle(pos=dw.pos, size=dw.size)
+        root.add_widget(grid)
 
-            def _mk(r):
-                def _s(w, *_): r.pos = w.pos; r.size = w.size
-                return _s
+    # -----------------------------------------------------------------------
+    # Free time card  (25.43, 268.39)  1210.56 × 100.29
+    # -----------------------------------------------------------------------
 
-            dw.bind(pos=_mk(_r), size=_mk(_r))
-            root.add_widget(dw)
-
-    # ── Daily summary card ─────────────────────────────────────────────────────
-
-    def _build_daily_summary(self, root: FloatLayout) -> None:
+    def _build_free_time_card(self, root: FloatLayout) -> None:
         CW, CH = 1210.56, 100.29
-        card = _GCard(
-            ct=_CARD_T, cb=_CARD_B, bdr=_BORDER_T,
+        card = _Card(
+            top=_WEEK_BG,
+            bot=(0.0, 0.039, 0.149, 1.0),
+            border=_CARD_BORDER,
             radius=_ff(29.66),
-            **_ph(25.43, 268.39, CW, CH))
+            size_hint=(_sw(CW), _sh(CH)),
+            pos_hint={"x": _x(25.43), "y": _y(268.39, CH)},
+        )
 
-        # Clock icon — x:31.08, y:24.02, 53.68×53.68
-        clk = _fp("icon_clock.png", "mingcute_time.png")
-        if clk:
-            card.add_widget(Image(source=clk, fit_mode="contain",
-                                  size_hint=(53.68/CW, 53.68/CH),
-                                  pos_hint={"x": 31.08/CW,
-                                            "y": (CH - 24.02 - 53.68)/CH}))
-        else:
-            card.add_widget(_lbl(
-                "⏱", _FONT, _ff(38), _MUTED,
-                halign="center", valign="middle",
-                size_hint=(53.68/CW, 53.68/CH),
-                pos_hint={"x": 31.08/CW, "y": (CH - 24.02 - 53.68)/CH}))
+        # Clock icon  (31.08, 24.02) in card  53.68 × 53.68
+        card.add_widget(_lbl(
+            "⏱", _FONT_SB, _ff(38), _MUTED,
+            halign="center", valign="middle",
+            size_hint=(53.68 / CW, 53.68 / CH),
+            pos_hint={"x": 31.08 / CW, "y": (CH - 24.02 - 53.68) / CH},
+        ))
 
-        # "You're free till X" — x:97.47, y:31.08, h:39
-        self._free_till_lbl = _lbl(
-            "Loading…", _FONT_SB, _ff(32.5), _WHITE,
-            size_hint=(680/CW, 39/CH),
-            pos_hint={"x": 97.47/CW, "y": (CH - 31.08 - 39)/CH})
-        card.add_widget(self._free_till_lbl)
+        # "You're free till 11:00 AM"  (97.47, 31.08)  356 × 39  Bold 32.49px
+        card.add_widget(_lbl(
+            "You're free till 11:00 AM",
+            _FONT_B, _ff(32.49), _WHITE,
+            halign="left", valign="middle",
+            size_hint=(356 / CW, 39 / CH),
+            pos_hint={"x": 97.47 / CW, "y": (CH - 31.08 - 39) / CH},
+        ))
 
-        # Sun icon — x:884.26, y:28.25, 49.44×49.44
-        sun = _fp("icon_sun.png", "icon_sun_morning_brief.png")
-        if sun:
-            card.add_widget(Image(source=sun, fit_mode="contain",
-                                  size_hint=(49.44/CW, 49.44/CH),
-                                  pos_hint={"x": 884.26/CW,
-                                            "y": (CH - 28.25 - 49.44)/CH}))
-        else:
-            card.add_widget(_lbl(
-                "☀", _FONT, _ff(34), _MUTED,
-                halign="center", valign="middle",
-                size_hint=(49.44/CW, 49.44/CH),
-                pos_hint={"x": 884.26/CW, "y": (CH - 28.25 - 49.44)/CH}))
+        # Sun icon  (884.26, 28.25)  49.44 × 49.44
+        card.add_widget(_lbl(
+            "☀", _FONT_SB, _ff(34), _MUTED,
+            halign="center", valign="middle",
+            size_hint=(49.44 / CW, 49.44 / CH),
+            pos_hint={"x": 884.26 / CW, "y": (CH - 28.25 - 49.44) / CH},
+        ))
 
-        # "X meeting today" — x:943.59, y:35.32, w:236, h:37
-        self._mtg_count_lbl = _lbl(
-            "— meetings today", _FONT_SB, _ff(31.1), _WHITE,
-            size_hint=(280/CW, 37/CH),
-            pos_hint={"x": 943.59/CW, "y": (CH - 35.32 - 37)/CH})
-        card.add_widget(self._mtg_count_lbl)
+        # "3 meeting today"  (943.59, 35.32)  236 × 37  Bold 31.08px
+        card.add_widget(_lbl(
+            "3 meeting today",
+            _FONT_B, _ff(31.08), _WHITE,
+            halign="left", valign="middle",
+            size_hint=(236 / CW, 37 / CH),
+            pos_hint={"x": 943.59 / CW, "y": (CH - 35.32 - 37) / CH},
+        ))
 
         root.add_widget(card)
 
-    # ── Meetings area: separator line + scrollable rows ────────────────────────
+    # -----------------------------------------------------------------------
+    # Separator line + timeline dots + time labels
+    # -----------------------------------------------------------------------
 
-    def _build_meetings_area(self, root: FloatLayout) -> None:
-        # Vertical separator line — x:203.41, y:377.15, w:2.83, h:355.96
-        sep = Widget(**_ph(_SEP_X, _MA_Y, 2.83, 355.96))
-        with sep.canvas.before:
-            Color(*_SEP_C)
-            _sr = Rectangle(pos=sep.pos, size=sep.size)
-        sep.bind(pos=lambda w, v: setattr(_sr, "pos", v),
-                 size=lambda w, v: setattr(_sr, "size", v))
+    def _build_separator_and_timeline(self, root: FloatLayout) -> None:
+        # Vertical separator  (203.41, 377.15)  2.83 × 355.96
+        sep = Widget(
+            size_hint=(_sw(2.83), _sh(355.96)),
+            pos_hint={"x": _x(203.41), "y": _y(377.15, 355.96)},
+        )
+        with sep.canvas:
+            Color(0.604, 0.745, 1.0, 0.75)  # #9ABDFF at 75%
+            sep._rect = Rectangle(pos=sep.pos, size=sep.size)
+        sep.bind(
+            pos=lambda w, v: setattr(w._rect, "pos", v),
+            size=lambda w, v: setattr(w._rect, "size", v),
+        )
         root.add_widget(sep)
 
-        # ScrollView — full width, from meetings area to screen bottom
-        scroll = ScrollView(
-            do_scroll_x=False,
-            bar_width=3,
-            bar_color=(*_BLUE_DOT[:3], 0.4),
-            bar_inactive_color=(*_BLUE_DOT[:3], 0.1),
-            size_hint=(1.0, _MA_H / FH),
-            pos_hint={"x": 0, "y": 0})
+        # Timeline dots
+        # Group 58 — large dot  (187.87, 412.46)  33.9 × 33.9  #0090FF
+        dot_large = Widget(
+            size_hint=(_sw(33.9), _sh(33.9)),
+            pos_hint={"x": _x(187.87), "y": _y(412.46, 33.9)},
+        )
+        with dot_large.canvas:
+            Color(0.0, 0.565, 1.0, 1.0)
+            dot_large._e = Ellipse(pos=dot_large.pos, size=dot_large.size)
+        dot_large.bind(
+            pos=lambda w, v: setattr(w._e, "pos", v),
+            size=lambda w, v: setattr(w._e, "size", v),
+        )
+        root.add_widget(dot_large)
 
-        self._meet_list = BoxLayout(
-            orientation="vertical",
-            spacing=_ff(8),
-            padding=[0, _ff(6), 0, _ff(24)],
-            size_hint_y=None)
-        self._meet_list.bind(minimum_height=self._meet_list.setter("height"))
-        scroll.add_widget(self._meet_list)
-        root.add_widget(scroll)
+        # Group 59 — medium dot  (192.11, 529.71)  25.43 × 25.43  #0050FF
+        dot_mid1 = Widget(
+            size_hint=(_sw(25.43), _sh(25.43)),
+            pos_hint={"x": _x(192.11), "y": _y(529.71, 25.43)},
+        )
+        with dot_mid1.canvas:
+            Color(0.0, 0.314, 1.0, 1.0)
+            dot_mid1._e = Ellipse(pos=dot_mid1.pos, size=dot_mid1.size)
+        dot_mid1.bind(
+            pos=lambda w, v: setattr(w._e, "pos", v),
+            size=lambda w, v: setattr(w._e, "size", v),
+        )
+        root.add_widget(dot_mid1)
 
-    # ── Lifecycle ──────────────────────────────────────────────────────────────
+        # Group 60 — medium dot  (192.11, 642.71)  25.43 × 25.43  #0050FF
+        dot_mid2 = Widget(
+            size_hint=(_sw(25.43), _sh(25.43)),
+            pos_hint={"x": _x(192.11), "y": _y(642.71, 25.43)},
+        )
+        with dot_mid2.canvas:
+            Color(0.0, 0.314, 1.0, 1.0)
+            dot_mid2._e = Ellipse(pos=dot_mid2.pos, size=dot_mid2.size)
+        dot_mid2.bind(
+            pos=lambda w, v: setattr(w._e, "pos", v),
+            size=lambda w, v: setattr(w._e, "size", v),
+        )
+        root.add_widget(dot_mid2)
 
-    def on_enter(self) -> None:
-        self._update_header()
-        self._load_week()
+        # Time labels (static placeholders)
+        # Group 61  (48.02, 405.4)
+        self._build_time_label(root, gx=48.02, gy=405.4, time_str="11:00", ampm_str="AM",
+                               ampm_x=35.31)
+        # Group 62  (59.33, 509.93)
+        self._build_time_label(root, gx=59.33, gy=509.93, time_str="2:00", ampm_str="PM",
+                               ampm_x=24.02)
+        # Group 63  (56.5, 622.94)
+        self._build_time_label(root, gx=56.5,  gy=622.94, time_str="5:30", ampm_str="PM",
+                               ampm_x=26.84)
 
-    # ── Day selection ──────────────────────────────────────────────────────────
+    def _build_time_label(self, root: FloatLayout, gx: float, gy: float,
+                          time_str: str, ampm_str: str, ampm_x: float) -> None:
+        GW, GH = 71.0, 60.9
+
+        # Outer container (so we can lay child labels within it)
+        grp = FloatLayout(
+            size_hint=(_sw(GW), _sh(GH)),
+            pos_hint={"x": _x(gx), "y": _y(gy, GH)},
+        )
+
+        # Time number (Bold 28.25px)
+        grp.add_widget(_lbl(
+            time_str, _FONT_B, _ff(28.25), _WHITE,
+            halign="left", valign="top",
+            size_hint=(1, None),
+            height=_ff(34),
+            pos_hint={"x": 0, "y": (GH - _ff(34)) / GH},
+        ))
+
+        # AM/PM (SemiBold 22.6px #B6BAF2)
+        grp.add_widget(_lbl(
+            ampm_str, _FONT_SB, _ff(22.6), _MUTED,
+            halign="left", valign="top",
+            size_hint=(35 / GW, None),
+            height=_ff(27),
+            pos_hint={"x": ampm_x / GW, "y": (GH - _ff(34) - _ff(27)) / GH},
+        ))
+
+        root.add_widget(grp)
+
+    # -----------------------------------------------------------------------
+    # Meeting cards
+    # -----------------------------------------------------------------------
+
+    def _build_meeting_cards(self, root: FloatLayout) -> None:
+        # Card 1 — "Product Sync"  (276.86, 377.15)  954.89 × 104.53
+        self._build_meeting_card(
+            root,
+            fig_x=276.86, fig_y=377.15,
+            cw=954.89, ch=104.53,
+            icon_text="👥",
+            title="Product Sync",
+            duration="30 min",
+            show_join=True,
+        )
+
+        # Card 2 — "Client Call"  (281.1, 490.16)  954.89 × 104.53
+        self._build_meeting_card(
+            root,
+            fig_x=281.1, fig_y=490.16,
+            cw=954.89, ch=104.53,
+            icon_text="📞",
+            title="Client Call",
+            duration="45 min",
+            show_join=False,
+        )
+
+        # Card 3 — "Review"  (281.1, 603.16)  954.89 × 104.53
+        self._build_meeting_card(
+            root,
+            fig_x=281.1, fig_y=603.16,
+            cw=954.89, ch=104.53,
+            icon_text="📋",
+            title="Review",
+            duration="30 min",
+            show_join=False,
+        )
+
+    def _build_meeting_card(self, root: FloatLayout, fig_x: float, fig_y: float,
+                            cw: float, ch: float, icon_text: str, title: str,
+                            duration: str, show_join: bool) -> None:
+        card = _Card(
+            top=_CARD_TOP,
+            bot=_CARD_BOT,
+            border=_CARD_BORDER,
+            radius=_ff(25.43),
+            size_hint=(_sw(cw), _sh(ch)),
+            pos_hint={"x": _x(fig_x), "y": _y(fig_y, ch)},
+        )
+
+        # Icon circle  (32.49, 16.95)  70.63 × 70.63
+        ICON_CX, ICON_CY = 32.49, 16.95
+        ICON_CW, ICON_CH = 70.63, 70.63
+        icon_circle = _Card(
+            top=(0.004, 0.043, 0.149, 1.0),
+            bot=(0.004, 0.043, 0.149, 1.0),
+            border=_CARD_BORDER,
+            radius=_ff(16.21),
+            size_hint=(ICON_CW / cw, ICON_CH / ch),
+            pos_hint={"x": ICON_CX / cw, "y": (ch - ICON_CY - ICON_CH) / ch},
+        )
+        icon_circle.add_widget(_lbl(
+            icon_text, _FONT_SB, _ff(30), _WHITE,
+            halign="center", valign="middle",
+            size_hint=(1, 1),
+            pos_hint={"x": 0, "y": 0},
+        ))
+        card.add_widget(icon_circle)
+
+        # Title  (129.95, 16.95)  176 × 34  Bold 28.25px
+        card.add_widget(_lbl(
+            title, _FONT_B, _ff(28.25), _WHITE,
+            halign="left", valign="middle",
+            size_hint=(240 / cw, 34 / ch),
+            pos_hint={"x": 129.95 / cw, "y": (ch - 16.95 - 34) / ch},
+        ))
+
+        # Duration group  (129.95, 56.5)  — clock icon + text
+        card.add_widget(_lbl(
+            f"⏱  {duration}", _FONT_SB, _ff(22.6), _MUTED,
+            halign="left", valign="middle",
+            size_hint=(160 / cw, 31.08 / ch),
+            pos_hint={"x": 129.95 / cw, "y": (ch - 56.5 - 31.08) / ch},
+        ))
+
+        # Join button  (607.4, 24.01)  144.08 × 56.5  (only on card 1)
+        if show_join:
+            join_btn = _TappableCard(
+                top=_JOIN_TOP,
+                bot=_JOIN_BOT,
+                border=(0.247, 0.549, 1.0, 1.0),
+                radius=_ff(12.71),
+                size_hint=(144.08 / cw, 56.5 / ch),
+                pos_hint={"x": 607.4 / cw, "y": (ch - 24.01 - 56.5) / ch},
+            )
+            join_btn.add_widget(_lbl(
+                "▶  Join", _FONT_B, _ff(26.84), _WHITE,
+                halign="center", valign="middle",
+                size_hint=(1, 1),
+                pos_hint={"x": 0, "y": 0},
+            ))
+            card.add_widget(join_btn)
+
+        # Details button position depends on whether join button is present
+        det_x = 778.32 if show_join else 607.4
+        details_btn = _TappableCard(
+            top=(0.0, 0.0, 0.0, 0.0),
+            bot=(0.0, 0.0, 0.0, 0.0),
+            border=_CARD_BORDER,
+            radius=_ff(12.71),
+            size_hint=(144.08 / cw, 56.5 / ch),
+            pos_hint={"x": det_x / cw, "y": (ch - 24.01 - 56.5) / ch},
+        )
+        details_btn.add_widget(_lbl(
+            "Details  ›", _FONT_B, _ff(21.19), _WHITE,
+            halign="center", valign="middle",
+            size_hint=(1, 1),
+            pos_hint={"x": 0, "y": 0},
+        ))
+        card.add_widget(details_btn)
+
+        root.add_widget(card)
+
+    # -----------------------------------------------------------------------
+    # Add event button  (440.72, 716.16)  378.57 × 60.74
+    # -----------------------------------------------------------------------
+
+    def _build_add_event_button(self, root: FloatLayout) -> None:
+        BW, BH = 378.57, 60.74
+        btn = _TappableCard(
+            top=_CARD_TOP,
+            bot=_CARD_BOT,
+            border=_CARD_BORDER,
+            radius=_ff(16.95),
+            size_hint=(_sw(BW), _sh(BH)),
+            pos_hint={"x": _x(440.72), "y": _y(716.16, BH)},
+        )
+
+        # "+" icon  (98.88, 9.89)  42.38 × 42.38
+        btn.add_widget(_lbl(
+            "+", _FONT_B, _ff(36), _BLUE,
+            halign="center", valign="middle",
+            size_hint=(42.38 / BW, 42.38 / BH),
+            pos_hint={"x": 98.88 / BW, "y": (BH - 9.89 - 42.38) / BH},
+        ))
+
+        # "Add event"  (146.91, 14.13)  133 × 34  Bold 28.25px  #006BF9
+        btn.add_widget(_lbl(
+            "Add event", _FONT_B, _ff(28.25), _BLUE,
+            halign="left", valign="middle",
+            size_hint=(133 / BW, 34 / BH),
+            pos_hint={"x": 146.91 / BW, "y": (BH - 14.13 - 34) / BH},
+        ))
+
+        root.add_widget(btn)
+
+    # -----------------------------------------------------------------------
+    # Date/heading helpers
+    # -----------------------------------------------------------------------
+
+    @staticmethod
+    def _format_date(d: date) -> str:
+        """Return e.g. "Wed , May 21" from a date object."""
+        abbrev = d.strftime("%a")
+        month  = d.strftime("%b")
+        return f"{abbrev} , {month} {d.day}"
 
     def _select_day(self, d: date) -> None:
-        self._selected_day = d
-        self._update_header()
-        self._refresh_cells()
-        self._refresh_daily_summary()
-        self._refresh_meetings()
-
-    def _update_header(self) -> None:
-        sel   = self._selected_day
+        self._selected_date = d
         today = display_now().date()
-        if self._hdr_day_lbl:
-            self._hdr_day_lbl.text  = "Today" if sel == today else _DAYS_F[sel.weekday()]
-        if self._hdr_date_lbl:
-            self._hdr_date_lbl.text = _fmt_date(sel)
+        if d == today:
+            self._heading_label.text = "Today"
+        else:
+            self._heading_label.text = d.strftime("%A")
+        self._datestr_label.text = self._format_date(d)
 
-    # ── Data loading ───────────────────────────────────────────────────────────
+    # -----------------------------------------------------------------------
+    # Lifecycle
+    # -----------------------------------------------------------------------
 
-    def _load_week(self) -> None:
-        ws = self._week_start.isoformat()
-        we = (self._week_start + timedelta(days=6)).isoformat()
-        self._zero_cells()
+    def on_enter(self):
+        today = display_now().date()
+        self._selected_date = today
+        self._heading_label.text = "Today"
+        self._datestr_label.text = self._format_date(today)
+        Clock.schedule_once(lambda _dt: self._load_week(), 0)
 
+    def _load_week(self):
         async def _fetch():
             try:
-                data = await self.backend.get_calendar_week(ws, we)
-                def _apply(_dt):
-                    self._week_data = data.get("days", {})
-                    self._refresh_cells()
-                    self._refresh_intelligence()
-                    self._refresh_daily_summary()
-                    self._refresh_meetings()
-                Clock.schedule_once(_apply, 0)
+                await self.backend.get_calendar_week()
             except Exception as exc:
-                logger.warning("get_calendar_week: %s", exc)
-                Clock.schedule_once(lambda _dt: self._refresh_meetings(), 0)
-
+                logger.debug("CalendarScreen: get_calendar_week failed: %s", exc)
         run_async(_fetch())
-
-    def _zero_cells(self) -> None:
-        for i, cell in enumerate(self._day_cells):
-            d = self._week_start + timedelta(days=i)
-            cell.update(d, 0, d == self._selected_day)
-
-    def _refresh_cells(self) -> None:
-        for i, cell in enumerate(self._day_cells):
-            d = self._week_start + timedelta(days=i)
-            n = len(self._week_data.get(d.isoformat(), {}).get("meetings", []))
-            cell.update(d, n, d == self._selected_day)
-
-    def _refresh_intelligence(self) -> None:
-        busy: list[str] = []
-        free: list[str] = []
-        for i in range(7):
-            d = self._week_start + timedelta(days=i)
-            n = len(self._week_data.get(d.isoformat(), {}).get("meetings", []))
-            if _density(n) >= 3:
-                busy.append(_DAYS_S[i])
-            if n == 0:
-                free.append(_DAYS_S[i])
-
-        if self._intel_busy_lbl:
-            self._intel_busy_lbl.text = (
-                "This Week Busy: " + ", ".join(busy) if busy
-                else "This Week: Light schedule")
-        if self._intel_free_lbl:
-            self._intel_free_lbl.text = (
-                f"Free: {free[0]} all day" if len(free) == 1
-                else f"Free: {', '.join(free)}" if free
-                else "Free: No free days")
-
-    def _refresh_daily_summary(self) -> None:
-        d = self._selected_day
-        meetings = self._week_data.get(d.isoformat(), {}).get("meetings", [])
-        n = len(meetings)
-
-        if self._mtg_count_lbl:
-            pl = "s" if n != 1 else ""
-            self._mtg_count_lbl.text = f"{n} meeting{pl} today"
-
-        if self._free_till_lbl:
-            if not meetings:
-                self._free_till_lbl.text = "You're free all day"
-            else:
-                t = self._fmt_time(meetings[0])
-                self._free_till_lbl.text = f"You're free till {t}"
-
-    def _refresh_meetings(self) -> None:
-        if self._meet_list is None:
-            return
-        self._meet_list.clear_widgets()
-
-        d        = self._selected_day
-        meetings = self._week_data.get(d.isoformat(), {}).get("meetings", [])
-
-        if not meetings:
-            self._meet_list.add_widget(_lbl(
-                "No meetings scheduled",
-                _FONT_SB, _ff(24), _MUTED,
-                halign="center", valign="middle",
-                size_hint_y=None, height=_ff(100)))
-        else:
-            for mtg in meetings:
-                self._meet_list.add_widget(self._meeting_row(mtg))
-
-        # "Add event" button — matches Figma width/position
-        self._meet_list.add_widget(self._add_event_row())
-
-    # ── Meeting row widget ─────────────────────────────────────────────────────
-
-    def _meeting_row(self, mtg: dict) -> Widget:
-        """Full-width row: time label on left + meeting card on right."""
-        row_h = _ff(_ROW_H)
-        row   = FloatLayout(size_hint_y=None, height=row_h)
-
-        # Time label (left of separator)
-        t_str = self._fmt_time(mtg)
-        parts = t_str.split(" ")
-        hm    = parts[0] if parts else "—"
-        ampm  = parts[1] if len(parts) > 1 else ""
-
-        time_box = BoxLayout(
-            orientation="vertical",
-            size_hint=(None, None),
-            size=(_ff(70), _ff(58)),
-            pos_hint={"x": _TL_X / FW, "center_y": 0.5})
-        time_box.add_widget(_lbl(
-            hm, _FONT_SB, _ff(28.25), _WHITE,
-            halign="left", valign="bottom",
-            size_hint=(1, 1)))
-        time_box.add_widget(_lbl(
-            ampm, _FONT_MD, _ff(22.6), _MUTED,
-            halign="left", valign="top",
-            size_hint=(1, 0.55)))
-        row.add_widget(time_box)
-
-        # Dot on separator line
-        dot_w = Widget(
-            size_hint=(None, None),
-            size=(_ff(10), _ff(10)),
-            pos_hint={"x": (_SEP_X - 4) / FW, "center_y": 0.5})
-        with dot_w.canvas:
-            Color(*_BLUE_TODAY)
-            _de = Ellipse(pos=dot_w.pos, size=dot_w.size)
-        dot_w.bind(pos=lambda w, v: setattr(_de, "pos", v),
-                   size=lambda w, v: setattr(_de, "size", v))
-        row.add_widget(dot_w)
-
-        # Meeting card — x:276.86, y centred in row, w:954.89, h:104.53
-        gap_y  = (_ROW_H - _CARD_H) / 2
-        card_h = _ff(_CARD_H)
-        card   = FloatLayout(
-            size_hint=(None, None),
-            size=(_ff(_CARD_W), card_h),
-            pos_hint={"x": _CARD_X / FW, "y": gap_y / _ROW_H})
-
-        with card.canvas.before:
-            Color(1, 1, 1, 1)
-            _cbg = RoundedRectangle(pos=card.pos, size=card.size,
-                                    radius=[_ff(25.43)],
-                                    texture=_grad(_MTG_T, _MTG_B))
-            Color(*_MTG_BDR, 0.8)
-            _cln = Line(rounded_rectangle=(card.x, card.y,
-                                           card.width, card.height,
-                                           _ff(25.43)), width=1.0)
-
-        def _sc(w, *_):
-            _cbg.pos = w.pos; _cbg.size = w.size; _cbg.radius = [_ff(25.43)]
-            _cln.rounded_rectangle = (w.x, w.y, w.width, w.height, _ff(25.43))
-
-        card.bind(pos=_sc, size=_sc)
-
-        CW, CH = _CARD_W, _CARD_H
-
-        # Icon circle — x:32.49, y:16.95, 70.63×70.63
-        icon_f = FloatLayout(
-            size_hint=(70.63/CW, 70.63/CH),
-            pos_hint={"x": 32.49/CW, "y": (CH - 16.95 - 70.63)/CH})
-        with icon_f.canvas.before:
-            Color(*_ICON_BG)
-            _ib = RoundedRectangle(pos=icon_f.pos, size=icon_f.size, radius=[_ff(16.21)])
-            Color(*_BORDER_T, 0.5)
-            _il = Line(rounded_rectangle=(icon_f.x, icon_f.y,
-                                          icon_f.width, icon_f.height,
-                                          _ff(16.21)), width=0.8)
-
-        def _si(w, *_):
-            _ib.pos = w.pos; _ib.size = w.size; _ib.radius = [_ff(16.21)]
-            _il.rounded_rectangle = (w.x, w.y, w.width, w.height, _ff(16.21))
-
-        icon_f.bind(pos=_si, size=_si)
-        title = (mtg.get("title") or "M").strip() or "M"
-        icon_f.add_widget(_lbl(
-            title[0].upper(), _FONT_SB, _ff(30), _BLUE_TODAY,
-            halign="center", valign="middle",
-            size_hint=(1, 1), pos_hint={"x": 0, "y": 0}))
-        card.add_widget(icon_f)
-
-        # Title — x:129.95, y:16.95, h:34
-        card.add_widget(_lbl(
-            title, _FONT_SB, _ff(28.25), _WHITE,
-            size_hint=(460/CW, 34/CH),
-            pos_hint={"x": 129.95/CW, "y": (CH - 16.95 - 34)/CH}))
-
-        # Duration — x:129.95, y:~56, h:31
-        dur = self._dur_str(mtg)
-        card.add_widget(_lbl(
-            f"⏱  {dur}", _FONT_MD, _ff(22.6), _MUTED,
-            size_hint=(320/CW, 31/CH),
-            pos_hint={"x": 129.95/CW, "y": (CH - 57.0 - 31.0)/CH}))
-
-        # "Join" button — x:607.4, y:24.01, 144.08×56.5
-        join = _Btn(
-            "Join", _WHITE, _JOIN_T, _JOIN_B, _JOIN_BDR,
-            radius=_ff(12.71), font_size=_ff(26.84),
-            size_hint=(144.08/CW, 56.5/CH),
-            pos_hint={"x": 607.4/CW, "y": (CH - 24.01 - 56.5)/CH})
-        card.add_widget(join)
-
-        # "Details" button — x:778.32, y:24.01, 144.08×56.5
-        details = _OutlineBtn(
-            "Details", _WHITE, _BORDER_T,
-            radius=_ff(12.71), font_size=_ff(21.19),
-            size_hint=(144.08/CW, 56.5/CH),
-            pos_hint={"x": 778.32/CW, "y": (CH - 24.01 - 56.5)/CH})
-        card.add_widget(details)
-
-        row.add_widget(card)
-        return row
-
-    # ── Add event row ──────────────────────────────────────────────────────────
-
-    def _add_event_row(self) -> Widget:
-        """Container row with the 'Add event' button centred at Figma x:440.72."""
-        outer = FloatLayout(size_hint_y=None, height=_ff(80))
-
-        btn = _Btn(
-            "+ Add event", _BLUE_ADD, _MTG_T, _MTG_B, _MTG_BDR,
-            radius=_ff(16.95), font_size=_ff(28.25),
-            size_hint=(378.57/FW, 60.74/80),
-            pos_hint={"x": 440.72/FW, "center_y": 0.5})
-        outer.add_widget(btn)
-        return outer
-
-    # ── Intelligence + daily summary helpers ───────────────────────────────────
-
-    def _compute_free_till(self, meetings: list) -> str:
-        if not meetings:
-            return "You're free all day"
-        return f"You're free till {self._fmt_time(meetings[0])}"
-
-    # ── Time / duration helpers ────────────────────────────────────────────────
-
-    def _fmt_time(self, mtg: dict) -> str:
-        start = mtg.get("start") or mtg.get("start_time") or ""
-        try:
-            if "T" in start:
-                dt = datetime.fromisoformat(start.replace("Z", "+00:00"))
-                loc = to_display_local(dt)
-                h   = loc.hour % 12 or 12
-                m   = loc.minute
-                ap  = "AM" if loc.hour < 12 else "PM"
-                return f"{h}:{m:02d} {ap}"
-        except Exception:
-            pass
-        if start and len(start) >= 5:
-            return start[:5]
-        return "—"
-
-    def _dur_str(self, mtg: dict) -> str:
-        dur = mtg.get("duration_minutes") or mtg.get("duration")
-        if dur:
-            try:
-                d = int(dur)
-                if d < 60:
-                    return f"{d} min"
-                h, m = divmod(d, 60)
-                return f"{h}h {m}min" if m else f"{h}h"
-            except Exception:
-                pass
-        start = mtg.get("start") or ""
-        end   = mtg.get("end") or ""
-        try:
-            if "T" in start and "T" in end:
-                s = datetime.fromisoformat(start.replace("Z", "+00:00"))
-                e = datetime.fromisoformat(end.replace("Z", "+00:00"))
-                d = int((e - s).total_seconds() / 60)
-                if d < 60:
-                    return f"{d} min"
-                h, m = divmod(d, 60)
-                return f"{h}h {m}min" if m else f"{h}h"
-        except Exception:
-            pass
-        return "—"
