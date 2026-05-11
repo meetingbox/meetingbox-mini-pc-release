@@ -55,7 +55,7 @@ _GREY  = (0.643, 0.643, 0.675, 1.0)   # #A4A4AC  section headers
 
 # Card backgrounds / borders (approximated from Figma gradients)
 _CARD_BG     = (0.004, 0.067, 0.216, 1.0)   # #011137 (top of gradient)
-_CARD_BORDER = (0.247, 0.259, 0.325, 1.0)   # #3F4253 (Figma gradient highlight — visible at 1.5 px)
+_CARD_BORDER = (0.137, 0.161, 0.259, 1.0)   # #232942 — subtle dark navy, between Figma gradient stops
 _HERO_BG     = (0.004, 0.047, 0.145, 1.0)   # #010C25 (solid fill)
 _PILL_BG     = (0.0,   0.059, 0.200, 1.0)   # #000F33 (pill gradient start)
 _ROW_BG      = (0.004, 0.043, 0.149, 1.0)   # #010B26 (brief row bg)
@@ -235,15 +235,14 @@ class _TappableCard(ButtonBehavior, FloatLayout):
                 )
             # Border on top of children so it shows over background images
             with self.canvas.after:
-                self._brd_color = Color(*_brd)
+                Color(*_brd)
                 self._line = Line(
                     rounded_rectangle=(self.x, self.y, self.width, self.height, radius),
-                    width=1.5,
+                    width=1.0,
                 )
             self.bind(pos=self._sync, size=self._sync)
         else:
             self._bg_rect = None
-            self._brd_color = None
             self._line = None
 
     def _sync(self, *_):
@@ -253,7 +252,6 @@ class _TappableCard(ButtonBehavior, FloatLayout):
         self._bg_rect.pos    = self.pos
         self._bg_rect.size   = self.size
         self._bg_rect.radius = [r]
-        self._brd_color.rgba = list(self._brd_color.rgba)  # force redraw
         self._line.rounded_rectangle = (self.x, self.y, self.width, self.height, r)
 
 
@@ -276,10 +274,10 @@ class _Card(FloatLayout):
         # Border lives in canvas.after → renders on top of child widgets
         # (e.g. the hero background image won't cover the border line).
         with self.canvas.after:
-            self._brd_color = Color(*_brd)
+            Color(*_brd)
             self._line = Line(
                 rounded_rectangle=(self.x, self.y, self.width, self.height, radius),
-                width=1.5,
+                width=1.0,
             )
         self.bind(pos=self._sync, size=self._sync)
 
@@ -288,7 +286,6 @@ class _Card(FloatLayout):
         self._bg.pos    = self.pos
         self._bg.size   = self.size
         self._bg.radius = [r]
-        self._brd_color.rgba = list(self._brd_color.rgba)  # force redraw
         self._line.rounded_rectangle = (self.x, self.y, self.width, self.height, r)
 
 
