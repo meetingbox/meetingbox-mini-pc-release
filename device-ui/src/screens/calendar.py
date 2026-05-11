@@ -132,7 +132,9 @@ class _Card(FloatLayout):
             self._bg = RoundedRectangle(
                 pos=self.pos, size=self.size, radius=[r], texture=_grad(ct, cb))
         with self.canvas.after:
-            Color(*bdr, bdr_alpha)
+            # bdr is a 4-tuple (r,g,b,a); passing *bdr + bdr_alpha = 5 args
+            # which Kivy's Color silently ignores.  Slice to RGB then add alpha.
+            Color(*bdr[:3], bdr_alpha)
             self._ln = Line(
                 rounded_rectangle=(self.x, self.y, self.width, self.height, r),
                 width=1.0)
