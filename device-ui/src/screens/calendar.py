@@ -581,8 +581,6 @@ class CalendarScreen(BaseScreen):
                      r=_ff(25.43), **_ph(cx, cy, cw, ch))
 
         # Icon circle  32.49, 16.95  70.63×70.63
-        # Use the downloaded Figma asset (includes circular bg + people icon).
-        # Fall back to a drawn circle with initial letter.
         IW, IH, IX, IY = 70.63, 70.63, 32.49, 16.95
         mtg_src = _asset("icon_meeting.png")
         if mtg_src:
@@ -608,16 +606,27 @@ class CalendarScreen(BaseScreen):
             size_hint=(300 / cw, 34 / ch),
             pos_hint={"x": 129.95 / cw, "y": (ch - 16.95 - 34) / ch}))
 
-        # Duration  129.95, 56.5  112.96×31.08
+        # Duration row: small clock icon + text.
+        # Emoji / special chars don't render in the 42dot custom font, so use
+        # icon_clock.png as a separate Image widget.
+        clock_src = _asset("icon_clock.png")
+        # Vertical centre of the duration text row (Figma top = 56.5, h = 31.08)
+        dur_row_cy_kivy = (ch - 56.50 - 31.08) / ch + (31.08 / ch) / 2  # centre
+        ICON_SZ = 20.0
+        icon_y_kivy = dur_row_cy_kivy - (ICON_SZ / ch) / 2
+        if clock_src:
+            card.add_widget(Image(
+                source=clock_src, fit_mode="contain",
+                size_hint=(ICON_SZ / cw, ICON_SZ / ch),
+                pos_hint={"x": 129.95 / cw, "y": icon_y_kivy}))
+        dur_x = 155.0 if clock_src else 129.95
         card.add_widget(_lbl(
-            f"⏱  {dur}", _FSB, _ff(22.6), _MUTED,
+            dur, _FSB, _ff(22.6), _MUTED,
             va="middle",
-            size_hint=(200 / cw, 31.08 / ch),
-            pos_hint={"x": 129.95 / cw, "y": (ch - 56.50 - 31.08) / ch}))
+            size_hint=(175 / cw, 31.08 / ch),
+            pos_hint={"x": dur_x / cw, "y": (ch - 56.50 - 31.08) / ch}))
 
         # Join button  607.4, 24.01  144.08×56.5
-        # Figma: Rectangle bg (#0059DC→#013DA7) + tabler:video icon + "Join" text
-        # Stroke: fill_X3J4FE = #3F8CFF → #0054D2 bright blue
         if show_join:
             JW, JH = 144.08, 56.5
             jb = _TapCard(
@@ -626,7 +635,6 @@ class CalendarScreen(BaseScreen):
                 size_hint=(JW / cw, JH / ch),
                 pos_hint={"x": 607.4 / cw, "y": (ch - 24.01 - JH) / ch})
 
-            # tabler:video icon  21.19, 11.3  33.9×33.9 within join button
             vid_src = _asset("icon_video.png")
             if vid_src:
                 jb.add_widget(Image(
@@ -640,7 +648,6 @@ class CalendarScreen(BaseScreen):
                     size_hint=(33.9 / JW, 33.9 / JH),
                     pos_hint={"x": 21.19 / JW, "y": (JH - 11.3 - 33.9) / JH}))
 
-            # "Join" text  69.21, 11.3  53×32  Bold 26.84
             jb.add_widget(_lbl(
                 "Join", _FB, _ff(26.84), _WHITE,
                 va="middle",
@@ -648,30 +655,43 @@ class CalendarScreen(BaseScreen):
                 pos_hint={"x": 69.21 / JW, "y": (JH - 11.3 - 32) / JH}))
             card.add_widget(jb)
 
-        # Details button  (x=778.32 with join, 607.4 without)  144.08×56.5
-        # Figma: transparent fill + bright-blue stroke (fill_X3J4FE — same as Join)
-        det_x = 778.32 if show_join else 607.4
+        # Details button — always at the right slot (778.32), regardless of
+        # whether the Join button is present.  Figma shows all three Details
+        # buttons right-aligned at the same horizontal position.
         DW, DH = 144.08, 56.5
         db = _TapCard(
             ct=(0, 0, 0, 0), cb=(0, 0, 0, 0),
-            bdr=_BDR_BTN,          # bright blue #3F8CFF, same stroke as Join
+            bdr=_BDR_BTN,
             r=_ff(12.71),
             size_hint=(DW / cw, DH / ch),
-            pos_hint={"x": det_x / cw, "y": (ch - 24.01 - DH) / ch})
+            pos_hint={"x": 778.32 / cw, "y": (ch - 24.01 - DH) / ch})
 
-        # "Details"  24.02, 15.54  68×25  Bold 21.19
         db.add_widget(_lbl(
             "Details", _FB, _ff(21.19), _WHITE,
             va="middle",
             size_hint=(68 / DW, 25 / DH),
             pos_hint={"x": 24.02 / DW, "y": (DH - 15.54 - 25) / DH}))
 
-        # Arrow icon  110.18, 8.48  19.78×39.55
-        db.add_widget(_lbl(
-            "›", _FB, _ff(26), _WHITE,
-            ha="center", va="middle",
-            size_hint=(19.78 / DW, 39.55 / DH),
-            pos_hint={"x": 110.18 / DW, "y": (DH - 8.48 - 39.55) / DH}))
+        # Arrow icon — "›" is not in the 42dot font; use icon_arrow.png from
+        # home assets (already downloaded) or fall back to ASCII ">".
+        arr_src = _asset("icon_arrow.png")
+        if not arr_src:
+            _home_arr = ASSETS_DIR / "home" / "figma" / "icon_arrow.png"
+            if _home_arr.is_file():
+                arr_src = str(_home_arr)
+        if arr_src:
+            AW, AH = 19.78, 19.78
+            arr_y_kivy = (DH / 2 - AH / 2) / DH
+            db.add_widget(Image(
+                source=arr_src, fit_mode="contain",
+                size_hint=(AW / DW, AH / DH),
+                pos_hint={"x": 110.18 / DW, "y": arr_y_kivy}))
+        else:
+            db.add_widget(_lbl(
+                ">", _FB, _ff(22), _WHITE,
+                ha="center", va="middle",
+                size_hint=(22 / DW, 30 / DH),
+                pos_hint={"x": 110.18 / DW, "y": (DH - 13 - 30) / DH}))
 
         card.add_widget(db)
         root.add_widget(card)
