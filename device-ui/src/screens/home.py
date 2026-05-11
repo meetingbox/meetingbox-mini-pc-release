@@ -387,7 +387,6 @@ class HomeScreen(BaseScreen):
         self._build_tasks_card(root)
         self._build_say_bar(root)
 
-        root.add_widget(self.build_footer())
         self.add_widget(root)
 
     # -----------------------------------------------------------------------
@@ -516,9 +515,9 @@ class HomeScreen(BaseScreen):
 
         # Date  (0, 77.26) in group → abs (29.87, 111.33)  150 × 23  SemiBold 19.48px
         self.date_label = _lbl(
-            "", _FONT_SB, _ff(19.48), _WHITE,
-            size_hint=(240 / CW, 23 / CH),
-            pos_hint={"x": 29.87 / CW, "y": (CH - 111.33 - 23) / CH},
+            "", _FONT_SB, _ff(19.48 * 1.2), _WHITE,
+            size_hint=(240 / CW, 28 / CH),
+            pos_hint={"x": 29.87 / CW, "y": (CH - 111.33 - 28) / CH},
         )
         card.add_widget(self.date_label)
 
@@ -597,16 +596,16 @@ class HomeScreen(BaseScreen):
 
         # "Start Recording"  (106.96, 31.76) in button  142 × 23  Bold 19.45px
         btn_card.add_widget(_lbl(
-            "Start Recording", _FONT, _ff(19.45), _WHITE, bold=True,
-            size_hint=(200 / BW, 23 / BH),
-            pos_hint={"x": 106.96 / BW, "y": (BH - 31.76 - 23) / BH},
+            "Start Recording", _FONT, _ff(19.45 * 1.2), _WHITE, bold=True,
+            size_hint=(200 / BW, 28 / BH),
+            pos_hint={"x": 106.96 / BW, "y": (BH - 31.76 - 28) / BH},
         ))
 
         # Subtitle  (95.94, 60.94) in button  164 × 15  SemiBold 12.97px
         btn_card.add_widget(_lbl(
-            'Tap or say "start recording"', _FONT_SB, _ff(12.97), _WHITE,
-            size_hint=(200 / BW, 15 / BH),
-            pos_hint={"x": 95.94 / BW, "y": (BH - 60.94 - 15) / BH},
+            'Tap or say "start recording"', _FONT_SB, _ff(12.97 * 1.2), _WHITE,
+            size_hint=(200 / BW, 19 / BH),
+            pos_hint={"x": 95.94 / BW, "y": (BH - 60.94 - 19) / BH},
         ))
 
         card.add_widget(btn_card)
@@ -695,35 +694,45 @@ class HomeScreen(BaseScreen):
 
         # "Last Meeting Summary"  (62.15, 57.91) abs in card  224 × 25  SemiBold 21.19px  #A4A4AC
         card.add_widget(_lbl(
-            "Last Meeting Summary", _FONT_SB, _ff(21.19), _GREY,
-            size_hint=(240 / CW, 25 / CH),
-            pos_hint={"x": 62.15 / CW, "y": (CH - 57.91 - 25) / CH},
+            "Last Meeting Summary", _FONT_SB, _ff(21.19 * 1.2), _GREY,
+            size_hint=(240 / CW, 30 / CH),
+            pos_hint={"x": 62.15 / CW, "y": (CH - 57.91 - 30) / CH},
         ))
 
         # Title group at (28.25, 104.53) in card
         # "Product Sync"  200 × 39  SemiBold 32.49px  #FFF
         self.last_title_label = _lbl(
-            "--", _FONT_SB, _ff(32.49), _WHITE,
-            size_hint=(240 / CW, 39 / CH),
-            pos_hint={"x": 28.25 / CW, "y": (CH - 104.53 - 39) / CH},
+            "--", _FONT_SB, _ff(32.49 * 1.2), _WHITE,
+            size_hint=(240 / CW, 46 / CH),
+            pos_hint={"x": 28.25 / CW, "y": (CH - 104.53 - 46) / CH},
         )
         card.add_widget(self.last_title_label)
 
         # "Today, 10:00 AM"  (28.25, 153.97)  164 × 25  SemiBold 21.19px  #B6BAF2
         self.last_meta_label = _lbl(
-            "--", _FONT_SB, _ff(21.19), _MUTED,
-            size_hint=(260 / CW, 25 / CH),
-            pos_hint={"x": 28.25 / CW, "y": (CH - 153.97 - 25) / CH},
+            "--", _FONT_SB, _ff(21.19 * 1.2), _MUTED,
+            size_hint=(260 / CW, 30 / CH),
+            pos_hint={"x": 28.25 / CW, "y": (CH - 153.97 - 30) / CH},
         )
         card.add_widget(self.last_meta_label)
 
-        # "2 action items"  (28.25, 238.72)  137 × 25  SemiBold 21.19px  #006FFF
+        # "Open summary"  (28.25, 238.72)  137 × 25  SemiBold 21.19px  #006FFF
         self.last_actions_label = _lbl(
-            "Open summary  ›", _FONT_SB, _ff(21.19), _BLUE,
-            size_hint=(260 / CW, 25 / CH),
-            pos_hint={"x": 28.25 / CW, "y": (CH - 238.72 - 25) / CH},
+            "Open summary", _FONT_SB, _ff(21.19 * 1.2), _BLUE,
+            size_hint=(180 / CW, 30 / CH),
+            pos_hint={"x": 28.25 / CW, "y": (CH - 238.72 - 30) / CH},
         )
         card.add_widget(self.last_actions_label)
+
+        # Arrow beside "Open summary"
+        _open_sum_arr = _fp("icon_arrow.png")
+        if _open_sum_arr:
+            card.add_widget(Image(
+                source=_open_sum_arr,
+                size_hint=(12 / CW, 22 / CH),
+                pos_hint={"x": (28.25 + 175) / CW, "y": (CH - 238.72 - 26) / CH},
+                fit_mode="contain",
+            ))
 
         # Avatar 1  (28.25, 274.04)  46.19 × 46.04  — circular via Ellipse texture
         av1_src = _fp("avatar_1.png") or _fp("avatar_photo_1.png")
@@ -779,9 +788,9 @@ class HomeScreen(BaseScreen):
                 fit_mode="contain",
             ))
         card.add_widget(_lbl(
-            "Morning Brief", _FONT_SB, _ff(24.01), _GREY,
-            size_hint=(200 / CW, 29 / CH),
-            pos_hint={"x": 72.04 / CW, "y": (CH - 14.13 - 29) / CH},
+            "Morning Brief", _FONT_SB, _ff(24.01 * 1.2), _GREY,
+            size_hint=(200 / CW, 35 / CH),
+            pos_hint={"x": 72.04 / CW, "y": (CH - 14.13 - 35) / CH},
         ))
 
         # --- Calendar row (9.89, 57.91)  288.16 × 73.45 ---
@@ -799,14 +808,14 @@ class HomeScreen(BaseScreen):
                 fit_mode="contain",
             ))
         brief_cal_title = _lbl(
-            "Briefing ready", _FONT, _ff(21.19), _GREY, bold=True,
-            size_hint=(210 / RW, 26 / RH),
-            pos_hint={"x": 81.37 / RW, "y": (RH - 13.77 - 26) / RH},
+            "Briefing ready", _FONT, _ff(21.19 * 1.2), _GREY, bold=True,
+            size_hint=(210 / RW, 30 / RH),
+            pos_hint={"x": 81.37 / RW, "y": (RH - 13.77 - 30) / RH},
         )
         brief_cal_sub = _lbl(
-            "Ask Tony for a briefing", _FONT_SB, _ff(16.95), _MUTED,
-            size_hint=(180 / RW, 20 / RH),
-            pos_hint={"x": 81.37 / RW, "y": (RH - 41.32 - 20) / RH},
+            "Ask Tony for a briefing", _FONT_SB, _ff(16.95 * 1.2), _MUTED,
+            size_hint=(180 / RW, 24 / RH),
+            pos_hint={"x": 81.37 / RW, "y": (RH - 41.32 - 24) / RH},
         )
         cal_row.add_widget(brief_cal_title)
         cal_row.add_widget(brief_cal_sub)
@@ -827,14 +836,14 @@ class HomeScreen(BaseScreen):
                 fit_mode="contain",
             ))
         self._brief_wx_title = _lbl(
-            "Weather: --°C", _FONT, _ff(21.19), _GREY, bold=True,
-            size_hint=(195 / RW, 22 / RH),
-            pos_hint={"x": 81.93 / RW, "y": (RH - 15.54 - 22) / RH},
+            "Weather: --°C", _FONT, _ff(21.19 * 1.2), _GREY, bold=True,
+            size_hint=(195 / RW, 28 / RH),
+            pos_hint={"x": 81.93 / RW, "y": (RH - 15.54 - 28) / RH},
         )
         self._brief_wx_sub = _lbl(
-            "--", _FONT_SB, _ff(16.95), _MUTED,
-            size_hint=(100 / RW, 19 / RH),
-            pos_hint={"x": 81.37 / RW, "y": (RH - 39.79 - 19) / RH},
+            "--", _FONT_SB, _ff(16.95 * 1.2), _MUTED,
+            size_hint=(100 / RW, 24 / RH),
+            pos_hint={"x": 81.37 / RW, "y": (RH - 39.79 - 24) / RH},
         )
         wx_row.add_widget(self._brief_wx_title)
         wx_row.add_widget(self._brief_wx_sub)
@@ -855,14 +864,14 @@ class HomeScreen(BaseScreen):
                 fit_mode="contain",
             ))
         brief_em_title = _lbl(
-            "email:", _FONT, _ff(21.19), _WHITE, bold=True,
-            size_hint=(100 / ER, 26 / EH),
-            pos_hint={"x": 81.37 / ER, "y": (EH - 21.46 - 26) / EH},
+            "email:", _FONT, _ff(21.19 * 1.2), _WHITE, bold=True,
+            size_hint=(100 / ER, 30 / EH),
+            pos_hint={"x": 81.37 / ER, "y": (EH - 21.46 - 30) / EH},
         )
         brief_em_sub = _lbl(
-            "Connect Gmail for updates", _FONT_SB, _ff(16.95), _MUTED,
-            size_hint=(210 / ER, 19 / EH),
-            pos_hint={"x": 81.37 / ER, "y": (EH - 49.44 - 19) / EH},
+            "Connect Gmail for updates", _FONT_SB, _ff(16.95 * 1.2), _MUTED,
+            size_hint=(210 / ER, 24 / EH),
+            pos_hint={"x": 81.37 / ER, "y": (EH - 49.44 - 24) / EH},
         )
         em_row.add_widget(brief_em_title)
         em_row.add_widget(brief_em_sub)
@@ -875,7 +884,7 @@ class HomeScreen(BaseScreen):
             pos_hint={"x": 107.0 / CW, "y": (CH - 344.0 - 28) / CH},
         )
         view_all_tap.add_widget(_lbl(
-            "View all", _FONT_SB, _ff(15.54), _BLUE,
+            "View all", _FONT_SB, _ff(15.54 * 1.2), _BLUE,
             size_hint=(1, 1), pos_hint={"x": 0, "y": 0},
         ))
         view_all_tap.bind(
@@ -1019,10 +1028,10 @@ class HomeScreen(BaseScreen):
 
         # Subtitle "Now: Product Sync"
         txt_lbl = _lbl(
-            "--", _FONT_SB, _ff(22.6), _MUTED,
-            size_hint=(240 / CW, 27 / CH),
+            "--", _FONT_SB, _ff(22.6 * 1.2), _MUTED,
+            size_hint=(240 / CW, 32 / CH),
             pos_hint={"x": (40.96 + 115.83) / CW,
-                      "y": (CH - 16.95 - 50.85 - 27) / CH},
+                      "y": (CH - 16.95 - 50.85 - 32) / CH},
         )
         card.add_widget(txt_lbl)
 
@@ -1077,10 +1086,10 @@ class HomeScreen(BaseScreen):
         card.add_widget(val_lbl)
 
         txt_lbl = _lbl(
-            "New emails", _FONT_SB, _ff(25.43), _MUTED,
-            size_hint=(160 / CW, 30 / CH),
+            "New emails", _FONT_SB, _ff(25.43 * 1.2), _MUTED,
+            size_hint=(160 / CW, 36 / CH),
             pos_hint={"x": (22.6 + 115.83) / CW,
-                      "y": (CH - 25.43 - 60.74 - 30) / CH},
+                      "y": (CH - 25.43 - 60.74 - 36) / CH},
         )
         card.add_widget(txt_lbl)
 
@@ -1130,10 +1139,10 @@ class HomeScreen(BaseScreen):
         card.add_widget(val_lbl)
 
         txt_lbl = _lbl(
-            "Tasks due", _FONT_SB, _ff(25.43), _MUTED,
-            size_hint=(150 / CW, 30 / CH),
+            "Tasks due", _FONT_SB, _ff(25.43 * 1.2), _MUTED,
+            size_hint=(150 / CW, 36 / CH),
             pos_hint={"x": (36.73 + 115.83) / CW,
-                      "y": (CH - 25.43 - 56.5 - 30) / CH},
+                      "y": (CH - 25.43 - 56.5 - 36) / CH},
         )
         card.add_widget(txt_lbl)
 
@@ -1187,9 +1196,9 @@ class HomeScreen(BaseScreen):
         # Prompt  (80.51, 56.50) abs in bar  416 × 27  SemiBold 22.6px  #B6BAF2
         bar.add_widget(_lbl(
             '"Schedule a meeting tomorrow at 4 PM"',
-            _FONT_SB, _ff(22.6), _MUTED,
-            size_hint=(500 / BW, 27 / BH),
-            pos_hint={"x": 80.51 / BW, "y": (BH - 56.50 - 27) / BH},
+            _FONT_SB, _ff(22.6 * 1.2), _MUTED,
+            size_hint=(500 / BW, 33 / BH),
+            pos_hint={"x": 80.51 / BW, "y": (BH - 56.50 - 33) / BH},
         ))
 
         # Voice orb  (591.86, 4.24) abs in bar  91.82 × 91.82
