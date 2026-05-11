@@ -358,6 +358,12 @@ class CalendarScreen(BaseScreen):
         self._day_widgets: list = []        # cleared on every day-view rebuild
         self._refresh_event = None          # Clock handle for per-minute refresh
 
+        # Grid dot state — populated in _build_grid, redrawn on week-data load
+        self._dot_widgets: list = []        # all dot Widgets (removable)
+        self._col_dot_info: list = []       # [(inner_sx, inner_sy, dot_y, inner_w), ...]
+        # Calendar-icon widget (x position updates when heading text changes)
+        self._cal_icon_img = None
+
         self._build_ui()
 
     # ── Build ──────────────────────────────────────────────────────────────────
@@ -421,18 +427,43 @@ class CalendarScreen(BaseScreen):
             **_ph(118.66, 60.36, 280.0, 40.0))
         root.add_widget(self._datestr_lbl)
 
-        # Calendar icon  241.93, 20.49  36.98×33 — use PNG asset
+        # Calendar icon — placed one space after the heading text (dynamic x).
+        # y is fixed (Figma: top=20.49, height=33).
         _cal_icon_path = ASSETS_DIR / "home" / "figma" / "icon_calendar_row.png"
+        if not _cal_icon_path.is_file():
+            _cal_icon_path = ASSETS_DIR / "brief" / "figma" / "icon_calendar.png"
+
         if _cal_icon_path.is_file():
-            root.add_widget(Image(
+            _sx = min(DISPLAY_WIDTH / FW, DISPLAY_HEIGHT / FH)
+            _icon_w = round(36.98 * _sx)
+            _icon_h = round(33.0 * _sx)
+            # Kivy y (bottom-up): (FH - top - height) / FH * display_height
+            _icon_y = (FH - 20.49 - 33.0) * DISPLAY_HEIGHT / FH
+
+            self._cal_icon_img = Image(
                 source=str(_cal_icon_path), fit_mode="contain",
-                **_ph(241.93, 20.49, 36.98, 33.0)))
-        else:
-            _brief_cal = ASSETS_DIR / "brief" / "figma" / "icon_calendar.png"
-            if _brief_cal.is_file():
-                root.add_widget(Image(
-                    source=str(_brief_cal), fit_mode="contain",
-                    **_ph(241.93, 20.49, 36.98, 33.0)))
+                size_hint=(None, None), size=(_icon_w, _icon_h),
+                x=round(241.93 * _sx), y=round(_icon_y),
+            )
+            root.add_widget(self._cal_icon_img)
+
+            # Update x whenever the heading text reflows
+            def _upd_icon_x(*_):
+                lbl = self._heading_lbl
+                ic  = self._cal_icon_img
+                if lbl and ic:
+                    tw = lbl.texture_size[0] if lbl.texture_size else 0
+                    if tw > 0:
+                        gap = max(5, round(8 * _sx))
+                        ic.x = lbl.x + tw + gap
+
+            self._heading_lbl.bind(
+                texture_size=lambda *_: Clock.schedule_once(
+                    lambda _dt: _upd_icon_x(), 0),
+                pos=lambda *_: Clock.schedule_once(
+                    lambda _dt: _upd_icon_x(), 0),
+            )
+            Clock.schedule_once(lambda _dt: _upd_icon_x(), 0.05)
 
         # Spark / intelligence icon  851.77, 38.24  39.38×40.89
         spark_src = _asset("icon_spark.png")
@@ -527,11 +558,63 @@ class CalendarScreen(BaseScreen):
             root.add_widget(dl)
             self._date_lbls.append(dl)
 
-            # Dots
-            for dot_dx, dot_dy, filled in dots:
-                dot_sx = inner_sx + dot_dx
-                dot_sy = inner_sy + dot_dy
-                dw2 = Widget(**_ph(dot_sx, dot_sy, 14.13, 14.13))
+            # Store dot position metadata for this column (used in _rebuild_all_dots).
+            # dot_y: y of the dot row within the inner content (from first Figma dot).
+            # inner_w: usable width for centering dots.
+            _dot_y = dots[0][1] if dots else (oh - idy - 20)
+            _inner_w = ow - idx_x
+            self._col_dot_info.append((inner_sx, inner_sy, _dot_y, _inner_w))
+
+    # ── Dynamic grid dots ──────────────────────────────────────────────────────
+
+    def _rebuild_all_dots(self) -> None:
+        """Remove existing dot widgets and redraw all 7 columns based on _week_data.
+
+        Density rules (user spec):
+          0 meetings → 1 unfilled dot
+          1 meeting  → 1 filled dot
+          2 meetings → 2 filled dots
+          3+         → 3 filled dots
+        """
+        root = self._root_layout
+        if root is None or not self._col_dot_info:
+            return
+
+        for w in self._dot_widgets:
+            root.remove_widget(w)
+        self._dot_widgets.clear()
+
+        DOT_SZ = 14.13   # dot diameter in Figma pixels
+        SPACING = 22.6   # centre-to-centre spacing between dots
+
+        for col_idx, (inner_sx, inner_sy, dot_y, inner_w) in enumerate(
+                self._col_dot_info):
+            d = self._col_dates[col_idx] if col_idx < len(self._col_dates) else None
+            n_meet = 0
+            if d and self._week_data:
+                n_meet = len(
+                    self._week_data.get(d.isoformat(), {}).get("meetings", []))
+
+            if n_meet == 0:
+                dot_specs = [(False,)]               # 1 unfilled
+            elif n_meet == 1:
+                dot_specs = [(True,)]                # 1 filled
+            elif n_meet == 2:
+                dot_specs = [(True,), (True,)]       # 2 filled
+            else:
+                dot_specs = [(True,), (True,), (True,)]  # 3 filled
+
+            n_dots = len(dot_specs)
+            # Centre the dots horizontally within the column's inner width.
+            # Clamp spacing so dots always fit.
+            sp = min(SPACING, (inner_w - DOT_SZ) / max(1, n_dots - 1)) if n_dots > 1 else 0
+            total_span = (n_dots - 1) * sp + DOT_SZ
+            start_x = (inner_w - total_span) / 2
+
+            for i, (filled,) in enumerate(dot_specs):
+                dot_sx = inner_sx + start_x + i * sp
+                dot_sy = inner_sy + dot_y
+                dw2 = Widget(**_ph(dot_sx, dot_sy, DOT_SZ, DOT_SZ))
                 if filled:
                     with dw2.canvas:
                         Color(*_BDOT)
@@ -552,6 +635,7 @@ class CalendarScreen(BaseScreen):
                         return _s
                     dw2.bind(pos=_mk_el(_el), size=_mk_el(_el))
                 root.add_widget(dw2)
+                self._dot_widgets.append(dw2)
 
     # ── Dynamic day view ───────────────────────────────────────────────────────
 
@@ -675,8 +759,8 @@ class CalendarScreen(BaseScreen):
 
     def _build_day_meetings(self, meetings: list, now, is_today: bool) -> None:
         """Build the vertical separator + scrollable meeting-card list."""
-        # Separator line behind the scroll area (fixed height covering the zone)
-        SEP_VIS_H = 329.01
+        # Full height from meeting-area top (377.15) to Add-button top (716.16)
+        SEP_VIS_H = 339.01
         sep = Widget(**_ph(203.41, 377.15, 2.83, SEP_VIS_H))
         with sep.canvas.before:
             Color(154 / 255, 189 / 255, 255 / 255, 0.6)  # #9ABDFF
@@ -875,9 +959,15 @@ class CalendarScreen(BaseScreen):
 
         arr_src = _asset("icon_arrow.png")
         if not arr_src:
-            _home_arr = ASSETS_DIR / "home" / "figma" / "icon_arrow.png"
-            if _home_arr.is_file():
-                arr_src = str(_home_arr)
+            # Priority: brief right-arrow → home card arrow → home generic arrow
+            for _p in [
+                ASSETS_DIR / "brief" / "figma" / "icon_arrow_right.png",
+                ASSETS_DIR / "home"  / "figma" / "icon_arrow_card.png",
+                ASSETS_DIR / "home"  / "figma" / "icon_arrow.png",
+            ]:
+                if _p.is_file():
+                    arr_src = str(_p)
+                    break
         if arr_src:
             AW, AH = 26.0, 26.0
             db.add_widget(Image(
@@ -921,15 +1011,14 @@ class CalendarScreen(BaseScreen):
 
     def _select_day(self, d: date, col_idx: int) -> None:
         today = display_now().date()
-        prev_sel = self._sel_date
         self._sel_date = d
 
+        # Only the tapped day gets a highlight; every other day is cleared.
+        # This ensures Monday (or today) loses its box when another day is tapped.
         for col_date, hl in zip(self._col_dates, self._highlights):
-            if col_date == today:
-                hl.set_mode("today")
-            elif col_date == d and col_date != today:
-                hl.set_mode("sel")
-            elif col_date == prev_sel and col_date != today:
+            if col_date == d:
+                hl.set_mode("today" if col_date == today else "sel")
+            else:
                 hl.set_mode("none")
 
         if self._heading_lbl:
@@ -959,6 +1048,8 @@ class CalendarScreen(BaseScreen):
         if self._datestr_lbl:
             self._datestr_lbl.text = _fmt_date(today)
 
+        # Draw initial dots (all unfilled) while data is being fetched
+        Clock.schedule_once(lambda _dt: self._rebuild_all_dots(), 0)
         Clock.schedule_once(lambda _dt: self._load_week(), 0)
         # Refresh meeting states every minute so glow follows the clock
         if self._refresh_event:
@@ -987,6 +1078,7 @@ class CalendarScreen(BaseScreen):
 
                 def _apply(_dt):
                     self._week_data = data.get("days", {}) if data else {}
+                    self._rebuild_all_dots()
                     self._update_day_view(self._sel_date)
 
                 Clock.schedule_once(_apply, 0)
