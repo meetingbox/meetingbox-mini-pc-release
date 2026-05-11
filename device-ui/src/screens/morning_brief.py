@@ -82,9 +82,12 @@ def _ph(fx: float, fy: float, fw: float, fh: float) -> dict:
     }
 
 
-def _ff(fs: float) -> int:
+def _ff(fs: float) -> float:
+    """Return the Figma font size scaled to the actual display.
+    On the standard 1260×800 device the scale is 1.0 and this returns
+    the exact Figma float value, preserving sub-pixel precision."""
     scale = min(DISPLAY_WIDTH / FW, DISPLAY_HEIGHT / FH)
-    return max(6, round(fs * scale))
+    return max(6.0, fs * scale)
 
 
 _GC: dict = {}
@@ -103,7 +106,7 @@ def _grad(top: tuple, bot: tuple):
     return _GC[k]
 
 
-def _lbl(text: str, font: str, size: int, color: tuple,
+def _lbl(text: str, font: str, size: float, color: tuple,
          ha: str = "left", va: str = "top", **kw) -> Label:
     lw = Label(text=text, font_name=font, font_size=size, color=color,
                halign=ha, valign=va, **kw)
@@ -111,7 +114,7 @@ def _lbl(text: str, font: str, size: int, color: tuple,
     return lw
 
 
-def _mlbl(text: str, font: str, size: int, color: tuple,
+def _mlbl(text: str, font: str, size: float, color: tuple,
           ha: str = "left", va: str = "top", **kw) -> Label:
     """Label with Kivy markup enabled (for mixed colours)."""
     lw = Label(text=text, font_name=font, font_size=size, color=color,
@@ -237,16 +240,16 @@ class MorningBriefScreen(BaseScreen):
 
         root.add_widget(_lbl(
             "Morning Brief", _FSB, _ff(38.14), _WHITE,
-            **_ph(118.66, 21.19, 320.0, 45.0)))
+            **_ph(118.66, 21.19, 320.0, 50.0)))
 
         root.add_widget(_lbl(
             "Good morning, J.K", _FSB, _ff(22.6), _BLUE2,
-            **_ph(118.66, 65.0, 280.0, 27.0)))
+            **_ph(118.66, 63.0, 280.0, 32.0)))
 
         root.add_widget(_lbl(
             "Here's your overview for today, 20 May",
             _FSB, _ff(21.19), _MUTED,
-            **_ph(118.66, 100.3, 500.0, 25.0)))
+            **_ph(118.66, 98.0, 560.0, 32.0)))
 
     # ── Weather card (Frame 19) ────────────────────────────────────────────────
     # Figma: (22.6, 132.78)  1214.8 × 185.04  r=22.6
@@ -264,8 +267,8 @@ class MorningBriefScreen(BaseScreen):
         # ── Header label
         card.add_widget(_lbl(
             "Weather Update", _FSB, _ff(21.19), _WHITE,
-            size_hint=(159 / CW, 25 / CH),
-            pos_hint={"x": 35.31 / CW, "y": (CH - 24.02 - 25) / CH}))
+            size_hint=(200 / CW, 32 / CH),
+            pos_hint={"x": 35.31 / CW, "y": (CH - 20.0 - 32) / CH}))
 
         # ── Sun / cloud image  (29.66, 72.04)  79.1 × 79.1
         cloud_src = _asset("weather_cloud.png")
@@ -281,8 +284,8 @@ class MorningBriefScreen(BaseScreen):
         # ── "partly cloudy"  (128.54, 104.53)
         card.add_widget(_lbl(
             "partly cloudy", _FSB, _ff(21.19), _DIM,
-            size_hint=(129 / CW, 25 / CH),
-            pos_hint={"x": 128.54 / CW, "y": (CH - 104.53 - 25) / CH}))
+            size_hint=(145 / CW, 32 / CH),
+            pos_hint={"x": 128.54 / CW, "y": (CH - 104.53 - 32) / CH}))
 
         # ── Location icon + city  (128.54, 137.01)
         loc_src = _asset("icon_location.png")
@@ -290,8 +293,8 @@ class MorningBriefScreen(BaseScreen):
             card.add_widget(_img(loc_src, CW, CH, 128.54, 137.01, 19.78, 19.78))
         card.add_widget(_lbl(
             "Hyderabad, India", _FSB, _ff(21.19), _MUTED,
-            size_hint=(171 / CW, 25 / CH),
-            pos_hint={"x": 151.14 / CW, "y": (CH - 134.19 - 25) / CH}))
+            size_hint=(190 / CW, 32 / CH),
+            pos_hint={"x": 151.14 / CW, "y": (CH - 134.19 - 32) / CH}))
 
         # ── Four vertical dividers
         for div_x in (387.04, 591.86, 796.68, 1001.5):
@@ -313,12 +316,12 @@ class MorningBriefScreen(BaseScreen):
             card.add_widget(_img(tmp_src, CW, CH, 413.88, 64.98, 31.08, 31.08))
         card.add_widget(_lbl(
             "28° / 18°", _FB, _ff(26.84), _WHITE,
-            size_hint=(109 / CW, 32 / CH),
-            pos_hint={"x": 450.61 / CW, "y": (CH - 63.57 - 32) / CH}))
+            size_hint=(120 / CW, 38 / CH),
+            pos_hint={"x": 450.61 / CW, "y": (CH - 63.57 - 38) / CH}))
         card.add_widget(_lbl(
             "High / Low", _FSB, _ff(16.95), _MUTED,
-            size_hint=(83 / CW, 20 / CH),
-            pos_hint={"x": 463.32 / CW, "y": (CH - 103.12 - 20) / CH}))
+            size_hint=(90 / CW, 26 / CH),
+            pos_hint={"x": 463.32 / CW, "y": (CH - 103.12 - 26) / CH}))
 
         # ── Humidity column  (group at 644.13, 63.57)
         hum_src = _asset("icon_humidity.png")
@@ -326,12 +329,12 @@ class MorningBriefScreen(BaseScreen):
             card.add_widget(_img(hum_src, CW, CH, 644.13, 66.39, 28.25, 28.25))
         card.add_widget(_lbl(
             "62%", _FB, _ff(26.84), _WHITE,
-            size_hint=(56 / CW, 32 / CH),
-            pos_hint={"x": 678.03 / CW, "y": (CH - 63.57 - 32) / CH}))
+            size_hint=(70 / CW, 38 / CH),
+            pos_hint={"x": 678.03 / CW, "y": (CH - 63.57 - 38) / CH}))
         card.add_widget(_lbl(
             "Humidity", _FSB, _ff(16.95), _MUTED,
-            size_hint=(71 / CW, 20 / CH),
-            pos_hint={"x": 658.26 / CW, "y": (CH - 103.12 - 20) / CH}))
+            size_hint=(80 / CW, 26 / CH),
+            pos_hint={"x": 658.26 / CW, "y": (CH - 103.12 - 26) / CH}))
 
         # ── Wind column  (group at 827.76, 63.57)
         wind_src = _asset("icon_wind.png")
@@ -339,24 +342,24 @@ class MorningBriefScreen(BaseScreen):
             card.add_widget(_img(wind_src, CW, CH, 827.76, 64.28, 35.31, 35.31))
         card.add_widget(_lbl(
             "12 km/h", _FB, _ff(26.84), _WHITE,
-            size_hint=(100 / CW, 32 / CH),
-            pos_hint={"x": 875.08 / CW, "y": (CH - 63.57 - 32) / CH}))
+            size_hint=(110 / CW, 38 / CH),
+            pos_hint={"x": 875.08 / CW, "y": (CH - 63.57 - 38) / CH}))
         card.add_widget(_lbl(
             "Wind", _FSB, _ff(16.95), _MUTED,
-            size_hint=(41 / CW, 20 / CH),
-            pos_hint={"x": 896.27 / CW, "y": (CH - 103.12 - 20) / CH}))
+            size_hint=(50 / CW, 26 / CH),
+            pos_hint={"x": 896.27 / CW, "y": (CH - 103.12 - 26) / CH}))
 
         # ── AQI column  (group at 1063.66, 66.39)
         # "42" rendered in #19D385 via Kivy markup
         card.add_widget(_mlbl(
             'AQl   [color=#19D385]42[/color]',
             _FB, _ff(26.84), _WHITE,
-            size_hint=(110 / CW, 32 / CH),
-            pos_hint={"x": 1063.66 / CW, "y": (CH - 66.39 - 32) / CH}))
+            size_hint=(120 / CW, 38 / CH),
+            pos_hint={"x": 1063.66 / CW, "y": (CH - 66.39 - 38) / CH}))
         card.add_widget(_lbl(
             "Good", _FSB, _ff(16.95), _MUTED,
-            size_hint=(42 / CW, 20 / CH),
-            pos_hint={"x": 1091.91 / CW, "y": (CH - 105.94 - 20) / CH}))
+            size_hint=(50 / CW, 26 / CH),
+            pos_hint={"x": 1091.91 / CW, "y": (CH - 105.94 - 26) / CH}))
 
         root.add_widget(card)
 
@@ -380,14 +383,14 @@ class MorningBriefScreen(BaseScreen):
         # "Today's Schedule"  (70.63, 29.66)
         card.add_widget(_lbl(
             "Today's Schedule", _FSB, _ff(21.19), _WHITE,
-            size_hint=(172 / CW, 25 / CH),
-            pos_hint={"x": 70.63 / CW, "y": (CH - 29.66 - 25) / CH}))
+            size_hint=(200 / CW, 32 / CH),
+            pos_hint={"x": 70.63 / CW, "y": (CH - 26.0 - 32) / CH}))
 
         # "View full calender"  (402.58, 29.66)  + arrow  (597.51, 22.6)
         card.add_widget(_lbl(
             "View full calender", _FSB, _ff(21.19), _BLUE,
-            size_hint=(175 / CW, 25 / CH),
-            pos_hint={"x": 402.58 / CW, "y": (CH - 29.66 - 25) / CH}))
+            size_hint=(185 / CW, 32 / CH),
+            pos_hint={"x": 402.58 / CW, "y": (CH - 26.0 - 32) / CH}))
         arr_src = _asset("icon_arrow_right.png")
         if arr_src:
             card.add_widget(_img(arr_src, CW, CH, 597.51, 22.6, 19.78, 39.55))
@@ -405,17 +408,17 @@ class MorningBriefScreen(BaseScreen):
         ]:
             card.add_widget(_lbl(
                 time_s, _FMD, _ff(21.19), _BLUE,
-                size_hint=(125 / CW, 25 / CH),
-                pos_hint={"x": 15.0 / CW, "y": (CH - row_y - 25) / CH}))
+                size_hint=(145 / CW, 32 / CH),
+                pos_hint={"x": 15.0 / CW, "y": (CH - row_y - 32) / CH}))
             _add_dot(card, CW, CH, 158.2, dot_y)
             card.add_widget(_lbl(
                 title_s, _FSB, _ff(21.19), _WHITE,
-                size_hint=(350 / CW, 25 / CH),
-                pos_hint={"x": 182.22 / CW, "y": (CH - row_y - 25) / CH}))
+                size_hint=(360 / CW, 32 / CH),
+                pos_hint={"x": 182.22 / CW, "y": (CH - row_y - 32) / CH}))
             card.add_widget(_lbl(
                 dur_s, _FSB, _ff(21.19), _MUTED,
-                size_hint=(68 / CW, 25 / CH),
-                pos_hint={"x": 548.07 / CW, "y": (CH - row_y - 25) / CH}))
+                size_hint=(75 / CW, 32 / CH),
+                pos_hint={"x": 548.07 / CW, "y": (CH - row_y - 32) / CH}))
 
         root.add_widget(card)
 
@@ -439,14 +442,14 @@ class MorningBriefScreen(BaseScreen):
         # "Tasks Overview"  (70.63, 29.66)
         card.add_widget(_lbl(
             "Tasks Overview", _FSB, _ff(21.19), _WHITE,
-            size_hint=(152 / CW, 25 / CH),
-            pos_hint={"x": 70.63 / CW, "y": (CH - 29.66 - 25) / CH}))
+            size_hint=(170 / CW, 32 / CH),
+            pos_hint={"x": 70.63 / CW, "y": (CH - 26.0 - 32) / CH}))
 
         # "View full tasks"  (360.2, 29.66) + arrow  (512.76, 22.6)
         card.add_widget(_lbl(
             "View full tasks", _FSB, _ff(21.19), _BLUE,
-            size_hint=(141 / CW, 25 / CH),
-            pos_hint={"x": 360.2 / CW, "y": (CH - 29.66 - 25) / CH}))
+            size_hint=(150 / CW, 32 / CH),
+            pos_hint={"x": 360.2 / CW, "y": (CH - 26.0 - 32) / CH}))
         arr_src = _asset("icon_arrow_right.png")
         if arr_src:
             card.add_widget(_img(arr_src, CW, CH, 512.76, 22.6, 19.78, 39.55))
@@ -455,16 +458,17 @@ class MorningBriefScreen(BaseScreen):
         for div_y in (81.93, 162.44, 242.96):
             _add_divider(card, CW, CH, 24.02, div_y, 505.68, 2.83)
 
-        # Task rows
-        #   icon_file, count, count_colour, label, sub-label,
-        #   icon_top, count_top, group_top
+        # Task rows — labels updated per Figma 927:288:
+        #   Row 1 label: "Due Today"  (927:296)
+        #   Row 2 label: "Upcoming"   (927:299, was "Due Today")
+        #   Row 3 label: "Unplanned"  (927:302, was "Due Today")
         for (icon_file, num_s, num_col, label_s, sub_s,
              icon_y, num_y, grp_y) in [
             ("icon_task_1.png", "2", _BLUE,   "Due Today", "2 high priority",
              93.23,  103.12, 98.88),
-            ("icon_task_2.png", "1", _PURPLE, "Due Today", "Next: Tomorrow",
+            ("icon_task_2.png", "1", _PURPLE, "Upcoming",  "Next: Tomorrow",
              173.74, 183.63, 179.39),
-            ("icon_task_3.png", "2", _GREEN,  "Due Today", "In Inbox",
+            ("icon_task_3.png", "2", _GREEN,  "Unplanned", "In Inbox",
              252.85, 262.73, 259.91),
         ]:
             task_src = _asset(icon_file)
@@ -474,17 +478,17 @@ class MorningBriefScreen(BaseScreen):
             card.add_widget(_lbl(
                 num_s, _FB, _ff(35.31), num_col,
                 ha="center", va="middle",
-                size_hint=(26 / CW, 42 / CH),
-                pos_hint={"x": 131.37 / CW, "y": (CH - num_y - 42) / CH}))
+                size_hint=(40 / CW, 48 / CH),
+                pos_hint={"x": 120.0 / CW, "y": (CH - num_y - 48) / CH}))
             card.add_widget(_lbl(
                 label_s, _FSB, _ff(21.19), _WHITE,
-                size_hint=(140 / CW, 25 / CH),
-                pos_hint={"x": 217.53 / CW, "y": (CH - grp_y - 25) / CH}))
+                size_hint=(180 / CW, 32 / CH),
+                pos_hint={"x": 217.53 / CW, "y": (CH - grp_y - 32) / CH}))
             card.add_widget(_lbl(
                 sub_s, _FMD, _ff(16.95), _MUTED,
-                size_hint=(180 / CW, 20 / CH),
+                size_hint=(200 / CW, 26 / CH),
                 pos_hint={"x": 217.53 / CW,
-                          "y": (CH - grp_y - 31.07 - 20) / CH}))
+                          "y": (CH - grp_y - 31.07 - 26) / CH}))
 
         root.add_widget(card)
 
@@ -507,14 +511,14 @@ class MorningBriefScreen(BaseScreen):
         # Section header label  (87.58, 18.37)
         card.add_widget(_lbl(
             "Recent Emails", _FSB, _ff(21.19), _WHITE,
-            size_hint=(172 / CW, 25 / CH),
-            pos_hint={"x": 87.58 / CW, "y": (CH - 18.37 - 25) / CH}))
+            size_hint=(200 / CW, 32 / CH),
+            pos_hint={"x": 87.58 / CW, "y": (CH - 14.0 - 32) / CH}))
 
         # "Go to emails" link  (1001.5, 15.54) + arrow  (1148.41, 8.48)
         card.add_widget(_lbl(
             "Go to emails", _FSB, _ff(21.19), _BLUE,
-            size_hint=(121 / CW, 25 / CH),
-            pos_hint={"x": 1001.5 / CW, "y": (CH - 15.54 - 25) / CH}))
+            size_hint=(140 / CW, 32 / CH),
+            pos_hint={"x": 1001.5 / CW, "y": (CH - 11.0 - 32) / CH}))
         arr_src = _asset("icon_arrow_right.png")
         if arr_src:
             card.add_widget(_img(arr_src, CW, CH, 1148.41, 8.48, 19.78, 39.55))
@@ -528,21 +532,21 @@ class MorningBriefScreen(BaseScreen):
         # Sender name  (93.23, 73.45)
         card.add_widget(_lbl(
             "Neha Sharma", _FSB, _ff(21.19), _WHITE,
-            size_hint=(131 / CW, 25 / CH),
-            pos_hint={"x": 93.23 / CW, "y": (CH - 73.45 - 25) / CH}))
+            size_hint=(160 / CW, 30 / CH),
+            pos_hint={"x": 93.23 / CW, "y": (CH - 70.0 - 30) / CH}))
 
-        # Email subject  (372.91, 76.28)  291 × 22
+        # Email subject  (372.91, 76.28)
         card.add_widget(_lbl(
             "Client follow-up from Product Sync",
             _FMD, _ff(18.36), _MUTED,
-            size_hint=(291 / CW, 22 / CH),
-            pos_hint={"x": 372.91 / CW, "y": (CH - 76.28 - 22) / CH}))
+            size_hint=(310 / CW, 28 / CH),
+            pos_hint={"x": 372.91 / CW, "y": (CH - 73.0 - 28) / CH}))
 
-        # Timestamp  (1084.84, 76.28)  81 × 22
+        # Timestamp  (1084.84, 76.28)
         card.add_widget(_lbl(
             "10:45 AM", _FMD, _ff(18.36), _MUTED,
-            size_hint=(81 / CW, 22 / CH),
-            pos_hint={"x": 1084.84 / CW, "y": (CH - 76.28 - 22) / CH}))
+            size_hint=(90 / CW, 28 / CH),
+            pos_hint={"x": 1084.84 / CW, "y": (CH - 73.0 - 28) / CH}))
 
         root.add_widget(card)
 
