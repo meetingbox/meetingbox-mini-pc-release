@@ -631,6 +631,16 @@ class BackendClient:
             logger.debug("get_emails failed: %s", e)
             return []
 
+    async def get_email_detail(self, email_id: str) -> Dict:
+        """GET /api/emails/{id} — full body of a single message."""
+        try:
+            resp = await self.client.get(f"{self.base_url}/api/emails/{email_id}")
+            resp.raise_for_status()
+            return resp.json()
+        except Exception as e:
+            logger.debug("get_email_detail failed: %s", e)
+            return {}
+
     async def mark_email_unread(self, email_id: str) -> Dict:
         """POST /api/emails/{id}/mark-unread"""
         try:
