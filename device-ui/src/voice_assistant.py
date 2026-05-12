@@ -48,17 +48,6 @@ if SetLogLevel is not None:
 
 _NON_ALNUM_RE = re.compile(r"[^a-z0-9]+")
 
-# After wake, Vosk small-model transcripts are often noisy; use a lower bar then.
-_RELAXED_INTENT_THRESHOLD_DEFAULT = 0.64
-_STRICT_ONLY_INTENTS = frozenset({
-    "factory_reset",
-    "restart_device",
-    "power_off",
-    "unpair_device",
-    "delete_this_meeting",
-    "delete_old_meetings",
-})
-
 
 @dataclass(frozen=True)
 class VoiceIntent:
@@ -145,31 +134,15 @@ def _build_intent_specs(start_commands: list[str]) -> tuple[_IntentSpec, ...]:
         _IntentSpec("resume_meeting", ("resume meeting", "resume recording", "continue meeting")),
         _IntentSpec("recording_status", ("are we recording", "recording status", "what is the meeting status")),
         _IntentSpec("recording_elapsed", ("how long have we been recording", "recording duration", "meeting duration")),
-        _IntentSpec("go_home", ("go home", "open home", "show home screen", "take me home")),
+        _IntentSpec("go_home", ("go home", "open home", "show home screen")),
         _IntentSpec("open_settings", ("open settings", "show settings")),
         _IntentSpec("show_meetings", ("show meetings", "open meetings", "show recent meetings")),
         _IntentSpec("show_last_meeting", ("show last meeting", "open last meeting", "last meeting")),
         _IntentSpec("summarize_last_meeting", ("summarize last meeting", "read last meeting summary", "what was the last meeting about")),
         _IntentSpec("read_action_items", ("read action items", "read my action items", "what are my action items")),
         _IntentSpec("test_microphone", ("test microphone", "test mic", "microphone test", "check microphone")),
-        _IntentSpec("what_time", (
-            "what time is it",
-            "tell me the time",
-            "current time",
-            "whats the time",
-            "what is the time",
-            "what time",
-            "do you know the time",
-        )),
-        _IntentSpec("wifi_status", (
-            "wifi status",
-            "network status",
-            "internet status",
-            "show ip address",
-            "whats the wifi",
-            "what is the wifi",
-            "ip address",
-        )),
+        _IntentSpec("what_time", ("what time is it", "tell me the time", "current time")),
+        _IntentSpec("wifi_status", ("wifi status", "network status", "internet status", "show ip address")),
         _IntentSpec("storage_left", ("storage left", "how much storage is left", "storage status")),
         _IntentSpec("version_status", ("what version are you on", "firmware version", "system version")),
         _IntentSpec("next_calendar", ("what s next on the calendar", "what is next on the calendar", "next meeting", "calendar status")),
@@ -279,21 +252,11 @@ class VoiceCommandInterpreter:
             for spec in self._intent_specs
         )
 
-    def _detect_intent(self, text: str, *, relaxed: bool = False) -> VoiceIntent | None:
+    def _detect_intent(self, text: str) -> VoiceIntent | None:
         best: tuple[float, VoiceIntent] | None = None
-        floor = _env_float(
-            "VOICE_ASSISTANT_RELAXED_INTENT_THRESHOLD",
-            _RELAXED_INTENT_THRESHOLD_DEFAULT,
-        )
         for spec in self._intent_specs:
-            score = max(
-                (_best_phrase_similarity(text, phrase) for phrase in spec.phrases),
-                default=0.0,
-            )
-            th = spec.threshold
-            if relaxed and spec.name not in _STRICT_ONLY_INTENTS:
-                th = min(th, floor)
-            if score < th:
+            score = max((_best_phrase_similarity(text, phrase) for phrase in spec.phrases), default=0.0)
+            if score < spec.threshold:
                 continue
             candidate = VoiceIntent(spec.name, value=spec.value, phrase=text)
             if best is None or score > best[0]:
@@ -301,7 +264,7 @@ class VoiceCommandInterpreter:
         return best[1] if best else None
 
     def detect_intent(self, text: str) -> VoiceIntent | None:
-        return self._detect_intent(_normalize_text(text), relaxed=False)
+        return self._detect_intent(_normalize_text(text))
 
     def handle_transcript(self, text: str, now: float | None = None) -> VoiceIntent | None:
         now = time.monotonic() if now is None else now
@@ -328,12 +291,8 @@ class VoiceCommandInterpreter:
         if now - self._last_action_at < self.action_cooldown_seconds:
             return None
 
+        intent = self._detect_intent(norm)
         heard_wake = self._heard_wake_phrase(norm)
-        in_post_wake_window = now <= self._awaiting_command_until and not heard_wake
-        wake_wc = len(self.wake_phrase.split())
-        extra_with_wake = heard_wake and len(norm.split()) > wake_wc
-        relaxed = in_post_wake_window or extra_with_wake
-        intent = self._detect_intent(norm, relaxed=relaxed)
 
         if heard_wake and intent is not None:
             self.reset()
@@ -378,8 +337,8 @@ class VoiceAssistant:
             ).split(",")
             if cmd.strip()
         ]
-        self.command_timeout_seconds = _env_float("VOICE_ASSISTANT_COMMAND_TIMEOUT", 9.0)
-        self.action_cooldown_seconds = _env_float("VOICE_ASSISTANT_ACTION_COOLDOWN", 0.85)
+        self.command_timeout_seconds = _env_float("VOICE_ASSISTANT_COMMAND_TIMEOUT", 6.0)
+        self.action_cooldown_seconds = _env_float("VOICE_ASSISTANT_ACTION_COOLDOWN", 2.0)
         self.confirmation_timeout_seconds = _env_float("VOICE_ASSISTANT_CONFIRMATION_TIMEOUT", 8.0)
         self.model_name = (
             os.getenv("VOICE_ASSISTANT_MODEL_NAME") or "vosk-model-small-en-us-0.15"
