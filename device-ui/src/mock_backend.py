@@ -34,10 +34,13 @@ class MockBackendClient:
             'privacy_mode': False,
             'auto_record': False,
 <<<<<<< HEAD
+<<<<<<< HEAD
             'voice_wake_phrase': 'hey buddy',
             'voice_assistant_enabled': True,
             'voice_realtime_assistant': False,
             'assistant_speech_volume': 85,
+=======
+>>>>>>> parent of 6f683de (Merge branch 'main' of https://github.com/meetingbox/meetingbox-mini-pc-release)
 =======
 >>>>>>> parent of 6f683de (Merge branch 'main' of https://github.com/meetingbox/meetingbox-mini-pc-release)
         }
