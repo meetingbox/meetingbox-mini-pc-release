@@ -511,6 +511,7 @@ class HomeScreen(BaseScreen):
         self._clock_event:       object | None = None
         self._footer_ip_event:   object | None = None
         self._voice_state_event: object | None = None
+        self._summary_poll_event: object | None = None
 
         # Voice interaction widgets and state
         self._listening_pill:    object | None = None  # the pill _Card
@@ -1264,7 +1265,7 @@ class HomeScreen(BaseScreen):
         def _email_touch(w, t):
             lx, ly = w.to_widget(t.x, t.y)
             if w.collide_point(lx, ly):
-                self._show_gmail_dashboard_dialog()
+                self.goto("emails", transition="slide_left")
                 return True
             return False
         card.bind(on_touch_up=_email_touch)
@@ -1435,6 +1436,11 @@ class HomeScreen(BaseScreen):
         self._voice_state_event = Clock.schedule_interval(
             lambda _dt: self._refresh_voice_pill(), 2.0
         )
+        if self._summary_poll_event:
+            self._summary_poll_event.cancel()
+        self._summary_poll_event = Clock.schedule_interval(
+            lambda _dt: self._load_home_summary(), 60.0
+        )
 
     def on_leave(self):
         # Clean up listening state immediately when leaving home
@@ -1461,6 +1467,9 @@ class HomeScreen(BaseScreen):
         if self._voice_state_event:
             self._voice_state_event.cancel()
             self._voice_state_event = None
+        if self._summary_poll_event:
+            self._summary_poll_event.cancel()
+            self._summary_poll_event = None
         try:
             get_weather_client().unsubscribe(self._on_weather_snapshot)
         except Exception:

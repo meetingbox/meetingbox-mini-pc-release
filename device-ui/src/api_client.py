@@ -605,6 +605,47 @@ class BackendClient:
             return {"commitments": [], "count": 0}
 
     # ==================================================================
+    # EMAIL API
+    # ==================================================================
+
+    async def get_emails(self, filter: str = "all", limit: int = 50) -> List[Dict]:
+        """GET /api/emails?filter=all|today|unread&limit=N"""
+        try:
+            resp = await self.client.get(
+                f"{self.base_url}/api/emails",
+                params={"filter": filter, "limit": int(limit)},
+            )
+            resp.raise_for_status()
+            return resp.json()
+        except Exception as e:
+            logger.debug("get_emails failed: %s", e)
+            return []
+
+    async def mark_email_unread(self, email_id: str) -> Dict:
+        """POST /api/emails/{id}/mark-unread"""
+        try:
+            resp = await self.client.post(
+                f"{self.base_url}/api/emails/{email_id}/mark-unread"
+            )
+            resp.raise_for_status()
+            return resp.json()
+        except Exception as e:
+            logger.debug("mark_email_unread failed: %s", e)
+            return {}
+
+    async def archive_email(self, email_id: str) -> Dict:
+        """POST /api/emails/{id}/archive"""
+        try:
+            resp = await self.client.post(
+                f"{self.base_url}/api/emails/{email_id}/archive"
+            )
+            resp.raise_for_status()
+            return resp.json()
+        except Exception as e:
+            logger.debug("archive_email failed: %s", e)
+            return {}
+
+    # ==================================================================
     # SYSTEM API
     # ==================================================================
 

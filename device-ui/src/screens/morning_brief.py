@@ -573,13 +573,22 @@ class MorningBriefScreen(BaseScreen):
             pos_hint={"x": 87.58 / CW, "y": (CH - 14.0 - 32) / CH}))
 
         # "Go to emails" link  (1001.5, 15.54) + arrow  (1148.41, 8.48)
-        card.add_widget(_lbl(
-            "Go to emails", _FSB, _ff(21.19), _BLUE,
-            size_hint=(140 / CW, 32 / CH),
-            pos_hint={"x": 1001.5 / CW, "y": (CH - 11.0 - 32) / CH}))
-        arr_src = _asset("icon_arrow_right.png")
-        if arr_src:
-            card.add_widget(_img(arr_src, CW, CH, 1148.41, 8.48, 19.78, 39.55))
+        from kivy.uix.behaviors import ButtonBehavior
+        from kivy.uix.floatlayout import FloatLayout as _FL
+
+        class _EmailLink(ButtonBehavior, _FL):
+            pass
+
+        email_tap = _EmailLink(
+            size_hint=(160 / CW, 40 / CH),
+            pos_hint={"x": 1001.5 / CW, "y": (CH - 11.0 - 40) / CH},
+        )
+        email_tap.add_widget(_lbl(
+            "Go to emails  ›", _FSB, _ff(21.19), _BLUE,
+            size_hint=(1, 1), pos_hint={"x": 0, "y": 0},
+        ))
+        email_tap.bind(on_release=lambda *_: self.goto("emails", transition="slide_left"))
+        card.add_widget(email_tap)
 
         # Horizontal divider  (29.66, 55.09)  1155.47 × 2.83
         _add_divider(card, CW, CH, 29.66, 55.09, 1155.47, 2.83)

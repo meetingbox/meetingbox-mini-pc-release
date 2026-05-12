@@ -23,6 +23,7 @@ class MockBackendClient:
     def __init__(self, base_url: str = None):
         self.current_recording = None
         self.meetings = self._generate_mock_meetings()
+        self._emails = self._generate_mock_emails()
         self._settings = {
             'device_name': 'Conference Room A',
             'timezone': 'America/New_York',
@@ -109,6 +110,87 @@ class MockBackendClient:
                     "topics": ["Standup"],
                     "sentiment": "Brief and informative",
                 },
+            },
+        ]
+
+    # ==================================================================
+    # MOCK EMAIL DATA
+    # ==================================================================
+
+    def _generate_mock_emails(self) -> List[Dict]:
+        now = datetime.now()
+        today_str = now.strftime("%Y-%m-%d")
+        yesterday = (now - timedelta(days=1)).strftime("%Y-%m-%d")
+        return [
+            {
+                "id": "e1",
+                "sender": "Neha Sharma",
+                "sender_email": "neha@client.com",
+                "subject": "Client follow-up from product sync",
+                "preview": "Hi Vivek, following up on our discussion...",
+                "body": (
+                    "Hi Vivek,\n\nFollowing up on our discussion in the Product Sync meeting. "
+                    "The client is aligned with the proposed solution.\n\n"
+                    "Next steps:\n"
+                    "• Share the updated timeline by EOD\n"
+                    "• Schedule a technical deep-dive with the client\n"
+                    "• Prepare the commercial proposal\n\n"
+                    "Let me know if you need anything from my side.\n\n"
+                    "Thanks,\nNeha"
+                ),
+                "to": "Vivek",
+                "time": "10:45 AM",
+                "date": today_str,
+                "is_read": False,
+                "is_today": True,
+            },
+            {
+                "id": "e2",
+                "sender": "Neha Sharma",
+                "sender_email": "neha@client.com",
+                "subject": "Re: Product Sync — action items",
+                "preview": "Just a quick note on the action items from today...",
+                "body": (
+                    "Hi Vivek,\n\nJust a quick note on the action items from today's sync. "
+                    "I've updated the project board.\n\nLet me know if anything looks off.\n\nNeha"
+                ),
+                "to": "Vivek",
+                "time": "9:30 AM",
+                "date": today_str,
+                "is_read": False,
+                "is_today": True,
+            },
+            {
+                "id": "e3",
+                "sender": "Neha Sharma",
+                "sender_email": "neha@client.com",
+                "subject": "Commercial proposal draft",
+                "preview": "Please find the draft commercial proposal attached...",
+                "body": (
+                    "Hi Vivek,\n\nPlease find the draft commercial proposal attached. "
+                    "I've kept the pricing in line with what we discussed.\n\nNeha"
+                ),
+                "to": "Vivek",
+                "time": "9:30 AM",
+                "date": yesterday,
+                "is_read": True,
+                "is_today": False,
+            },
+            {
+                "id": "e4",
+                "sender": "Neha Sharma",
+                "sender_email": "neha@client.com",
+                "subject": "Timeline update for Q3 deliverables",
+                "preview": "Following the board review, please find the updated timeline...",
+                "body": (
+                    "Hi Vivek,\n\nFollowing the board review, please find the updated timeline "
+                    "for Q3 deliverables. The dates have shifted slightly.\n\nNeha"
+                ),
+                "to": "Vivek",
+                "time": "9:30 AM",
+                "date": yesterday,
+                "is_read": True,
+                "is_today": False,
             },
         ]
 
@@ -249,6 +331,31 @@ class MockBackendClient:
             "owner_user_id": "mock-user",
             "owner_email": "you@example.com",
         }
+
+    # ==================================================================
+    # EMAILS (MOCK)
+    # ==================================================================
+
+    async def get_emails(self, filter: str = "all", limit: int = 50) -> List[Dict]:
+        await asyncio.sleep(0.15)
+        emails = self._emails
+        if filter == "today":
+            emails = [e for e in emails if e.get("is_today")]
+        elif filter == "unread":
+            emails = [e for e in emails if not e.get("is_read")]
+        return emails[:limit]
+
+    async def mark_email_unread(self, email_id: str) -> dict:
+        await asyncio.sleep(0.1)
+        for e in self._emails:
+            if e["id"] == email_id:
+                e["is_read"] = False
+        return {"status": "ok"}
+
+    async def archive_email(self, email_id: str) -> dict:
+        await asyncio.sleep(0.1)
+        self._emails = [e for e in self._emails if e["id"] != email_id]
+        return {"status": "ok"}
 
     # ==================================================================
     # INTEGRATIONS
