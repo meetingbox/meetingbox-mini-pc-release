@@ -354,13 +354,6 @@ class MockBackendClient:
             emails = [e for e in emails if not e.get("is_read")]
         return emails[:limit]
 
-    async def get_email_detail(self, email_id: str) -> dict:
-        await asyncio.sleep(0.1)
-        for e in self._emails:
-            if e["id"] == email_id:
-                return dict(e)
-        return {}
-
     async def mark_email_unread(self, email_id: str) -> dict:
         await asyncio.sleep(0.1)
         for e in self._emails:

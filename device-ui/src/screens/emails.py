@@ -866,35 +866,10 @@ class EmailsScreen(BaseScreen):
 
     def _select_email(self, email: dict):
         self._selected_email = email
+        # Mark as read locally
         email["is_read"] = True
-        # Show what we have immediately, then fetch full body
         self._update_detail(email)
-        self._rebuild_list()
-        self._fetch_email_body(email)
-
-    def _fetch_email_body(self, email: dict):
-        email_id = email.get("id")
-        if not email_id:
-            return
-
-        async def _fetch():
-            try:
-                detail = await self.backend.get_email_detail(email_id)
-            except Exception as exc:
-                logger.debug("_fetch_email_body failed: %s", exc)
-                return
-            if not detail:
-                return
-
-            def _apply(_dt):
-                # Only update if this email is still selected
-                if (self._selected_email and
-                        self._selected_email.get("id") == email_id):
-                    email.update(detail)
-                    self._update_detail(email)
-            Clock.schedule_once(_apply, 0)
-
-        run_async(_fetch())
+        self._rebuild_list()          # refresh row highlight
 
     def _update_detail(self, email: dict):
         if self._empty_lbl:
