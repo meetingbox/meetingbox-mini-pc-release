@@ -233,6 +233,7 @@ class SettingsScreen(BaseScreen):
 
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
         self.voice_assistant_enabled_item = SettingsItem(
             title='Wake word listening',
             subtitle='Keep mic on for your wake phrase',
@@ -259,6 +260,8 @@ class SettingsScreen(BaseScreen):
         )
         self.container.add_widget(self.wake_phrase_item)
 
+=======
+>>>>>>> parent of 6f683de (Merge branch 'main' of https://github.com/meetingbox/meetingbox-mini-pc-release)
 =======
 >>>>>>> parent of 6f683de (Merge branch 'main' of https://github.com/meetingbox/meetingbox-mini-pc-release)
 =======
@@ -349,6 +352,7 @@ class SettingsScreen(BaseScreen):
         self.auto_record_item.toggle.active = auto_record
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
         vae = getattr(self.app, "voice_assistant_enabled", True)
         self.voice_assistant_enabled_item.toggle.active = bool(vae)
         vra = getattr(self.app, "voice_realtime_assistant", False)
@@ -360,6 +364,8 @@ class SettingsScreen(BaseScreen):
         except (TypeError, ValueError):
             sv = 85
         self.speech_volume_item.subtitle_label.text = f'{max(0, min(100, sv))}%'
+=======
+>>>>>>> parent of 6f683de (Merge branch 'main' of https://github.com/meetingbox/meetingbox-mini-pc-release)
 =======
 >>>>>>> parent of 6f683de (Merge branch 'main' of https://github.com/meetingbox/meetingbox-mini-pc-release)
 =======
@@ -465,6 +471,7 @@ class SettingsScreen(BaseScreen):
 
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
                     try:
                         vae = settings.get("voice_assistant_enabled", True)
                         if isinstance(vae, str):
@@ -504,6 +511,8 @@ class SettingsScreen(BaseScreen):
                     except Exception:
                         pass
 
+=======
+>>>>>>> parent of 6f683de (Merge branch 'main' of https://github.com/meetingbox/meetingbox-mini-pc-release)
 =======
 >>>>>>> parent of 6f683de (Merge branch 'main' of https://github.com/meetingbox/meetingbox-mini-pc-release)
 =======

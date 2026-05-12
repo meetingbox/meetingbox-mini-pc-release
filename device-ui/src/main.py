@@ -571,6 +571,7 @@ class MeetingBoxApp(App):
 
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
         # OpenAI Realtime assistant (optional; uses server /api/voice + wake phrase).
         self._realtime_voice_session = None
         self._realtime_session_start_monotonic = None
@@ -580,6 +581,8 @@ class MeetingBoxApp(App):
         self.voice_assistant_enabled = True
         self.assistant_speech_volume = 85
 
+=======
+>>>>>>> parent of 6f683de (Merge branch 'main' of https://github.com/meetingbox/meetingbox-mini-pc-release)
 =======
 >>>>>>> parent of 6f683de (Merge branch 'main' of https://github.com/meetingbox/meetingbox-mini-pc-release)
 =======
@@ -893,6 +896,7 @@ class MeetingBoxApp(App):
                 self.auto_record = auto_record
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
 
                 vra = settings.get("voice_realtime_assistant", False)
                 if isinstance(vra, str):
@@ -919,6 +923,8 @@ class MeetingBoxApp(App):
                     wake_phrase=vwp,
                     enabled=self.voice_assistant_enabled,
                 )
+=======
+>>>>>>> parent of 6f683de (Merge branch 'main' of https://github.com/meetingbox/meetingbox-mini-pc-release)
 =======
 >>>>>>> parent of 6f683de (Merge branch 'main' of https://github.com/meetingbox/meetingbox-mini-pc-release)
 =======
@@ -1846,6 +1852,7 @@ class MeetingBoxApp(App):
 
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
     def _handle_voice_wake_phrase(self, _text: str) -> None:
         if (
             getattr(self, "voice_realtime_assistant", False)
@@ -1861,6 +1868,8 @@ class MeetingBoxApp(App):
             return
         self._begin_local_voice_command_session()
 
+=======
+>>>>>>> parent of 6f683de (Merge branch 'main' of https://github.com/meetingbox/meetingbox-mini-pc-release)
 =======
 >>>>>>> parent of 6f683de (Merge branch 'main' of https://github.com/meetingbox/meetingbox-mini-pc-release)
 =======
@@ -1895,6 +1904,7 @@ class MeetingBoxApp(App):
             except Exception:
                 pass
 
+<<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
     def _end_realtime_voice_session(self) -> None:
@@ -2018,6 +2028,8 @@ class MeetingBoxApp(App):
         v = max(0, min(100, v))
         return max(0, min(200, int(round(v * 2))))
 
+=======
+>>>>>>> parent of 6f683de (Merge branch 'main' of https://github.com/meetingbox/meetingbox-mini-pc-release)
 =======
 >>>>>>> parent of 6f683de (Merge branch 'main' of https://github.com/meetingbox/meetingbox-mini-pc-release)
 =======
