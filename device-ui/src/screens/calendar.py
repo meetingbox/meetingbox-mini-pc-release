@@ -122,27 +122,35 @@ class _ImgBtn(ButtonBehavior, Image):
     pass
 
 
-class _FlippedImg(Widget):
-    """Draws an image horizontally mirrored by flipping its UV texture coordinates.
-    No matrix transforms — just reverses the texture sampling direction (u 0→1 becomes 1→0).
+class _NavArrow(Widget):
+    """Draws a chevron nav arrow (< or >) using canvas Lines.
+
+    Identical rendering for both directions — only the direction param differs.
+    Color and weight match the Figma muted-blue palette used in the grid.
     """
 
-    def __init__(self, source: str, **kw):
+    def __init__(self, direction: str = "right", **kw):
         super().__init__(**kw)
+        self._dir = direction  # "left" or "right"
         with self.canvas:
-            Color(1, 1, 1, 1)
-            # tex_coords order: BL, BR, TR, TL  (u, v pairs)
-            # Default (normal):  (0,0, 1,0, 1,1, 0,1)
-            # Flipped horizontal:(1,0, 0,0, 0,1, 1,1)  ← swap u: left=1, right=0
-            self._rect = Rectangle(
-                source=source, pos=self.pos, size=self.size,
-                tex_coords=(1, 0, 0, 0, 0, 1, 1, 1))
-        self.bind(pos=self._upd, size=self._upd)
-        Clock.schedule_once(self._upd, 0)
+            self._col = Color(*_MUTED)
+            self._top = Line(points=[], width=2.2, cap="round", joint="round")
+            self._bot = Line(points=[], width=2.2, cap="round", joint="round")
+        self.bind(pos=self._draw, size=self._draw)
+        Clock.schedule_once(self._draw, 0)
 
-    def _upd(self, *_):
-        self._rect.pos = self.pos
-        self._rect.size = self.size
+    def _draw(self, *_):
+        x, y, w, h = self.x, self.y, self.width, self.height
+        cx, cy = x + w / 2, y + h / 2
+        # Chevron arms: tip at 55 % of half-width, arms span 45 % of half-height
+        arm  = h * 0.28   # arm vertical half-length
+        reach = w * 0.30  # horizontal depth of chevron
+        if self._dir == "right":
+            tip_x, tail_x = cx + reach, cx - reach
+        else:
+            tip_x, tail_x = cx - reach, cx + reach
+        self._top.points = [tail_x, cy + arm, tip_x, cy, ]
+        self._bot.points = [tip_x, cy, tail_x, cy - arm]
 
 
 # ── Gradient card ─────────────────────────────────────────────────────────────
@@ -546,27 +554,17 @@ class CalendarScreen(BaseScreen):
             dv.bind(pos=_mk(_r), size=_mk(_r))
             root.add_widget(dv)
 
-        # Nav arrow icon source: use the confirmed-working weui:arrow-filled Figma asset.
-        # The same image is used for both directions — right as-is, left via horizontal flip.
-        _nav_arr_src = (str(_CAL / "icon_arrow_details.png")
-                        if (_CAL / "icon_arrow_details.png").is_file()
-                        else str(_CAL / "icon_nav_left_arrow.png")
-                        if (_CAL / "icon_nav_left_arrow.png").is_file() else "")
-
-        # Left navigation arrow — large tap zone (full grid height) + flipped icon
+        # Left navigation arrow — large tap zone (full grid height) + chevron icon
         _ltz = _TapZone(**_ph(GX + 4, GY, 60, 151.14))
         _ltz.bind(on_release=lambda *_: self._nav_week(-1))
         root.add_widget(_ltz)
-        if _nav_arr_src:
-            root.add_widget(_FlippedImg(_nav_arr_src, **_ph(GX + 20, GY + 59, 34, 34)))
+        root.add_widget(_NavArrow("left",  **_ph(GX + 16, GY + 51, 42, 50)))
 
-        # Right navigation arrow — large tap zone + icon
+        # Right navigation arrow — large tap zone + chevron icon
         _rtz = _TapZone(**_ph(GX + 1146, GY, 65, 151.14))
         _rtz.bind(on_release=lambda *_: self._nav_week(1))
         root.add_widget(_rtz)
-        if _nav_arr_src:
-            root.add_widget(Image(source=_nav_arr_src, fit_mode="contain",
-                                  **_ph(GX + 1156, GY + 59, 34, 34)))
+        root.add_widget(_NavArrow("right", **_ph(GX + 1152, GY + 51, 42, 50)))
 
         # Per-column: WED-style highlight, tap zone, abbrev label, date label, dots
         self._highlights.clear()
