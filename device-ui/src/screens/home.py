@@ -585,48 +585,35 @@ class HomeScreen(BaseScreen):
             root.add_widget(sg_btn)
 
     def _build_listening_pill(self, root: FloatLayout) -> None:
-        """Voice-state pill  (805.16, 21.19)  302.29 × 76.28  r=76.28.
+        """Voice-state pill  (805.16, 21.19)  302.29 × 76.28.
 
-        Hidden by default (opacity=0); shown via ``show_listening_state()``
-        when the wake word fires.  Display-only — not tappable.
+        Uses the exact Figma PNG (listening_pill_figma.png) as the pill background.
+        An animated _FigmaWaveform is overlaid at the soundwave position.
+        Hidden by default (opacity=0); shown via show_listening_state().
+        Display-only — not tappable.
         """
         PW, PH = 302.29, 76.28
-        pill = _Card(top=_PILL_TOP, bot=_PILL_BOT,
-                     border=(0.129, 0.157, 0.294, 1.0),
-                     radius=_ff(38),
-                     size_hint=(_sw(PW), _sh(PH)),
-                     pos_hint={"x": _x(805.16), "y": _y(21.19, PH)})
+
+        # Outer container — no canvas bg; the PNG provides the visual
+        pill = FloatLayout(
+            size_hint=(_sw(PW), _sh(PH)),
+            pos_hint={"x": _x(805.16), "y": _y(21.19, PH)},
+        )
         pill.opacity = 0.0  # hidden in idle state
 
-        # Blue dot — Figma Ellipse 8 at (36.73, 28.25) in pill  19.78 × 19.78
-        # Use downloaded Figma asset; fall back to Label "●" if missing.
-        ld_src = _fp("icon_listening_dot_pill.png") or _fp("icon_listening_dot.png")
-        if ld_src:
+        # Figma pill PNG as the background (covers the full pill area)
+        pill_src = _fp("listening_pill_figma.png") or _fp("listening_pill.png")
+        if pill_src:
             pill.add_widget(Image(
-                source=ld_src,
-                size_hint=(19.78 / PW, 19.78 / PH),
-                pos_hint={"x": 36.73 / PW, "y": (PH - 28.25 - 19.78) / PH},
-                fit_mode="contain",
+                source=pill_src,
+                size_hint=(1, 1),
+                pos_hint={"x": 0, "y": 0},
+                fit_mode="fill",
+                allow_stretch=True,
+                keep_ratio=False,
             ))
-            self.voice_dot = None
-        else:
-            self.voice_dot = Label(
-                text="●", font_size=_ff(18), color=_BLUE,
-                size_hint=(19.78 / PW, 19.78 / PH),
-                pos_hint={"x": 36.73 / PW, "y": (PH - 28.25 - 19.78) / PH},
-            )
-            pill.add_widget(self.voice_dot)
 
-        # "Listening" at (80.52, 21.19)  118 × 34  SemiBold 28.25px
-        self.voice_state_label = _lbl(
-            "Listening", _FONT_SB, _ff(28.25), _WHITE,
-            size_hint=(160 / PW, 34 / PH),
-            pos_hint={"x": 80.52 / PW, "y": (PH - 21.19 - 34) / PH},
-        )
-        pill.add_widget(self.voice_state_label)
-
-        # Soundwave — live animated widget whose 7 bars exactly match Figma node 927:543
-        # (bi:soundwave, #006BF9).  Position matches Figma: (224.6, 15.54) in pill 45.2×45.2.
+        # Animated soundwave bars overlaid at the soundwave position (224.6, 15.54) 45.2×45.2
         sw_wf = _FigmaWaveform(
             size_hint=(45.2 / PW, 45.2 / PH),
             pos_hint={"x": 224.6 / PW, "y": (PH - 15.54 - 45.2) / PH},
@@ -634,7 +621,10 @@ class HomeScreen(BaseScreen):
         pill.add_widget(sw_wf)
         self._soundwave_wf = sw_wf
 
-        # Pill is display-only — no touch handler
+        # Keep label refs for any callers that update content
+        self.voice_dot = None
+        self.voice_state_label = None
+
         self._listening_pill = pill
         root.add_widget(pill)
 
