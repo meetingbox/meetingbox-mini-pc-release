@@ -212,6 +212,106 @@ class _ScalableImage(Widget):
 
 
 # ---------------------------------------------------------------------------
+# Figma waveform widget — 7 animated bars matching SVG node 927:543 exactly
+# ---------------------------------------------------------------------------
+
+class _FigmaWaveform(Widget):
+    """Animated waveform that reproduces the exact 7-bar bi:soundwave SVG from Figma.
+
+    Bar x-centres, widths, and base heights are parsed directly from SVG node 927:543
+    (viewBox 0 0 46 46). Color is #006BF9 exactly as in Figma. Each bar oscillates
+    independently; ``update_bars(t, amplitude)`` is called at ~30 fps.
+    """
+
+    # (x_centre, base_height) in the 46×46 SVG viewBox — directly from Figma SVG paths
+    _BAR_DATA = [
+        (7.185,  8.625),   # outermost left
+        (12.935, 14.375),
+        (18.685, 22.999),
+        (24.435, 34.499),  # centre / tallest
+        (30.185, 22.999),
+        (35.935, 14.375),
+        (41.685, 8.625),   # outermost right
+    ]
+    _BAR_W  = 2.875    # bar width in viewBox units (= corner radius × 2 → fully-rounded ends)
+    _VB     = 46.0     # viewBox side length
+    _CY_VB  = 23.0     # y-centre of every bar in the viewBox
+    # Symmetric phase offsets so the wave appears to spread outward from the centre
+    _PHASES = [3.0, 2.2, 1.4, 0.0, 1.4, 2.2, 3.0]
+
+    def __init__(self, **kw):
+        super().__init__(**kw)
+        self._bar_rects: list = []
+        self._scale:     float = 1.0
+        self._bar_w_px:  float = 1.0
+        self._bar_cxy:   list  = []
+        self._setup_canvas()
+        self.bind(pos=self._on_resize, size=self._on_resize)
+        Clock.schedule_once(self._on_resize, 0)
+
+    def _setup_canvas(self):
+        with self.canvas:
+            self._color_inst = Color(0.0, 0.420, 0.976, 1.0)  # #006BF9
+            self._bar_rects = [
+                RoundedRectangle(pos=(0, 0), size=(1, 1), radius=[0.5])
+                for _ in self._BAR_DATA
+            ]
+
+    def _on_resize(self, *_):
+        w, h = self.size
+        px, py = self.pos
+        if w <= 0 or h <= 0:
+            return
+        s  = min(w / self._VB, h / self._VB)
+        ox = px + (w - self._VB * s) / 2
+        oy = py + (h - self._VB * s) / 2
+        self._scale    = s
+        self._bar_w_px = self._BAR_W * s
+        self._bar_cxy  = [
+            (ox + cx * s, oy + self._CY_VB * s)
+            for cx, _ in self._BAR_DATA
+        ]
+        # Render bars at their Figma baseline heights
+        r = self._bar_w_px / 2
+        for i, rect in enumerate(self._bar_rects):
+            cx_px, cy_px = self._bar_cxy[i]
+            bh_px = self._BAR_DATA[i][1] * s
+            rect.pos    = (cx_px - self._bar_w_px / 2, cy_px - bh_px / 2)
+            rect.size   = (self._bar_w_px, bh_px)
+            rect.radius = [r]
+
+    def update_bars(self, t: float, amplitude: float) -> None:
+        """Animate bar heights at ~30 fps.
+
+        Each bar breathes with a symmetric phase offset.  ``amplitude`` (0–1) scales
+        both the peak height *and* the oscillation speed so louder voice → taller +
+        faster movement, matching the original design intent.
+        """
+        if not self._bar_rects or not self._bar_cxy:
+            return
+        s   = self._scale
+        bwp = self._bar_w_px
+        r   = bwp / 2
+        amp = max(0.0, min(1.0, amplitude))
+
+        for i, rect in enumerate(self._bar_rects):
+            cx_px, cy_px = self._bar_cxy[i]
+            base_h_px    = self._BAR_DATA[i][1] * s
+            phase        = self._PHASES[i]
+
+            # Gentle idle oscillation (always visible even at zero amplitude)
+            idle = 1.0 + 0.10 * math.sin(t * 3.0 + phase)
+            # Voice-reactive: louder → taller, faster
+            vspeed = 5.0 + amp * 12.0
+            voice  = amp * 1.2 * abs(math.sin(t * vspeed + phase))
+
+            h_px = base_h_px * idle * (1.0 + voice)
+            rect.pos    = (cx_px - bwp / 2, cy_px - h_px / 2)
+            rect.size   = (bwp, h_px)
+            rect.radius = [r]
+
+
+# ---------------------------------------------------------------------------
 # Label factory
 # ---------------------------------------------------------------------------
 
@@ -414,7 +514,7 @@ class HomeScreen(BaseScreen):
 
         # Voice interaction widgets and state
         self._listening_pill:    object | None = None  # the pill _Card
-        self._soundwave_img:     _ScalableImage | None = None
+        self._soundwave_wf:      _FigmaWaveform | None = None
         self._voice_orb:         _ScalableImage | None = None
         self._listening_active:  bool = False
         self._current_amplitude: float = 0.0
@@ -525,20 +625,14 @@ class HomeScreen(BaseScreen):
         )
         pill.add_widget(self.voice_state_label)
 
-        # Soundwave — exact Figma 'bi:soundwave' asset (icon_soundwave_listening.png)
-        # Position matches Figma: (224.6, 15.54) in pill  45.2 × 45.2
-        # Uses _ScalableImage so amplitude-driven scale animation works without
-        # affecting pill layout.
-        sw_src = (_fp("icon_soundwave_listening.png")
-                  or _fp("icon_soundwave.png"))
-        if sw_src:
-            sw_img = _ScalableImage(
-                source=sw_src,
-                size_hint=(45.2 / PW, 45.2 / PH),
-                pos_hint={"x": 224.6 / PW, "y": (PH - 15.54 - 45.2) / PH},
-            )
-            pill.add_widget(sw_img)
-            self._soundwave_img = sw_img
+        # Soundwave — live animated widget whose 7 bars exactly match Figma node 927:543
+        # (bi:soundwave, #006BF9).  Position matches Figma: (224.6, 15.54) in pill 45.2×45.2.
+        sw_wf = _FigmaWaveform(
+            size_hint=(45.2 / PW, 45.2 / PH),
+            pos_hint={"x": 224.6 / PW, "y": (PH - 15.54 - 45.2) / PH},
+        )
+        pill.add_widget(sw_wf)
+        self._soundwave_wf = sw_wf
 
         # Pill is display-only — no touch handler
         self._listening_pill = pill
@@ -1325,9 +1419,8 @@ class HomeScreen(BaseScreen):
         if self._voice_orb is not None:
             Animation.cancel_all(self._voice_orb, 'orb_scale')
             self._voice_orb.orb_scale = 1.0
-        if self._soundwave_img is not None:
-            Animation.cancel_all(self._soundwave_img, 'orb_scale')
-            self._soundwave_img.orb_scale = 1.0
+        if self._soundwave_wf is not None:
+            self._soundwave_wf.update_bars(time.monotonic(), 0.0)
 
         self._update_clock_labels()
         snap = get_weather_client().snapshot
@@ -1366,9 +1459,8 @@ class HomeScreen(BaseScreen):
         if self._voice_orb is not None:
             Animation.cancel_all(self._voice_orb, 'orb_scale')
             self._voice_orb.orb_scale = 1.0
-        if self._soundwave_img is not None:
-            Animation.cancel_all(self._soundwave_img, 'orb_scale')
-            self._soundwave_img.orb_scale = 1.0
+        if self._soundwave_wf is not None:
+            self._soundwave_wf.update_bars(time.monotonic(), 0.0)
 
         if self._clock_event:
             self._clock_event.cancel()
@@ -1586,7 +1678,7 @@ class HomeScreen(BaseScreen):
             )
 
         # -- Start soundwave animation tick --------------------------------
-        if self._soundwave_tick_ev is None and self._soundwave_img is not None:
+        if self._soundwave_tick_ev is None and self._soundwave_wf is not None:
             self._soundwave_tick_ev = Clock.schedule_interval(
                 self._soundwave_tick, 1 / 30
             )
@@ -1596,15 +1688,12 @@ class HomeScreen(BaseScreen):
         self._listening_active = False
         self._current_amplitude = 0.0
 
-        # -- Stop soundwave tick and ease icon back to 1.0 ----------------
+        # -- Stop soundwave tick and reset bars to baseline ----------------
         if self._soundwave_tick_ev is not None:
             self._soundwave_tick_ev.cancel()
             self._soundwave_tick_ev = None
-        if self._soundwave_img is not None:
-            Animation.cancel_all(self._soundwave_img, 'orb_scale')
-            Animation(orb_scale=1.0, duration=0.3, t='out_sine').start(
-                self._soundwave_img
-            )
+        if self._soundwave_wf is not None:
+            self._soundwave_wf.update_bars(time.monotonic(), 0.0)
 
         # -- Voice orb: scale back to 1.0x --------------------------------
         if self._voice_orb is not None:
@@ -1621,16 +1710,10 @@ class HomeScreen(BaseScreen):
             )
 
     def _soundwave_tick(self, _dt) -> None:
-        """30-fps tick: scale the Figma soundwave asset with amplitude + idle oscillation."""
-        if self._soundwave_img is None:
+        """30-fps tick: drive the _FigmaWaveform bar animation."""
+        if self._soundwave_wf is None:
             return
-        amp = min(1.0, max(0.0, self._current_amplitude))
-        t   = time.monotonic()
-        # Gentle idle breathing so the icon is never completely static
-        idle  = 1.0 + 0.04 * math.sin(t * 2.5)
-        # Voice energy: louder → larger scale, with a fast shimmer
-        voice = amp * 0.38 * (1.0 + 0.18 * math.sin(t * 9.0))
-        self._soundwave_img.orb_scale = max(0.94, min(1.42, idle + voice))
+        self._soundwave_wf.update_bars(time.monotonic(), self._current_amplitude)
 
     def update_amplitude(self, amp: float) -> None:
         """Receive microphone amplitude (0-1); stored for the soundwave tick."""
