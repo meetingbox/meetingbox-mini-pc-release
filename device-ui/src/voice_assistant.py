@@ -344,7 +344,11 @@ class VoiceAssistant:
             ).split(",")
             if cmd.strip()
         ]
-        self.command_timeout_seconds = _env_float("VOICE_ASSISTANT_COMMAND_TIMEOUT", 15.0)
+        # Floor keeps the post-wake speech window usable (avoid sub‑second timeouts via misconfigured env).
+        self.command_timeout_seconds = max(
+            5.0,
+            _env_float("VOICE_ASSISTANT_COMMAND_TIMEOUT", 15.0),
+        )
         self.action_cooldown_seconds = _env_float("VOICE_ASSISTANT_ACTION_COOLDOWN", 2.0)
         self.confirmation_timeout_seconds = _env_float("VOICE_ASSISTANT_CONFIRMATION_TIMEOUT", 8.0)
         self.model_name = (

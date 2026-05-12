@@ -1884,11 +1884,29 @@ class MeetingBoxApp(App):
                 pass
 
     def _begin_local_voice_command_session(self) -> None:
-        """Post-wake window for local Vosk commands (no Realtime)."""
+        """Post-wake window for local Vosk commands (no Realtime).
+
+        Refreshes the home listening animation and hide timer so Realtime failures
+        or API fallbacks do not collapse the UI after a fraction of a second.
+        """
         try:
             self.voice_assistant.simulate_wake()
         except Exception:
             logger.exception("simulate_wake after wake phrase failed")
+        timeout = max(2.0, self.voice_assistant.command_timeout_seconds)
+        if (
+            self.screen_manager is not None
+            and self.screen_manager.current == "home"
+        ):
+            try:
+                home = self.screen_manager.get_screen("home")
+                home.show_listening_state()
+                Clock.schedule_once(
+                    lambda _dt: self._hide_home_listening_state(),
+                    timeout,
+                )
+            except Exception:
+                pass
 
     def _handle_voice_conversation_turn(self, text: str) -> None:
         """Cloud assistant Q&A for speech that is not a rigid local intent (person-like dialogue)."""
@@ -1979,7 +1997,7 @@ class MeetingBoxApp(App):
         self._realtime_session_pending = False
         self._sync_voice_assistant_state()
         if short_failed:
-            Clock.schedule_once(lambda _dt: self._hide_home_listening_state(), 0)
+            # Do not hide listening here — local fallback re-shows it for the full timeout.
             Clock.schedule_once(
                 lambda _dt: self._begin_local_voice_command_session(), 0
             )
@@ -2002,7 +2020,6 @@ class MeetingBoxApp(App):
             return
 
         if not get_device_auth_token().strip():
-            Clock.schedule_once(lambda _dt: self._hide_home_listening_state(), 0)
             Clock.schedule_once(
                 lambda _dt: self._begin_local_voice_command_session(), 0
             )
@@ -2023,7 +2040,6 @@ class MeetingBoxApp(App):
                 logger.warning("Realtime voice session request failed: %s", e)
                 self._realtime_session_pending = False
                 Clock.schedule_once(lambda _dt: self._clear_voice_indicator_override(), 0)
-                Clock.schedule_once(lambda _dt: self._hide_home_listening_state(), 0)
                 Clock.schedule_once(
                     lambda _dt: self._begin_local_voice_command_session(), 0
                 )
@@ -2039,7 +2055,6 @@ class MeetingBoxApp(App):
         except ImportError:
             logger.exception("realtime_voice_session module missing")
             self._clear_voice_indicator_override()
-            self._hide_home_listening_state()
             self._sync_voice_assistant_state()
             Clock.schedule_once(lambda _dt: self._begin_local_voice_command_session(), 0)
             return
@@ -2050,7 +2065,6 @@ class MeetingBoxApp(App):
         model = (data.get("model") or "").strip()
         if not secret or not model:
             self._clear_voice_indicator_override()
-            self._hide_home_listening_state()
             self._sync_voice_assistant_state()
             Clock.schedule_once(lambda _dt: self._begin_local_voice_command_session(), 0)
             return
@@ -2061,7 +2075,7 @@ class MeetingBoxApp(App):
 
         def _err(msg: str) -> None:
             logger.error("Realtime voice error: %s", msg)
-            Clock.schedule_once(lambda _dt: self._hide_home_listening_state(), 0)
+            # Do not hide home listening here — session end + local fallback restore the UI.
             Clock.schedule_once(lambda _dt: self._end_realtime_voice_session(), 0)
 
         def _on_rt_connected() -> None:
@@ -2102,7 +2116,6 @@ class MeetingBoxApp(App):
             self._realtime_voice_session = None
             self._realtime_session_pending = False
             self._clear_voice_indicator_override()
-            self._hide_home_listening_state()
             self._sync_voice_assistant_state()
             Clock.schedule_once(lambda _dt: self._begin_local_voice_command_session(), 0)
 
