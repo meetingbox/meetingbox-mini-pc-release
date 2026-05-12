@@ -1796,30 +1796,40 @@ class MeetingBoxApp(App):
                 self._clear_voice_indicator_override, duration
             )
 
+    def _show_home_listening_after_wake(self) -> None:
+        """Zoom mic orb + listening pill on home (local Vosk or OpenAI Realtime)."""
+        if self.screen_manager is None or self.screen_manager.current != "home":
+            return
+        try:
+            self.screen_manager.get_screen("home").show_listening_state()
+        except Exception:
+            pass
+
     def _handle_voice_wake_phrase(self, _text: str) -> None:
         if (
             getattr(self, "voice_realtime_assistant", False)
             and get_device_auth_token().strip()
             and not USE_MOCK_BACKEND
         ):
-            Clock.schedule_once(lambda _dt: self._start_realtime_voice_session(), 0)
+            def _kick_realtime(_dt):
+                self._show_home_listening_after_wake()
+                self._start_realtime_voice_session()
+
+            Clock.schedule_once(_kick_realtime, 0)
             return
+        try:
+            self.voice_assistant.simulate_wake()
+        except Exception:
+            pass
         timeout = max(2.0, self.voice_assistant.command_timeout_seconds)
 
         def _wake_ui(_dt):
             heard = getattr(self, "voice_wake_phrase_display", "Hey buddy") or "Hey buddy"
             self._set_voice_indicator_override("wake", f'Heard "{heard}"', timeout)
-            # Trigger home-screen mic animation + listening pill
-            if (self.screen_manager is not None
-                    and self.screen_manager.current == 'home'):
-                try:
-                    home = self.screen_manager.get_screen('home')
-                    home.show_listening_state()
-                    Clock.schedule_once(
-                        lambda _dt2: self._hide_home_listening_state(), timeout
-                    )
-                except Exception:
-                    pass
+            self._show_home_listening_after_wake()
+            Clock.schedule_once(
+                lambda _dt2: self._hide_home_listening_state(), timeout
+            )
 
         Clock.schedule_once(_wake_ui, 0)
 
@@ -1856,6 +1866,7 @@ class MeetingBoxApp(App):
     def _end_realtime_voice_session(self) -> None:
         self._realtime_voice_session = None
         self._clear_voice_indicator_override()
+        self._hide_home_listening_state()
         self._sync_voice_assistant_state()
 
     def _start_realtime_voice_session(self) -> None:
@@ -1875,6 +1886,7 @@ class MeetingBoxApp(App):
                 data = await self.backend.create_realtime_voice_session()
             except Exception as e:
                 logger.warning("Realtime voice session request failed: %s", e)
+                Clock.schedule_once(lambda _dt: self._hide_home_listening_state(), 0)
                 Clock.schedule_once(
                     lambda _dt: self._set_voice_indicator_override(
                         "error",
@@ -1896,6 +1908,7 @@ class MeetingBoxApp(App):
         model = (data.get("model") or "").strip()
         if not secret or not model:
             self._set_voice_indicator_override("error", "Invalid voice session.", duration=4.0)
+            self._hide_home_listening_state()
             self._sync_voice_assistant_state()
             return
         tok = get_device_auth_token().strip()
@@ -1905,6 +1918,7 @@ class MeetingBoxApp(App):
 
         def _err(msg: str) -> None:
             logger.error("Realtime voice error: %s", msg)
+            Clock.schedule_once(lambda _dt: self._hide_home_listening_state(), 0)
             Clock.schedule_once(
                 lambda _dt: self._set_voice_indicator_override("error", "Voice session failed.", duration=4.0),
                 0,
