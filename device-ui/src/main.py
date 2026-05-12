@@ -566,6 +566,7 @@ class MeetingBoxApp(App):
             self._handle_voice_intent,
             on_wake_phrase=self._handle_voice_wake_phrase,
             on_amplitude=self._handle_voice_amplitude,
+            on_conversation_turn=self._handle_voice_conversation_turn,
         )
         self._voice_confirmation_timeout = self.voice_assistant.confirmation_timeout_seconds
         self._last_amplitude_sched = 0.0
@@ -1889,6 +1890,45 @@ class MeetingBoxApp(App):
         except Exception:
             logger.exception("simulate_wake after wake phrase failed")
 
+    def _handle_voice_conversation_turn(self, text: str) -> None:
+        """Cloud assistant Q&A for speech that is not a rigid local intent (person-like dialogue)."""
+        if not getattr(self, "voice_assistant_enabled", True):
+            return
+        if self._voice_pending_confirmation:
+            return
+        phrase = (text or "").strip()
+        if len(phrase) < 3:
+            return
+
+        async def _go():
+            self._set_voice_indicator_override("wake", "Thinking…", duration=None)
+            try:
+                if not USE_MOCK_BACKEND and not get_device_auth_token().strip():
+                    Clock.schedule_once(
+                        lambda _dt: self._voice_reply_and_extend_listening(
+                            "Pair this device with your account so I can answer questions.",
+                            error=True,
+                        ),
+                        0,
+                    )
+                    return
+                res = await self.backend.post_assistant_intent(phrase)
+                raw = (res.get("assistant_message") or "").strip() or "Okay."
+                Clock.schedule_once(lambda _dt, m=raw: self._voice_reply_and_extend_listening(m), 0)
+            except Exception as e:
+                logger.warning("Assistant conversation failed: %s", e)
+                Clock.schedule_once(
+                    lambda _dt: self._voice_reply_and_extend_listening(
+                        "I could not reach the assistant. Check BACKEND_URL and your network.",
+                        error=True,
+                    ),
+                    0,
+                )
+            finally:
+                Clock.schedule_once(lambda _dt: self._clear_voice_indicator_override(), 0)
+
+        run_async(_go())
+
     def _hide_home_listening_state(self, *_args) -> None:
         """Called after wake-word timeout to restore the home screen to idle."""
         if (self.screen_manager is not None
@@ -2151,6 +2191,22 @@ class MeetingBoxApp(App):
             duration if duration is not None else self._voice_duration_seconds(text),
         )
         self._speak_text_async(text)
+
+    def _voice_reply_and_extend_listening(self, message: str, *, error: bool = False) -> None:
+        """Speak assistant text and reopen the post-wake command window for multi-turn chat."""
+        msg = self._trim_voice_text(message, 450)
+        words = max(1, len(msg.split()))
+        dur = min(45.0, max(2.5, words * 0.42))
+        st = "error" if error else "speaking"
+        self._voice_reply(msg, state=st, duration=dur)
+
+        def _extend(_dt):
+            try:
+                self.voice_assistant.simulate_wake()
+            except Exception:
+                logger.debug("simulate_wake after assistant reply failed", exc_info=True)
+
+        Clock.schedule_once(_extend, dur + 0.35)
 
     @staticmethod
     def _format_voice_duration(seconds: int) -> str:

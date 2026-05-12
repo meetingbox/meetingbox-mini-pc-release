@@ -471,6 +471,18 @@ class MockBackendClient:
 
         return {"days": days}
 
+    async def post_assistant_intent(
+        self, message: str, meeting_id: str | None = None
+    ) -> Dict:
+        await asyncio.sleep(0.2)
+        text = (message or "").strip()
+        return {
+            "audit_id": "mock-audit",
+            "assistant_message": f"Here is a quick answer about: {text[:120]}{'…' if len(text) > 120 else ''}",
+            "routed_agent_id": "mock",
+            "tool_results": [],
+        }
+
     async def get_briefing_context(self, days_ahead: int = 1) -> Dict:
         await asyncio.sleep(0.1)
         today = date.today()

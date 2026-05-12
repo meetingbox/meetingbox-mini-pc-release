@@ -211,6 +211,11 @@ class VoiceCommandInterpreter:
     def awaiting_confirmation(self) -> bool:
         return time.monotonic() <= self._awaiting_confirmation_until
 
+    @property
+    def awaiting_command(self) -> bool:
+        """True during the post-wake window when follow-up speech is accepted."""
+        return time.monotonic() <= self._awaiting_command_until
+
     def reset(self) -> None:
         self._awaiting_command_until = 0.0
 
@@ -321,10 +326,12 @@ class VoiceAssistant:
         on_intent: Callable[[VoiceIntent], None],
         on_wake_phrase: Callable[[str], None] | None = None,
         on_amplitude: Callable[[float], None] | None = None,
+        on_conversation_turn: Callable[[str], None] | None = None,
     ):
         self._on_intent = on_intent
         self._on_wake_phrase = on_wake_phrase
         self._on_amplitude = on_amplitude
+        self._on_conversation_turn = on_conversation_turn
         self._amplitude_ema = 0.0
         self._last_amplitude_call = 0.0
         self.enabled = _env_flag("VOICE_ASSISTANT_ENABLED", True)
@@ -337,7 +344,7 @@ class VoiceAssistant:
             ).split(",")
             if cmd.strip()
         ]
-        self.command_timeout_seconds = _env_float("VOICE_ASSISTANT_COMMAND_TIMEOUT", 6.0)
+        self.command_timeout_seconds = _env_float("VOICE_ASSISTANT_COMMAND_TIMEOUT", 15.0)
         self.action_cooldown_seconds = _env_float("VOICE_ASSISTANT_ACTION_COOLDOWN", 2.0)
         self.confirmation_timeout_seconds = _env_float("VOICE_ASSISTANT_CONFIRMATION_TIMEOUT", 8.0)
         self.model_name = (
@@ -498,13 +505,30 @@ class VoiceAssistant:
             except Exception:
                 logger.exception("Voice assistant wake callback failed")
         intent = self._interpreter.handle_transcript(norm)
-        if intent is None:
+        if intent is not None:
+            logger.info('Voice command accepted: "%s" -> %s', norm, intent.name)
+            try:
+                self._on_intent(intent)
+            except Exception:
+                logger.exception("Voice assistant callback failed")
             return
-        logger.info('Voice command accepted: "%s" -> %s', norm, intent.name)
-        try:
-            self._on_intent(intent)
-        except Exception:
-            logger.exception("Voice assistant callback failed")
+
+        # Natural-language assistant: anything spoken during the post-wake window
+        # that is not a rigid intent is sent to the server assistant (person-like Q&A).
+        if (
+            self._on_conversation_turn is not None
+            and self._interpreter.awaiting_command
+            and len(norm) >= 3
+        ):
+            if (
+                self._on_wake_phrase is not None
+                and self._interpreter.should_trigger_wake_callback(norm)
+            ):
+                return
+            try:
+                self._on_conversation_turn(norm)
+            except Exception:
+                logger.exception("Voice conversation turn callback failed")
 
     def _resolve_input_device(self):
         idx_s = (AUDIO_INPUT_DEVICE_INDEX or "").strip()
