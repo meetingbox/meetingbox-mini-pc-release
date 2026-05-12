@@ -1,7 +1,7 @@
 """
 Local wake-word voice control for the device UI.
 
-Listens for a configurable wake phrase (default: "hey tony"), then accepts
+Listens for a configurable wake phrase (default: "hey buddy"), then accepts
 follow-up commands covering meetings, navigation, device controls, and a small
 confirmation flow for destructive actions.
 """
@@ -319,7 +319,7 @@ class VoiceAssistant:
         self._amplitude_ema = 0.0
         self._last_amplitude_call = 0.0
         self.enabled = _env_flag("VOICE_ASSISTANT_ENABLED", True)
-        self.wake_phrase = (os.getenv("VOICE_ASSISTANT_WAKE_PHRASE") or "hey tony").strip() or "hey tony"
+        self.wake_phrase = (os.getenv("VOICE_ASSISTANT_WAKE_PHRASE") or "hey buddy").strip() or "hey buddy"
         self.start_commands = [
             cmd.strip()
             for cmd in (
@@ -362,6 +362,27 @@ class VoiceAssistant:
         self._model = None
         self._model_lock = threading.Lock()
         self._warned_unavailable = False
+
+    def apply_server_settings(
+        self,
+        *,
+        wake_phrase: str | None = None,
+        enabled: bool | None = None,
+    ) -> None:
+        """Apply voice prefs from synced /api/device/settings (wake phrase, master enable)."""
+        if wake_phrase is not None:
+            wp = (wake_phrase or "").strip()
+            if wp:
+                self.wake_phrase = wp
+        if enabled is not None:
+            self.enabled = bool(enabled)
+        self._interpreter = VoiceCommandInterpreter(
+            wake_phrase=self.wake_phrase,
+            start_commands=self.start_commands,
+            command_timeout_seconds=self.command_timeout_seconds,
+            action_cooldown_seconds=self.action_cooldown_seconds,
+            confirmation_timeout_seconds=self.confirmation_timeout_seconds,
+        )
 
     @property
     def available(self) -> bool:
