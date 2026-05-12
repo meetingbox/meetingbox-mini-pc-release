@@ -62,6 +62,7 @@ class RealtimeVoiceSession:
         device_token: str,
         on_session_end: Callable[[], None] | None = None,
         on_error: Callable[[str], None] | None = None,
+        on_connected: Callable[[], None] | None = None,
     ) -> None:
         self._client_secret = client_secret
         self._model = model
@@ -69,6 +70,7 @@ class RealtimeVoiceSession:
         self._token = (device_token or "").strip()
         self._on_session_end = on_session_end
         self._on_error = on_error
+        self._on_connected = on_connected
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
 
@@ -148,6 +150,12 @@ class RealtimeVoiceSession:
                     except Exception:
                         pass
                 return
+
+            if self._on_connected:
+                try:
+                    self._on_connected()
+                except Exception:
+                    logger.exception("Realtime on_connected failed")
 
             def recv_loop() -> None:
                 try:
