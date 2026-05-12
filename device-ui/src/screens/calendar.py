@@ -523,25 +523,24 @@ class CalendarScreen(BaseScreen):
             dv.bind(pos=_mk(_r), size=_mk(_r))
             root.add_widget(dv)
 
-        # Left navigation arrow — Figma: grid x=20, y=59, 34×34
-        _left_btn = _TapCard(ct=_ICON_BG, cb=_ICON_BG, bdr=_BDR_CARD,
-                             r=_ff(8), **_ph(GX + 20, GY + 59, 34, 34))
-        _left_btn.add_widget(_lbl(
-            "<", _FB, _ff(22), _MUTED,
-            ha="center", va="middle",
-            size_hint=(1, 1), pos_hint={"x": 0, "y": 0}))
-        _left_btn.bind(on_release=lambda *_: self._nav_week(-1))
-        root.add_widget(_left_btn)
+        # Left navigation arrow — large tap zone (full grid height) + icon overlay
+        # Tap zone: x=GX+4, full grid height → easy tap above/below the icon
+        _ltz = _TapZone(**_ph(GX + 4, GY, 60, 151.14))
+        _ltz.bind(on_release=lambda *_: self._nav_week(-1))
+        root.add_widget(_ltz)
+        _nav_left_src = _asset("icon_nav_left.png")
+        if _nav_left_src:
+            root.add_widget(Image(source=_nav_left_src, fit_mode="contain",
+                                  **_ph(GX + 20, GY + 59, 34, 34)))
 
-        # Right navigation arrow — Figma: grid x=1156, y=59, 34×34
-        _right_btn = _TapCard(ct=_ICON_BG, cb=_ICON_BG, bdr=_BDR_CARD,
-                              r=_ff(8), **_ph(GX + 1156, GY + 59, 34, 34))
-        _right_btn.add_widget(_lbl(
-            ">", _FB, _ff(22), _MUTED,
-            ha="center", va="middle",
-            size_hint=(1, 1), pos_hint={"x": 0, "y": 0}))
-        _right_btn.bind(on_release=lambda *_: self._nav_week(1))
-        root.add_widget(_right_btn)
+        # Right navigation arrow — large tap zone + icon overlay
+        _rtz = _TapZone(**_ph(GX + 1146, GY, 65, 151.14))
+        _rtz.bind(on_release=lambda *_: self._nav_week(1))
+        root.add_widget(_rtz)
+        _nav_right_src = _asset("icon_nav_right.png")
+        if _nav_right_src:
+            root.add_widget(Image(source=_nav_right_src, fit_mode="contain",
+                                  **_ph(GX + 1156, GY + 59, 34, 34)))
 
         # Per-column: WED-style highlight, tap zone, abbrev label, date label, dots
         self._highlights.clear()
@@ -989,23 +988,25 @@ class CalendarScreen(BaseScreen):
             size_hint=(85 / DW, _det_h / DH),
             pos_hint={"x": 14.02 / DW, "y": (DH - _det_h) / 2 / DH}))
 
-        arr_src = _asset("icon_arrow.png")
-        if not arr_src:
-            # Priority: brief right-arrow → home card arrow → home generic arrow
-            for _p in [
-                ASSETS_DIR / "brief" / "figma" / "icon_arrow_right.png",
-                ASSETS_DIR / "home"  / "figma" / "icon_arrow_card.png",
-                ASSETS_DIR / "home"  / "figma" / "icon_arrow.png",
-            ]:
-                if _p.is_file():
-                    arr_src = str(_p)
-                    break
+        # Arrow icon — priority: exact Figma node (calendar) → brief → home variants
+        arr_src = ""
+        for _p in [
+            _CAL / "icon_arrow_details.png",          # weui:arrow-filled from Figma meeting card
+            _CAL / "icon_nav_left_arrow.png",          # same weui arrow from grid
+            _CAL / "icon_weui_arrow.png",              # weui component
+            ASSETS_DIR / "brief" / "figma" / "icon_arrow_right.png",
+            ASSETS_DIR / "home"  / "figma" / "icon_arrow_card.png",
+            ASSETS_DIR / "home"  / "figma" / "icon_arrow.png",
+        ]:
+            if _p.is_file():
+                arr_src = str(_p)
+                break
         if arr_src:
-            AW, AH = 26.0, 26.0
+            AW, AH = 18.0, 30.0
             db.add_widget(Image(
                 source=arr_src, fit_mode="contain",
                 size_hint=(AW / DW, AH / DH),
-                pos_hint={"x": 108.0 / DW, "y": (DH / 2 - AH / 2) / DH}))
+                pos_hint={"x": 110.0 / DW, "y": (DH / 2 - AH / 2) / DH}))
         else:
             db.add_widget(_lbl(
                 ">", _FB, _ff(28), _WHITE,
