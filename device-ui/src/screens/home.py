@@ -209,70 +209,106 @@ class _ScalableImage(Widget):
         self._sync_scale()
 
 
+
+
 # ---------------------------------------------------------------------------
-# Live waveform widget (5 animated bars that react to microphone amplitude)
+# Figma waveform widget — 7 animated bars matching SVG node 927:543 exactly
 # ---------------------------------------------------------------------------
 
-class _LiveWaveform(Widget):
-    """Animated soundwave bars matching the Figma 'bi:soundwave' visual language.
+class _FigmaWaveform(Widget):
+    """Animated waveform that reproduces the exact 7-bar bi:soundwave SVG from Figma.
 
-    Bar heights oscillate gently when idle and respond to ``amplitude`` (0-1)
-    when the user is speaking.  Call ``start()``/``stop()`` to control the
-    30-fps tick so the widget only consumes CPU while the listening pill is
-    visible.
+    Bar x-centres, widths, and base heights are parsed directly from SVG node 927:543
+    (viewBox 0 0 46 46). Color is #006BF9 exactly as in Figma. Each bar oscillates
+    independently; ``update_bars(t, amplitude)`` is called at ~30 fps.
     """
-    amplitude = NumericProperty(0.0)
 
-    _BASE_H = (0.30, 0.60, 1.00, 0.60, 0.30)
+    # (x_centre, base_height) in the 46×46 SVG viewBox — directly from Figma SVG paths
+    _BAR_DATA = [
+        (7.185,  8.625),   # outermost left
+        (12.935, 14.375),
+        (18.685, 22.999),
+        (24.435, 34.499),  # centre / tallest
+        (30.185, 22.999),
+        (35.935, 14.375),
+        (41.685, 8.625),   # outermost right
+    ]
+    _BAR_W  = 2.875    # bar width in viewBox units (= corner radius × 2 → fully-rounded ends)
+    _VB     = 46.0     # viewBox side length
+    _CY_VB  = 23.0     # y-centre of every bar in the viewBox
+    # Symmetric phase offsets so the wave appears to spread outward from the centre
+    _PHASES = [3.0, 2.2, 1.4, 0.0, 1.4, 2.2, 3.0]
 
     def __init__(self, **kw):
         super().__init__(**kw)
-        self._bar_colors: list = []
-        self._bar_rects:  list = []
-        self._tick_ev = None
+        self._bar_rects: list = []
+        self._scale:     float = 1.0
+        self._bar_w_px:  float = 1.0
+        self._bar_cxy:   list  = []
+        self._setup_canvas()
+        self.bind(pos=self._on_resize, size=self._on_resize)
+        Clock.schedule_once(self._on_resize, 0)
+
+    def _setup_canvas(self):
         with self.canvas:
-            for _ in self._BASE_H:
-                self._bar_colors.append(Color(1, 1, 1, 0.85))
-                self._bar_rects.append(Rectangle())
-        self.bind(pos=self._redraw, size=self._redraw)
-        Clock.schedule_once(self._redraw, 0)
+            self._color_inst = Color(0.0, 0.420, 0.976, 1.0)  # #006BF9
+            self._bar_rects = [
+                RoundedRectangle(pos=(0, 0), size=(1, 1), radius=[0.5])
+                for _ in self._BAR_DATA
+            ]
 
-    def start(self):
-        if self._tick_ev is None:
-            self._tick_ev = Clock.schedule_interval(self._tick, 1 / 30)
-
-    def stop(self):
-        if self._tick_ev:
-            self._tick_ev.cancel()
-            self._tick_ev = None
-        self.amplitude = 0.0
-        Clock.schedule_once(self._redraw, 0)
-
-    def _tick(self, _dt):
-        self._redraw()
-
-    def _redraw(self, *_):
+    def _on_resize(self, *_):
         w, h = self.size
-        x0, y0 = self.pos
+        px, py = self.pos
         if w <= 0 or h <= 0:
             return
-        amp  = min(1.0, max(0.0, float(self.amplitude)))
-        t    = time.monotonic()
-        n    = len(self._BASE_H)
-        bw   = max(2.0, w * 0.13)
-        gap  = max(1.0, (w - n * bw) / (n + 1))
-        for i, (rect, color) in enumerate(
-                zip(self._bar_rects, self._bar_colors)):
-            base     = self._BASE_H[i]
-            idle_osc = 0.08 * math.sin(t * 1.8 + i * 1.1)
-            voice    = amp * (0.45 + 0.45 * math.sin(t * 9.0 + i * 0.9))
-            frac     = max(0.10, min(1.0, base + idle_osc + voice))
-            bh       = h * frac
-            bx       = x0 + gap + i * (bw + gap)
-            by       = y0 + (h - bh) / 2
-            rect.pos  = (bx, by)
-            rect.size = (bw, bh)
-            color.rgba = (1, 1, 1, min(1.0, 0.45 + 0.45 * base + amp * 0.45))
+        s  = min(w / self._VB, h / self._VB)
+        ox = px + (w - self._VB * s) / 2
+        oy = py + (h - self._VB * s) / 2
+        self._scale    = s
+        self._bar_w_px = self._BAR_W * s
+        self._bar_cxy  = [
+            (ox + cx * s, oy + self._CY_VB * s)
+            for cx, _ in self._BAR_DATA
+        ]
+        # Render bars at their Figma baseline heights
+        r = self._bar_w_px / 2
+        for i, rect in enumerate(self._bar_rects):
+            cx_px, cy_px = self._bar_cxy[i]
+            bh_px = self._BAR_DATA[i][1] * s
+            rect.pos    = (cx_px - self._bar_w_px / 2, cy_px - bh_px / 2)
+            rect.size   = (self._bar_w_px, bh_px)
+            rect.radius = [r]
+
+    def update_bars(self, t: float, amplitude: float) -> None:
+        """Animate bar heights at ~30 fps.
+
+        Each bar breathes with a symmetric phase offset.  ``amplitude`` (0–1) scales
+        both the peak height *and* the oscillation speed so louder voice → taller +
+        faster movement, matching the original design intent.
+        """
+        if not self._bar_rects or not self._bar_cxy:
+            return
+        s   = self._scale
+        bwp = self._bar_w_px
+        r   = bwp / 2
+        amp = max(0.0, min(1.0, amplitude))
+
+        for i, rect in enumerate(self._bar_rects):
+            cx_px, cy_px = self._bar_cxy[i]
+            base_h_px    = self._BAR_DATA[i][1] * s
+            phase        = self._PHASES[i]
+
+            # Gentle idle oscillation (always visible even at zero amplitude)
+            idle = 1.0 + 0.10 * math.sin(t * 3.0 + phase)
+            # Voice-reactive: louder → taller, faster
+            vspeed = 5.0 + amp * 12.0
+            voice  = amp * 1.2 * abs(math.sin(t * vspeed + phase))
+
+            h_px = base_h_px * idle * (1.0 + voice)
+            rect.pos    = (cx_px - bwp / 2, cy_px - h_px / 2)
+            rect.size   = (bwp, h_px)
+            rect.radius = [r]
 
 
 # ---------------------------------------------------------------------------
@@ -478,9 +514,11 @@ class HomeScreen(BaseScreen):
 
         # Voice interaction widgets and state
         self._listening_pill:    object | None = None  # the pill _Card
-        self._waveform:          _LiveWaveform | None = None
+        self._soundwave_wf:      _FigmaWaveform | None = None
         self._voice_orb:         _ScalableImage | None = None
         self._listening_active:  bool = False
+        self._current_amplitude: float = 0.0
+        self._soundwave_tick_ev: object | None = None
 
         self._build_ui()
 
@@ -547,46 +585,46 @@ class HomeScreen(BaseScreen):
             root.add_widget(sg_btn)
 
     def _build_listening_pill(self, root: FloatLayout) -> None:
-        """Voice-state pill  (805.16, 21.19)  302.29 × 76.28  r=76.28.
+        """Voice-state pill  (805.16, 21.19)  302.29 × 76.28.
 
-        Hidden by default (opacity=0); shown via ``show_listening_state()``
-        when the wake word fires.  Display-only — not tappable.
+        Uses the exact Figma PNG (listening_pill_figma.png) as the pill background.
+        An animated _FigmaWaveform is overlaid at the soundwave position.
+        Hidden by default (opacity=0); shown via show_listening_state().
+        Display-only — not tappable.
         """
         PW, PH = 302.29, 76.28
-        pill = _Card(top=_PILL_TOP, bot=_PILL_BOT,
-                     border=(0.129, 0.157, 0.294, 1.0),
-                     radius=_ff(38),
-                     size_hint=(_sw(PW), _sh(PH)),
-                     pos_hint={"x": _x(805.16), "y": _y(21.19, PH)})
+
+        # Outer container — no canvas bg; the PNG provides the visual
+        pill = FloatLayout(
+            size_hint=(_sw(PW), _sh(PH)),
+            pos_hint={"x": _x(805.16), "y": _y(21.19, PH)},
+        )
         pill.opacity = 0.0  # hidden in idle state
 
-        # Blue dot — Figma Ellipse 8 at (36.73, 28.25) in pill  19.78 × 19.78
-        # Gradient fill: rgba(70,125,254) → rgba(0,88,244)
-        self.voice_dot = Label(
-            text="●", font_size=_ff(18), color=_BLUE,
-            size_hint=(19.78 / PW, 19.78 / PH),
-            pos_hint={"x": 36.73 / PW, "y": (PH - 28.25 - 19.78) / PH},
-        )
-        pill.add_widget(self.voice_dot)
+        # Figma pill PNG as the background (covers the full pill area)
+        pill_src = _fp("listening_pill_figma.png") or _fp("listening_pill.png")
+        if pill_src:
+            pill.add_widget(Image(
+                source=pill_src,
+                size_hint=(1, 1),
+                pos_hint={"x": 0, "y": 0},
+                fit_mode="fill",
+                allow_stretch=True,
+                keep_ratio=False,
+            ))
 
-        # "Listening" at (80.52, 21.19)  118 × 34  SemiBold 28.25px
-        self.voice_state_label = _lbl(
-            "Listening", _FONT_SB, _ff(28.25), _WHITE,
-            size_hint=(160 / PW, 34 / PH),
-            pos_hint={"x": 80.52 / PW, "y": (PH - 21.19 - 34) / PH},
-        )
-        pill.add_widget(self.voice_state_label)
-
-        # Soundwave — live animated waveform replacing static icon_soundwave.png
-        # Position matches Figma: (224.6, 15.54) in pill  45.2 × 45.2
-        waveform = _LiveWaveform(
+        # Animated soundwave bars overlaid at the soundwave position (224.6, 15.54) 45.2×45.2
+        sw_wf = _FigmaWaveform(
             size_hint=(45.2 / PW, 45.2 / PH),
             pos_hint={"x": 224.6 / PW, "y": (PH - 15.54 - 45.2) / PH},
         )
-        pill.add_widget(waveform)
-        self._waveform = waveform
+        pill.add_widget(sw_wf)
+        self._soundwave_wf = sw_wf
 
-        # Pill is display-only — no touch handler
+        # Keep label refs for any callers that update content
+        self.voice_dot = None
+        self.voice_state_label = None
+
         self._listening_pill = pill
         root.add_widget(pill)
 
@@ -1361,14 +1399,18 @@ class HomeScreen(BaseScreen):
     def on_enter(self):
         # Ensure listening state is reset to idle each time we arrive at home
         self._listening_active = False
+        self._current_amplitude = 0.0
+        if self._soundwave_tick_ev is not None:
+            self._soundwave_tick_ev.cancel()
+            self._soundwave_tick_ev = None
         if self._listening_pill is not None:
             Animation.cancel_all(self._listening_pill, 'opacity')
             self._listening_pill.opacity = 0.0
         if self._voice_orb is not None:
             Animation.cancel_all(self._voice_orb, 'orb_scale')
             self._voice_orb.orb_scale = 1.0
-        if self._waveform is not None:
-            self._waveform.stop()
+        if self._soundwave_wf is not None:
+            self._soundwave_wf.update_bars(time.monotonic(), 0.0)
 
         self._update_clock_labels()
         snap = get_weather_client().snapshot
@@ -1397,14 +1439,18 @@ class HomeScreen(BaseScreen):
     def on_leave(self):
         # Clean up listening state immediately when leaving home
         self._listening_active = False
+        self._current_amplitude = 0.0
+        if self._soundwave_tick_ev is not None:
+            self._soundwave_tick_ev.cancel()
+            self._soundwave_tick_ev = None
         if self._listening_pill is not None:
             Animation.cancel_all(self._listening_pill, 'opacity')
             self._listening_pill.opacity = 0.0
         if self._voice_orb is not None:
             Animation.cancel_all(self._voice_orb, 'orb_scale')
             self._voice_orb.orb_scale = 1.0
-        if self._waveform is not None:
-            self._waveform.stop()
+        if self._soundwave_wf is not None:
+            self._soundwave_wf.update_bars(time.monotonic(), 0.0)
 
         if self._clock_event:
             self._clock_event.cancel()
@@ -1595,14 +1641,14 @@ class HomeScreen(BaseScreen):
 
         1. Scales the bottom mic orb up to 1.4x then pulses 1.3↔1.4x.
         2. Fades the Listening pill in.
-        3. Starts the live waveform ticker.
+        3. Starts the soundwave amplitude tick.
         """
         self._listening_active = True
+        self._current_amplitude = 0.0
 
         # -- Voice orb animation ------------------------------------------
         if self._voice_orb is not None:
             Animation.cancel_all(self._voice_orb, 'orb_scale')
-            # Snap to 1.4x quickly, then pulse softly
             def _start_pulse(*_):
                 pulse = (
                     Animation(orb_scale=1.3, duration=0.6, t='in_out_sine') +
@@ -1621,13 +1667,23 @@ class HomeScreen(BaseScreen):
                 self._listening_pill
             )
 
-        # -- Start waveform tick ------------------------------------------
-        if self._waveform is not None:
-            self._waveform.start()
+        # -- Start soundwave animation tick --------------------------------
+        if self._soundwave_tick_ev is None and self._soundwave_wf is not None:
+            self._soundwave_tick_ev = Clock.schedule_interval(
+                self._soundwave_tick, 1 / 30
+            )
 
     def hide_listening_state(self) -> None:
-        """End of voice interaction: scale orb back, fade out pill, stop waveform."""
+        """End of voice interaction: scale orb back, fade out pill, stop soundwave."""
         self._listening_active = False
+        self._current_amplitude = 0.0
+
+        # -- Stop soundwave tick and reset bars to baseline ----------------
+        if self._soundwave_tick_ev is not None:
+            self._soundwave_tick_ev.cancel()
+            self._soundwave_tick_ev = None
+        if self._soundwave_wf is not None:
+            self._soundwave_wf.update_bars(time.monotonic(), 0.0)
 
         # -- Voice orb: scale back to 1.0x --------------------------------
         if self._voice_orb is not None:
@@ -1643,14 +1699,16 @@ class HomeScreen(BaseScreen):
                 self._listening_pill
             )
 
-        # -- Stop waveform tick -------------------------------------------
-        if self._waveform is not None:
-            self._waveform.stop()
+    def _soundwave_tick(self, _dt) -> None:
+        """30-fps tick: drive the _FigmaWaveform bar animation."""
+        if self._soundwave_wf is None:
+            return
+        self._soundwave_wf.update_bars(time.monotonic(), self._current_amplitude)
 
     def update_amplitude(self, amp: float) -> None:
-        """Receive microphone amplitude (0-1) and forward to the live waveform."""
-        if self._listening_active and self._waveform is not None:
-            self._waveform.amplitude = amp
+        """Receive microphone amplitude (0-1); stored for the soundwave tick."""
+        if self._listening_active:
+            self._current_amplitude = amp
 
     # -----------------------------------------------------------------------
     # Clock labels
