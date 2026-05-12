@@ -223,6 +223,15 @@ class SettingsScreen(BaseScreen):
         )
         self.container.add_widget(self.mic_test_item)
 
+        self.voice_assistant_enabled_item = SettingsItem(
+            title='Wake word listening',
+            subtitle='Keep mic on for your wake phrase',
+            mode='toggle',
+            active=True,
+            on_toggle=self._on_voice_assistant_enabled_toggled,
+        )
+        self.container.add_widget(self.voice_assistant_enabled_item)
+
         self.voice_realtime_item = SettingsItem(
             title='AI voice assistant',
             subtitle='OpenAI Realtime after wake word',
@@ -324,6 +333,8 @@ class SettingsScreen(BaseScreen):
         self.privacy_item.toggle.active = privacy
         auto_record = getattr(self.app, 'auto_record', False)
         self.auto_record_item.toggle.active = auto_record
+        vae = getattr(self.app, "voice_assistant_enabled", True)
+        self.voice_assistant_enabled_item.toggle.active = bool(vae)
         vra = getattr(self.app, "voice_realtime_assistant", True)
         self.voice_realtime_item.toggle.active = bool(vra)
         wk = getattr(self.app, "voice_wake_phrase_display", "hey buddy")
@@ -428,6 +439,12 @@ class SettingsScreen(BaseScreen):
                     self.calendar_item.subtitle_label.text = cal_status
 
                     try:
+                        vae = settings.get("voice_assistant_enabled", True)
+                        if isinstance(vae, str):
+                            vae = str(vae).strip().lower() in ("1", "true", "yes", "on")
+                        self.voice_assistant_enabled_item.toggle.active = bool(vae)
+                        self.app.voice_assistant_enabled = bool(vae)
+
                         vra = settings.get("voice_realtime_assistant", True)
                         if isinstance(vra, str):
                             vra = str(vra).strip().lower() in ("1", "true", "yes", "on")
@@ -439,7 +456,12 @@ class SettingsScreen(BaseScreen):
                             wk[:1].upper() + wk[1:] if wk else "Hey buddy"
                         )
                         if hasattr(self.app, "voice_assistant") and self.app.voice_assistant:
-                            self.app.voice_assistant.apply_server_settings(wake_phrase=wk)
+                            self.app.voice_assistant.apply_server_settings(
+                                wake_phrase=wk,
+                                enabled=bool(vae),
+                            )
+                        if hasattr(self.app, "_sync_voice_assistant_state"):
+                            Clock.schedule_once(lambda _dt: self.app._sync_voice_assistant_state(), 0)
                     except Exception:
                         pass
 
@@ -491,6 +513,21 @@ class SettingsScreen(BaseScreen):
                 await self.backend.update_settings({'auto_record': active})
             except Exception:
                 pass
+        run_async(_save())
+
+    def _on_voice_assistant_enabled_toggled(self, active):
+        self.app.voice_assistant_enabled = bool(active)
+        if hasattr(self.app, "voice_assistant") and self.app.voice_assistant:
+            self.app.voice_assistant.apply_server_settings(enabled=bool(active))
+        if hasattr(self.app, "_sync_voice_assistant_state"):
+            self.app._sync_voice_assistant_state()
+
+        async def _save():
+            try:
+                await self.backend.update_settings({"voice_assistant_enabled": active})
+            except Exception:
+                pass
+
         run_async(_save())
 
     def _on_voice_realtime_toggled(self, active):

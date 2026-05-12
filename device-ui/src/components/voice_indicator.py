@@ -164,6 +164,15 @@ class VoiceAssistantIndicator(BoxLayout):
             anim = Animation(glow_alpha=0.12, pulse_scale=1.02, duration=1.4) + Animation(
                 glow_alpha=0.04, pulse_scale=0.98, duration=1.4
             )
+        elif state == "wake_standby":
+            # Mic on: waiting for the wake phrase (persistent while enabled).
+            self._bg_color.rgba = (0.06, 0.12, 0.18, 0.94)
+            self.title_label.text = "Listening"
+            self.subtitle_label.text = message or "Say your wake phrase"
+            self._set_palette((0.28, 0.64, 0.98, 1))
+            anim = Animation(glow_alpha=0.16, pulse_scale=1.05, duration=1.2) + Animation(
+                glow_alpha=0.06, pulse_scale=0.99, duration=1.2
+            )
         elif state == "wake":
             self._bg_color.rgba = (0.08, 0.13, 0.20, 0.96)
             self.title_label.text = "Listening"
@@ -179,6 +188,15 @@ class VoiceAssistantIndicator(BoxLayout):
             self._set_palette(COLORS["green"])
             anim = Animation(glow_alpha=0.28, pulse_scale=1.14, duration=0.40) + Animation(
                 glow_alpha=0.12, pulse_scale=1.00, duration=0.36
+            )
+        elif state == "assistant_live":
+            # Full assistant session (e.g. Realtime) — mic is hot for conversation.
+            self._bg_color.rgba = (0.07, 0.15, 0.11, 0.96)
+            self.title_label.text = "Assistant"
+            self.subtitle_label.text = message or "Listening — speak now"
+            self._set_palette(COLORS["green"])
+            anim = Animation(glow_alpha=0.30, pulse_scale=1.12, duration=0.55) + Animation(
+                glow_alpha=0.12, pulse_scale=1.00, duration=0.55
             )
         elif state == "speaking":
             self._bg_color.rgba = (0.07, 0.15, 0.11, 0.96)
@@ -201,6 +219,10 @@ class VoiceAssistantIndicator(BoxLayout):
         anim.start(self)
         self.orb.glow_alpha = self.glow_alpha
         self.orb.pulse_scale = self.pulse_scale
+
+    def on_touch_down(self, touch):
+        # Decorative overlay — let touches reach the screen underneath.
+        return False
 
     def on_glow_alpha(self, *_args):
         self.orb.glow_alpha = self.glow_alpha

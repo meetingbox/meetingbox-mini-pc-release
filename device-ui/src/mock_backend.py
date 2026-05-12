@@ -33,6 +33,7 @@ class MockBackendClient:
             'privacy_mode': False,
             'auto_record': False,
             'voice_wake_phrase': 'hey buddy',
+            'voice_assistant_enabled': True,
             'voice_realtime_assistant': True,
         }
         logger.info("Using MOCK backend client")
