@@ -554,17 +554,27 @@ class CalendarScreen(BaseScreen):
             dv.bind(pos=_mk(_r), size=_mk(_r))
             root.add_widget(dv)
 
-        # Left navigation arrow — large tap zone (full grid height) + chevron icon
+        # Left navigation arrow — large tap zone (full grid height) + Figma icon
         _ltz = _TapZone(**_ph(GX + 4, GY, 60, 151.14))
         _ltz.bind(on_release=lambda *_: self._nav_week(-1))
         root.add_widget(_ltz)
-        root.add_widget(_NavArrow("left",  **_ph(GX + 16, GY + 51, 42, 50)))
+        _nav_l = _asset("icon_nav_left.png")
+        if _nav_l:
+            root.add_widget(Image(source=_nav_l, fit_mode="contain",
+                                  **_ph(GX + 16, GY + 51, 42, 50)))
+        else:
+            root.add_widget(_NavArrow("left", **_ph(GX + 16, GY + 51, 42, 50)))
 
-        # Right navigation arrow — large tap zone + chevron icon
+        # Right navigation arrow — large tap zone + Figma icon
         _rtz = _TapZone(**_ph(GX + 1146, GY, 65, 151.14))
         _rtz.bind(on_release=lambda *_: self._nav_week(1))
         root.add_widget(_rtz)
-        root.add_widget(_NavArrow("right", **_ph(GX + 1152, GY + 51, 42, 50)))
+        _nav_r = _asset("icon_nav_right.png")
+        if _nav_r:
+            root.add_widget(Image(source=_nav_r, fit_mode="contain",
+                                  **_ph(GX + 1152, GY + 51, 42, 50)))
+        else:
+            root.add_widget(_NavArrow("right", **_ph(GX + 1152, GY + 51, 42, 50)))
 
         # Per-column: WED-style highlight, tap zone, abbrev label, date label, dots
         self._highlights.clear()
