@@ -218,6 +218,7 @@ from config import (
     DEFAULT_PRIVACY_MODE,
     LOCAL_REDIS_HOST,
     LOCAL_REDIS_PORT,
+    LOCAL_REDIS_ENABLED,
     display_now,
     setup_complete_marker_paths_for_read,
     get_device_auth_token,
@@ -655,9 +656,10 @@ class MeetingBoxApp(App):
         # Start WebSocket listener
         self.start_websocket_listener()
 
-        # Start local Redis listener for real-time audio levels from the audio
-        # container (both on the same Docker network).
-        self._start_local_redis_listener()
+        # Optional: Redis pub/sub for audio levels when appliance runs with local Redis.
+        # Disable with LOCAL_REDIS_ENABLED=0 when using a remote API only (no local Redis).
+        if LOCAL_REDIS_ENABLED:
+            self._start_local_redis_listener()
         # Voice assistant logic (wake phrase, intents) stays active; the floating
         # "Tony" overlay is intentionally not mounted. ``self.voice_indicator``
         # remains None (set in __init__) so existing _refresh/_set helpers no-op
