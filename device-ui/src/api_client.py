@@ -495,6 +495,16 @@ class BackendClient:
             logger.error(f"Failed to update settings: {e}")
             raise
 
+    async def create_realtime_voice_session(self) -> Dict:
+        """POST /api/voice/realtime/session — OpenAI Realtime client secret + model."""
+        try:
+            resp = await self.client.post(f"{self.base_url}/api/voice/realtime/session")
+            resp.raise_for_status()
+            return resp.json()
+        except Exception as e:
+            logger.error("Realtime voice session failed: %s", e)
+            raise
+
     async def post_setup_complete(
             self,
             wifi_ssid: str = "",

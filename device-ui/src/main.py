@@ -566,6 +566,11 @@ class MeetingBoxApp(App):
         self._voice_confirmation_timeout = self.voice_assistant.confirmation_timeout_seconds
         self._last_amplitude_sched = 0.0
 
+        # OpenAI Realtime assistant (optional; uses server /api/voice + wake phrase).
+        self._realtime_voice_session = None
+        self.voice_realtime_assistant = True
+        self.voice_wake_phrase_display = "Hey buddy"
+
     # ==================================================================
     # BUILD
     # ==================================================================
@@ -835,6 +840,12 @@ class MeetingBoxApp(App):
 
     def on_stop(self):
         logger.info("MeetingBox UI stopping")
+        if self._realtime_voice_session is not None:
+            try:
+                self._realtime_voice_session.stop()
+            except Exception:
+                pass
+            self._realtime_voice_session = None
         self.voice_assistant.stop()
         self._local_redis_stop.set()
         if getattr(self, '_setup_poll', None):
@@ -871,6 +882,15 @@ class MeetingBoxApp(App):
                 self.privacy_mode = privacy
                 auto_record = settings.get('auto_record', False)
                 self.auto_record = auto_record
+
+                vra = settings.get("voice_realtime_assistant", True)
+                if isinstance(vra, str):
+                    vra = str(vra).strip().lower() in ("1", "true", "yes", "on")
+                self.voice_realtime_assistant = bool(vra)
+
+                vwp = (settings.get("voice_wake_phrase") or "hey buddy").strip()
+                self.voice_wake_phrase_display = vwp[:1].upper() + vwp[1:] if vwp else "Hey buddy"
+                self.voice_assistant.apply_server_settings(wake_phrase=vwp)
             except Exception as e:
                 logger.warning("Could not load settings: %s", e)
             try:
@@ -1713,6 +1733,8 @@ class MeetingBoxApp(App):
     def _voice_assistant_should_listen(self) -> bool:
         if self.screen_manager is None:
             return False
+        if self._realtime_voice_session is not None:
+            return False
         if self._voice_start_in_flight:
             return False
         if self.user_voice_paused:
@@ -1746,7 +1768,8 @@ class MeetingBoxApp(App):
             self.voice_indicator.set_state(state, message)
             return
         if self.voice_assistant.available and self._voice_assistant_should_listen():
-            self.voice_indicator.set_state("idle", 'Say "Hey Tony"')
+            lbl = getattr(self, "voice_wake_phrase_display", "Hey buddy") or "Hey buddy"
+            self.voice_indicator.set_state("idle", f'Say "{lbl}"')
             return
         self.voice_indicator.set_state("hidden")
 
@@ -1774,6 +1797,7 @@ class MeetingBoxApp(App):
             )
 
     def _handle_voice_wake_phrase(self, _text: str) -> None:
+<<<<<<< Updated upstream
         timeout = max(2.0, self.voice_assistant.command_timeout_seconds)
 
         def _wake_ui(_dt):
@@ -1821,6 +1845,95 @@ class MeetingBoxApp(App):
                 home.update_amplitude(amplitude)
             except Exception:
                 pass
+=======
+        if (
+            getattr(self, "voice_realtime_assistant", False)
+            and get_device_auth_token().strip()
+            and not USE_MOCK_BACKEND
+        ):
+            Clock.schedule_once(lambda _dt: self._start_realtime_voice_session(), 0)
+            return
+        heard = getattr(self, "voice_wake_phrase_display", "wake phrase") or "wake phrase"
+        Clock.schedule_once(
+            lambda _dt: self._set_voice_indicator_override(
+                "wake",
+                f'Heard "{heard}"',
+                max(2.0, self.voice_assistant.command_timeout_seconds),
+            ),
+            0,
+        )
+
+    def _end_realtime_voice_session(self) -> None:
+        self._realtime_voice_session = None
+        self._clear_voice_indicator_override()
+        self._sync_voice_assistant_state()
+
+    def _start_realtime_voice_session(self) -> None:
+        if self._realtime_voice_session is not None:
+            return
+        if not get_device_auth_token().strip():
+            return
+
+        self._set_voice_indicator_override(
+            "wake",
+            "Connecting voice assistant…",
+            duration=8.0,
+        )
+
+        async def _go():
+            try:
+                data = await self.backend.create_realtime_voice_session()
+            except Exception as e:
+                logger.warning("Realtime voice session request failed: %s", e)
+                Clock.schedule_once(
+                    lambda _dt: self._set_voice_indicator_override(
+                        "error",
+                        "Voice assistant unavailable (check server).",
+                        duration=5.0,
+                    ),
+                    0,
+                )
+                return
+            Clock.schedule_once(lambda _dt, d=data: self._run_realtime_voice_session(d), 0)
+
+        run_async(_go())
+
+    def _run_realtime_voice_session(self, data: dict) -> None:
+        from realtime_voice_session import RealtimeVoiceSession
+        from config import BACKEND_URL
+
+        secret = (data.get("client_secret") or "").strip()
+        model = (data.get("model") or "").strip()
+        if not secret or not model:
+            self._set_voice_indicator_override("error", "Invalid voice session.", duration=4.0)
+            self._sync_voice_assistant_state()
+            return
+        tok = get_device_auth_token().strip()
+
+        def _end() -> None:
+            Clock.schedule_once(lambda _dt: self._end_realtime_voice_session(), 0)
+
+        def _err(msg: str) -> None:
+            logger.error("Realtime voice error: %s", msg)
+            Clock.schedule_once(
+                lambda _dt: self._set_voice_indicator_override("error", "Voice session failed.", duration=4.0),
+                0,
+            )
+
+        self.voice_assistant.set_paused(True)
+        self._realtime_voice_session = RealtimeVoiceSession(
+            client_secret=secret,
+            model=model,
+            backend_base_url=BACKEND_URL,
+            device_token=tok,
+            on_session_end=_end,
+            on_error=_err,
+        )
+        self._clear_voice_indicator_override()
+        self._set_voice_indicator_override("speaking", "Listening…", duration=None)
+        self._sync_voice_assistant_state()
+        self._realtime_voice_session.start()
+>>>>>>> Stashed changes
 
     def _speak_text_blocking(self, text: str) -> bool:
         phrase = (text or "").strip()
