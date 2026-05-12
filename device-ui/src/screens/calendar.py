@@ -13,7 +13,6 @@ from pathlib import Path
 
 from kivy.clock import Clock
 from kivy.graphics import Color, Ellipse, Line, Rectangle, RoundedRectangle
-from kivy.graphics.context_instructions import PushMatrix, PopMatrix, Scale, Translate
 from kivy.uix.behaviors import ButtonBehavior
 from kivy.uix.boxlayout import BoxLayout
 from kivy.uix.floatlayout import FloatLayout
@@ -124,26 +123,24 @@ class _ImgBtn(ButtonBehavior, Image):
 
 
 class _FlippedImg(Widget):
-    """Draws an image horizontally mirrored (for left-nav arrow from right-arrow asset)."""
+    """Draws an image horizontally mirrored by flipping its UV texture coordinates.
+    No matrix transforms — just reverses the texture sampling direction (u 0→1 becomes 1→0).
+    """
 
     def __init__(self, source: str, **kw):
         super().__init__(**kw)
-        self._src = source
         with self.canvas:
             Color(1, 1, 1, 1)
-            PushMatrix()
-            self._sc = Scale(-1, 1, 1)
-            self._tr = Translate(0, 0)
-            self._rect = Rectangle(source=source, pos=self.pos, size=self.size)
-            PopMatrix()
+            # tex_coords order: BL, BR, TR, TL  (u, v pairs)
+            # Default (normal):  (0,0, 1,0, 1,1, 0,1)
+            # Flipped horizontal:(1,0, 0,0, 0,1, 1,1)  ← swap u: left=1, right=0
+            self._rect = Rectangle(
+                source=source, pos=self.pos, size=self.size,
+                tex_coords=(1, 0, 0, 0, 0, 1, 1, 1))
         self.bind(pos=self._upd, size=self._upd)
         Clock.schedule_once(self._upd, 0)
 
     def _upd(self, *_):
-        # Scale(-1,1,1) then Translate(tx) → final_x = -x_orig + tx
-        # We want the image to stay at the same screen position but mirrored:
-        # tx = 2 * self.x + self.width
-        self._tr.x = 2 * self.x + self.width
         self._rect.pos = self.pos
         self._rect.size = self.size
 
