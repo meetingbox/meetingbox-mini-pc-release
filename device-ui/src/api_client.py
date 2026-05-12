@@ -604,6 +604,12 @@ class BackendClient:
             logger.debug("get_commitments failed: %s", e)
             return {"commitments": [], "count": 0}
 
+    async def create_realtime_voice_session(self) -> Dict:
+        """POST /api/voice/realtime/session — OpenAI Realtime client secret (Bearer token)."""
+        resp = await self.client.post(f"{self.base_url}/api/voice/realtime/session")
+        resp.raise_for_status()
+        return resp.json()
+
     # ==================================================================
     # EMAIL API
     # ==================================================================

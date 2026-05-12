@@ -236,13 +236,13 @@ class VoiceCommandInterpreter:
         return self._heard_wake_phrase(_normalize_text(text))
 
     def should_trigger_wake_callback(self, norm: str) -> bool:
-        """True only for wake-only lines — not when a command is in the same utterance (relaxed)."""
+        """True only for wake-only lines — not when a command is in the same utterance."""
         if not self._heard_wake_phrase(norm):
             return False
         wake_wc = len(self.wake_phrase.split())
         if len(norm.split()) <= wake_wc:
             return True
-        return self._detect_intent(norm, relaxed=True) is None
+        return self._detect_intent(norm) is None
 
     def heard_start_command(self, text: str) -> bool:
         norm = _normalize_text(text)
@@ -419,6 +419,21 @@ class VoiceAssistant:
         Used when the user taps the mic icon to start voice interaction.
         """
         self._interpreter.activate()
+
+    def apply_server_settings(
+        self,
+        *,
+        wake_phrase: str | None = None,
+        enabled: bool | None = None,
+    ) -> None:
+        """Apply device settings synced from the backend (wake phrase, master enable)."""
+        if enabled is not None:
+            self.enabled = bool(enabled)
+        if wake_phrase is not None:
+            raw = (wake_phrase or "").strip()
+            if raw:
+                self.wake_phrase = raw
+                self._interpreter.wake_phrase = _normalize_text(raw)
 
     def begin_confirmation(self) -> None:
         self._interpreter.begin_confirmation()

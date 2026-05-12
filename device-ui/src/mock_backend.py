@@ -43,6 +43,10 @@ class MockBackendClient:
     async def close(self):
         pass
 
+    async def create_realtime_voice_session(self) -> Dict:
+        """No secret from mock — device UI falls back to local Vosk commands."""
+        return {"client_secret": "", "model": "", "expires_at": 0, "session": {}}
+
     # ==================================================================
     # MOCK DATA
     # ==================================================================

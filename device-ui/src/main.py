@@ -1994,7 +1994,16 @@ class MeetingBoxApp(App):
 
     def _run_realtime_voice_session(self, data: dict) -> None:
         self._realtime_session_pending = False
-        from realtime_voice_session import RealtimeVoiceSession
+        try:
+            from realtime_voice_session import RealtimeVoiceSession
+        except ImportError:
+            logger.exception("realtime_voice_session module missing")
+            self._clear_voice_indicator_override()
+            self._hide_home_listening_state()
+            self._sync_voice_assistant_state()
+            Clock.schedule_once(lambda _dt: self._begin_local_voice_command_session(), 0)
+            return
+
         from config import BACKEND_URL
 
         secret = (data.get("client_secret") or "").strip()
@@ -2034,19 +2043,28 @@ class MeetingBoxApp(App):
 
             Clock.schedule_once(_ui, 0)
 
-        self._realtime_connected_ok = False
-        self._realtime_session_start_monotonic = time.monotonic()
-        self._realtime_voice_session = RealtimeVoiceSession(
-            client_secret=secret,
-            model=model,
-            backend_base_url=BACKEND_URL,
-            device_token=tok,
-            on_session_end=_end,
-            on_error=_err,
-            on_connected=_on_rt_connected,
-        )
-        self._sync_voice_assistant_state()
-        self._realtime_voice_session.start()
+        try:
+            self._realtime_connected_ok = False
+            self._realtime_session_start_monotonic = time.monotonic()
+            self._realtime_voice_session = RealtimeVoiceSession(
+                client_secret=secret,
+                model=model,
+                backend_base_url=BACKEND_URL,
+                device_token=tok,
+                on_session_end=_end,
+                on_error=_err,
+                on_connected=_on_rt_connected,
+            )
+            self._sync_voice_assistant_state()
+            self._realtime_voice_session.start()
+        except Exception:
+            logger.exception("Realtime voice session failed to start")
+            self._realtime_voice_session = None
+            self._realtime_session_pending = False
+            self._clear_voice_indicator_override()
+            self._hide_home_listening_state()
+            self._sync_voice_assistant_state()
+            Clock.schedule_once(lambda _dt: self._begin_local_voice_command_session(), 0)
 
     def _espeak_amplitude(self) -> int:
         """Map stored volume 0–100 to espeak-ng -a (0–200)."""
