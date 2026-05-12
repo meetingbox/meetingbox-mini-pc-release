@@ -214,6 +214,11 @@ class VoiceCommandInterpreter:
     def reset(self) -> None:
         self._awaiting_command_until = 0.0
 
+    def activate(self, now: float | None = None) -> None:
+        """Open the command-listening window as if the wake phrase was just heard."""
+        now = time.monotonic() if now is None else now
+        self._awaiting_command_until = now + self.command_timeout_seconds
+
     def begin_confirmation(self, now: float | None = None) -> None:
         now = time.monotonic() if now is None else now
         self._awaiting_confirmation_until = now + self.confirmation_timeout_seconds
@@ -398,6 +403,13 @@ class VoiceAssistant:
             self._clear_audio_queue()
         else:
             logger.info("Voice assistant listening")
+
+    def simulate_wake(self) -> None:
+        """Activate command-listening mode as if the wake phrase was just heard.
+
+        Used when the user taps the mic icon to start voice interaction.
+        """
+        self._interpreter.activate()
 
     def begin_confirmation(self) -> None:
         self._interpreter.begin_confirmation()

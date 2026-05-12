@@ -1333,6 +1333,15 @@ class HomeScreen(BaseScreen):
             bar.add_widget(voice_orb)
             self._voice_orb = voice_orb
 
+        # Transparent tap target on top of voice orb — same pos/size as orb
+        orb_tap = _TappableCard(
+            draw_bg=False,
+            size_hint=(91.82 / BW, 91.82 / BH),
+            pos_hint={"x": 591.86 / BW, "y": (BH - 4.24 - 91.82) / BH},
+        )
+        orb_tap.bind(on_release=self._on_mic_orb_tapped)
+        bar.add_widget(orb_tap)
+
         # Keyboard badge  (1084.84, 16.95) abs in bar  76.28 × 67.8
         kb_src = _fp("icon_keyboard.png")
         if kb_src:
@@ -1439,7 +1448,7 @@ class HomeScreen(BaseScreen):
             self.goto("meetings", transition="slide_left")
 
     # -----------------------------------------------------------------------
-    # Voice pill toggle
+    # Voice pill toggle (kept for backward-compat callers)
     # -----------------------------------------------------------------------
 
     def _toggle_voice_listening(self):
@@ -1460,6 +1469,34 @@ class HomeScreen(BaseScreen):
         app.user_voice_paused = not getattr(app, "user_voice_paused", False)
         app._sync_voice_assistant_state()
         self._refresh_voice_pill()
+
+    # -----------------------------------------------------------------------
+    # Mic orb tap — activates listening same as wake word
+    # -----------------------------------------------------------------------
+
+    def _on_mic_orb_tapped(self, _inst) -> None:
+        """Tapping the mic orb triggers the listening state just like the wake word.
+
+        Puts the voice interpreter in command-listening mode and runs the
+        same animation/pill sequence as a real wake-phrase detection.
+        """
+        app = self.app
+        va  = getattr(app, 'voice_assistant', None)
+        if not va or not getattr(va, 'available', False):
+            self.add_widget(ModalDialog(
+                title="Voice unavailable",
+                message=(
+                    "No microphone is available, or the wake-word model is "
+                    "missing. Run a Microphone Test from Settings to debug."
+                ),
+                confirm_text="OK",
+                cancel_text="",
+            ))
+            return
+        # Open the voice interpreter's command window
+        va.simulate_wake()
+        # Reuse the exact same UI flow as real wake-word detection
+        app._handle_voice_wake_phrase("")
 
     # -----------------------------------------------------------------------
     # Weather location dialog
