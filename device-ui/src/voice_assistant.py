@@ -306,9 +306,13 @@ class VoiceAssistant:
         self,
         on_intent: Callable[[VoiceIntent], None],
         on_wake_phrase: Callable[[str], None] | None = None,
+        on_amplitude: Callable[[float], None] | None = None,
     ):
         self._on_intent = on_intent
         self._on_wake_phrase = on_wake_phrase
+        self._on_amplitude = on_amplitude
+        self._amplitude_ema = 0.0
+        self._last_amplitude_call = 0.0
         self.enabled = _env_flag("VOICE_ASSISTANT_ENABLED", True)
         self.wake_phrase = (os.getenv("VOICE_ASSISTANT_WAKE_PHRASE") or "hey tony").strip() or "hey tony"
         self.start_commands = [
@@ -509,16 +513,32 @@ class VoiceAssistant:
                 logger.debug("Voice assistant sounddevice status: %s", status)
             if self._stop_event.is_set() or self._is_paused():
                 return
+            raw = bytes(indata)
             try:
-                self._audio_queue.put_nowait(bytes(indata))
+                self._audio_queue.put_nowait(raw)
             except queue.Full:
                 try:
                     self._audio_queue.get_nowait()
                 except queue.Empty:
                     pass
                 try:
-                    self._audio_queue.put_nowait(bytes(indata))
+                    self._audio_queue.put_nowait(raw)
                 except queue.Full:
+                    pass
+            # Compute smoothed RMS amplitude and notify at ~30 fps
+            if self._on_amplitude is not None:
+                try:
+                    import array as _arr
+                    samples = _arr.array('h', raw)
+                    n = len(samples)
+                    if n:
+                        rms = (sum(x * x for x in samples) / n) ** 0.5 / 32768.0
+                        self._amplitude_ema = 0.3 * rms + 0.7 * self._amplitude_ema
+                        now_t = time.monotonic()
+                        if now_t - self._last_amplitude_call >= 0.033:
+                            self._last_amplitude_call = now_t
+                            self._on_amplitude(self._amplitude_ema)
+                except Exception:
                     pass
 
         last_err = None

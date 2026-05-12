@@ -561,8 +561,10 @@ class MeetingBoxApp(App):
         self.voice_assistant = VoiceAssistant(
             self._handle_voice_intent,
             on_wake_phrase=self._handle_voice_wake_phrase,
+            on_amplitude=self._handle_voice_amplitude,
         )
         self._voice_confirmation_timeout = self.voice_assistant.confirmation_timeout_seconds
+        self._last_amplitude_sched = 0.0
 
     # ==================================================================
     # BUILD
@@ -1772,14 +1774,53 @@ class MeetingBoxApp(App):
             )
 
     def _handle_voice_wake_phrase(self, _text: str) -> None:
+        timeout = max(2.0, self.voice_assistant.command_timeout_seconds)
+
+        def _wake_ui(_dt):
+            self._set_voice_indicator_override("wake", 'Heard "Hey Tony"', timeout)
+            # Trigger home-screen mic animation + listening pill
+            if (self.screen_manager is not None
+                    and self.screen_manager.current == 'home'):
+                try:
+                    home = self.screen_manager.get_screen('home')
+                    home.show_listening_state()
+                    Clock.schedule_once(
+                        lambda _dt2: self._hide_home_listening_state(), timeout
+                    )
+                except Exception:
+                    pass
+
+        Clock.schedule_once(_wake_ui, 0)
+
+    def _hide_home_listening_state(self, *_args) -> None:
+        """Called after wake-word timeout to restore the home screen to idle."""
+        if (self.screen_manager is not None
+                and self.screen_manager.current == 'home'):
+            try:
+                home = self.screen_manager.get_screen('home')
+                home.hide_listening_state()
+            except Exception:
+                pass
+
+    def _handle_voice_amplitude(self, amplitude: float) -> None:
+        """Received from the audio thread — forward to home screen at ~30 fps."""
+        import time as _time
+        now = _time.monotonic()
+        if now - self._last_amplitude_sched < 0.033:
+            return
+        self._last_amplitude_sched = now
         Clock.schedule_once(
-            lambda _dt: self._set_voice_indicator_override(
-                "wake",
-                'Heard "Hey Tony"',
-                max(2.0, self.voice_assistant.command_timeout_seconds),
-            ),
-            0,
+            lambda _dt, a=amplitude: self._apply_amplitude_to_home(a), 0
         )
+
+    def _apply_amplitude_to_home(self, amplitude: float) -> None:
+        if (self.screen_manager is not None
+                and self.screen_manager.current == 'home'):
+            try:
+                home = self.screen_manager.get_screen('home')
+                home.update_amplitude(amplitude)
+            except Exception:
+                pass
 
     def _speak_text_blocking(self, text: str) -> bool:
         phrase = (text or "").strip()
