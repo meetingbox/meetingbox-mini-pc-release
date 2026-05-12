@@ -1,11 +1,14 @@
-FROM python:3.11-slim
+# Pin Debian release: the floating tag python:3.11-slim tracks "latest Debian slim" and can jump
+# (e.g. bookworm → trixie). That invalidates every cached apt layer and forces a ~15+ min re-download.
+# bookworm = Debian 12 — stable package names and reproducible Docker layer cache across builds.
+FROM python:3.11-slim-bookworm
 
 # System dependencies for Kivy GUI on Linux (X11/SDL2 backend):
 # SDL2, OpenGL/GLES, X11 client libs, touch input, build tools,
 # PortAudio for sounddevice (mic test).
 # Notes:
 #   libegl1-mesa-dev was removed in Debian Bookworm — EGL is now vendor-neutral.
-#   libmtdev1 was renamed to libmtdev1t64 in Bookworm's time_t transition.
+#   On trixie+: libmtdev1t64; on bookworm use libmtdev1 (see apt line below).
 #   GStreamer dev libs and libinput-dev are not required for the SDL2 window backend.
 #
 # Apt: Hash Sum mismatch on .deb files is often mirror/CDN or HTTP pipelining; we clear lists,
@@ -38,7 +41,7 @@ RUN set -eux; \
             libxfixes-dev \
             libxi-dev \
             libxrandr-dev \
-            libmtdev1t64 \
+            libmtdev1 \
             libportaudio2 \
             build-essential \
             pkg-config \
