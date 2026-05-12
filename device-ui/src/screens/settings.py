@@ -231,9 +231,6 @@ class SettingsScreen(BaseScreen):
         )
         self.container.add_widget(self.mic_test_item)
 
-<<<<<<< HEAD
-<<<<<<< HEAD
-<<<<<<< HEAD
         self.voice_assistant_enabled_item = SettingsItem(
             title='Wake word listening',
             subtitle='Keep mic on for your wake phrase',
@@ -260,12 +257,6 @@ class SettingsScreen(BaseScreen):
         )
         self.container.add_widget(self.wake_phrase_item)
 
-=======
->>>>>>> parent of 6f683de (Merge branch 'main' of https://github.com/meetingbox/meetingbox-mini-pc-release)
-=======
->>>>>>> parent of 6f683de (Merge branch 'main' of https://github.com/meetingbox/meetingbox-mini-pc-release)
-=======
->>>>>>> parent of 6f683de (Merge branch 'main' of https://github.com/meetingbox/meetingbox-mini-pc-release)
         # ---- INTEGRATIONS ----
         self.container.add_widget(self._section_header('INTEGRATIONS'))
 
@@ -350,9 +341,6 @@ class SettingsScreen(BaseScreen):
         self.privacy_item.toggle.active = privacy
         auto_record = getattr(self.app, 'auto_record', False)
         self.auto_record_item.toggle.active = auto_record
-<<<<<<< HEAD
-<<<<<<< HEAD
-<<<<<<< HEAD
         vae = getattr(self.app, "voice_assistant_enabled", True)
         self.voice_assistant_enabled_item.toggle.active = bool(vae)
         vra = getattr(self.app, "voice_realtime_assistant", False)
@@ -364,12 +352,6 @@ class SettingsScreen(BaseScreen):
         except (TypeError, ValueError):
             sv = 85
         self.speech_volume_item.subtitle_label.text = f'{max(0, min(100, sv))}%'
-=======
->>>>>>> parent of 6f683de (Merge branch 'main' of https://github.com/meetingbox/meetingbox-mini-pc-release)
-=======
->>>>>>> parent of 6f683de (Merge branch 'main' of https://github.com/meetingbox/meetingbox-mini-pc-release)
-=======
->>>>>>> parent of 6f683de (Merge branch 'main' of https://github.com/meetingbox/meetingbox-mini-pc-release)
 
     # ------------------------------------------------------------------
     # Data
@@ -469,9 +451,6 @@ class SettingsScreen(BaseScreen):
                     self.gmail_item.subtitle_label.text = gmail_status
                     self.calendar_item.subtitle_label.text = cal_status
 
-<<<<<<< HEAD
-<<<<<<< HEAD
-<<<<<<< HEAD
                     try:
                         vae = settings.get("voice_assistant_enabled", True)
                         if isinstance(vae, str):
@@ -511,12 +490,6 @@ class SettingsScreen(BaseScreen):
                     except Exception:
                         pass
 
-=======
->>>>>>> parent of 6f683de (Merge branch 'main' of https://github.com/meetingbox/meetingbox-mini-pc-release)
-=======
->>>>>>> parent of 6f683de (Merge branch 'main' of https://github.com/meetingbox/meetingbox-mini-pc-release)
-=======
->>>>>>> parent of 6f683de (Merge branch 'main' of https://github.com/meetingbox/meetingbox-mini-pc-release)
                     wifi_ok = bool(info.get('wifi_ssid'))
                     privacy = getattr(self.app, 'privacy_mode', False)
                     self.update_footer(
@@ -565,6 +538,60 @@ class SettingsScreen(BaseScreen):
                 await self.backend.update_settings({'auto_record': active})
             except Exception:
                 pass
+        run_async(_save())
+
+    def _on_voice_assistant_enabled_toggled(self, active):
+        self.app.voice_assistant_enabled = bool(active)
+        if hasattr(self.app, "voice_assistant") and self.app.voice_assistant:
+            self.app.voice_assistant.apply_server_settings(enabled=bool(active))
+        if hasattr(self.app, "_sync_voice_assistant_state"):
+            self.app._sync_voice_assistant_state()
+
+        async def _save():
+            try:
+                await self.backend.update_settings({"voice_assistant_enabled": active})
+            except Exception:
+                pass
+
+        run_async(_save())
+
+    def _on_voice_realtime_toggled(self, active):
+        self.app.voice_realtime_assistant = bool(active)
+
+        async def _save():
+            try:
+                await self.backend.update_settings({'voice_realtime_assistant': active})
+            except Exception:
+                pass
+
+        run_async(_save())
+
+    def _show_wake_phrase_dialog(self):
+        dialog = TextInputDialog(
+            title='Wake phrase',
+            message='Phrase to wake the assistant (spoken naturally, e.g. hey buddy).',
+            initial_value=self.wake_phrase_item.subtitle_label.text or 'hey buddy',
+            placeholder='hey buddy',
+            on_confirm=self._apply_wake_phrase,
+        )
+        self.add_widget(dialog)
+
+    def _apply_wake_phrase(self, value: str):
+        wk = (value or '').strip().lower() or 'hey buddy'
+        self.wake_phrase_item.subtitle_label.text = wk
+        disp = wk[:1].upper() + wk[1:] if wk else 'Hey buddy'
+        self.app.voice_wake_phrase_display = disp
+        if hasattr(self.app, "voice_assistant") and self.app.voice_assistant:
+            self.app.voice_assistant.apply_server_settings(wake_phrase=wk)
+        if hasattr(self.app, "_sync_voice_assistant_state"):
+            self.app._sync_voice_assistant_state()
+
+        async def _save():
+            try:
+                await self.backend.update_settings({'voice_wake_phrase': wk})
+            except Exception:
+                pass
+
         run_async(_save())
 
     # ------------------------------------------------------------------
