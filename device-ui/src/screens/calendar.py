@@ -13,6 +13,7 @@ from pathlib import Path
 
 from kivy.clock import Clock
 from kivy.graphics import Color, Ellipse, Line, Rectangle, RoundedRectangle
+from kivy.graphics.context_instructions import PushMatrix, PopMatrix, Scale, Translate
 from kivy.uix.behaviors import ButtonBehavior
 from kivy.uix.boxlayout import BoxLayout
 from kivy.uix.floatlayout import FloatLayout
@@ -120,6 +121,31 @@ def _lbl(text: str, font: str, size: int, color: tuple,
 class _ImgBtn(ButtonBehavior, Image):
     """An Image widget that fires on_release when tapped."""
     pass
+
+
+class _FlippedImg(Widget):
+    """Draws an image horizontally mirrored (for left-nav arrow from right-arrow asset)."""
+
+    def __init__(self, source: str, **kw):
+        super().__init__(**kw)
+        self._src = source
+        with self.canvas:
+            Color(1, 1, 1, 1)
+            PushMatrix()
+            self._sc = Scale(-1, 1, 1)
+            self._tr = Translate(0, 0)
+            self._rect = Rectangle(source=source, pos=self.pos, size=self.size)
+            PopMatrix()
+        self.bind(pos=self._upd, size=self._upd)
+        Clock.schedule_once(self._upd, 0)
+
+    def _upd(self, *_):
+        # Scale(-1,1,1) then Translate(tx) → final_x = -x_orig + tx
+        # We want the image to stay at the same screen position but mirrored:
+        # tx = 2 * self.x + self.width
+        self._tr.x = 2 * self.x + self.width
+        self._rect.pos = self.pos
+        self._rect.size = self.size
 
 
 # ── Gradient card ─────────────────────────────────────────────────────────────
@@ -523,23 +549,26 @@ class CalendarScreen(BaseScreen):
             dv.bind(pos=_mk(_r), size=_mk(_r))
             root.add_widget(dv)
 
-        # Left navigation arrow — large tap zone (full grid height) + icon overlay
-        # Tap zone: x=GX+4, full grid height → easy tap above/below the icon
+        # Nav arrow icon source: use the confirmed-working weui:arrow-filled Figma asset.
+        # The same image is used for both directions — right as-is, left via horizontal flip.
+        _nav_arr_src = (str(_CAL / "icon_arrow_details.png")
+                        if (_CAL / "icon_arrow_details.png").is_file()
+                        else str(_CAL / "icon_nav_left_arrow.png")
+                        if (_CAL / "icon_nav_left_arrow.png").is_file() else "")
+
+        # Left navigation arrow — large tap zone (full grid height) + flipped icon
         _ltz = _TapZone(**_ph(GX + 4, GY, 60, 151.14))
         _ltz.bind(on_release=lambda *_: self._nav_week(-1))
         root.add_widget(_ltz)
-        _nav_left_src = _asset("icon_nav_left.png")
-        if _nav_left_src:
-            root.add_widget(Image(source=_nav_left_src, fit_mode="contain",
-                                  **_ph(GX + 20, GY + 59, 34, 34)))
+        if _nav_arr_src:
+            root.add_widget(_FlippedImg(_nav_arr_src, **_ph(GX + 20, GY + 59, 34, 34)))
 
-        # Right navigation arrow — large tap zone + icon overlay
+        # Right navigation arrow — large tap zone + icon
         _rtz = _TapZone(**_ph(GX + 1146, GY, 65, 151.14))
         _rtz.bind(on_release=lambda *_: self._nav_week(1))
         root.add_widget(_rtz)
-        _nav_right_src = _asset("icon_nav_right.png")
-        if _nav_right_src:
-            root.add_widget(Image(source=_nav_right_src, fit_mode="contain",
+        if _nav_arr_src:
+            root.add_widget(Image(source=_nav_arr_src, fit_mode="contain",
                                   **_ph(GX + 1156, GY + 59, 34, 34)))
 
         # Per-column: WED-style highlight, tap zone, abbrev label, date label, dots
