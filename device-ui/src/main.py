@@ -222,6 +222,7 @@ from config import (
     setup_complete_marker_paths_for_read,
     get_device_auth_token,
     clear_stored_device_auth_token,
+    WAKE_LOCAL_VOICE_ONLY,
 )
 
 from api_client import BackendClient
@@ -262,6 +263,7 @@ from screens.idle import IdleScreen
 from screens.settings import SettingsScreen
 from screens.auto_delete_picker import AutoDeletePickerScreen
 from screens.brightness_picker import BrightnessPickerScreen
+from screens.speech_volume_picker import SpeechVolumePickerScreen
 from screens.idle_timeout_picker import IdleTimeoutPickerScreen
 from screens.mic_test import MicTestScreen
 from screens.update_check import UpdateCheckScreen
@@ -572,9 +574,10 @@ class MeetingBoxApp(App):
         self._realtime_voice_session = None
         self._realtime_session_start_monotonic = None
         self._realtime_connected_ok = False
-        self.voice_realtime_assistant = True
+        self.voice_realtime_assistant = False
         self.voice_wake_phrase_display = "Hey buddy"
         self.voice_assistant_enabled = True
+        self.assistant_speech_volume = 85
 
     # ==================================================================
     # BUILD
@@ -638,6 +641,7 @@ class MeetingBoxApp(App):
         self.screen_manager.add_widget(SettingsScreen(name='settings'))
         self.screen_manager.add_widget(AutoDeletePickerScreen(name='auto_delete_picker'))
         self.screen_manager.add_widget(BrightnessPickerScreen(name='brightness_picker'))
+        self.screen_manager.add_widget(SpeechVolumePickerScreen(name='speech_volume_picker'))
         self.screen_manager.add_widget(IdleTimeoutPickerScreen(name='idle_timeout_picker'))
         self.screen_manager.add_widget(MicTestScreen(name='mic_test'))
         self.screen_manager.add_widget(UpdateCheckScreen(name='update_check'))
@@ -891,7 +895,7 @@ class MeetingBoxApp(App):
                 auto_record = settings.get('auto_record', False)
                 self.auto_record = auto_record
 
-                vra = settings.get("voice_realtime_assistant", True)
+                vra = settings.get("voice_realtime_assistant", False)
                 if isinstance(vra, str):
                     vra = str(vra).strip().lower() in ("1", "true", "yes", "on")
                 self.voice_realtime_assistant = bool(vra)
@@ -903,6 +907,15 @@ class MeetingBoxApp(App):
 
                 vwp = (settings.get("voice_wake_phrase") or "hey buddy").strip()
                 self.voice_wake_phrase_display = vwp[:1].upper() + vwp[1:] if vwp else "Hey buddy"
+                try:
+                    sv = settings.get("assistant_speech_volume", 85)
+                    if isinstance(sv, str):
+                        sv = int(float(sv.strip()))
+                    else:
+                        sv = int(sv)
+                except (TypeError, ValueError):
+                    sv = 85
+                self.assistant_speech_volume = max(0, min(100, sv))
                 self.voice_assistant.apply_server_settings(
                     wake_phrase=vwp,
                     enabled=self.voice_assistant_enabled,
@@ -1857,6 +1870,7 @@ class MeetingBoxApp(App):
             getattr(self, "voice_realtime_assistant", False)
             and get_device_auth_token().strip()
             and not USE_MOCK_BACKEND
+            and not WAKE_LOCAL_VOICE_ONLY
         ):
             def _kick_realtime(_dt):
                 self._show_home_listening_after_wake()
@@ -1897,8 +1911,14 @@ class MeetingBoxApp(App):
                 pass
 
     def _end_realtime_voice_session(self) -> None:
+        sess = self._realtime_voice_session
         started = getattr(self, "_realtime_session_start_monotonic", None)
         connected = getattr(self, "_realtime_connected_ok", False)
+        if sess is not None:
+            try:
+                sess.stop()
+            except Exception:
+                logger.debug("Realtime session stop", exc_info=True)
         short_failed = (
             started is not None
             and not connected
@@ -1967,6 +1987,7 @@ class MeetingBoxApp(App):
         def _err(msg: str) -> None:
             logger.error("Realtime voice error: %s", msg)
             Clock.schedule_once(lambda _dt: self._hide_home_listening_state(), 0)
+            Clock.schedule_once(lambda _dt: self._end_realtime_voice_session(), 0)
 
         def _on_rt_connected() -> None:
             # Run on Realtime worker thread — release Vosk mic before opening Realtime input.
@@ -2001,13 +2022,26 @@ class MeetingBoxApp(App):
         self._sync_voice_assistant_state()
         self._realtime_voice_session.start()
 
+    def _espeak_amplitude(self) -> int:
+        """Map stored volume 0–100 to espeak-ng -a (0–200)."""
+        try:
+            v = int(getattr(self, "assistant_speech_volume", 85) or 85)
+        except (TypeError, ValueError):
+            v = 85
+        v = max(0, min(100, v))
+        return max(0, min(200, int(round(v * 2))))
+
     def _speak_text_blocking(self, text: str) -> bool:
         phrase = (text or "").strip()
         if not phrase:
             return False
+        amp_n = self._espeak_amplitude()
+        if amp_n <= 0:
+            return True
+        amp = str(amp_n)
         for cmd in (
-            ["espeak-ng", "-s", "165", "-a", "180", phrase],
-            ["espeak", "-s", "165", "-a", "180", phrase],
+            ["espeak-ng", "-s", "165", "-a", amp, phrase],
+            ["espeak", "-s", "165", "-a", amp, phrase],
         ):
             exe = shutil.which(cmd[0])
             if not exe:
@@ -2023,6 +2057,31 @@ class MeetingBoxApp(App):
                 return True
             except Exception as e:
                 logger.warning("Voice feedback via %s failed: %s", exe, e)
+        esng = shutil.which("espeak-ng")
+        aplay = shutil.which("aplay")
+        if esng and aplay:
+            try:
+                proc = subprocess.Popen(
+                    [esng, "-s", "165", "-a", amp, phrase, "--stdout"],
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.DEVNULL,
+                )
+                try:
+                    subprocess.run(
+                        [aplay, "-q"],
+                        stdin=proc.stdout,
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                        check=False,
+                        timeout=30,
+                    )
+                finally:
+                    if proc.stdout:
+                        proc.stdout.close()
+                    proc.wait(timeout=30)
+                return True
+            except Exception as e:
+                logger.warning("Voice feedback via espeak-ng stdout | aplay failed: %s", e)
         logger.warning("Voice feedback unavailable: no espeak command found")
         return False
 

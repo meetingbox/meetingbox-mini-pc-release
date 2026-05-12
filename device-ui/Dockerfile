@@ -50,6 +50,7 @@ RUN set -eux; \
             util-linux \
             iproute2 \
             espeak-ng \
+            alsa-utils \
             network-manager \
             sudo \
         ; then \

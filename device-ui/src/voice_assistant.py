@@ -262,6 +262,15 @@ class VoiceCommandInterpreter:
     def heard_wake_phrase(self, text: str) -> bool:
         return self._heard_wake_phrase(_normalize_text(text))
 
+    def should_trigger_wake_callback(self, norm: str) -> bool:
+        """True only for wake-only lines — not when a command is in the same utterance (relaxed)."""
+        if not self._heard_wake_phrase(norm):
+            return False
+        wake_wc = len(self.wake_phrase.split())
+        if len(norm.split()) <= wake_wc:
+            return True
+        return self._detect_intent(norm, relaxed=True) is None
+
     def heard_start_command(self, text: str) -> bool:
         norm = _normalize_text(text)
         return any(
@@ -529,8 +538,7 @@ class VoiceAssistant:
         logger.debug("Voice assistant heard: %s", norm)
         if (
             self._on_wake_phrase is not None
-            and self._interpreter.heard_wake_phrase(norm)
-            and self._interpreter.detect_intent(norm) is None
+            and self._interpreter.should_trigger_wake_callback(norm)
         ):
             try:
                 self._on_wake_phrase(norm)

@@ -101,6 +101,14 @@ LOCAL_REDIS_PORT = int(os.getenv("LOCAL_REDIS_PORT", "6379"))
 AUDIO_INPUT_DEVICE_INDEX = (os.getenv("AUDIO_INPUT_DEVICE_INDEX", "") or "").strip()
 AUDIO_INPUT_DEVICE_NAME = (os.getenv("AUDIO_INPUT_DEVICE_NAME", "") or "").strip()
 
+# If true, wake word never starts OpenAI Realtime — only local Vosk + espeak (reliable on appliances).
+WAKE_LOCAL_VOICE_ONLY = str(os.getenv("MEETINGBOX_WAKE_LOCAL_VOICE_ONLY", "")).strip().lower() in (
+    "1",
+    "true",
+    "yes",
+    "on",
+)
+
 # ============================================================================
 # DISPLAY SETTINGS
 # ============================================================================

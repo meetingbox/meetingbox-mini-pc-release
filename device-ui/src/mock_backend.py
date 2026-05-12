@@ -35,7 +35,8 @@ class MockBackendClient:
             'auto_record': False,
             'voice_wake_phrase': 'hey buddy',
             'voice_assistant_enabled': True,
-            'voice_realtime_assistant': True,
+            'voice_realtime_assistant': False,
+            'assistant_speech_volume': 85,
         }
         logger.info("Using MOCK backend client")
 

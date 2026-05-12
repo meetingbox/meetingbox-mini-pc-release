@@ -215,6 +215,14 @@ class SettingsScreen(BaseScreen):
         # ---- AUDIO ----
         self.container.add_widget(self._section_header('AUDIO'))
 
+        self.speech_volume_item = SettingsItem(
+            title='Assistant voice volume',
+            subtitle='85%',
+            mode='arrow',
+            on_press=lambda _: self.goto('speech_volume_picker', transition='slide_left'),
+        )
+        self.container.add_widget(self.speech_volume_item)
+
         self.mic_test_item = SettingsItem(
             title='Microphone Test',
             subtitle='',
@@ -236,7 +244,7 @@ class SettingsScreen(BaseScreen):
             title='AI voice assistant',
             subtitle='OpenAI Realtime after wake word',
             mode='toggle',
-            active=True,
+            active=False,
             on_toggle=self._on_voice_realtime_toggled,
         )
         self.container.add_widget(self.voice_realtime_item)
@@ -335,10 +343,15 @@ class SettingsScreen(BaseScreen):
         self.auto_record_item.toggle.active = auto_record
         vae = getattr(self.app, "voice_assistant_enabled", True)
         self.voice_assistant_enabled_item.toggle.active = bool(vae)
-        vra = getattr(self.app, "voice_realtime_assistant", True)
+        vra = getattr(self.app, "voice_realtime_assistant", False)
         self.voice_realtime_item.toggle.active = bool(vra)
         wk = getattr(self.app, "voice_wake_phrase_display", "hey buddy")
         self.wake_phrase_item.subtitle_label.text = (wk or "hey buddy").lower()
+        try:
+            sv = int(getattr(self.app, "assistant_speech_volume", 85))
+        except (TypeError, ValueError):
+            sv = 85
+        self.speech_volume_item.subtitle_label.text = f'{max(0, min(100, sv))}%'
 
     # ------------------------------------------------------------------
     # Data
@@ -445,7 +458,7 @@ class SettingsScreen(BaseScreen):
                         self.voice_assistant_enabled_item.toggle.active = bool(vae)
                         self.app.voice_assistant_enabled = bool(vae)
 
-                        vra = settings.get("voice_realtime_assistant", True)
+                        vra = settings.get("voice_realtime_assistant", False)
                         if isinstance(vra, str):
                             vra = str(vra).strip().lower() in ("1", "true", "yes", "on")
                         self.voice_realtime_item.toggle.active = bool(vra)
@@ -462,6 +475,18 @@ class SettingsScreen(BaseScreen):
                             )
                         if hasattr(self.app, "_sync_voice_assistant_state"):
                             Clock.schedule_once(lambda _dt: self.app._sync_voice_assistant_state(), 0)
+                    except Exception:
+                        pass
+
+                    try:
+                        sv = settings.get("assistant_speech_volume", 85)
+                        if isinstance(sv, str):
+                            sv = int(float(sv.strip()))
+                        else:
+                            sv = int(sv)
+                        sv = max(0, min(100, sv))
+                        self.app.assistant_speech_volume = sv
+                        self.speech_volume_item.subtitle_label.text = f'{sv}%'
                     except Exception:
                         pass
 
