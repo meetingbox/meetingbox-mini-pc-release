@@ -569,9 +569,6 @@ class MeetingBoxApp(App):
         self._voice_confirmation_timeout = self.voice_assistant.confirmation_timeout_seconds
         self._last_amplitude_sched = 0.0
 
-<<<<<<< HEAD
-<<<<<<< HEAD
-<<<<<<< HEAD
         # OpenAI Realtime assistant (optional; uses server /api/voice + wake phrase).
         self._realtime_voice_session = None
         self._realtime_session_start_monotonic = None
@@ -581,12 +578,6 @@ class MeetingBoxApp(App):
         self.voice_assistant_enabled = True
         self.assistant_speech_volume = 85
 
-=======
->>>>>>> parent of 6f683de (Merge branch 'main' of https://github.com/meetingbox/meetingbox-mini-pc-release)
-=======
->>>>>>> parent of 6f683de (Merge branch 'main' of https://github.com/meetingbox/meetingbox-mini-pc-release)
-=======
->>>>>>> parent of 6f683de (Merge branch 'main' of https://github.com/meetingbox/meetingbox-mini-pc-release)
     # ==================================================================
     # BUILD
     # ==================================================================
@@ -894,9 +885,6 @@ class MeetingBoxApp(App):
                 self.privacy_mode = privacy
                 auto_record = settings.get('auto_record', False)
                 self.auto_record = auto_record
-<<<<<<< HEAD
-<<<<<<< HEAD
-<<<<<<< HEAD
 
                 vra = settings.get("voice_realtime_assistant", False)
                 if isinstance(vra, str):
@@ -923,12 +911,6 @@ class MeetingBoxApp(App):
                     wake_phrase=vwp,
                     enabled=self.voice_assistant_enabled,
                 )
-=======
->>>>>>> parent of 6f683de (Merge branch 'main' of https://github.com/meetingbox/meetingbox-mini-pc-release)
-=======
->>>>>>> parent of 6f683de (Merge branch 'main' of https://github.com/meetingbox/meetingbox-mini-pc-release)
-=======
->>>>>>> parent of 6f683de (Merge branch 'main' of https://github.com/meetingbox/meetingbox-mini-pc-release)
             except Exception as e:
                 logger.warning("Could not load settings: %s", e)
             try:
@@ -1833,27 +1815,30 @@ class MeetingBoxApp(App):
 
     def _handle_voice_wake_phrase(self, _text: str) -> None:
         timeout = max(2.0, self.voice_assistant.command_timeout_seconds)
+        lbl = getattr(self, "voice_wake_phrase_display", "Hey buddy") or "Hey buddy"
 
         def _wake_ui(_dt):
-            self._set_voice_indicator_override("wake", 'Heard "Hey Tony"', timeout)
-            # Trigger home-screen mic animation + listening pill
-            if (self.screen_manager is not None
-                    and self.screen_manager.current == 'home'):
+            self._set_voice_indicator_override(
+                "wake",
+                f'Heard "{lbl}"',
+                timeout,
+            )
+            if (
+                self.screen_manager is not None
+                and self.screen_manager.current == "home"
+            ):
                 try:
-                    home = self.screen_manager.get_screen('home')
+                    home = self.screen_manager.get_screen("home")
                     home.show_listening_state()
                     Clock.schedule_once(
-                        lambda _dt2: self._hide_home_listening_state(), timeout
+                        lambda _dt2: self._hide_home_listening_state(),
+                        timeout,
                     )
                 except Exception:
                     pass
 
         Clock.schedule_once(_wake_ui, 0)
 
-<<<<<<< HEAD
-<<<<<<< HEAD
-<<<<<<< HEAD
-    def _handle_voice_wake_phrase(self, _text: str) -> None:
         if (
             getattr(self, "voice_realtime_assistant", False)
             and get_device_auth_token().strip()
@@ -1866,14 +1851,36 @@ class MeetingBoxApp(App):
 
             Clock.schedule_once(_kick_realtime, 0)
             return
-        self._begin_local_voice_command_session()
 
-=======
->>>>>>> parent of 6f683de (Merge branch 'main' of https://github.com/meetingbox/meetingbox-mini-pc-release)
-=======
->>>>>>> parent of 6f683de (Merge branch 'main' of https://github.com/meetingbox/meetingbox-mini-pc-release)
-=======
->>>>>>> parent of 6f683de (Merge branch 'main' of https://github.com/meetingbox/meetingbox-mini-pc-release)
+        Clock.schedule_once(
+            lambda _dt: self._begin_local_voice_command_session(),
+            0,
+        )
+
+    def _show_home_listening_after_wake(self) -> None:
+        """Home listening animation while OpenAI Realtime connects."""
+        timeout = max(2.0, self.voice_assistant.command_timeout_seconds)
+        if (
+            self.screen_manager is not None
+            and self.screen_manager.current == "home"
+        ):
+            try:
+                home = self.screen_manager.get_screen("home")
+                home.show_listening_state()
+                Clock.schedule_once(
+                    lambda _dt: self._hide_home_listening_state(),
+                    timeout,
+                )
+            except Exception:
+                pass
+
+    def _begin_local_voice_command_session(self) -> None:
+        """Post-wake window for local Vosk commands (no Realtime)."""
+        try:
+            self.voice_assistant.simulate_wake()
+        except Exception:
+            logger.exception("simulate_wake after wake phrase failed")
+
     def _hide_home_listening_state(self, *_args) -> None:
         """Called after wake-word timeout to restore the home screen to idle."""
         if (self.screen_manager is not None
@@ -1904,9 +1911,6 @@ class MeetingBoxApp(App):
             except Exception:
                 pass
 
-<<<<<<< HEAD
-<<<<<<< HEAD
-<<<<<<< HEAD
     def _end_realtime_voice_session(self) -> None:
         sess = self._realtime_voice_session
         started = getattr(self, "_realtime_session_start_monotonic", None)
@@ -2028,12 +2032,6 @@ class MeetingBoxApp(App):
         v = max(0, min(100, v))
         return max(0, min(200, int(round(v * 2))))
 
-=======
->>>>>>> parent of 6f683de (Merge branch 'main' of https://github.com/meetingbox/meetingbox-mini-pc-release)
-=======
->>>>>>> parent of 6f683de (Merge branch 'main' of https://github.com/meetingbox/meetingbox-mini-pc-release)
-=======
->>>>>>> parent of 6f683de (Merge branch 'main' of https://github.com/meetingbox/meetingbox-mini-pc-release)
     def _speak_text_blocking(self, text: str) -> bool:
         phrase = (text or "").strip()
         if not phrase:
