@@ -33,10 +33,13 @@ class MockBackendClient:
             'idle_screen_timeout': '30',
             'privacy_mode': False,
             'auto_record': False,
+<<<<<<< HEAD
             'voice_wake_phrase': 'hey buddy',
             'voice_assistant_enabled': True,
             'voice_realtime_assistant': False,
             'assistant_speech_volume': 85,
+=======
+>>>>>>> parent of 6f683de (Merge branch 'main' of https://github.com/meetingbox/meetingbox-mini-pc-release)
         }
         logger.info("Using MOCK backend client")
 
@@ -291,11 +294,6 @@ class MockBackendClient:
         if action == "factory_reset":
             return {**self._settings, "status": "resetting", "host_reboot_initiated": True}
         return self._settings
-
-    async def create_realtime_voice_session(self) -> Dict:
-        """Mock: Realtime requires a real API (USE_MOCK_BACKEND skips device wake→OpenAI)."""
-        await asyncio.sleep(0.1)
-        raise RuntimeError("Mock backend: use real server with MEETINGBOX_REALTIME_VOICE_ENABLED=1")
 
     async def post_setup_complete(
             self,
