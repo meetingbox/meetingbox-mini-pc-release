@@ -234,6 +234,7 @@ from hardware import (
 from network_util import linux_ethernet_ready
 from profile_store import get_active_profile, clear_active_profile_selection
 from voice_assistant import VoiceAssistant, VoiceIntent
+from components.voice_indicator import VoiceAssistantIndicator
 
 # Boot-flow screens
 from screens.splash import SplashScreen
@@ -567,6 +568,14 @@ class MeetingBoxApp(App):
         self._voice_confirmation_timeout = self.voice_assistant.confirmation_timeout_seconds
         self._last_amplitude_sched = 0.0
 
+        # OpenAI Realtime assistant (optional; uses server /api/voice + wake phrase).
+        self._realtime_voice_session = None
+        self._realtime_session_start_monotonic = None
+        self._realtime_connected_ok = False
+        self.voice_realtime_assistant = True
+        self.voice_wake_phrase_display = "Hey buddy"
+        self.voice_assistant_enabled = True
+
     # ==================================================================
     # BUILD
     # ==================================================================
@@ -599,6 +608,11 @@ class MeetingBoxApp(App):
             transition=FadeTransition(duration=TRANSITION_DURATION['fade']))
         self.screen_manager.size_hint = (1, 1)
         self.root_layout.add_widget(self.screen_manager)
+
+        self.voice_indicator = VoiceAssistantIndicator(
+            pos_hint={"right": 0.99, "top": 0.92},
+        )
+        self.root_layout.add_widget(self.voice_indicator)
 
         # Register ALL screens
         self.screen_manager.add_widget(SplashScreen(name='splash'))
@@ -646,10 +660,7 @@ class MeetingBoxApp(App):
         # Start local Redis listener for real-time audio levels from the audio
         # container (both on the same Docker network).
         self._start_local_redis_listener()
-        # Voice assistant logic (wake phrase, intents) stays active; the floating
-        # "Tony" overlay is intentionally not mounted. ``self.voice_indicator``
-        # remains None (set in __init__) so existing _refresh/_set helpers no-op
-        # via their ``if not self.voice_indicator`` guards.
+
         self._sync_voice_assistant_state()
         self._refresh_voice_indicator()
 
@@ -837,6 +848,12 @@ class MeetingBoxApp(App):
 
     def on_stop(self):
         logger.info("MeetingBox UI stopping")
+        if self._realtime_voice_session is not None:
+            try:
+                self._realtime_voice_session.stop()
+            except Exception:
+                pass
+            self._realtime_voice_session = None
         self.voice_assistant.stop()
         self._local_redis_stop.set()
         if getattr(self, '_setup_poll', None):
@@ -873,6 +890,23 @@ class MeetingBoxApp(App):
                 self.privacy_mode = privacy
                 auto_record = settings.get('auto_record', False)
                 self.auto_record = auto_record
+
+                vra = settings.get("voice_realtime_assistant", True)
+                if isinstance(vra, str):
+                    vra = str(vra).strip().lower() in ("1", "true", "yes", "on")
+                self.voice_realtime_assistant = bool(vra)
+
+                vae = settings.get("voice_assistant_enabled", True)
+                if isinstance(vae, str):
+                    vae = str(vae).strip().lower() in ("1", "true", "yes", "on")
+                self.voice_assistant_enabled = bool(vae)
+
+                vwp = (settings.get("voice_wake_phrase") or "hey buddy").strip()
+                self.voice_wake_phrase_display = vwp[:1].upper() + vwp[1:] if vwp else "Hey buddy"
+                self.voice_assistant.apply_server_settings(
+                    wake_phrase=vwp,
+                    enabled=self.voice_assistant_enabled,
+                )
             except Exception as e:
                 logger.warning("Could not load settings: %s", e)
             try:
@@ -1715,6 +1749,10 @@ class MeetingBoxApp(App):
     def _voice_assistant_should_listen(self) -> bool:
         if self.screen_manager is None:
             return False
+        if not getattr(self, "voice_assistant_enabled", True):
+            return False
+        if self._realtime_voice_session is not None:
+            return False
         if self._voice_start_in_flight:
             return False
         if self.user_voice_paused:
@@ -1747,8 +1785,16 @@ class MeetingBoxApp(App):
             state, message = self._voice_indicator_override
             self.voice_indicator.set_state(state, message)
             return
-        if self.voice_assistant.available and self._voice_assistant_should_listen():
-            self.voice_indicator.set_state("idle", 'Say "Hey Tony"')
+        if (
+            self.voice_assistant.available
+            and self.voice_assistant.enabled
+            and self._voice_assistant_should_listen()
+        ):
+            lbl = getattr(self, "voice_wake_phrase_display", "Hey buddy") or "Hey buddy"
+            self.voice_indicator.set_state(
+                "wake_standby",
+                f'Mic on — say "{lbl}" to start',
+            )
             return
         self.voice_indicator.set_state("hidden")
 
@@ -1775,24 +1821,50 @@ class MeetingBoxApp(App):
                 self._clear_voice_indicator_override, duration
             )
 
-    def _handle_voice_wake_phrase(self, _text: str) -> None:
+    def _show_home_listening_after_wake(self) -> None:
+        """Zoom mic orb + listening pill on home (local Vosk or OpenAI Realtime)."""
+        if self.screen_manager is None or self.screen_manager.current != "home":
+            return
+        try:
+            self.screen_manager.get_screen("home").show_listening_state()
+        except Exception:
+            pass
+
+    def _begin_local_voice_command_session(self) -> None:
+        """After wake: listen for a spoken command via Vosk and run intents (incl. TTS reply)."""
+        try:
+            self.voice_assistant.simulate_wake()
+        except Exception:
+            pass
         timeout = max(2.0, self.voice_assistant.command_timeout_seconds)
 
         def _wake_ui(_dt):
-            self._set_voice_indicator_override("wake", 'Heard "Hey Tony"', timeout)
-            # Trigger home-screen mic animation + listening pill
-            if (self.screen_manager is not None
-                    and self.screen_manager.current == 'home'):
-                try:
-                    home = self.screen_manager.get_screen('home')
-                    home.show_listening_state()
-                    Clock.schedule_once(
-                        lambda _dt2: self._hide_home_listening_state(), timeout
-                    )
-                except Exception:
-                    pass
+            heard = getattr(self, "voice_wake_phrase_display", "Hey buddy") or "Hey buddy"
+            self._set_voice_indicator_override(
+                "wake",
+                f'Heard "{heard}" — say your request now',
+                timeout,
+            )
+            self._show_home_listening_after_wake()
+            Clock.schedule_once(
+                lambda _dt2: self._hide_home_listening_state(), timeout
+            )
 
         Clock.schedule_once(_wake_ui, 0)
+
+    def _handle_voice_wake_phrase(self, _text: str) -> None:
+        if (
+            getattr(self, "voice_realtime_assistant", False)
+            and get_device_auth_token().strip()
+            and not USE_MOCK_BACKEND
+        ):
+            def _kick_realtime(_dt):
+                self._show_home_listening_after_wake()
+                self._start_realtime_voice_session()
+
+            Clock.schedule_once(_kick_realtime, 0)
+            return
+        self._begin_local_voice_command_session()
 
     def _hide_home_listening_state(self, *_args) -> None:
         """Called after wake-word timeout to restore the home screen to idle."""
@@ -1823,6 +1895,111 @@ class MeetingBoxApp(App):
                 home.update_amplitude(amplitude)
             except Exception:
                 pass
+
+    def _end_realtime_voice_session(self) -> None:
+        started = getattr(self, "_realtime_session_start_monotonic", None)
+        connected = getattr(self, "_realtime_connected_ok", False)
+        short_failed = (
+            started is not None
+            and not connected
+            and (time.monotonic() - float(started)) < 30.0
+        )
+        self._realtime_session_start_monotonic = None
+        self._realtime_connected_ok = False
+        self._realtime_voice_session = None
+        self._sync_voice_assistant_state()
+        if short_failed:
+            Clock.schedule_once(lambda _dt: self._hide_home_listening_state(), 0)
+            Clock.schedule_once(
+                lambda _dt: self._begin_local_voice_command_session(), 0
+            )
+            return
+        self._clear_voice_indicator_override()
+        self._hide_home_listening_state()
+        self._refresh_voice_indicator()
+
+    def _start_realtime_voice_session(self) -> None:
+        if self._realtime_voice_session is not None:
+            return
+        if not get_device_auth_token().strip():
+            Clock.schedule_once(lambda _dt: self._hide_home_listening_state(), 0)
+            Clock.schedule_once(
+                lambda _dt: self._begin_local_voice_command_session(), 0
+            )
+            return
+
+        self._set_voice_indicator_override(
+            "wake",
+            "Connecting to assistant…",
+            duration=None,
+        )
+
+        async def _go():
+            try:
+                data = await self.backend.create_realtime_voice_session()
+            except Exception as e:
+                logger.warning("Realtime voice session request failed: %s", e)
+                Clock.schedule_once(lambda _dt: self._hide_home_listening_state(), 0)
+                Clock.schedule_once(
+                    lambda _dt: self._begin_local_voice_command_session(), 0
+                )
+                return
+            Clock.schedule_once(lambda _dt, d=data: self._run_realtime_voice_session(d), 0)
+
+        run_async(_go())
+
+    def _run_realtime_voice_session(self, data: dict) -> None:
+        from realtime_voice_session import RealtimeVoiceSession
+        from config import BACKEND_URL
+
+        secret = (data.get("client_secret") or "").strip()
+        model = (data.get("model") or "").strip()
+        if not secret or not model:
+            self._hide_home_listening_state()
+            self._sync_voice_assistant_state()
+            Clock.schedule_once(lambda _dt: self._begin_local_voice_command_session(), 0)
+            return
+        tok = get_device_auth_token().strip()
+
+        def _end() -> None:
+            Clock.schedule_once(lambda _dt: self._end_realtime_voice_session(), 0)
+
+        def _err(msg: str) -> None:
+            logger.error("Realtime voice error: %s", msg)
+            Clock.schedule_once(lambda _dt: self._hide_home_listening_state(), 0)
+
+        def _on_rt_connected() -> None:
+            # Run on Realtime worker thread — release Vosk mic before opening Realtime input.
+            try:
+                self.voice_assistant.set_paused(True)
+            except Exception:
+                logger.exception("pause local voice for Realtime failed")
+
+            def _ui(_dt):
+                self._realtime_connected_ok = True
+                self._clear_voice_indicator_override()
+                self._set_voice_indicator_override(
+                    "assistant_live",
+                    "Speak now — assistant is listening",
+                    duration=None,
+                )
+                self._sync_voice_assistant_state()
+
+            Clock.schedule_once(_ui, 0)
+
+        self._realtime_connected_ok = False
+        self._realtime_session_start_monotonic = time.monotonic()
+        self._realtime_voice_session = RealtimeVoiceSession(
+            client_secret=secret,
+            model=model,
+            backend_base_url=BACKEND_URL,
+            device_token=tok,
+            on_session_end=_end,
+            on_error=_err,
+            on_connected=_on_rt_connected,
+        )
+        self._sync_voice_assistant_state()
+        self._realtime_voice_session.start()
 
     def _speak_text_blocking(self, text: str) -> bool:
         phrase = (text or "").strip()
