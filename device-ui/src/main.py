@@ -1797,11 +1797,18 @@ class MeetingBoxApp(App):
             )
 
     def _handle_voice_wake_phrase(self, _text: str) -> None:
-<<<<<<< Updated upstream
+        if (
+            getattr(self, "voice_realtime_assistant", False)
+            and get_device_auth_token().strip()
+            and not USE_MOCK_BACKEND
+        ):
+            Clock.schedule_once(lambda _dt: self._start_realtime_voice_session(), 0)
+            return
         timeout = max(2.0, self.voice_assistant.command_timeout_seconds)
 
         def _wake_ui(_dt):
-            self._set_voice_indicator_override("wake", 'Heard "Hey Tony"', timeout)
+            heard = getattr(self, "voice_wake_phrase_display", "Hey buddy") or "Hey buddy"
+            self._set_voice_indicator_override("wake", f'Heard "{heard}"', timeout)
             # Trigger home-screen mic animation + listening pill
             if (self.screen_manager is not None
                     and self.screen_manager.current == 'home'):
@@ -1845,23 +1852,6 @@ class MeetingBoxApp(App):
                 home.update_amplitude(amplitude)
             except Exception:
                 pass
-=======
-        if (
-            getattr(self, "voice_realtime_assistant", False)
-            and get_device_auth_token().strip()
-            and not USE_MOCK_BACKEND
-        ):
-            Clock.schedule_once(lambda _dt: self._start_realtime_voice_session(), 0)
-            return
-        heard = getattr(self, "voice_wake_phrase_display", "wake phrase") or "wake phrase"
-        Clock.schedule_once(
-            lambda _dt: self._set_voice_indicator_override(
-                "wake",
-                f'Heard "{heard}"',
-                max(2.0, self.voice_assistant.command_timeout_seconds),
-            ),
-            0,
-        )
 
     def _end_realtime_voice_session(self) -> None:
         self._realtime_voice_session = None
@@ -1933,7 +1923,6 @@ class MeetingBoxApp(App):
         self._set_voice_indicator_override("speaking", "Listening…", duration=None)
         self._sync_voice_assistant_state()
         self._realtime_voice_session.start()
->>>>>>> Stashed changes
 
     def _speak_text_blocking(self, text: str) -> bool:
         phrase = (text or "").strip()
