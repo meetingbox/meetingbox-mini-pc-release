@@ -97,6 +97,21 @@ def _ff(fs: float) -> float:
 _GC: dict = {}
 
 
+def _aqi_category(aqi: int) -> tuple[str, str]:
+    """Return (label, hex_colour) for a US AQI value."""
+    if aqi <= 50:
+        return "Good",        "#19D385"
+    if aqi <= 100:
+        return "Moderate",    "#FFD500"
+    if aqi <= 150:
+        return "Sensitive",   "#FF7E00"
+    if aqi <= 200:
+        return "Unhealthy",   "#FF0000"
+    if aqi <= 300:
+        return "Very Poor",   "#960032"
+    return "Hazardous",       "#7E0023"
+
+
 def _grad(top: tuple, bot: tuple):
     from kivy.graphics.texture import Texture
     k = (top, bot)
@@ -621,9 +636,39 @@ class MorningBriefScreen(BaseScreen):
                 if self._wx_temp:
                     self._wx_temp.text = f"{round(snap.temp_c):.0f}°"
                 if self._wx_condition:
-                    self._wx_condition.text = (snap.label or "—").lower()
+                    self._wx_condition.text = (snap.label or "-").lower()
                 if self._wx_city:
-                    self._wx_city.text = snap.city or "—"
+                    self._wx_city.text = snap.city or "-"
+
+                if self._wx_hi_lo:
+                    hi = f"{round(snap.hi_c)}" if snap.hi_c is not None else "-"
+                    lo = f"{round(snap.lo_c)}" if snap.lo_c is not None else "-"
+                    self._wx_hi_lo.text = f"{hi} / {lo}"
+
+                if self._wx_hum:
+                    self._wx_hum.text = (
+                        f"{snap.humidity_pct}%"
+                        if snap.humidity_pct is not None else "-%"
+                    )
+
+                if self._wx_wind:
+                    self._wx_wind.text = (
+                        f"{round(snap.wind_kmh)} km/h"
+                        if snap.wind_kmh is not None else "-"
+                    )
+
+                if self._wx_aqi:
+                    if snap.aqi is not None:
+                        cat, hex_col = _aqi_category(snap.aqi)
+                        self._wx_aqi.text = (
+                            f"AQI [color={hex_col}]{snap.aqi}[/color]"
+                        )
+                        if self._wx_aqi_lbl:
+                            self._wx_aqi_lbl.text = cat
+                    else:
+                        self._wx_aqi.text = "AQI -"
+                        if self._wx_aqi_lbl:
+                            self._wx_aqi_lbl.text = "-"
             except Exception:
                 logger.debug("morning_brief weather UI apply failed", exc_info=True)
         Clock.schedule_once(_apply, 0)
