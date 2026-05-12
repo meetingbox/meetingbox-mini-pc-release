@@ -290,42 +290,42 @@ def _m_state(m: dict, now) -> str:
 GX, GY = 24.02, 105.94
 
 _COLS = [
-    # MON — 63.57,21.19 66×110.18
-    (63.57,   21.19,  66.0,   110.18, 0.00,  0.00,
-     0.00,  0.00,  66.0, 34.0,   9.89, 38.14, 47.0, 51.0,
+    # MON — 117.56, 23  66×110.18  (shifted right to fit left nav arrow)
+    (117.56,  23.00,  66.0, 110.18, 0.00,  0.00,
+      0.00,   0.00,  66.0,  34.0,   9.89, 38.14, 47.0, 51.0,
      [(15.54, 96.05, True), (38.14, 96.05, True)]),
-    # TUE — 240.13,21.19 53×110.18
-    (240.13,  21.19,  53.0,   110.18, 0.00,  0.00,
-     0.00,  0.00,  53.0, 34.0,   1.41, 39.55, 51.0, 51.0,
+    # TUE — 276.79, 23  53×110.18
+    (276.79,  23.00,  53.0, 110.18, 0.00,  0.00,
+      0.00,   0.00,  53.0,  34.0,   1.41, 39.55, 51.0, 51.0,
      [(16.95, 96.05, True)]),
-    # WED — 365.85,5.65 139.84×139.84 (today in Figma); inner offset 38.14,16.95
-    (365.85,   5.65, 139.84,  139.84, 38.14, 16.95,
-     1.41,  0.00,  64.0, 34.0,  11.30, 38.14, 46.0, 51.0,
+    # WED — 385, 5  139.84×139.84 (today in Figma); inner offset 38.14, 20.35
+    (385.00,   5.00, 139.84, 139.84, 38.14, 20.35,
+      1.41,   0.00,  64.0,  34.0,  11.30, 38.14, 46.0, 51.0,
      [(0.00, 93.23, True), (22.60, 93.23, True), (45.20, 93.23, True)]),
-    # THU — 577.73,22.6 57×107.35
-    (577.73,  22.60,  57.0,   107.35, 0.00,  0.00,
-     0.00,  0.00,  57.0, 34.0,   4.23, 38.14, 49.0, 51.0,
+    # THU — 579.38, 25  57×107.35
+    (579.38,  25.00,  57.0, 107.35, 0.00,  0.00,
+      0.00,   0.00,  57.0,  34.0,   4.23, 38.14, 49.0, 51.0,
      [(21.19, 93.23, True), (43.79, 93.23, True)]),
-    # FRI — 750.07,22.6 51×107.35
-    (750.07,  22.60,  51.0,   107.35, 0.00,  0.00,
-     2.82,  0.00,  47.0, 34.0,   0.00, 38.14, 51.0, 51.0,
+    # FRI — 734.20, 25  51×107.35
+    (734.20,  25.00,  51.0, 107.35, 0.00,  0.00,
+      2.82,   0.00,  47.0,  34.0,   0.00, 38.14, 51.0, 51.0,
      [(18.36, 93.23, True)]),
-    # SAT — 919.58,22.6 51×107.35  (outline dot)
-    (919.58,  22.60,  51.0,   107.35, 0.00,  0.00,
-     0.00,  0.00,  51.0, 34.0,   0.00, 38.14, 51.0, 51.0,
+    # SAT — 886.20, 25  51×107.35  (outline dot — no meetings)
+    (886.20,  25.00,  51.0, 107.35, 0.00,  0.00,
+      0.00,   0.00,  51.0,  34.0,   0.00, 38.14, 51.0, 51.0,
      [(18.37, 93.23, False)]),
-    # SUN — 1084.84,22.6 58×107.35  (outline dot)
-    (1084.84, 22.60,  58.0,   107.35, 0.00,  0.00,
-     0.00,  0.00,  58.0, 34.0,   4.24, 38.14, 51.0, 51.0,
+    # SUN — 1033.97, 32.41  58×107.35  (outline dot — no meetings)
+    (1033.97, 32.41,  58.0, 107.35, 0.00,  0.00,
+      0.00,   0.00,  58.0,  34.0,   4.24, 38.14, 51.0, 51.0,
      [(22.60, 93.23, False)]),
 ]
 
 # WED-style highlight dimensions: the Figma "today" box is 139.84×139.84
-# starting at grid y=5.65 (nearly flush with grid top).  We apply these same
+# starting at grid y=5 (nearly flush with grid top).  We apply these same
 # fixed dimensions to whichever column is "today" so the highlight always looks
 # like the Figma's WED treatment.
 _HL_H  = 139.84   # highlight height (matches WED outer group)
-_HL_Y  = GY + 5.65  # screen y of highlight top-edge
+_HL_Y  = GY + 5.0   # screen y of highlight top-edge (Figma: GY + 5)
 
 _DAY_ABBR = ["MON", "TUE", "WED", "THU", "FRI", "SAT", "SUN"]
 _DAY_FULL = ["Monday", "Tuesday", "Wednesday", "Thursday",
@@ -352,6 +352,9 @@ class CalendarScreen(BaseScreen):
         self._highlights: list[_Highlight] = []
         self._col_dates: list[date] = []
 
+        # Week navigation state
+        self._view_week_mon: date | None = None   # Monday of the week currently shown
+
         # Dynamic day-view state
         self._week_data: dict = {}          # ISO date str -> {"meetings": [...]}
         self._root_layout: FloatLayout | None = None
@@ -363,6 +366,10 @@ class CalendarScreen(BaseScreen):
         self._col_dot_info: list = []       # [(inner_sx, inner_sy, dot_y, inner_w), ...]
         # Calendar-icon widget (x position updates when heading text changes)
         self._cal_icon_img = None
+
+        # Header summary labels (busy/free — updated after each week load)
+        self._busy_lbl: Label | None = None
+        self._free_lbl: Label | None = None
 
         self._build_ui()
 
@@ -409,7 +416,7 @@ class CalendarScreen(BaseScreen):
         else:
             back = _TapCard(ct=_ICON_BG, cb=_ICON_BG, bdr=_BDR_CARD,
                             r=_ff(38), **_ph(24.02, 21.19, 76.28, 76.28))
-            back.add_widget(_lbl("‹", _FB, _ff(36), _WHITE,
+            back.add_widget(_lbl("<", _FB, _ff(36), _WHITE,
                                  ha="center", va="middle",
                                  size_hint=(1, 1), pos_hint={"x": 0, "y": 0}))
             back.bind(on_release=lambda *_: self.go_back())
@@ -472,18 +479,21 @@ class CalendarScreen(BaseScreen):
                                   **_ph(851.77, 28.0, 39.38, 40.89)))
         else:
             root.add_widget(_lbl(
-                "✦", _FSB, _ff(30), _MUTED, ha="center", va="middle",
+                "*", _FSB, _ff(30), _MUTED, ha="center", va="middle",
                 **_ph(851.77, 28.0, 42.0, 42.0)))
 
         # Busy text  905.91, 19.78  299×29  (+20% size)
-        root.add_widget(_lbl(
-            "This Week Busy: Wed, Thu", _FSB, _ff(24.61 * 1.2), _MUTED,
-            **_ph(905.91, 19.78, 340.0, 36.0)))
+        # Dynamic — updated after each week load via _update_header_summary()
+        self._busy_lbl = _lbl(
+            "Loading calendar...", _FSB, _ff(24.61 * 1.2), _MUTED,
+            **_ph(905.91, 19.78, 340.0, 36.0))
+        root.add_widget(self._busy_lbl)
 
         # Free text  905.91, 55.46  207×29  (+20% size)
-        root.add_widget(_lbl(
-            "Free: Fri afternoon", _FSB, _ff(24.61 * 1.2), _MUTED,
-            **_ph(905.91, 55.46, 260.0, 36.0)))
+        self._free_lbl = _lbl(
+            "", _FSB, _ff(24.61 * 1.2), _MUTED,
+            **_ph(905.91, 55.46, 260.0, 36.0))
+        root.add_widget(self._free_lbl)
 
     # ── Week grid ──────────────────────────────────────────────────────────────
 
@@ -495,11 +505,13 @@ class CalendarScreen(BaseScreen):
             **_ph(GX, GY, 1210.56, 151.14)))
 
         today = display_now().date()
-        week_mon = today - timedelta(days=today.weekday())
-        self._col_dates = [week_mon + timedelta(days=i) for i in range(7)]
+        if self._view_week_mon is None:
+            self._view_week_mon = today - timedelta(days=today.weekday())
+        self._col_dates = [self._view_week_mon + timedelta(days=i) for i in range(7)]
 
-        # Six vertical dividers  w=2.83, h=84.75, y=33.9 within grid
-        for div_x in (179.4, 348.91, 518.41, 687.91, 857.42, 1026.93):
+        # Six vertical dividers — new positions matching updated Figma column layout
+        # (Figma: w=2.83, h=84.75, y=33.9 within grid; divider x values within grid)
+        for div_x in (224.0, 377.0, 530.0, 682.0, 834.0, 986.0):
             sx, sy = GX + div_x, GY + 33.9
             dv = Widget(**_ph(sx, sy, 2.83, 84.75))
             with dv.canvas.before:
@@ -510,6 +522,26 @@ class CalendarScreen(BaseScreen):
                 return _s
             dv.bind(pos=_mk(_r), size=_mk(_r))
             root.add_widget(dv)
+
+        # Left navigation arrow — Figma: grid x=20, y=59, 34×34
+        _left_btn = _TapCard(ct=_ICON_BG, cb=_ICON_BG, bdr=_BDR_CARD,
+                             r=_ff(8), **_ph(GX + 20, GY + 59, 34, 34))
+        _left_btn.add_widget(_lbl(
+            "<", _FB, _ff(22), _MUTED,
+            ha="center", va="middle",
+            size_hint=(1, 1), pos_hint={"x": 0, "y": 0}))
+        _left_btn.bind(on_release=lambda *_: self._nav_week(-1))
+        root.add_widget(_left_btn)
+
+        # Right navigation arrow — Figma: grid x=1156, y=59, 34×34
+        _right_btn = _TapCard(ct=_ICON_BG, cb=_ICON_BG, bdr=_BDR_CARD,
+                              r=_ff(8), **_ph(GX + 1156, GY + 59, 34, 34))
+        _right_btn.add_widget(_lbl(
+            ">", _FB, _ff(22), _MUTED,
+            ha="center", va="middle",
+            size_hint=(1, 1), pos_hint={"x": 0, "y": 0}))
+        _right_btn.bind(on_release=lambda *_: self._nav_week(1))
+        root.add_widget(_right_btn)
 
         # Per-column: WED-style highlight, tap zone, abbrev label, date label, dots
         self._highlights.clear()
@@ -675,7 +707,7 @@ class CalendarScreen(BaseScreen):
             if is_today:
                 states = [_m_state(m, now) for m in meetings]
                 if all(s == "past" for s in states):
-                    free_text = "All meetings for today are done  ✓"
+                    free_text = "All meetings for today are done"
                     mtg_text = f"{mtg_noun} completed"
                     show_sun = True
                 else:
@@ -718,7 +750,7 @@ class CalendarScreen(BaseScreen):
                 pos_hint={"x": 31.08 / CW, "y": (CH - 24.02 - 53.68) / CH}))
         else:
             card.add_widget(_lbl(
-                "⏱", _FSB, _ff(38), _MUTED, ha="center", va="middle",
+                "O", _FSB, _ff(38), _MUTED, ha="center", va="middle",
                 size_hint=(53.68 / CW, 53.68 / CH),
                 pos_hint={"x": 31.08 / CW, "y": (CH - 24.02 - 53.68) / CH}))
 
@@ -887,7 +919,7 @@ class CalendarScreen(BaseScreen):
     def _fill_meeting_card(self, card, m: dict, state: str,
                            cw: float, ch: float) -> None:
         """Populate meeting card contents (icon, title, duration, details btn)."""
-        title = m.get("title", "—")
+        title = m.get("title", "-")
 
         # Icon circle  32.49, 16.95  70.63×70.63
         IW, IH, IX, IY = 70.63, 70.63, 32.49, 16.95
@@ -1033,8 +1065,9 @@ class CalendarScreen(BaseScreen):
 
     def on_enter(self) -> None:
         today = display_now().date()
-        week_mon = today - timedelta(days=today.weekday())
-        self._col_dates = [week_mon + timedelta(days=i) for i in range(7)]
+        # Always reset to the current week when entering the screen
+        self._view_week_mon = today - timedelta(days=today.weekday())
+        self._col_dates = [self._view_week_mon + timedelta(days=i) for i in range(7)]
         self._sel_date = today
 
         for i, lbl in enumerate(self._date_lbls):
@@ -1047,6 +1080,11 @@ class CalendarScreen(BaseScreen):
             self._heading_lbl.text = "Today"
         if self._datestr_lbl:
             self._datestr_lbl.text = _fmt_date(today)
+
+        if self._busy_lbl:
+            self._busy_lbl.text = "Loading calendar..."
+        if self._free_lbl:
+            self._free_lbl.text = ""
 
         # Draw initial dots (all unfilled) while data is being fetched
         Clock.schedule_once(lambda _dt: self._rebuild_all_dots(), 0)
@@ -1068,11 +1106,12 @@ class CalendarScreen(BaseScreen):
     def _load_week(self) -> None:
         async def _fetch():
             try:
-                today = display_now().date()
-                week_mon = today - timedelta(days=today.weekday())
-                end_d = week_mon + timedelta(days=6)
+                vm = self._view_week_mon
+                if vm is None:
+                    return
+                end_d = vm + timedelta(days=6)
                 data = await self.backend.get_calendar_week(
-                    week_mon.isoformat(),
+                    vm.isoformat(),
                     end_d.isoformat(),
                 )
 
@@ -1080,8 +1119,93 @@ class CalendarScreen(BaseScreen):
                     self._week_data = data.get("days", {}) if data else {}
                     self._rebuild_all_dots()
                     self._update_day_view(self._sel_date)
+                    self._update_header_summary()
 
                 Clock.schedule_once(_apply, 0)
             except Exception as exc:
                 logger.debug("CalendarScreen: get_calendar_week failed: %s", exc)
         run_async(_fetch())
+
+    # ── Week navigation ────────────────────────────────────────────────────────
+
+    def _nav_week(self, delta: int) -> None:
+        """Navigate to the previous (delta=-1) or next (delta=+1) week."""
+        if self._view_week_mon is None:
+            return
+        self._view_week_mon += timedelta(weeks=delta)
+        today = display_now().date()
+        self._col_dates = [self._view_week_mon + timedelta(days=i) for i in range(7)]
+
+        # Select today if visible in the new week, else select Monday
+        if today in self._col_dates:
+            self._sel_date = today
+        else:
+            self._sel_date = self._view_week_mon
+
+        # Update date number labels
+        for i, lbl in enumerate(self._date_lbls):
+            lbl.text = str(self._col_dates[i].day)
+
+        # Update highlights — only selected day is lit
+        for col_date, hl in zip(self._col_dates, self._highlights):
+            if col_date == self._sel_date:
+                hl.set_mode("today" if col_date == today else "sel")
+            else:
+                hl.set_mode("none")
+
+        # Update header day/date
+        if self._heading_lbl:
+            self._heading_lbl.text = (
+                "Today" if self._sel_date == today
+                else _DAY_FULL[self._sel_date.weekday()])
+        if self._datestr_lbl:
+            self._datestr_lbl.text = _fmt_date(self._sel_date)
+
+        # Show "Loading..." while fetching the new week's data
+        if self._busy_lbl:
+            self._busy_lbl.text = "Loading calendar..."
+        if self._free_lbl:
+            self._free_lbl.text = ""
+
+        # Clear current data / dots, then reload
+        self._week_data = {}
+        self._rebuild_all_dots()
+        self._update_day_view(self._sel_date)
+        Clock.schedule_once(lambda _dt: self._load_week(), 0)
+
+    # ── Header summary (busy / free days) ─────────────────────────────────────
+
+    def _update_header_summary(self) -> None:
+        """Derive busy/free day labels from loaded _week_data and update header."""
+        if self._busy_lbl is None:
+            return
+
+        _abbrs = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+        busy: list[str] = []
+        free: list[str] = []
+        moderate: list[str] = []
+
+        for i, d in enumerate(self._col_dates):
+            key = d.isoformat()
+            n = len(self._week_data.get(key, {}).get("meetings", []))
+            abbr = _abbrs[i]
+            if n >= 3:
+                busy.append(abbr)
+            elif n == 2:
+                moderate.append(abbr)
+            elif n == 0:
+                free.append(abbr)
+
+        if self._busy_lbl:
+            if busy:
+                self._busy_lbl.text = f"Busy: {', '.join(busy)}"
+            elif moderate:
+                self._busy_lbl.text = f"Moderate: {', '.join(moderate)}"
+            else:
+                self._busy_lbl.text = "Light week ahead"
+
+        if self._free_lbl:
+            if free:
+                self._free_lbl.text = f"Free: {', '.join(free)}"
+            else:
+                self._free_lbl.text = ""
