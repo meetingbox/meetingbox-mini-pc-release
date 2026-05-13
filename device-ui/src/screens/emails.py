@@ -828,11 +828,6 @@ class EmailsScreen(BaseScreen):
 
         emails = self._filtered_emails
         if not self._gmail_connected:
-<<<<<<< Updated upstream
-            err_detail = f"\n({self._gmail_error})" if self._gmail_error else ""
-            self._list_container.add_widget(_lbl(
-                (
-=======
             err = (self._gmail_error or "").lower()
             if "401" in err or "not authenticated" in err:
                 msg = (
@@ -854,18 +849,12 @@ class EmailsScreen(BaseScreen):
                 )
             else:
                 msg = (
->>>>>>> Stashed changes
                     "Connect Gmail in the web dashboard:\n"
                     "Settings \u2192 Integrations \u2192 Gmail.\n"
                     "Then reopen Emails here."
-<<<<<<< Updated upstream
-                    + err_detail
-                ),
-=======
                 )
             self._list_container.add_widget(_lbl(
                 msg,
->>>>>>> Stashed changes
                 _FONT_MD, _ff(18), _MUTED,
                 halign="center", valign="middle",
                 size_hint=(0.92, None),
