@@ -308,9 +308,16 @@ class EmailsScreen(BaseScreen):
         self._all_emails: list = []
         self._filtered_emails: list = []
         self._selected_email: dict | None = None
+<<<<<<< HEAD
+        self._active_tab: str = "all"
+=======
         self._active_tab: str = "today"
         self._gmail_connected: bool = True
         self._gmail_error: str | None = None
+<<<<<<< Updated upstream
+=======
+>>>>>>> 80acb610da5b2fd2afda5f1e8358d5b30b67449c
+>>>>>>> Stashed changes
 
         # Dynamic label refs
         self._tab_labels: dict = {}          # tab -> Label
@@ -738,7 +745,7 @@ class EmailsScreen(BaseScreen):
                 else:
                     emails = await self.backend.get_emails(filter="all", limit=50)
             except Exception as exc:
-                logger.debug("_load_emails failed: %s", exc)
+                logger.warning("_load_emails failed: %s", exc)
                 emails = []
                 connected = False
                 err_msg = str(exc) if str(exc) else None
@@ -748,6 +755,11 @@ class EmailsScreen(BaseScreen):
                 self._gmail_error = err_msg
                 self._all_emails = emails
                 self._update_tab_counts()
+                # If active tab is "today" but nothing arrived today, fall back to "all"
+                if self._active_tab == "today" and not any(e.get("is_today") for e in emails):
+                    self._active_tab = "all"
+                    for tid, lbl in self._tab_labels.items():
+                        lbl.bold = (tid == "all")
                 self._apply_filter()
                 if emails and self._selected_email is None:
                     self._select_email(emails[0])
