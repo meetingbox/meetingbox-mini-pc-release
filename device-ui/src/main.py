@@ -585,6 +585,10 @@ class MeetingBoxApp(App):
         self.voice_wake_phrase_display = "Hey buddy"
         self.voice_assistant_enabled = True
         self.assistant_speech_volume = 85
+        # Realtime may only start when _handle_voice_wake_phrase sets this True (one-shot).
+        self._realtime_launch_permitted = False
+        # Limits cloud NL replies per wake/mic activation (local wake listening unaffected).
+        self._voice_cloud_qa_budget = 0
 
     # ==================================================================
     # BUILD
@@ -1828,6 +1832,17 @@ class MeetingBoxApp(App):
             )
 
     def _handle_voice_wake_phrase(self, _text: str) -> None:
+        """Run after local wake detection or mic orb (same flow).
+
+        Arms at most one cloud Q&A reply for this wake. OpenAI Realtime may only start
+        when voice_realtime_assistant is on and `_realtime_launch_permitted` is set here.
+        """
+        if getattr(self, "voice_assistant_enabled", True):
+            self._voice_cloud_qa_budget = 1
+        else:
+            self._voice_cloud_qa_budget = 0
+        self._realtime_launch_permitted = False
+
         timeout = max(2.0, self.voice_assistant.command_timeout_seconds)
         lbl = getattr(self, "voice_wake_phrase_display", "Hey buddy") or "Hey buddy"
 
@@ -1860,6 +1875,8 @@ class MeetingBoxApp(App):
             and not USE_MOCK_BACKEND
             and not WAKE_LOCAL_VOICE_ONLY
         ):
+            self._realtime_launch_permitted = True
+
             def _kick_realtime(_dt):
                 self._show_home_listening_after_wake()
                 self._start_realtime_voice_session()
@@ -1920,34 +1937,44 @@ class MeetingBoxApp(App):
             return
         if self._voice_pending_confirmation:
             return
-        phrase = (text or "").strip()
-        if len(phrase) < 3:
+        if getattr(self, "_voice_cloud_qa_budget", 0) <= 0:
+            logger.debug("Cloud assistant Q&A skipped (no budget for this wake cycle)")
             return
+        phrase = (text or "").strip()
+        if len(phrase) < 6:
+            return
+
+        self._voice_cloud_qa_budget -= 1
 
         async def _go():
             self._set_voice_indicator_override("wake", "Thinking…", duration=None)
             try:
                 if not USE_MOCK_BACKEND and not get_device_auth_token().strip():
+                    if getattr(self, "voice_assistant_enabled", True):
+                        Clock.schedule_once(
+                            lambda _dt: self._voice_reply_and_extend_listening(
+                                "Pair this device with your account so I can answer questions.",
+                                error=True,
+                            ),
+                            0,
+                        )
+                    return
+                res = await self.backend.post_assistant_intent(phrase)
+                raw = (res.get("assistant_message") or "").strip() or "Okay."
+                if getattr(self, "voice_assistant_enabled", True):
+                    Clock.schedule_once(
+                        lambda _dt, m=raw: self._voice_reply_and_extend_listening(m), 0
+                    )
+            except Exception as e:
+                logger.warning("Assistant conversation failed: %s", e)
+                if getattr(self, "voice_assistant_enabled", True):
                     Clock.schedule_once(
                         lambda _dt: self._voice_reply_and_extend_listening(
-                            "Pair this device with your account so I can answer questions.",
+                            "I could not reach the assistant. Check BACKEND_URL and your network.",
                             error=True,
                         ),
                         0,
                     )
-                    return
-                res = await self.backend.post_assistant_intent(phrase)
-                raw = (res.get("assistant_message") or "").strip() or "Okay."
-                Clock.schedule_once(lambda _dt, m=raw: self._voice_reply_and_extend_listening(m), 0)
-            except Exception as e:
-                logger.warning("Assistant conversation failed: %s", e)
-                Clock.schedule_once(
-                    lambda _dt: self._voice_reply_and_extend_listening(
-                        "I could not reach the assistant. Check BACKEND_URL and your network.",
-                        error=True,
-                    ),
-                    0,
-                )
             finally:
                 Clock.schedule_once(lambda _dt: self._clear_voice_indicator_override(), 0)
 
@@ -2023,7 +2050,18 @@ class MeetingBoxApp(App):
             logger.debug(
                 "Realtime voice session request already in flight; skipping duplicate"
             )
+            self._realtime_launch_permitted = False
             return
+
+        if not getattr(self, "_realtime_launch_permitted", False):
+            logger.warning(
+                "Realtime voice session rejected (not armed by wake phrase); using local assistant"
+            )
+            Clock.schedule_once(
+                lambda _dt: self._begin_local_voice_command_session(), 0
+            )
+            return
+        self._realtime_launch_permitted = False
 
         if not get_device_auth_token().strip():
             Clock.schedule_once(

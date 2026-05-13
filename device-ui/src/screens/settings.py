@@ -542,6 +542,9 @@ class SettingsScreen(BaseScreen):
 
     def _on_voice_assistant_enabled_toggled(self, active):
         self.app.voice_assistant_enabled = bool(active)
+        if not active:
+            self.app._voice_cloud_qa_budget = 0
+            self.app._realtime_launch_permitted = False
         if hasattr(self.app, "voice_assistant") and self.app.voice_assistant:
             self.app.voice_assistant.apply_server_settings(enabled=bool(active))
         if hasattr(self.app, "_sync_voice_assistant_state"):
@@ -557,6 +560,8 @@ class SettingsScreen(BaseScreen):
 
     def _on_voice_realtime_toggled(self, active):
         self.app.voice_realtime_assistant = bool(active)
+        if not active and hasattr(self.app, "_realtime_launch_permitted"):
+            self.app._realtime_launch_permitted = False
 
         async def _save():
             try:

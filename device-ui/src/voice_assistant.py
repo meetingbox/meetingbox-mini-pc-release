@@ -222,7 +222,7 @@ class VoiceCommandInterpreter:
         self._awaiting_confirmation_until = 0.0
 
     def _heard_wake_phrase(self, text: str) -> bool:
-        return _best_phrase_similarity(text, self.wake_phrase) >= 0.72
+        return _best_phrase_similarity(text, self.wake_phrase) >= 0.82
 
     def _matches_any(self, text: str, phrases: tuple[str, ...], threshold: float = 0.76) -> bool:
         return any(_best_phrase_similarity(text, phrase) >= threshold for phrase in phrases)
@@ -519,7 +519,7 @@ class VoiceAssistant:
         if (
             self._on_conversation_turn is not None
             and intent is None
-            and len(norm) >= 3
+            and len(norm) >= 6
             and self.in_command_window()
             and not self._interpreter.is_wake_only_utterance(norm)
         ):
