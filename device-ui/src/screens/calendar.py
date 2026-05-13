@@ -1128,11 +1128,20 @@ class CalendarScreen(BaseScreen):
         if self._refresh_event:
             self._refresh_event.cancel()
         self._refresh_event = Clock.schedule_interval(self._tick, 60)
+        # Reload data from server every 30 s to pick up new meetings/calendar events
+        if getattr(self, "_data_poll_event", None):
+            self._data_poll_event.cancel()
+        self._data_poll_event = Clock.schedule_interval(
+            lambda _dt: self._load_week(), 30.0
+        )
 
     def on_leave(self) -> None:
         if self._refresh_event:
             self._refresh_event.cancel()
             self._refresh_event = None
+        if getattr(self, "_data_poll_event", None):
+            self._data_poll_event.cancel()
+            self._data_poll_event = None
 
     def _tick(self, _dt) -> None:
         """Called every minute — re-renders the day view to update glow/state."""

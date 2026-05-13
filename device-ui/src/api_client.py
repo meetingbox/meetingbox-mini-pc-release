@@ -35,6 +35,52 @@ logger = logging.getLogger(__name__)
 _GMAIL_RECENT_DAYS = 90
 
 
+def _meetings_to_calendar_days(meetings: list, start_date: str, end_date: str) -> dict:
+    """
+    Convert a list of local recorded meetings into the calendar/week dict format:
+      {"days": {"YYYY-MM-DD": {"meetings": [...]}}}
+    Used as a fallback when Google Calendar is not connected.
+    """
+    from datetime import date as _date
+    try:
+        d_start = _date.fromisoformat(start_date)
+        d_end = _date.fromisoformat(end_date)
+    except ValueError:
+        return {"days": {}}
+
+    days: dict = {}
+    for m in meetings:
+        # start_time may be in various formats
+        raw_start = m.get("start_time") or m.get("started_at") or m.get("created_at") or ""
+        if not raw_start:
+            continue
+        try:
+            if raw_start.endswith("Z"):
+                raw_start = raw_start[:-1] + "+00:00"
+            dt = datetime.fromisoformat(raw_start)
+            day_str = dt.date().isoformat()
+        except ValueError:
+            continue
+        try:
+            meeting_date = _date.fromisoformat(day_str)
+        except ValueError:
+            continue
+        if not (d_start <= meeting_date <= d_end):
+            continue
+
+        event = {
+            "id": m.get("id", ""),
+            "title": m.get("title") or "Meeting",
+            "start": m.get("start_time") or raw_start,
+            "end": m.get("end_time") or m.get("stop_time") or m.get("start_time") or raw_start,
+            "status": m.get("status", "completed"),
+            "source": "local",
+        }
+        days.setdefault(day_str, {"meetings": []})["meetings"].append(event)
+
+    return {"days": days}
+
+
 def _parse_sender_display(raw: str) -> str:
     """Parse 'Display Name <addr@host>' into a short display name (same idea as server emails route)."""
     m = re.match(r"^(.*?)\s*<([^>]+)>", (raw or "").strip())
@@ -353,10 +399,7 @@ class BackendClient:
     async def get_meetings(self, limit: int = 20, offset: int = 0) -> List[Dict]:
         """
         GET /api/meetings/?limit=&offset=
-        Returns list of meeting dicts.
-        Backend shape: { id, title, start_time, end_time, duration, status,
-                         audio_path, created_at }
-        We normalise to the shape the UI expects.
+        Returns list of meeting dicts. Returns [] on any error so callers never crash.
         """
         try:
             resp = await self.client.get(
@@ -365,13 +408,17 @@ class BackendClient:
             )
             resp.raise_for_status()
             meetings = resp.json()
-            # Normalise: add pending_actions=0 if missing
+            if not isinstance(meetings, list):
+                return []
             for m in meetings:
                 m.setdefault('pending_actions', 0)
             return meetings
+        except httpx.HTTPStatusError as e:
+            logger.warning("get_meetings HTTP %s: %s", e.response.status_code, e.response.text[:200])
+            return []
         except Exception as e:
-            logger.error(f"Failed to fetch meetings: {e}")
-            raise
+            logger.warning("get_meetings failed: %s", e)
+            return []
 
     async def get_meeting_detail(self, meeting_id: str) -> Dict:
         """
@@ -529,21 +576,20 @@ class BackendClient:
             message: str,
             meeting_id: Optional[str] = None,
     ) -> Dict:
-        """POST /api/assistant/intent — route a natural-language request."""
-        try:
-            payload: Dict = {"message": message}
-            if meeting_id:
-                payload["meeting_id"] = meeting_id
-            resp = await self.client.post(
-                f"{self.base_url}/api/assistant/intent",
-                json=payload,
-                timeout=120.0,
-            )
-            resp.raise_for_status()
-            return resp.json()
-        except Exception as e:
-            logger.error("Assistant intent failed: %s", e)
-            raise
+        """POST /api/assistant/intent — route a natural-language request.
+        Raises on failure so callers (voice assistant) can distinguish network
+        errors from empty responses.
+        """
+        payload: Dict = {"message": message}
+        if meeting_id:
+            payload["meeting_id"] = meeting_id
+        resp = await self.client.post(
+            f"{self.base_url}/api/assistant/intent",
+            json=payload,
+            timeout=120.0,
+        )
+        resp.raise_for_status()
+        return resp.json()
 
     async def approve_assistant_pending(self, pending_id: str) -> Dict:
         """POST /api/assistant/pending-actions/{id}/approve"""
@@ -696,23 +742,31 @@ class BackendClient:
         """GET /api/calendar/week?start=YYYY-MM-DD&end=YYYY-MM-DD
 
         Returns meetings grouped by date:
-        {
-          "days": {
-            "2026-05-04": {"meetings": [{id, title, start, end, ...}]},
-            ...
-          }
-        }
+          {"days": {"2026-05-04": {"meetings": [{id, title, start, end, ...}]}}}
+
+        Falls back to local recorded meetings when Google Calendar is not connected.
         """
+        # --- Primary: Google Calendar via server ---
         try:
             resp = await self.client.get(
                 f"{self.base_url}/api/calendar/week",
                 params={"start": start_date, "end": end_date},
             )
             resp.raise_for_status()
-            return resp.json()
+            data = resp.json()
+            if isinstance(data, dict) and "days" in data:
+                return data
         except Exception as e:
-            logger.debug("get_calendar_week failed: %s", e)
-            return {"days": {}}
+            logger.debug("get_calendar_week google failed: %s — using meetings fallback", e)
+
+        # --- Fallback: build calendar view from local recorded meetings ---
+        try:
+            meetings = await self.get_meetings(limit=100)
+            return _meetings_to_calendar_days(meetings, start_date, end_date)
+        except Exception as e:
+            logger.debug("get_calendar_week fallback failed: %s", e)
+
+        return {"days": {}}
 
     async def get_briefing_context(self, days_ahead: int = 1) -> Dict:
         """GET /api/briefing/context — calendar slice, tasks, mem0, Gmail preview."""

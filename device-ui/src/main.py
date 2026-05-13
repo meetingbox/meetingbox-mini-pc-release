@@ -1970,11 +1970,12 @@ class MeetingBoxApp(App):
                     )
             except Exception as e:
                 logger.warning("Assistant conversation failed: %s", e)
+                # Don't speak the error — just flash the voice indicator briefly so the
+                # user knows the request failed without an annoying spoken error message.
                 if getattr(self, "voice_assistant_enabled", True):
                     Clock.schedule_once(
-                        lambda _dt: self._voice_reply_and_extend_listening(
-                            "Cannot reach the server. Check your network or ask an admin to restart the server.",
-                            error=True,
+                        lambda _dt: self._set_voice_indicator_override(
+                            "error", "No server connection", 2.5
                         ),
                         0,
                     )
@@ -2249,31 +2250,43 @@ class MeetingBoxApp(App):
             except Exception as e:
                 logger.debug("mimic3 TTS failed: %s", e)
 
-        # --- 3. espeak-ng / espeak with natural voice settings ---
-        # Use en-us+f3 (natural American English female, variant 3)
-        # -p 46 = moderate pitch, -s 125 = comfortable speed, -g 3 = small word gap
-        for exe_name, voice in (("espeak-ng", "en-us+f3"), ("espeak", "en")):
-            exe = shutil.which(exe_name)
+        # --- 3. espeak-ng / espeak — try progressively simpler voice flags ---
+        # Try natural voice variants first, fall back to bare defaults so
+        # something always plays even if optional voice data isn't installed.
+        esng = shutil.which("espeak-ng")
+        esp = shutil.which("espeak")
+        for exe, voice_flags in [
+            # Most natural: American English female variant (built-in, no MBROLA needed)
+            (esng, ["-v", "en-us+f3", "-s", "125", "-p", "46", "-g", "3"]),
+            # Fallback: plain American English accent
+            (esng, ["-v", "en-us", "-s", "125"]),
+            # Fallback: bare espeak-ng (default voice)
+            (esng, ["-s", "125"]),
+            # Legacy espeak binary
+            (esp,  ["-v", "en", "-s", "125"]),
+        ]:
             if not exe:
                 continue
             try:
-                subprocess.run(
-                    [exe, "-v", voice, "-s", "125", "-p", "46", "-g", "3", "-a", amp, phrase],
+                result = subprocess.run(
+                    [exe, *voice_flags, "-a", amp, phrase],
                     check=False,
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
-                    timeout=15,
+                    timeout=20,
                 )
-                return True
+                if result.returncode == 0:
+                    return True
+                # Non-zero return might mean bad voice flag — try next variant
+                logger.debug("espeak returncode=%s for flags %s", result.returncode, voice_flags)
             except Exception as e:
-                logger.warning("Voice feedback via %s failed: %s", exe, e)
+                logger.debug("espeak attempt failed (%s): %s", voice_flags, e)
 
         # --- 4. espeak-ng --stdout | aplay (last resort) ---
-        esng = shutil.which("espeak-ng")
         if esng and aplay:
             try:
                 proc = subprocess.Popen(
-                    [esng, "-v", "en-us+f3", "-s", "125", "-p", "46", "-g", "3", "-a", amp, phrase, "--stdout"],
+                    [esng, "-v", "en-us", "-s", "125", "-a", amp, phrase, "--stdout"],
                     stdout=subprocess.PIPE,
                     stderr=subprocess.DEVNULL,
                 )
