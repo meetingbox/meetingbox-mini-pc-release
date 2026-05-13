@@ -93,17 +93,30 @@ class MeetingsScreen(BaseScreen):
 
     def on_enter(self):
         self._load_meetings()
+        if getattr(self, "_poll_event", None):
+            self._poll_event.cancel()
+        self._poll_event = Clock.schedule_interval(
+            lambda _dt: self._load_meetings(silent=True), 30.0
+        )
 
-    def _load_meetings(self):
-        self._show_loading()
+    def on_leave(self):
+        if getattr(self, "_poll_event", None):
+            self._poll_event.cancel()
+            self._poll_event = None
+
+    def _load_meetings(self, silent: bool = False):
+        if not silent:
+            self._show_loading()
 
         async def _load():
-            try:
-                meetings = await self.backend.get_meetings(limit=MEETINGS_LIST_LIMIT)
-                self.meetings = meetings
-                Clock.schedule_once(lambda _: self._populate(), 0)
-            except Exception:
-                Clock.schedule_once(lambda _: self._show_empty('Could not load meetings. Check backend connection.'), 0)
+            meetings = await self.backend.get_meetings(limit=MEETINGS_LIST_LIMIT)
+            def _apply(_dt):
+                if meetings:
+                    self.meetings = meetings
+                    self._populate()
+                elif not silent:
+                    self._show_empty('No meetings yet. Start a recording to create one.')
+            Clock.schedule_once(_apply, 0)
         run_async(_load())
 
     def _show_loading(self):
