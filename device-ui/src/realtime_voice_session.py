@@ -14,6 +14,9 @@ from kivy.clock import Clock
 
 logger = logging.getLogger(__name__)
 
+# Flip to True when OpenAI Realtime WebSocket/session is wired up end-to-end.
+REALTIME_VOICE_IMPLEMENTED = False
+
 
 class RealtimeVoiceSession:
     """Minimal lifecycle wrapper — runs callbacks on a background thread."""

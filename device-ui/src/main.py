@@ -237,6 +237,11 @@ from network_util import linux_ethernet_ready
 from profile_store import get_active_profile, clear_active_profile_selection
 from voice_assistant import VoiceAssistant, VoiceIntent
 
+try:
+    from realtime_voice_session import REALTIME_VOICE_IMPLEMENTED
+except ImportError:
+    REALTIME_VOICE_IMPLEMENTED = False
+
 # Boot-flow screens
 from screens.splash import SplashScreen
 from screens.welcome import WelcomeScreen
@@ -1850,6 +1855,7 @@ class MeetingBoxApp(App):
 
         if (
             getattr(self, "voice_realtime_assistant", False)
+            and REALTIME_VOICE_IMPLEMENTED
             and get_device_auth_token().strip()
             and not USE_MOCK_BACKEND
             and not WAKE_LOCAL_VOICE_ONLY
@@ -2206,20 +2212,12 @@ class MeetingBoxApp(App):
         self._speak_text_async(text)
 
     def _voice_reply_and_extend_listening(self, message: str, *, error: bool = False) -> None:
-        """Speak assistant text and reopen the post-wake command window for multi-turn chat."""
+        """Speak assistant text; next question requires another wake phrase or mic tap."""
         msg = self._trim_voice_text(message, 450)
         words = max(1, len(msg.split()))
         dur = min(45.0, max(2.5, words * 0.42))
         st = "error" if error else "speaking"
         self._voice_reply(msg, state=st, duration=dur)
-
-        def _extend(_dt):
-            try:
-                self.voice_assistant.simulate_wake()
-            except Exception:
-                logger.debug("simulate_wake after assistant reply failed", exc_info=True)
-
-        Clock.schedule_once(_extend, dur + 0.35)
 
     @staticmethod
     def _format_voice_duration(seconds: int) -> str:
