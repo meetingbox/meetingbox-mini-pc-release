@@ -309,6 +309,8 @@ class EmailsScreen(BaseScreen):
         self._filtered_emails: list = []
         self._selected_email: dict | None = None
         self._active_tab: str = "today"
+        self._gmail_connected: bool = True
+        self._gmail_error: str | None = None
 
         # Dynamic label refs
         self._tab_labels: dict = {}          # tab -> Label
@@ -715,13 +717,35 @@ class EmailsScreen(BaseScreen):
 
     def _load_emails(self):
         async def _fetch():
+            emails: list = []
+            connected = True
+            err_msg: str | None = None
             try:
-                emails = await self.backend.get_emails(filter="all", limit=50)
+                fetch = getattr(self.backend, "fetch_gmail_recent", None)
+                if fetch is not None:
+                    data = await fetch(max_results=40, days=90, q="")
+                    connected = bool(data.get("connected"))
+                    err_msg = (data.get("error") or "").strip() or None
+                    rows = data.get("messages") or []
+                    if connected and isinstance(rows, list):
+                        from api_client import _map_gmail_recent_row
+
+                        emails = [
+                            _map_gmail_recent_row(m)
+                            for m in rows
+                            if isinstance(m, dict) and m.get("id")
+                        ]
+                else:
+                    emails = await self.backend.get_emails(filter="all", limit=50)
             except Exception as exc:
                 logger.debug("_load_emails failed: %s", exc)
                 emails = []
+                connected = False
+                err_msg = str(exc) if str(exc) else None
 
             def _apply(_dt):
+                self._gmail_connected = connected
+                self._gmail_error = err_msg
                 self._all_emails = emails
                 self._update_tab_counts()
                 self._apply_filter()
@@ -757,6 +781,32 @@ class EmailsScreen(BaseScreen):
         self._list_container.clear_widgets()
 
         emails = self._filtered_emails
+        if not self._gmail_connected:
+            self._list_container.add_widget(_lbl(
+                (
+                    "Connect Gmail in the web dashboard:\n"
+                    "Settings → Integrations → Gmail.\n"
+                    "Then reopen Emails here."
+                ),
+                _FONT_MD, _ff(18), _MUTED,
+                halign="center", valign="middle",
+                size_hint=(0.92, None),
+                height=_ff(120),
+                pos_hint={"x": 0.04, "y": 0.38},
+            ))
+            self._list_container.height = _ff(567)
+            return
+        if not emails and self._gmail_error:
+            self._list_container.add_widget(_lbl(
+                self._gmail_error,
+                _FONT_MD, _ff(16), (0.9, 0.75, 0.35, 1.0),
+                halign="center", valign="middle",
+                size_hint=(0.92, None),
+                height=_ff(80),
+                pos_hint={"x": 0.04, "y": 0.42},
+            ))
+            self._list_container.height = _ff(567)
+            return
         if not emails:
             self._list_container.add_widget(_lbl(
                 "No emails", _FONT_MD, _ff(18), _MUTED,

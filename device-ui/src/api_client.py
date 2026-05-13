@@ -9,7 +9,9 @@ import asyncio
 import json
 import logging
 import os
-from datetime import datetime
+import re
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 from typing import AsyncIterator, Dict, List, Optional
 from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
@@ -28,6 +30,89 @@ from config import (
 )
 
 logger = logging.getLogger(__name__)
+
+# Match dashboard Emails tab (`frontend/src/pages/Emails.tsx`).
+_GMAIL_RECENT_DAYS = 90
+
+
+def _parse_sender_display(raw: str) -> str:
+    """Parse 'Display Name <addr@host>' into a short display name (same idea as server emails route)."""
+    m = re.match(r"^(.*?)\s*<([^>]+)>", (raw or "").strip())
+    if m:
+        name = m.group(1).strip().strip('"')
+        addr = m.group(2).strip()
+        return name or addr
+    s = (raw or "").strip()
+    return s or "—"
+
+
+def _parse_message_date(raw_date: str) -> Optional[datetime]:
+    s = (raw_date or "").strip()
+    if not s:
+        return None
+    try:
+        return parsedate_to_datetime(s)
+    except Exception:
+        pass
+    try:
+        if len(s) >= 10 and s[4] == "-" and s[7] == "-":
+            return datetime.fromisoformat(s[:10]).replace(tzinfo=timezone.utc)
+    except Exception:
+        pass
+    return None
+
+
+def _is_today_rfc(raw_date: str) -> bool:
+    dt = _parse_message_date(raw_date)
+    if dt is None:
+        return False
+    try:
+        now = datetime.now(tz=timezone.utc)
+        return (now - dt).days == 0
+    except Exception:
+        return False
+
+
+def _friendly_time_rfc(raw_date: str) -> str:
+    """Portable version of server emails `_friendly_time` (no platform-specific strftime)."""
+    dt = _parse_message_date(raw_date)
+    if dt is None:
+        return (raw_date or "")[:10] if raw_date else "—"
+    try:
+        now = datetime.now(tz=timezone.utc)
+        local_dt = dt.astimezone()
+        delta_days = (now - dt).days
+        if delta_days == 0:
+            h24 = local_dt.hour
+            h12 = h24 % 12 or 12
+            ampm = "AM" if h24 < 12 else "PM"
+            return f"{h12}:{local_dt.minute:02d} {ampm}"
+        if delta_days < 7:
+            return local_dt.strftime("%a %d")
+        return local_dt.strftime("%b %d")
+    except Exception:
+        return raw_date[:10] if raw_date else "—"
+
+
+def _map_gmail_recent_row(msg: Dict) -> Dict:
+    """Shape from `GET /api/integrations/gmail/recent` `messages[]` → device EmailsScreen row."""
+    raw_from = msg.get("from") or ""
+    raw_date = msg.get("date") or ""
+    snippet = msg.get("snippet") or ""
+    return {
+        "id": msg["id"],
+        "thread_id": msg.get("threadId"),
+        "sender": _parse_sender_display(raw_from),
+        "sender_email": raw_from,
+        "subject": (msg.get("subject") or "(no subject)").strip() or "(no subject)",
+        "preview": snippet,
+        "body": snippet,
+        "time": _friendly_time_rfc(raw_date),
+        "date": raw_date,
+        "is_today": _is_today_rfc(raw_date),
+        "is_read": bool(msg.get("is_read", True)),
+        "to": "",
+    }
 
 
 def build_websocket_url(base_ws_url: str) -> str:
@@ -614,18 +699,52 @@ class BackendClient:
     # EMAIL API
     # ==================================================================
 
-    async def get_emails(self, filter: str = "all", limit: int = 50) -> List[Dict]:
-        """GET /api/emails?filter=all|today|unread&limit=N"""
+    async def fetch_gmail_recent(
+            self,
+            *,
+            max_results: int = 40,
+            days: int = _GMAIL_RECENT_DAYS,
+            q: str = "",
+    ) -> Dict:
+        """
+        GET /api/integrations/gmail/recent — same feed as dashboard Emails tab; works with device Bearer token.
+        """
         try:
             resp = await self.client.get(
-                f"{self.base_url}/api/emails",
-                params={"filter": filter, "limit": int(limit)},
+                f"{self.base_url}/api/integrations/gmail/recent",
+                params={
+                    "max_results": int(max_results),
+                    "days": int(days),
+                    "q": (q or "").strip(),
+                },
             )
             resp.raise_for_status()
-            return resp.json()
+            data = resp.json()
+            if not isinstance(data, dict):
+                return {"connected": False, "messages": [], "error": "Invalid response"}
+            return data
+        except httpx.HTTPStatusError as e:
+            logger.warning(
+                "fetch_gmail_recent HTTP %s: %s",
+                e.response.status_code,
+                (e.response.text or "")[:300],
+            )
+            return {
+                "connected": False,
+                "messages": [],
+                "error": f"HTTP {e.response.status_code}",
+            }
         except Exception as e:
-            logger.debug("get_emails failed: %s", e)
+            logger.warning("fetch_gmail_recent failed: %s", e)
+            return {"connected": False, "messages": [], "error": str(e)}
+
+    async def get_emails(self, filter: str = "all", limit: int = 50) -> List[Dict]:
+        """Load Gmail rows using the same API as the web dashboard (filter applied locally by EmailsScreen)."""
+        data = await self.fetch_gmail_recent(max_results=limit, days=_GMAIL_RECENT_DAYS, q="")
+        rows = data.get("messages") or []
+        if not isinstance(rows, list):
             return []
+        return [_map_gmail_recent_row(m) for m in rows if isinstance(m, dict) and m.get("id")]
 
     async def mark_email_unread(self, email_id: str) -> Dict:
         """POST /api/emails/{id}/mark-unread"""

@@ -344,14 +344,50 @@ class MockBackendClient:
     # EMAILS (MOCK)
     # ==================================================================
 
+    async def fetch_gmail_recent(
+            self,
+            *,
+            max_results: int = 40,
+            days: int = 90,
+            q: str = "",
+    ) -> Dict:
+        await asyncio.sleep(0.1)
+        msgs = []
+        for e in self._emails:
+            se = (e.get("sender_email") or "").strip()
+            sn = (e.get("sender") or "").strip()
+            if se and sn:
+                frm = f"{sn} <{se}>"
+            elif se:
+                frm = se
+            else:
+                frm = sn or "—"
+            msgs.append({
+                "id": e["id"],
+                "threadId": e.get("thread_id"),
+                "from": frm,
+                "subject": e.get("subject", ""),
+                "snippet": e.get("preview", ""),
+                "date": e.get("date", ""),
+                "is_read": bool(e.get("is_read", True)),
+            })
+        return {"connected": True, "messages": msgs[:max_results], "count": len(msgs)}
+
     async def get_emails(self, filter: str = "all", limit: int = 50) -> List[Dict]:
-        await asyncio.sleep(0.15)
-        emails = self._emails
+        from api_client import _GMAIL_RECENT_DAYS, _map_gmail_recent_row
+
+        data = await self.fetch_gmail_recent(max_results=limit, days=_GMAIL_RECENT_DAYS, q="")
+        rows = data.get("messages") or []
+        mapped = [
+            _map_gmail_recent_row(m)
+            for m in rows
+            if isinstance(m, dict) and m.get("id")
+        ]
         if filter == "today":
-            emails = [e for e in emails if e.get("is_today")]
+            mapped = [e for e in mapped if e.get("is_today")]
         elif filter == "unread":
-            emails = [e for e in emails if not e.get("is_read")]
-        return emails[:limit]
+            mapped = [e for e in mapped if not e.get("is_read")]
+        return mapped[:limit]
 
     async def mark_email_unread(self, email_id: str) -> dict:
         await asyncio.sleep(0.1)
