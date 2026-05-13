@@ -150,6 +150,15 @@ def _build_intent_specs(start_commands: list[str]) -> tuple[_IntentSpec, ...]:
         _IntentSpec("recording_elapsed", ("how long have we been recording", "recording duration", "meeting duration", "how long is the meeting")),
         _IntentSpec("go_home", ("go home", "open home", "show home screen", "take me home", "home screen")),
         _IntentSpec("open_settings", ("open settings", "show settings", "go to settings")),
+        _IntentSpec("show_emails", (
+            "show emails", "open emails", "show inbox", "open inbox", "my inbox",
+            "check emails", "read emails", "view emails", "check inbox",
+            "show my inbox", "open my inbox", "check my emails",
+        )),
+        _IntentSpec("show_calendar", (
+            "show calendar", "open calendar", "my calendar", "check calendar",
+            "view calendar", "show schedule", "open schedule",
+        )),
         _IntentSpec("show_meetings", ("show meetings", "open meetings", "show recent meetings", "my meetings")),
         _IntentSpec("show_last_meeting", ("show last meeting", "open last meeting", "last meeting")),
         _IntentSpec("summarize_last_meeting", ("summarize last meeting", "read last meeting summary", "what was the last meeting about", "summarize my last meeting")),

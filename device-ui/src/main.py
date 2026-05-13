@@ -1846,7 +1846,13 @@ class MeetingBoxApp(App):
         when voice_realtime_assistant is on and `_realtime_launch_permitted` is set here.
         """
         if getattr(self, "voice_assistant_enabled", True):
-            self._voice_cloud_qa_budget = 1
+            # During an active meeting recording, suppress cloud Q&A so the
+            # ambient conversation is not sent to the AI. Local commands
+            # (stop/pause/resume meeting etc.) still work.
+            if self.recording_state.get("active"):
+                self._voice_cloud_qa_budget = 0
+            else:
+                self._voice_cloud_qa_budget = 1
         else:
             self._voice_cloud_qa_budget = 0
         self._realtime_launch_permitted = False
@@ -2904,6 +2910,16 @@ class MeetingBoxApp(App):
         if intent.name == "open_settings":
             self.goto_screen("settings", "slide_left")
             self._voice_reply("Opening settings.", duration=2.5)
+            return
+
+        if intent.name == "show_emails":
+            self.goto_screen("emails", "slide_left")
+            self._voice_reply("Opening inbox.", duration=2.5)
+            return
+
+        if intent.name == "show_calendar":
+            self.goto_screen("calendar", "slide_left")
+            self._voice_reply("Opening calendar.", duration=2.5)
             return
 
         if intent.name == "show_meetings":
