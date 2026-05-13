@@ -1961,7 +1961,12 @@ class MeetingBoxApp(App):
         self._voice_cloud_qa_budget -= 1
 
         async def _go():
-            self._set_voice_indicator_override("wake", "Thinking…", duration=None)
+            # Always use Clock.schedule_once for Kivy UI ops — this coroutine
+            # runs on the asyncio background thread, not the Kivy main thread.
+            Clock.schedule_once(
+                lambda _dt: self._set_voice_indicator_override("wake", "Thinking…", duration=None),
+                0,
+            )
             try:
                 if not USE_MOCK_BACKEND and not get_device_auth_token().strip():
                     if getattr(self, "voice_assistant_enabled", True):
@@ -1981,8 +1986,6 @@ class MeetingBoxApp(App):
                     )
             except Exception as e:
                 logger.warning("Assistant conversation failed: %s", e)
-                # Don't speak the error — just flash the voice indicator briefly so the
-                # user knows the request failed without an annoying spoken error message.
                 if getattr(self, "voice_assistant_enabled", True):
                     Clock.schedule_once(
                         lambda _dt: self._set_voice_indicator_override(
@@ -2332,9 +2335,15 @@ class MeetingBoxApp(App):
             # Vosk resumes — prevents the last syllable triggering a new command.
             import time as _time
             _time.sleep(1.5)
-            if va is not None:
-                va.set_tts_active(False)
-            self._speaking_lock.release()
+            try:
+                if va is not None:
+                    va.set_tts_active(False)
+            except Exception:
+                pass
+            try:
+                self._speaking_lock.release()
+            except RuntimeError:
+                pass
 
     def _speak_text_async(self, text: str) -> None:
         threading.Thread(

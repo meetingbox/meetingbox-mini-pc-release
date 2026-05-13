@@ -442,15 +442,29 @@ class VoiceAssistant:
         self._thread = None
 
     def set_tts_active(self, active: bool) -> None:
-        """Suppress mic input while TTS speaker output is playing (prevents feedback loop)."""
+        """Suppress mic input while TTS speaker output is playing (prevents feedback loop).
+
+        Also closes the sounddevice input stream while TTS is playing so the
+        ALSA audio device is fully released before espeak-ng/aplay open the
+        output side. The _run loop re-opens the stream automatically once
+        _tts_active clears and the stream is None.
+        """
         with self._tts_lock:
             self._tts_active = active
         if active:
+            # Close the mic stream so ALSA is not held while the speaker plays.
+            # This avoids hard-to-catch audio-subsystem crashes on single-device
+            # USB dongles and on some ALSA configurations.
+            try:
+                self._close_stream()
+            except Exception:
+                logger.debug("Voice: _close_stream during TTS failed (ignored)", exc_info=True)
             # Flush any queued audio so leftover snippets don't trigger a command
             self._clear_audio_queue()
-            logger.debug("Voice: mic suppressed (TTS playing)")
+            logger.debug("Voice: mic stream closed (TTS playing)")
         else:
-            logger.debug("Voice: mic resumed (TTS done)")
+            # Stream will be re-opened by _run loop on the next iteration.
+            logger.debug("Voice: mic will resume (TTS done)")
 
     def _is_tts_active(self) -> bool:
         with self._tts_lock:
@@ -520,7 +534,7 @@ class VoiceAssistant:
 
     def _run(self) -> None:
         while not self._stop_event.is_set():
-            if self._is_paused():
+            if self._is_paused() or self._is_tts_active():
                 self._stop_event.wait(0.25)
                 continue
             if not self._ensure_model_ready():
