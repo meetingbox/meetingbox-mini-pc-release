@@ -308,16 +308,9 @@ class EmailsScreen(BaseScreen):
         self._all_emails: list = []
         self._filtered_emails: list = []
         self._selected_email: dict | None = None
-<<<<<<< HEAD
         self._active_tab: str = "all"
-=======
-        self._active_tab: str = "today"
         self._gmail_connected: bool = True
         self._gmail_error: str | None = None
-<<<<<<< Updated upstream
-=======
->>>>>>> 80acb610da5b2fd2afda5f1e8358d5b30b67449c
->>>>>>> Stashed changes
 
         # Dynamic label refs
         self._tab_labels: dict = {}          # tab -> Label

@@ -140,62 +140,6 @@ def build_websocket_url(base_ws_url: str) -> str:
     )
 
 
-def _parse_gmail_sender(raw: str) -> tuple:
-    m = re.match(r"^(.*?)\s*<([^>]+)>", (raw or "").strip())
-    if m:
-        name = m.group(1).strip().strip('"')
-        addr = m.group(2).strip()
-        return (name or addr, addr)
-    s = (raw or "").strip()
-    return (s, s)
-
-
-def _gmail_friendly_time(raw_date: str) -> str:
-    try:
-        dt = parsedate_to_datetime(raw_date)
-        now = datetime.now(tz=timezone.utc)
-        local_dt = dt.astimezone()
-        if (now - dt).days == 0:
-            h = local_dt.hour % 12
-            if h == 0:
-                h = 12
-            return f"{h}:{local_dt.minute:02d} {local_dt.strftime('%p')}"
-        if (now - dt).days < 7:
-            return local_dt.strftime("%a %d")
-        return local_dt.strftime("%b %d")
-    except Exception:
-        return raw_date[:10] if raw_date else "—"
-
-
-def _gmail_is_today(raw_date: str) -> bool:
-    try:
-        dt = parsedate_to_datetime(raw_date)
-        now = datetime.now(tz=timezone.utc)
-        return (now - dt).days == 0
-    except Exception:
-        return False
-
-
-def _normalize_gmail_recent_row(msg: Dict) -> Dict:
-    """Map GET /api/integrations/gmail/recent row → device EmailsScreen row."""
-    sender_name, sender_addr = _parse_gmail_sender(msg.get("from", ""))
-    raw_date = msg.get("date", "")
-    return {
-        "id": msg["id"],
-        "thread_id": msg.get("threadId"),
-        "sender": sender_name,
-        "sender_email": sender_addr,
-        "subject": (msg.get("subject") or "").strip() or "(no subject)",
-        "preview": msg.get("snippet", ""),
-        "body": msg.get("snippet", ""),
-        "time": _gmail_friendly_time(raw_date),
-        "date": raw_date,
-        "is_today": _gmail_is_today(raw_date),
-        "is_read": msg.get("is_read", True),
-        "to": "",
-    }
-
-
 class BackendClient:
     """
     Client for MeetingBox backend API.
@@ -755,13 +699,6 @@ class BackendClient:
     # GMAIL (same feed as dashboard: GET /api/integrations/gmail/recent)
     # ==================================================================
 
-<<<<<<< Updated upstream
-=======
-<<<<<<< HEAD
-    async def get_emails(self, filter: str = "all", limit: int = 50) -> List[Dict]:
-        """List inbox via dashboard Gmail feed (device or user Bearer token)."""
-=======
->>>>>>> Stashed changes
     async def fetch_gmail_recent(
             self,
             *,
@@ -772,26 +709,9 @@ class BackendClient:
         """
         GET /api/integrations/gmail/recent — same feed as dashboard Emails tab; works with device Bearer token.
         """
-<<<<<<< Updated upstream
-=======
->>>>>>> 80acb610da5b2fd2afda5f1e8358d5b30b67449c
->>>>>>> Stashed changes
         try:
-            max_results = max(1, min(int(limit), 50))
-            # Match dashboard default window; optional tab-specific query if caller passes filter.
-            q = ""
-            days = 365
-            fl = (filter or "all").strip().lower()
-            if fl == "today":
-                q = "newer_than:1d"
-                days = 365
-            elif fl == "unread":
-                q = "is:unread"
-                days = 365
-            params: Dict = {"max_results": max_results, "days": days, "q": q}
             resp = await self.client.get(
                 f"{self.base_url}/api/integrations/gmail/recent",
-<<<<<<< Updated upstream
                 params={
                     "max_results": int(max_results),
                     "days": int(days),
@@ -818,41 +738,20 @@ class BackendClient:
             logger.warning("fetch_gmail_recent failed: %s", e)
             return {"connected": False, "messages": [], "error": str(e)}
 
-=======
-<<<<<<< HEAD
-                params=params,
-            )
-            resp.raise_for_status()
-            data = resp.json()
-            if not data.get("connected"):
-                err = (data.get("error") or "").strip()
-                if err:
-                    logger.warning(
-                        "get_emails: Gmail not connected or feed error: %s",
-                        err[:300],
-                    )
-                else:
-                    logger.warning(
-                        "get_emails: connected=false (owner may need to connect Gmail in dashboard)"
-                    )
-                return []
-            raw = data.get("messages") or []
-            return [_normalize_gmail_recent_row(m) for m in raw]
-        except httpx.HTTPStatusError as e:
-            body = ""
-            try:
-                body = (e.response.text or "")[:400]
-            except Exception:
-                pass
-            logger.warning(
-                "get_emails HTTP %s: %s",
-                e.response.status_code if e.response is not None else "?",
-                body or str(e),
-            )
+    async def get_emails(self, filter: str = "all", limit: int = 50) -> List[Dict]:
+        """Load Gmail rows using the same API as the web dashboard (filter applied locally by EmailsScreen)."""
+        data = await self.fetch_gmail_recent(max_results=limit, days=_GMAIL_RECENT_DAYS, q="")
+        if not data.get("connected"):
+            err = (data.get("error") or "").strip()
+            if err:
+                logger.warning("get_emails: Gmail not connected: %s", err[:300])
+            else:
+                logger.warning("get_emails: connected=false (connect Gmail from dashboard Settings)")
             return []
-        except Exception as e:
-            logger.warning("get_emails failed: %s", e)
+        rows = data.get("messages") or []
+        if not isinstance(rows, list):
             return []
+        return [_map_gmail_recent_row(m) for m in rows if isinstance(m, dict) and m.get("id")]
 
     async def get_email_detail(self, email_id: str) -> Dict:
         """GET /api/integrations/gmail/messages/{id} — full body."""
@@ -865,45 +764,6 @@ class BackendClient:
         except Exception as e:
             logger.debug("get_email_detail failed: %s", e)
             return {}
-=======
-                params={
-                    "max_results": int(max_results),
-                    "days": int(days),
-                    "q": (q or "").strip(),
-                },
-            )
-            resp.raise_for_status()
-            data = resp.json()
-            if not isinstance(data, dict):
-                return {"connected": False, "messages": [], "error": "Invalid response"}
-            return data
-        except httpx.HTTPStatusError as e:
-            logger.warning(
-                "fetch_gmail_recent HTTP %s: %s",
-                e.response.status_code,
-                (e.response.text or "")[:300],
-            )
-            return {
-                "connected": False,
-                "messages": [],
-                "error": f"HTTP {e.response.status_code}",
-            }
-        except Exception as e:
-            logger.warning("fetch_gmail_recent failed: %s", e)
-            return {"connected": False, "messages": [], "error": str(e)}
-
->>>>>>> Stashed changes
-    async def get_emails(self, filter: str = "all", limit: int = 50) -> List[Dict]:
-        """Load Gmail rows using the same API as the web dashboard (filter applied locally by EmailsScreen)."""
-        data = await self.fetch_gmail_recent(max_results=limit, days=_GMAIL_RECENT_DAYS, q="")
-        rows = data.get("messages") or []
-        if not isinstance(rows, list):
-            return []
-        return [_map_gmail_recent_row(m) for m in rows if isinstance(m, dict) and m.get("id")]
-<<<<<<< Updated upstream
-=======
->>>>>>> 80acb610da5b2fd2afda5f1e8358d5b30b67449c
->>>>>>> Stashed changes
 
     async def mark_email_unread(self, email_id: str) -> Dict:
         """POST /api/integrations/gmail/messages/{id}/mark-unread"""
