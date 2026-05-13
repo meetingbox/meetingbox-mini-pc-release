@@ -141,7 +141,7 @@ def _build_intent_specs(start_commands: list[str]) -> tuple[_IntentSpec, ...]:
         _IntentSpec("summarize_last_meeting", ("summarize last meeting", "read last meeting summary", "what was the last meeting about")),
         _IntentSpec("read_action_items", ("read action items", "read my action items", "what are my action items")),
         _IntentSpec("test_microphone", ("test microphone", "test mic", "microphone test", "check microphone")),
-        _IntentSpec("what_time", ("what time is it", "tell me the time", "current time")),
+        _IntentSpec("what_time", ("what time is it", "tell me the time", "current time", "what time", "what is the time", "whats the time", "the time please", "time please")),
         _IntentSpec("wifi_status", ("wifi status", "network status", "internet status", "show ip address")),
         _IntentSpec("storage_left", ("storage left", "how much storage is left", "storage status")),
         _IntentSpec("version_status", ("what version are you on", "firmware version", "system version")),
@@ -222,7 +222,7 @@ class VoiceCommandInterpreter:
         self._awaiting_confirmation_until = 0.0
 
     def _heard_wake_phrase(self, text: str) -> bool:
-        return _best_phrase_similarity(text, self.wake_phrase) >= 0.82
+        return _best_phrase_similarity(text, self.wake_phrase) >= 0.80
 
     def _matches_any(self, text: str, phrases: tuple[str, ...], threshold: float = 0.76) -> bool:
         return any(_best_phrase_similarity(text, phrase) >= threshold for phrase in phrases)

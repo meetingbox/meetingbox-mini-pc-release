@@ -582,7 +582,10 @@ class MeetingBoxApp(App):
         self._realtime_session_start_monotonic = None
         self._realtime_connected_ok = False
         self.voice_realtime_assistant = False
+        # Sync interpreter to the UI default immediately so wake works before
+        # async device-settings load (VoiceAssistant env-var default is "hey tony").
         self.voice_wake_phrase_display = "Hey buddy"
+        self.voice_assistant.apply_server_settings(wake_phrase="hey buddy")
         self.voice_assistant_enabled = True
         self.assistant_speech_volume = 85
         # Realtime may only start when _handle_voice_wake_phrase sets this True (one-shot).
