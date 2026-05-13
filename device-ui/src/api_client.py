@@ -761,8 +761,27 @@ class BackendClient:
             q: str = "",
     ) -> Dict:
         """
-        GET /api/integrations/gmail/recent — same feed as dashboard Emails tab; works with device Bearer token.
+        Fetch Gmail inbox. Tries the dedicated /api/emails endpoint first (purpose-built
+        for device + user Bearer), then falls back to /api/integrations/gmail/recent.
         """
+        # --- Primary: /api/emails (returns list directly) ---
+        try:
+            resp = await self.client.get(
+                f"{self.base_url}/api/emails",
+                params={"filter": "all", "limit": int(max_results)},
+            )
+            resp.raise_for_status()
+            rows = resp.json()
+            if isinstance(rows, list):
+                return {"connected": True, "messages": rows, "count": len(rows)}
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code not in (401, 403):
+                logger.debug("fetch_gmail_recent /api/emails HTTP %s", e.response.status_code)
+            # Fall through to legacy endpoint on auth errors too (device may not be paired yet)
+        except Exception as e:
+            logger.debug("fetch_gmail_recent /api/emails failed: %s", e)
+
+        # --- Fallback: /api/integrations/gmail/recent ---
         try:
             resp = await self.client.get(
                 f"{self.base_url}/api/integrations/gmail/recent",
@@ -808,40 +827,46 @@ class BackendClient:
         return [_map_gmail_recent_row(m) for m in rows if isinstance(m, dict) and m.get("id")]
 
     async def get_email_detail(self, email_id: str) -> Dict:
-        """GET /api/integrations/gmail/messages/{id} — full body."""
-        try:
-            resp = await self.client.get(
-                f"{self.base_url}/api/integrations/gmail/messages/{email_id}"
-            )
-            resp.raise_for_status()
-            return resp.json()
-        except Exception as e:
-            logger.debug("get_email_detail failed: %s", e)
-            return {}
+        """GET /api/emails/{id} — full body (falls back to integrations route)."""
+        for url in (
+            f"{self.base_url}/api/emails/{email_id}",
+            f"{self.base_url}/api/integrations/gmail/messages/{email_id}",
+        ):
+            try:
+                resp = await self.client.get(url)
+                resp.raise_for_status()
+                return resp.json()
+            except Exception as e:
+                logger.debug("get_email_detail %s failed: %s", url, e)
+        return {}
 
     async def mark_email_unread(self, email_id: str) -> Dict:
-        """POST /api/integrations/gmail/messages/{id}/mark-unread"""
-        try:
-            resp = await self.client.post(
-                f"{self.base_url}/api/integrations/gmail/messages/{email_id}/mark-unread"
-            )
-            resp.raise_for_status()
-            return resp.json()
-        except Exception as e:
-            logger.debug("mark_email_unread failed: %s", e)
-            return {}
+        """POST /api/emails/{id}/mark-unread (falls back to integrations route)."""
+        for url in (
+            f"{self.base_url}/api/emails/{email_id}/mark-unread",
+            f"{self.base_url}/api/integrations/gmail/messages/{email_id}/mark-unread",
+        ):
+            try:
+                resp = await self.client.post(url)
+                resp.raise_for_status()
+                return resp.json()
+            except Exception as e:
+                logger.debug("mark_email_unread %s failed: %s", url, e)
+        return {}
 
     async def archive_email(self, email_id: str) -> Dict:
-        """POST /api/integrations/gmail/messages/{id}/archive"""
-        try:
-            resp = await self.client.post(
-                f"{self.base_url}/api/integrations/gmail/messages/{email_id}/archive"
-            )
-            resp.raise_for_status()
-            return resp.json()
-        except Exception as e:
-            logger.debug("archive_email failed: %s", e)
-            return {}
+        """POST /api/emails/{id}/archive (falls back to integrations route)."""
+        for url in (
+            f"{self.base_url}/api/emails/{email_id}/archive",
+            f"{self.base_url}/api/integrations/gmail/messages/{email_id}/archive",
+        ):
+            try:
+                resp = await self.client.post(url)
+                resp.raise_for_status()
+                return resp.json()
+            except Exception as e:
+                logger.debug("archive_email %s failed: %s", url, e)
+        return {}
 
     # ==================================================================
     # SYSTEM API

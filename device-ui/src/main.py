@@ -2183,16 +2183,82 @@ class MeetingBoxApp(App):
         if amp_n <= 0:
             return True
         amp = str(amp_n)
-        for cmd in (
-            ["espeak-ng", "-s", "120", "-a", amp, phrase],
-            ["espeak", "-s", "120", "-a", amp, phrase],
-        ):
-            exe = shutil.which(cmd[0])
+
+        # --- 1. piper (neural TTS — best quality, fully offline) ---
+        # Usage: echo "text" | piper --model MODEL --output_file /tmp/piper_out.wav && aplay /tmp/piper_out.wav
+        piper = shutil.which("piper")
+        aplay = shutil.which("aplay")
+        if piper and aplay:
+            import glob as _glob
+            model_candidates = [
+                "/usr/share/piper/voices/en_US-amy-medium.onnx",
+                "/usr/share/piper/voices/en_US-lessac-medium.onnx",
+                "/usr/share/piper/voices/en_US-ryan-medium.onnx",
+                "/usr/local/share/piper/en_US-amy-medium.onnx",
+            ]
+            # Also search dynamically
+            model_candidates += _glob.glob("/usr/share/piper/voices/en_US-*.onnx")
+            model_candidates += _glob.glob("/usr/local/share/piper/**/*.onnx", recursive=True)
+            piper_model = next((m for m in model_candidates if os.path.isfile(m)), None)
+            if piper_model:
+                try:
+                    import tempfile
+                    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
+                        tmp_path = tmp.name
+                    proc = subprocess.run(
+                        [piper, "--model", piper_model, "--output_file", tmp_path],
+                        input=phrase.encode(),
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                        timeout=15,
+                        check=False,
+                    )
+                    if proc.returncode == 0 and os.path.getsize(tmp_path) > 0:
+                        subprocess.run(
+                            [aplay, "-q", tmp_path],
+                            check=False,
+                            stdout=subprocess.DEVNULL,
+                            stderr=subprocess.DEVNULL,
+                            timeout=30,
+                        )
+                        try:
+                            os.unlink(tmp_path)
+                        except OSError:
+                            pass
+                        return True
+                    try:
+                        os.unlink(tmp_path)
+                    except OSError:
+                        pass
+                except Exception as e:
+                    logger.debug("piper TTS failed: %s", e)
+
+        # --- 2. mimic3 (Mycroft neural TTS — good quality) ---
+        mimic3 = shutil.which("mimic3")
+        if mimic3:
+            try:
+                result = subprocess.run(
+                    [mimic3, "--voice", "en_US/vctk_low#p236", phrase],
+                    check=False,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    timeout=20,
+                )
+                if result.returncode == 0:
+                    return True
+            except Exception as e:
+                logger.debug("mimic3 TTS failed: %s", e)
+
+        # --- 3. espeak-ng / espeak with natural voice settings ---
+        # Use en-us+f3 (natural American English female, variant 3)
+        # -p 46 = moderate pitch, -s 125 = comfortable speed, -g 3 = small word gap
+        for exe_name, voice in (("espeak-ng", "en-us+f3"), ("espeak", "en")):
+            exe = shutil.which(exe_name)
             if not exe:
                 continue
             try:
                 subprocess.run(
-                    [exe, *cmd[1:]],
+                    [exe, "-v", voice, "-s", "125", "-p", "46", "-g", "3", "-a", amp, phrase],
                     check=False,
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
@@ -2201,12 +2267,13 @@ class MeetingBoxApp(App):
                 return True
             except Exception as e:
                 logger.warning("Voice feedback via %s failed: %s", exe, e)
+
+        # --- 4. espeak-ng --stdout | aplay (last resort) ---
         esng = shutil.which("espeak-ng")
-        aplay = shutil.which("aplay")
         if esng and aplay:
             try:
                 proc = subprocess.Popen(
-                    [esng, "-s", "165", "-a", amp, phrase, "--stdout"],
+                    [esng, "-v", "en-us+f3", "-s", "125", "-p", "46", "-g", "3", "-a", amp, phrase, "--stdout"],
                     stdout=subprocess.PIPE,
                     stderr=subprocess.DEVNULL,
                 )
@@ -2226,7 +2293,7 @@ class MeetingBoxApp(App):
                 return True
             except Exception as e:
                 logger.warning("Voice feedback via espeak-ng stdout | aplay failed: %s", e)
-        logger.warning("Voice feedback unavailable: no espeak command found")
+        logger.warning("Voice feedback unavailable: no TTS engine found")
         return False
 
     def _speak_text_async(self, text: str) -> None:
@@ -2743,7 +2810,7 @@ class MeetingBoxApp(App):
             if self.recording_state.get("active"):
                 self._voice_reply("A meeting is already recording.", duration=3.0)
                 return
-            logger.info('Voice trigger accepted ("hey tony" -> "start meeting")')
+            logger.info('Voice trigger accepted ("hey buddy" -> "start meeting")')
             self._voice_start_in_flight = True
             self._voice_start_confirmation_pending = True
             self._reset_idle_timer()

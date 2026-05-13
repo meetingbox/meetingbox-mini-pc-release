@@ -120,33 +120,55 @@ def _build_intent_specs(start_commands: list[str]) -> tuple[_IntentSpec, ...]:
         dict.fromkeys(
             [
                 *(_normalize_text(cmd) for cmd in start_commands if _normalize_text(cmd)),
+                "start meeting",
                 "start the meeting",
                 "start recording",
                 "begin meeting",
                 "begin recording",
+                "start a meeting",
+                "lets start the meeting",
+                "let s start the meeting",
+                "start meeting now",
+                "record meeting",
+                "start session",
             ]
         )
     )
+    # Lower threshold (0.68) for the high-frequency action commands so they
+    # trigger reliably even when the Vosk small model drops a word or two.
+    _ACT = 0.68
     return (
-        _IntentSpec("start_meeting", start_aliases),
-        _IntentSpec("stop_meeting", ("stop meeting", "end meeting", "stop recording", "finish meeting")),
-        _IntentSpec("pause_meeting", ("pause meeting", "pause recording", "hold recording")),
-        _IntentSpec("resume_meeting", ("resume meeting", "resume recording", "continue meeting")),
-        _IntentSpec("recording_status", ("are we recording", "recording status", "what is the meeting status")),
-        _IntentSpec("recording_elapsed", ("how long have we been recording", "recording duration", "meeting duration")),
-        _IntentSpec("go_home", ("go home", "open home", "show home screen")),
-        _IntentSpec("open_settings", ("open settings", "show settings")),
-        _IntentSpec("show_meetings", ("show meetings", "open meetings", "show recent meetings")),
+        _IntentSpec("start_meeting", start_aliases, threshold=_ACT),
+        _IntentSpec("stop_meeting", (
+            "stop meeting", "end meeting", "stop recording", "finish meeting",
+            "end the meeting", "stop the meeting", "finish recording",
+            "end session", "stop session",
+        ), threshold=_ACT),
+        _IntentSpec("pause_meeting", ("pause meeting", "pause recording", "hold recording", "pause the meeting"), threshold=_ACT),
+        _IntentSpec("resume_meeting", ("resume meeting", "resume recording", "continue meeting", "resume the meeting"), threshold=_ACT),
+        _IntentSpec("recording_status", ("are we recording", "recording status", "what is the meeting status", "is recording on")),
+        _IntentSpec("recording_elapsed", ("how long have we been recording", "recording duration", "meeting duration", "how long is the meeting")),
+        _IntentSpec("go_home", ("go home", "open home", "show home screen", "take me home", "home screen")),
+        _IntentSpec("open_settings", ("open settings", "show settings", "go to settings")),
+        _IntentSpec("show_meetings", ("show meetings", "open meetings", "show recent meetings", "my meetings")),
         _IntentSpec("show_last_meeting", ("show last meeting", "open last meeting", "last meeting")),
-        _IntentSpec("summarize_last_meeting", ("summarize last meeting", "read last meeting summary", "what was the last meeting about")),
-        _IntentSpec("read_action_items", ("read action items", "read my action items", "what are my action items")),
-        _IntentSpec("test_microphone", ("test microphone", "test mic", "microphone test", "check microphone")),
-        _IntentSpec("what_time", ("what time is it", "tell me the time", "current time", "what time", "what is the time", "whats the time", "the time please", "time please")),
-        _IntentSpec("wifi_status", ("wifi status", "network status", "internet status", "show ip address")),
-        _IntentSpec("storage_left", ("storage left", "how much storage is left", "storage status")),
+        _IntentSpec("summarize_last_meeting", ("summarize last meeting", "read last meeting summary", "what was the last meeting about", "summarize my last meeting")),
+        _IntentSpec("read_action_items", ("read action items", "read my action items", "what are my action items", "show action items", "my tasks")),
+        _IntentSpec("test_microphone", ("test microphone", "test mic", "microphone test", "check microphone", "is the mic working")),
+        _IntentSpec("what_time", (
+            "what time is it", "tell me the time", "current time", "what time",
+            "what is the time", "whats the time", "the time please", "time please",
+            "time", "what s the time", "do you have the time",
+        )),
+        _IntentSpec("wifi_status", ("wifi status", "network status", "internet status", "show ip address", "am i connected")),
+        _IntentSpec("storage_left", ("storage left", "how much storage is left", "storage status", "how much space")),
         _IntentSpec("version_status", ("what version are you on", "firmware version", "system version")),
-        _IntentSpec("next_calendar", ("what s next on the calendar", "what is next on the calendar", "next meeting", "calendar status")),
-        _IntentSpec("system_status", ("system health", "is everything working", "device status")),
+        _IntentSpec("next_calendar", (
+            "what s next on the calendar", "what is next on the calendar",
+            "next meeting", "calendar status", "next event", "what is next",
+            "whats next", "what s next",
+        )),
+        _IntentSpec("system_status", ("system health", "is everything working", "device status", "system status")),
         _IntentSpec("privacy_mode", ("turn privacy mode on", "privacy mode on", "enable privacy mode"), value="on"),
         _IntentSpec("privacy_mode", ("turn privacy mode off", "privacy mode off", "disable privacy mode"), value="off"),
         _IntentSpec("brightness", ("brightness low", "set brightness to low", "screen brightness low"), value="low"),
@@ -194,8 +216,8 @@ class VoiceCommandInterpreter:
         self,
         wake_phrase: str,
         start_commands: list[str],
-        command_timeout_seconds: float = 6.0,
-        action_cooldown_seconds: float = 8.0,
+        command_timeout_seconds: float = 10.0,
+        action_cooldown_seconds: float = 3.0,
         confirmation_timeout_seconds: float = 8.0,
     ):
         self.wake_phrase = _normalize_text(wake_phrase)
