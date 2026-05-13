@@ -63,13 +63,15 @@ def _resolve_backend_url() -> str:
             if dash_env:
                 _, pub = _normalize_dashboard_config(dash_env)
                 out = pub.strip().rstrip("/")
-                logger.warning("Ignoring localhost BACKEND_URL; derived backend from DASHBOARD_URL: %s", out)
-                return out
-            if (
-                _native_runtime_uses_packaged_defaults()
-                and (os.getenv("MEETINGBOX_ALLOW_LOCAL_BACKEND") or "").strip() != "1"
-            ):
-                logger.warning("Ignoring packaged localhost BACKEND_URL; using cloud backend: %s", _CLOUD_BACKEND_URL)
+                if out not in _LOCAL_BACKEND_DEFAULTS:
+                    logger.warning("Ignoring localhost BACKEND_URL; derived backend from DASHBOARD_URL: %s", out)
+                    return out
+            if (os.getenv("MEETINGBOX_ALLOW_LOCAL_BACKEND") or "").strip() != "1":
+                logger.warning(
+                    "BACKEND_URL is localhost — overriding with cloud backend: %s "
+                    "(set MEETINGBOX_ALLOW_LOCAL_BACKEND=1 to keep localhost)",
+                    _CLOUD_BACKEND_URL,
+                )
                 return _CLOUD_BACKEND_URL
         return explicit
     if not dash_env:
