@@ -1143,7 +1143,6 @@ class EmailsScreen(BaseScreen):
 
         # ── Error / empty states ─────────────────────────────────────────────
         if not self._gmail_connected:
-<<<<<<< Updated upstream
             err = (self._gmail_error or "").lower()
             if "401" in err or "not authenticated" in err:
                 msg = (
@@ -1172,12 +1171,6 @@ class EmailsScreen(BaseScreen):
             self._list_container.add_widget(_lbl(
                 msg,
                 _FONT_MD, _ff(18), _MUTED,
-=======
-            extra = f"\n({self._gmail_error})" if self._gmail_error else ""
-            self._list_container.add_widget(_lbl(
-                "Connect Gmail from\nSettings → Integrations → Gmail" + extra,
-                _F_MED, _ff(17), _C_MUTED,
->>>>>>> Stashed changes
                 halign="center", valign="middle",
                 size_hint=(None, None),
                 size=(_ff(460), _ff(110)),
