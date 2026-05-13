@@ -222,13 +222,36 @@ class VoiceCommandInterpreter:
         self._awaiting_confirmation_until = 0.0
 
     def _heard_wake_phrase(self, text: str) -> bool:
-        return _best_phrase_similarity(text, self.wake_phrase) >= 0.72
+        return _best_phrase_similarity(text, self.wake_phrase) >= 0.82
 
     def _matches_any(self, text: str, phrases: tuple[str, ...], threshold: float = 0.76) -> bool:
         return any(_best_phrase_similarity(text, phrase) >= threshold for phrase in phrases)
 
     def heard_wake_phrase(self, text: str) -> bool:
         return self._heard_wake_phrase(_normalize_text(text))
+
+    def is_awaiting_command(self, now: float | None = None) -> bool:
+        now = time.monotonic() if now is None else now
+        return now <= self._awaiting_command_until
+
+    def is_wake_only_utterance(self, text: str) -> bool:
+        """True if *text* is (fuzzy) wake phrase plus optional filler words only."""
+        norm = _normalize_text(text)
+        if not norm or not self._heard_wake_phrase(norm):
+            return False
+        wake_set = set(self.wake_phrase.split())
+        fillers = frozenset(
+            {"please", "uh", "um", "ok", "okay", "yeah", "really", "so", "now"}
+        )
+        words = norm.split()
+        residual = [w for w in words if w not in wake_set and w not in fillers]
+        if not residual:
+            return True
+        # Wake phrase with transcript typos (e.g. "hey toni") — extras are small and very close.
+        wake_wc = len(self.wake_phrase.split())
+        if len(words) <= wake_wc + 2 and _best_phrase_similarity(norm, self.wake_phrase) >= 0.88:
+            return True
+        return False
 
     def heard_start_command(self, text: str) -> bool:
         norm = _normalize_text(text)
@@ -405,6 +428,36 @@ class VoiceAssistant:
     def clear_confirmation(self) -> None:
         self._interpreter.clear_confirmation()
 
+    def simulate_wake(self) -> None:
+        """Open the post-wake command window without a spoken transcript (mic orb, etc.)."""
+        now = time.monotonic()
+        self._interpreter._awaiting_command_until = now + self.command_timeout_seconds
+
+    def in_command_window(self) -> bool:
+        return self._interpreter.is_awaiting_command()
+
+    def apply_server_settings(
+        self,
+        *,
+        enabled: bool | None = None,
+        wake_phrase: str | None = None,
+    ) -> None:
+        if enabled is None and wake_phrase is None:
+            return
+        if enabled is not None:
+            self.enabled = bool(enabled)
+        if wake_phrase is not None:
+            wp = str(wake_phrase).strip()
+            if wp:
+                self.wake_phrase = wp
+        self._interpreter = VoiceCommandInterpreter(
+            wake_phrase=self.wake_phrase,
+            start_commands=self.start_commands,
+            command_timeout_seconds=self.command_timeout_seconds,
+            action_cooldown_seconds=self.action_cooldown_seconds,
+            confirmation_timeout_seconds=self.confirmation_timeout_seconds,
+        )
+
     def _can_run(self) -> bool:
         if not self.enabled:
             return False
@@ -453,11 +506,6 @@ class VoiceAssistant:
         if not norm:
             return
         logger.debug("Voice assistant heard: %s", norm)
-        if self._on_conversation_turn is not None:
-            try:
-                self._on_conversation_turn(norm)
-            except Exception:
-                logger.exception("Voice assistant conversation_turn callback failed")
         if (
             self._on_wake_phrase is not None
             and self._interpreter.heard_wake_phrase(norm)
@@ -468,6 +516,17 @@ class VoiceAssistant:
             except Exception:
                 logger.exception("Voice assistant wake callback failed")
         intent = self._interpreter.handle_transcript(norm)
+        if (
+            self._on_conversation_turn is not None
+            and intent is None
+            and len(norm) >= 6
+            and self.in_command_window()
+            and not self._interpreter.is_wake_only_utterance(norm)
+        ):
+            try:
+                self._on_conversation_turn(norm)
+            except Exception:
+                logger.exception("Voice assistant conversation_turn callback failed")
         if intent is None:
             return
         logger.info('Voice command accepted: "%s" -> %s', norm, intent.name)
