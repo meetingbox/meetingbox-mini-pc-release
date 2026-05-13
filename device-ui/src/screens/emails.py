@@ -28,6 +28,7 @@ from kivy.uix.scrollview import ScrollView
 from kivy.uix.widget import Widget
 
 from async_helper import run_async
+from api_client import _GMAIL_RECENT_DAYS
 from config import ASSETS_DIR, COLORS, DISPLAY_HEIGHT, DISPLAY_WIDTH
 from screens.base_screen import BaseScreen
 
@@ -723,7 +724,7 @@ class EmailsScreen(BaseScreen):
             try:
                 fetch = getattr(self.backend, "fetch_gmail_recent", None)
                 if fetch is not None:
-                    data = await fetch(max_results=40, days=90, q="")
+                    data = await fetch(max_results=40, days=_GMAIL_RECENT_DAYS, q="")
                     connected = bool(data.get("connected"))
                     err_msg = (data.get("error") or "").strip() or None
                     rows = data.get("messages") or []
@@ -752,7 +753,9 @@ class EmailsScreen(BaseScreen):
                 if self._active_tab == "today" and not any(e.get("is_today") for e in emails):
                     self._active_tab = "all"
                     for tid, lbl in self._tab_labels.items():
-                        lbl.bold = (tid == "all")
+                        lbl.color = _BLUE if tid == "all" else _MUTED
+                    for tid, lbl in self._count_labels.items():
+                        lbl.color = _BLUE if tid == "all" else _WHITE
                 self._apply_filter()
                 if emails and self._selected_email is None:
                     self._select_email(emails[0])

@@ -27,6 +27,7 @@ from kivy.uix.label import Label
 from kivy.uix.widget import Widget
 
 from async_helper import run_async
+from api_client import _GMAIL_RECENT_DAYS, summarize_gmail_feed_for_home
 from components.modal_dialog import ModalDialog
 from components.text_input_dialog import TextInputDialog
 from config import (
@@ -1787,6 +1788,15 @@ class HomeScreen(BaseScreen):
 
     def _load_home_summary(self):
         async def _fetch():
+            gfeed: dict = {}
+            try:
+                gf = getattr(self.backend, "fetch_gmail_recent", None)
+                if gf is not None:
+                    gfeed = await gf(max_results=40, days=_GMAIL_RECENT_DAYS, q="")
+            except Exception as exc:
+                logger.debug("home gmail feed failed: %s", exc)
+                gfeed = {}
+            gsum = summarize_gmail_feed_for_home(gfeed)
             try:
                 data     = await self.backend.get_home_summary()
                 meetings = []
@@ -1797,7 +1807,6 @@ class HomeScreen(BaseScreen):
                 latest   = meetings[0] if meetings else None
                 today_n  = int(data.get("pending_actions_today") or 0)
                 total_n  = int(data.get("pending_actions_total") or 0)
-                unread_n = data.get("unread_email_count")
                 next_title, next_time = _format_next_meeting(data.get("next_meeting"))
 
                 def _apply(_dt):
@@ -1842,26 +1851,27 @@ class HomeScreen(BaseScreen):
                         self.last_meta_label.text   = "Start a recording to build memory"
                         self.last_actions_label.text = "Open meeting library  ›"
 
-                    self.email_card.value_label.text = (
-                        str(unread_n) if unread_n is not None else "—"
-                    )
-                    self.tasks_card.value_label.text = str(total_n)
+                    # Same Gmail feed as dashboard Emails tab (`/api/integrations/gmail/recent`).
+                    if self.email_card is not None:
+                        self.email_card.value_label.text = str(gsum.get("unread_count") or 0)
+                    if self.brief_email_label is not None:
+                        self.brief_email_label.title_label.text = "email:  From:"
+                        self.brief_email_label.subtitle_label.text = str(
+                            gsum.get("brief_subtitle") or "Connect Gmail for updates"
+                        )
 
-                    self.brief_calendar_label.title_label.text = (
-                        f"{max(0, today_n)} actions today"
-                        if today_n else "Briefing ready"
-                    )
-                    self.brief_calendar_label.subtitle_label.text = (
-                        f"First at {next_time}"
-                        if next_time and next_time != "Time not set"
-                        else "Ask Tony for focus"
-                    )
-                    self.brief_email_label.title_label.text = "email:  From:"
-                    self.brief_email_label.subtitle_label.text = (
-                        "Connect Gmail for updates"
-                        if unread_n is None
-                        else f"{unread_n} new messages"
-                    )
+                    if self.brief_calendar_label is not None:
+                        self.brief_calendar_label.title_label.text = (
+                            f"{max(0, today_n)} actions today"
+                            if today_n else "Briefing ready"
+                        )
+                        self.brief_calendar_label.subtitle_label.text = (
+                            f"First at {next_time}"
+                            if next_time and next_time != "Time not set"
+                            else "Ask Tony for focus"
+                        )
+
+                    self.tasks_card.value_label.text = str(total_n)
 
                 Clock.schedule_once(_apply, 0)
             except Exception:

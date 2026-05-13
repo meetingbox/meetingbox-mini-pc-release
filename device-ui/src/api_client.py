@@ -115,6 +115,60 @@ def _map_gmail_recent_row(msg: Dict) -> Dict:
     }
 
 
+def summarize_gmail_feed_for_home(feed: Optional[Dict]) -> Dict[str, object]:
+    """
+    Normalize `GET /api/integrations/gmail/recent` (same as frontend `Emails.tsx`)
+    for home / morning-brief widgets: unread count + one-line preview.
+    """
+    out: Dict[str, object] = {
+        "connected": False,
+        "unread_count": 0,
+        "message_count": 0,
+        "brief_subtitle": "Connect Gmail for updates",
+        "top_raw": None,
+    }
+    if not isinstance(feed, dict):
+        return out
+    out["connected"] = bool(feed.get("connected"))
+    raw_msgs = feed.get("messages")
+    if not isinstance(raw_msgs, list):
+        raw_msgs = []
+    normalized: List[Dict] = []
+    unread = 0
+    for m in raw_msgs:
+        if not isinstance(m, dict) or not m.get("id"):
+            continue
+        normalized.append(m)
+        if not m.get("is_read", True):
+            unread += 1
+    out["message_count"] = len(normalized)
+    out["unread_count"] = unread
+    err = (feed.get("error") or "").strip()
+    if not out["connected"]:
+        out["brief_subtitle"] = "Connect Gmail for updates"
+        return out
+    if not normalized:
+        out["brief_subtitle"] = err or "No recent messages"
+        return out
+    out["top_raw"] = normalized[0]
+
+    def _name(mi: Dict) -> str:
+        return _parse_sender_display(mi.get("from") or "")
+
+    first = _name(normalized[0])
+    if len(normalized) == 1:
+        subj = (normalized[0].get("subject") or normalized[0].get("snippet") or "").strip()
+        out["brief_subtitle"] = f"{first}: {subj[:40]}" if subj else first
+        return out
+    second = _name(normalized[1])
+    rest = len(normalized) - 2
+    if rest > 0:
+        out["brief_subtitle"] = f"{first}, {second} +{rest}"
+    else:
+        out["brief_subtitle"] = f"{first}, {second}"
+    return out
+
+
 def build_websocket_url(base_ws_url: str) -> str:
     """
     Match server/web WebSocket auth: optional MEETINGBOX_WS_REQUIRE_AUTH (access_token query)
