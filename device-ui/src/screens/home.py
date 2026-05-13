@@ -1863,7 +1863,10 @@ class HomeScreen(BaseScreen):
                     if self.email_card is not None:
                         self.email_card.value_label.text = str(gsum.get("unread_count") or 0)
                     if self.brief_email_label is not None:
-                        self.brief_email_label.title_label.text = "email:  From:"
+                        unread = int(gsum.get("unread_count") or 0)
+                        self.brief_email_label.title_label.text = (
+                            f"Email  •  {unread} unread" if unread else "Email"
+                        )
                         self.brief_email_label.subtitle_label.text = str(
                             gsum.get("brief_subtitle") or "Connect Gmail for updates"
                         )
