@@ -592,6 +592,8 @@ class MeetingBoxApp(App):
         self._realtime_launch_permitted = False
         # Limits cloud NL replies per wake/mic activation (local wake listening unaffected).
         self._voice_cloud_qa_budget = 0
+        # Serialises TTS calls — overlapping replies are dropped, not stacked
+        self._speaking_lock = threading.Lock()
 
     # ==================================================================
     # BUILD
@@ -2183,134 +2185,150 @@ class MeetingBoxApp(App):
         phrase = (text or "").strip()
         if not phrase:
             return False
-        amp_n = self._espeak_amplitude()
-        if amp_n <= 0:
-            return True
-        amp = str(amp_n)
 
-        # --- 1. piper (neural TTS — best quality, fully offline) ---
-        # Usage: echo "text" | piper --model MODEL --output_file /tmp/piper_out.wav && aplay /tmp/piper_out.wav
-        piper = shutil.which("piper")
-        aplay = shutil.which("aplay")
-        if piper and aplay:
-            import glob as _glob
-            model_candidates = [
-                "/usr/share/piper/voices/en_US-amy-medium.onnx",
-                "/usr/share/piper/voices/en_US-lessac-medium.onnx",
-                "/usr/share/piper/voices/en_US-ryan-medium.onnx",
-                "/usr/local/share/piper/en_US-amy-medium.onnx",
-            ]
-            # Also search dynamically
-            model_candidates += _glob.glob("/usr/share/piper/voices/en_US-*.onnx")
-            model_candidates += _glob.glob("/usr/local/share/piper/**/*.onnx", recursive=True)
-            piper_model = next((m for m in model_candidates if os.path.isfile(m)), None)
-            if piper_model:
-                try:
-                    import tempfile
-                    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
-                        tmp_path = tmp.name
-                    proc = subprocess.run(
-                        [piper, "--model", piper_model, "--output_file", tmp_path],
-                        input=phrase.encode(),
-                        stdout=subprocess.DEVNULL,
-                        stderr=subprocess.DEVNULL,
-                        timeout=15,
-                        check=False,
-                    )
-                    if proc.returncode == 0 and os.path.getsize(tmp_path) > 0:
-                        subprocess.run(
-                            [aplay, "-q", tmp_path],
-                            check=False,
+        # Drop this reply if another TTS call is already in progress.
+        # Prevents multiple overlapping voices when the cloud returns
+        # a reply while a previous one is still playing.
+        if not self._speaking_lock.acquire(blocking=False):
+            logger.debug("_speak_text_blocking: skipping (already speaking)")
+            return False
+
+        va = getattr(self, "voice_assistant", None)
+        try:
+            # Suppress Vosk mic input while speaker is active so the
+            # device's own voice is not picked up and re-processed.
+            if va is not None:
+                va.set_tts_active(True)
+
+            amp_n = self._espeak_amplitude()
+            if amp_n <= 0:
+                return True
+            amp = str(amp_n)
+
+            # --- 1. piper (neural TTS — best quality, fully offline) ---
+            piper = shutil.which("piper")
+            aplay = shutil.which("aplay")
+            if piper and aplay:
+                import glob as _glob
+                model_candidates = [
+                    "/usr/share/piper/voices/en_US-amy-medium.onnx",
+                    "/usr/share/piper/voices/en_US-lessac-medium.onnx",
+                    "/usr/share/piper/voices/en_US-ryan-medium.onnx",
+                    "/usr/local/share/piper/en_US-amy-medium.onnx",
+                ]
+                model_candidates += _glob.glob("/usr/share/piper/voices/en_US-*.onnx")
+                model_candidates += _glob.glob("/usr/local/share/piper/**/*.onnx", recursive=True)
+                piper_model = next((m for m in model_candidates if os.path.isfile(m)), None)
+                if piper_model:
+                    try:
+                        import tempfile
+                        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
+                            tmp_path = tmp.name
+                        proc = subprocess.run(
+                            [piper, "--model", piper_model, "--output_file", tmp_path],
+                            input=phrase.encode(),
                             stdout=subprocess.DEVNULL,
                             stderr=subprocess.DEVNULL,
-                            timeout=30,
+                            timeout=15,
+                            check=False,
                         )
+                        if proc.returncode == 0 and os.path.getsize(tmp_path) > 0:
+                            subprocess.run(
+                                [aplay, "-q", tmp_path],
+                                check=False,
+                                stdout=subprocess.DEVNULL,
+                                stderr=subprocess.DEVNULL,
+                                timeout=30,
+                            )
+                            try:
+                                os.unlink(tmp_path)
+                            except OSError:
+                                pass
+                            return True
                         try:
                             os.unlink(tmp_path)
                         except OSError:
                             pass
-                        return True
-                    try:
-                        os.unlink(tmp_path)
-                    except OSError:
-                        pass
-                except Exception as e:
-                    logger.debug("piper TTS failed: %s", e)
+                    except Exception as e:
+                        logger.debug("piper TTS failed: %s", e)
 
-        # --- 2. mimic3 (Mycroft neural TTS — good quality) ---
-        mimic3 = shutil.which("mimic3")
-        if mimic3:
-            try:
-                result = subprocess.run(
-                    [mimic3, "--voice", "en_US/vctk_low#p236", phrase],
-                    check=False,
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                    timeout=20,
-                )
-                if result.returncode == 0:
-                    return True
-            except Exception as e:
-                logger.debug("mimic3 TTS failed: %s", e)
-
-        # --- 3. espeak-ng / espeak — try progressively simpler voice flags ---
-        # Try natural voice variants first, fall back to bare defaults so
-        # something always plays even if optional voice data isn't installed.
-        esng = shutil.which("espeak-ng")
-        esp = shutil.which("espeak")
-        for exe, voice_flags in [
-            # Most natural: American English female variant (built-in, no MBROLA needed)
-            (esng, ["-v", "en-us+f3", "-s", "125", "-p", "46", "-g", "3"]),
-            # Fallback: plain American English accent
-            (esng, ["-v", "en-us", "-s", "125"]),
-            # Fallback: bare espeak-ng (default voice)
-            (esng, ["-s", "125"]),
-            # Legacy espeak binary
-            (esp,  ["-v", "en", "-s", "125"]),
-        ]:
-            if not exe:
-                continue
-            try:
-                result = subprocess.run(
-                    [exe, *voice_flags, "-a", amp, phrase],
-                    check=False,
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                    timeout=20,
-                )
-                if result.returncode == 0:
-                    return True
-                # Non-zero return might mean bad voice flag — try next variant
-                logger.debug("espeak returncode=%s for flags %s", result.returncode, voice_flags)
-            except Exception as e:
-                logger.debug("espeak attempt failed (%s): %s", voice_flags, e)
-
-        # --- 4. espeak-ng --stdout | aplay (last resort) ---
-        if esng and aplay:
-            try:
-                proc = subprocess.Popen(
-                    [esng, "-v", "en-us", "-s", "125", "-a", amp, phrase, "--stdout"],
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.DEVNULL,
-                )
+            # --- 2. mimic3 (Mycroft neural TTS — good quality) ---
+            mimic3 = shutil.which("mimic3")
+            if mimic3:
                 try:
-                    subprocess.run(
-                        [aplay, "-q"],
-                        stdin=proc.stdout,
+                    result = subprocess.run(
+                        [mimic3, "--voice", "en_US/vctk_low#p236", phrase],
+                        check=False,
                         stdout=subprocess.DEVNULL,
                         stderr=subprocess.DEVNULL,
-                        check=False,
-                        timeout=30,
+                        timeout=20,
                     )
-                finally:
-                    if proc.stdout:
-                        proc.stdout.close()
-                    proc.wait(timeout=30)
-                return True
-            except Exception as e:
-                logger.warning("Voice feedback via espeak-ng stdout | aplay failed: %s", e)
-        logger.warning("Voice feedback unavailable: no TTS engine found")
-        return False
+                    if result.returncode == 0:
+                        return True
+                except Exception as e:
+                    logger.debug("mimic3 TTS failed: %s", e)
+
+            # --- 3. espeak-ng / espeak — try progressively simpler voice flags ---
+            esng = shutil.which("espeak-ng")
+            esp = shutil.which("espeak")
+            for exe, voice_flags in [
+                (esng, ["-v", "en-us+f3", "-s", "125", "-p", "46", "-g", "3"]),
+                (esng, ["-v", "en-us", "-s", "125"]),
+                (esng, ["-s", "125"]),
+                (esp,  ["-v", "en", "-s", "125"]),
+            ]:
+                if not exe:
+                    continue
+                try:
+                    result = subprocess.run(
+                        [exe, *voice_flags, "-a", amp, phrase],
+                        check=False,
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                        timeout=20,
+                    )
+                    if result.returncode == 0:
+                        return True
+                    logger.debug("espeak returncode=%s for flags %s", result.returncode, voice_flags)
+                except Exception as e:
+                    logger.debug("espeak attempt failed (%s): %s", voice_flags, e)
+
+            # --- 4. espeak-ng --stdout | aplay (last resort) ---
+            if esng and aplay:
+                try:
+                    proc = subprocess.Popen(
+                        [esng, "-v", "en-us", "-s", "125", "-a", amp, phrase, "--stdout"],
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.DEVNULL,
+                    )
+                    try:
+                        subprocess.run(
+                            [aplay, "-q"],
+                            stdin=proc.stdout,
+                            stdout=subprocess.DEVNULL,
+                            stderr=subprocess.DEVNULL,
+                            check=False,
+                            timeout=30,
+                        )
+                    finally:
+                        if proc.stdout:
+                            proc.stdout.close()
+                        proc.wait(timeout=30)
+                    return True
+                except Exception as e:
+                    logger.warning("Voice feedback via espeak-ng stdout | aplay failed: %s", e)
+
+            logger.warning("Voice feedback unavailable: no TTS engine found")
+            return False
+
+        finally:
+            # Wait 1.5 s after playback ends so the speaker tail decays before
+            # Vosk resumes — prevents the last syllable triggering a new command.
+            import time as _time
+            _time.sleep(1.5)
+            if va is not None:
+                va.set_tts_active(False)
+            self._speaking_lock.release()
 
     def _speak_text_async(self, text: str) -> None:
         threading.Thread(

@@ -395,6 +395,8 @@ class VoiceAssistant:
         self._stop_event = threading.Event()
         self._pause_lock = threading.Lock()
         self._paused = True
+        self._tts_lock = threading.Lock()
+        self._tts_active = False   # True while speaker is playing — drops mic input
         self._thread: threading.Thread | None = None
         self._stream = None
         self._stream_samplerate = 0
@@ -429,6 +431,21 @@ class VoiceAssistant:
         if self._thread and self._thread.is_alive():
             self._thread.join(timeout=2.0)
         self._thread = None
+
+    def set_tts_active(self, active: bool) -> None:
+        """Suppress mic input while TTS speaker output is playing (prevents feedback loop)."""
+        with self._tts_lock:
+            self._tts_active = active
+        if active:
+            # Flush any queued audio so leftover snippets don't trigger a command
+            self._clear_audio_queue()
+            logger.debug("Voice: mic suppressed (TTS playing)")
+        else:
+            logger.debug("Voice: mic resumed (TTS done)")
+
+    def _is_tts_active(self) -> bool:
+        with self._tts_lock:
+            return self._tts_active
 
     def set_paused(self, paused: bool) -> None:
         with self._pause_lock:
@@ -597,7 +614,7 @@ class VoiceAssistant:
             del frames, time_info
             if status and str(status):
                 logger.debug("Voice assistant sounddevice status: %s", status)
-            if self._stop_event.is_set() or self._is_paused():
+            if self._stop_event.is_set() or self._is_paused() or self._is_tts_active():
                 return
             if self._on_amplitude is not None:
                 try:
