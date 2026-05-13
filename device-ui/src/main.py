@@ -1052,6 +1052,9 @@ class MeetingBoxApp(App):
             logger.info("WebSocket listener cancelled")
         except Exception as e:
             logger.error(f"WebSocket error: {e}")
+            # Reset reconnect counter before the outer restart so the next
+            # subscribe_events() run gets a full 10 fresh attempts.
+            self.backend._ws_reconnect_attempts = 0
             await asyncio.sleep(2)
             Clock.schedule_once(lambda _: self.start_websocket_listener(), 0)
 

@@ -851,16 +851,18 @@ class BackendClient:
                 return {"connected": False, "messages": [], "error": "Invalid response"}
             return data
         except httpx.HTTPStatusError as e:
-            logger.warning(
-                "fetch_gmail_recent HTTP %s: %s",
-                e.response.status_code,
-                (e.response.text or "")[:300],
-            )
-            return {
-                "connected": False,
-                "messages": [],
-                "error": f"HTTP {e.response.status_code}",
-            }
+            sc = e.response.status_code
+            logger.warning("fetch_gmail_recent HTTP %s: %s", sc, (e.response.text or "")[:300])
+            if sc == 401:
+                error_msg = "HTTP 401 — not authenticated"
+            elif sc == 403:
+                error_msg = "HTTP 403 — Gmail not connected"
+            else:
+                error_msg = f"HTTP {sc}"
+            return {"connected": False, "messages": [], "error": error_msg}
+        except httpx.TimeoutException as e:
+            logger.warning("fetch_gmail_recent timeout: %s", e)
+            return {"connected": False, "messages": [], "error": "timeout — network or server issue"}
         except Exception as e:
             logger.warning("fetch_gmail_recent failed: %s", e)
             return {"connected": False, "messages": [], "error": str(e)}

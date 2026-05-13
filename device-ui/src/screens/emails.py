@@ -828,14 +828,44 @@ class EmailsScreen(BaseScreen):
 
         emails = self._filtered_emails
         if not self._gmail_connected:
+<<<<<<< Updated upstream
             err_detail = f"\n({self._gmail_error})" if self._gmail_error else ""
             self._list_container.add_widget(_lbl(
                 (
+=======
+            err = (self._gmail_error or "").lower()
+            if "401" in err or "not authenticated" in err:
+                msg = (
+                    "Device not paired.\n"
+                    "Open Settings \u2192 Pair Device and link this\n"
+                    "device to your account first."
+                )
+            elif "403" in err or "not connected" in err:
+                msg = (
+                    "Gmail not connected.\n"
+                    "Open the web dashboard \u2192 Settings \u2192\n"
+                    "Integrations \u2192 Gmail and connect."
+                )
+            elif "timeout" in err or "connect" in err or "network" in err:
+                msg = (
+                    "Cannot reach server.\n"
+                    "Check internet connection and that the\n"
+                    "backend is running, then pull to refresh."
+                )
+            else:
+                msg = (
+>>>>>>> Stashed changes
                     "Connect Gmail in the web dashboard:\n"
-                    "Settings → Integrations → Gmail.\n"
+                    "Settings \u2192 Integrations \u2192 Gmail.\n"
                     "Then reopen Emails here."
+<<<<<<< Updated upstream
                     + err_detail
                 ),
+=======
+                )
+            self._list_container.add_widget(_lbl(
+                msg,
+>>>>>>> Stashed changes
                 _FONT_MD, _ff(18), _MUTED,
                 halign="center", valign="middle",
                 size_hint=(0.92, None),
