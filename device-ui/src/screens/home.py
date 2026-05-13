@@ -570,7 +570,7 @@ class HomeScreen(BaseScreen):
         self._build_listening_pill(root)
 
         # Settings badge  (1159.71, 21.19)  76.28 × 76.28  — tappable → settings screen
-        sg_src = _fp("icon_settings.png")
+        sg_src = _fp("email_icon_settings_badge.png") or _fp("icon_settings.png")
         if sg_src:
             sg_btn = _TappableCard(
                 draw_bg=False,
