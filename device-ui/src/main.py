@@ -1052,7 +1052,7 @@ class MeetingBoxApp(App):
             logger.info("WebSocket listener cancelled")
         except Exception as e:
             logger.error(f"WebSocket error: {e}")
-            await asyncio.sleep(5)
+            await asyncio.sleep(2)
             Clock.schedule_once(lambda _: self.start_websocket_listener(), 0)
 
     # ==================================================================
@@ -1973,7 +1973,7 @@ class MeetingBoxApp(App):
                 if getattr(self, "voice_assistant_enabled", True):
                     Clock.schedule_once(
                         lambda _dt: self._voice_reply_and_extend_listening(
-                            "I could not reach the assistant. Check BACKEND_URL and your network.",
+                            "Cannot reach the server. Check your network or ask an admin to restart the server.",
                             error=True,
                         ),
                         0,
@@ -2184,8 +2184,8 @@ class MeetingBoxApp(App):
             return True
         amp = str(amp_n)
         for cmd in (
-            ["espeak-ng", "-s", "165", "-a", amp, phrase],
-            ["espeak", "-s", "165", "-a", amp, phrase],
+            ["espeak-ng", "-s", "120", "-a", amp, phrase],
+            ["espeak", "-s", "120", "-a", amp, phrase],
         ):
             exe = shutil.which(cmd[0])
             if not exe:

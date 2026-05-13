@@ -7,6 +7,7 @@ size, and colour is taken directly from the Figma node data.  Live data
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import math
 import time
@@ -1440,7 +1441,7 @@ class HomeScreen(BaseScreen):
         if self._summary_poll_event:
             self._summary_poll_event.cancel()
         self._summary_poll_event = Clock.schedule_interval(
-            lambda _dt: self._load_home_summary(), 60.0
+            lambda _dt: self._load_home_summary(), 30.0
         )
 
     def on_leave(self):
@@ -1788,22 +1789,29 @@ class HomeScreen(BaseScreen):
 
     def _load_home_summary(self):
         async def _fetch():
-            gfeed: dict = {}
-            try:
+            # Fetch Gmail, home summary, and latest meeting in parallel.
+            async def _gmail():
                 gf = getattr(self.backend, "fetch_gmail_recent", None)
-                if gf is not None:
-                    gfeed = await gf(max_results=40, days=_GMAIL_RECENT_DAYS, q="")
-            except Exception as exc:
-                logger.debug("home gmail feed failed: %s", exc)
-                gfeed = {}
+                if gf is None:
+                    return {}
+                return await gf(max_results=40, days=_GMAIL_RECENT_DAYS, q="")
+
+            async def _summary():
+                return await self.backend.get_home_summary()
+
+            async def _meetings():
+                return await self.backend.get_meetings(limit=1)
+
+            results = await asyncio.gather(
+                _gmail(), _summary(), _meetings(), return_exceptions=True
+            )
+            gfeed    = results[0] if not isinstance(results[0], BaseException) else {}
+            summary  = results[1] if not isinstance(results[1], BaseException) else None
+            meetings = results[2] if not isinstance(results[2], BaseException) else []
+
             gsum = summarize_gmail_feed_for_home(gfeed)
             try:
-                data     = await self.backend.get_home_summary()
-                meetings = []
-                try:
-                    meetings = await self.backend.get_meetings(limit=1)
-                except Exception:
-                    meetings = []
+                data = summary or await self.backend.get_home_summary()
                 latest   = meetings[0] if meetings else None
                 today_n  = int(data.get("pending_actions_today") or 0)
                 total_n  = int(data.get("pending_actions_total") or 0)

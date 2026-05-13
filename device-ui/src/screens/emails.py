@@ -711,6 +711,16 @@ class EmailsScreen(BaseScreen):
 
     def on_enter(self):
         self._load_emails()
+        if not hasattr(self, "_refresh_event") or self._refresh_event is None:
+            from kivy.clock import Clock
+            self._refresh_event = Clock.schedule_interval(
+                lambda _dt: self._load_emails(), 30.0
+            )
+
+    def on_leave(self):
+        if hasattr(self, "_refresh_event") and self._refresh_event is not None:
+            self._refresh_event.cancel()
+            self._refresh_event = None
 
     # -----------------------------------------------------------------------
     # Data loading

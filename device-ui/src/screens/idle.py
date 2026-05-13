@@ -497,7 +497,7 @@ class IdleScreen(BaseScreen):
         if self._home_summary_event:
             self._home_summary_event.cancel()
         self._home_summary_event = Clock.schedule_interval(
-            lambda _dt: self._refresh_home_summary(), 60.0
+            lambda _dt: self._refresh_home_summary(), 30.0
         )
 
     def on_leave(self):

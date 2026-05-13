@@ -12,6 +12,7 @@ All coordinates are Figma absolute px, converted with _ph() to Kivy fractions.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from datetime import date, datetime
 
@@ -708,20 +709,18 @@ class MorningBriefScreen(BaseScreen):
 
     def _load_briefing_backend(self) -> None:
         async def _go():
-            data: dict = {}
-            gfeed: dict = {}
-            try:
-                data = await self.backend.get_briefing_context(days_ahead=1)
-            except Exception as exc:
-                logger.debug("get_briefing_context failed: %s", exc)
-                data = {}
-            try:
+            async def _briefing():
+                return await self.backend.get_briefing_context(days_ahead=1)
+
+            async def _gmail():
                 gf = getattr(self.backend, "fetch_gmail_recent", None)
-                if gf is not None:
-                    gfeed = await gf(max_results=40, days=_GMAIL_RECENT_DAYS, q="")
-            except Exception as exc:
-                logger.debug("morning_brief gmail feed failed: %s", exc)
-                gfeed = {}
+                if gf is None:
+                    return {}
+                return await gf(max_results=40, days=_GMAIL_RECENT_DAYS, q="")
+
+            results = await asyncio.gather(_briefing(), _gmail(), return_exceptions=True)
+            data  = results[0] if not isinstance(results[0], BaseException) else {}
+            gfeed = results[1] if not isinstance(results[1], BaseException) else {}
             Clock.schedule_once(
                 lambda dt: self._apply_briefing_data(data or {}, gfeed),
                 0,

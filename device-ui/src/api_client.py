@@ -1031,7 +1031,7 @@ class BackendClient:
         if self._ws_reconnect_attempts > WS_MAX_RECONNECT_ATTEMPTS:
             logger.error("Max WS reconnect attempts reached")
             raise ConnectionError("Failed to reconnect to backend WebSocket")
-        delay = min(WS_RECONNECT_DELAY * (2 ** self._ws_reconnect_attempts), 60)
+        delay = min(WS_RECONNECT_DELAY * (2 ** self._ws_reconnect_attempts), 30)
         logger.info(f"Reconnecting WS in {delay}s (attempt {self._ws_reconnect_attempts})")
         await asyncio.sleep(delay)
 

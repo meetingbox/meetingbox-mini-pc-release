@@ -80,11 +80,11 @@ DEVICE_AUTH_TOKEN_FILE_NAME = 'device_auth_token'
 # Use mock backend for testing (set MOCK_BACKEND=1)
 USE_MOCK_BACKEND = os.getenv('MOCK_BACKEND', '0') == '1'
 
-# API timeout in seconds
-API_TIMEOUT = 30
+# API timeout in seconds (keep snappy; long uploads have their own timeout)
+API_TIMEOUT = 15
 
 # WebSocket reconnect settings
-WS_RECONNECT_DELAY = 3  # seconds
+WS_RECONNECT_DELAY = 1  # seconds (exponential backoff: 1 → 2 → 4 → … capped at 30)
 WS_MAX_RECONNECT_ATTEMPTS = 10
 
 # ============================================================================
