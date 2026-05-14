@@ -27,6 +27,7 @@ from config import (
     WS_MAX_RECONNECT_ATTEMPTS,
     get_device_auth_token,
     persist_device_auth_token,
+    _strip_trailing_rest_api_path,
 )
 
 logger = logging.getLogger(__name__)
@@ -253,7 +254,7 @@ def invoke_realtime_tool_sync(
     POST /api/voice/realtime/tools/invoke (blocking).
     Used by the Realtime WebSocket worker thread; mirrors BackendClient.invoke_realtime_tool.
     """
-    root = (base_url or "").strip().rstrip("/")
+    root = _strip_trailing_rest_api_path((base_url or "").strip().rstrip("/"))
     tok = (bearer_token or "").strip()
     if not root or not tok:
         return json.dumps({"error": "missing_backend_or_token"})
@@ -304,7 +305,7 @@ class BackendClient:
     """
 
     def __init__(self, base_url: str = BACKEND_URL):
-        self.base_url = base_url.rstrip('/')
+        self.base_url = _strip_trailing_rest_api_path(base_url.rstrip("/"))
         self.ws_url = BACKEND_WS_URL
         self.client = httpx.AsyncClient(timeout=API_TIMEOUT)
         self._refresh_auth_header()

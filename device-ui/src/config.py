@@ -9,6 +9,7 @@ import functools
 import logging
 import os
 from pathlib import Path
+from urllib.parse import urlparse, urlunparse
 
 logger = logging.getLogger(__name__)
 
@@ -18,6 +19,43 @@ logger = logging.getLogger(__name__)
 
 _CLOUD_BACKEND_URL = "https://meetingboxai.lucratechsol.com"
 _LOCAL_BACKEND_DEFAULTS = {"http://127.0.0.1:8000", "http://localhost:8000"}
+
+
+def _strip_trailing_rest_api_path(url: str) -> str:
+    """
+    Client always calls ``{BASE}/api/...``. If BASE wrongly ends with ``/api``,
+    requests become ``.../api/api/...`` (404). Wrong WS derivation: ``wss://host/api/ws``.
+    """
+    u = (url or "").strip().rstrip("/")
+    if len(u) > 8 and u.lower().endswith("/api"):
+        out = u[:-4].rstrip("/")
+        logger.warning(
+            "BACKEND_URL had a trailing /api — removed it (%s → %s). "
+            "Use scheme + host only; paths already include /api/....",
+            u,
+            out,
+        )
+        return out or u
+    return u
+
+
+def _fix_ws_wrong_under_api(ws_url: str) -> str:
+    """API WebSocket route is ``/ws`` on the FastAPI root, never ``/api/ws``."""
+    w = (ws_url or "").strip()
+    if not w:
+        return w
+    try:
+        pu = urlparse(w)
+    except ValueError:
+        return w
+    path = (pu.path or "").rstrip("/")
+    if path == "/api/ws":
+        logger.warning(
+            "BACKEND_WS_URL used path /api/ws — correcting to /ws (%s)",
+            w,
+        )
+        return urlunparse((pu.scheme, pu.netloc, "/ws", pu.params, pu.query, pu.fragment))
+    return w
 
 
 def _normalize_dashboard_config(raw: str) -> tuple[str, str]:
@@ -82,7 +120,7 @@ def _resolve_backend_url() -> str:
     return out
 
 
-BACKEND_URL = _resolve_backend_url()
+BACKEND_URL = _strip_trailing_rest_api_path(_resolve_backend_url())
 
 
 def _default_ws_url(http_url: str) -> str:
@@ -95,7 +133,8 @@ def _default_ws_url(http_url: str) -> str:
     return "ws://localhost:8000/ws"
 
 
-BACKEND_WS_URL = (os.getenv("BACKEND_WS_URL", "") or "").strip() or _default_ws_url(BACKEND_URL)
+_WS_ENV = (os.getenv("BACKEND_WS_URL", "") or "").strip()
+BACKEND_WS_URL = _fix_ws_wrong_under_api(_WS_ENV) if _WS_ENV else _default_ws_url(BACKEND_URL)
 DEVICE_AUTH_TOKEN = os.getenv('DEVICE_AUTH_TOKEN', '')
 DEVICE_AUTH_TOKEN_FILE_NAME = 'device_auth_token'
 
