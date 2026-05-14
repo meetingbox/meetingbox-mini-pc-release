@@ -1996,7 +1996,7 @@ class MeetingBoxApp(App):
                             0,
                         )
                     return
-                res = await self.backend.post_assistant_intent(phrase)
+                res = await self.backend.post_assistant_intent(phrase, voice_optimized=True)
                 raw = (res.get("assistant_message") or "").strip() or "Okay."
                 if getattr(self, "voice_assistant_enabled", True):
                     Clock.schedule_once(

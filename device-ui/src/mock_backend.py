@@ -508,7 +508,11 @@ class MockBackendClient:
         return {"days": days}
 
     async def post_assistant_intent(
-        self, message: str, meeting_id: str | None = None
+        self,
+        message: str,
+        meeting_id: str | None = None,
+        *,
+        voice_optimized: bool = False,
     ) -> Dict:
         await asyncio.sleep(0.2)
         text = (message or "").strip()

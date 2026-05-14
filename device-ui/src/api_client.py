@@ -584,12 +584,14 @@ class BackendClient:
             self,
             message: str,
             meeting_id: Optional[str] = None,
+            *,
+            voice_optimized: bool = False,
     ) -> Dict:
         """POST /api/assistant/intent — route a natural-language request.
         Raises on failure so callers (voice assistant) can distinguish network
         errors from empty responses.
         """
-        payload: Dict = {"message": message}
+        payload: Dict = {"message": message, "voice_optimized": voice_optimized}
         if meeting_id:
             payload["meeting_id"] = meeting_id
         resp = await self.client.post(
