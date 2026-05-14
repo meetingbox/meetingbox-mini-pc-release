@@ -240,6 +240,43 @@ def build_websocket_url(base_ws_url: str) -> str:
     )
 
 
+def invoke_realtime_tool_sync(
+    base_url: str,
+    bearer_token: str,
+    *,
+    call_id: str,
+    name: str,
+    arguments: str = "{}",
+    timeout: float = 90.0,
+) -> str:
+    """
+    POST /api/voice/realtime/tools/invoke (blocking).
+    Used by the Realtime WebSocket worker thread; mirrors BackendClient.invoke_realtime_tool.
+    """
+    root = (base_url or "").strip().rstrip("/")
+    tok = (bearer_token or "").strip()
+    if not root or not tok:
+        return json.dumps({"error": "missing_backend_or_token"})
+    url = f"{root}/api/voice/realtime/tools/invoke"
+    headers = {"Authorization": f"Bearer {tok}"}
+    payload = {
+        "call_id": (call_id or "").strip(),
+        "name": (name or "").strip(),
+        "arguments": arguments if arguments is not None else "{}",
+    }
+    try:
+        with httpx.Client(timeout=timeout) as client:
+            resp = client.post(url, json=payload, headers=headers)
+            resp.raise_for_status()
+            body = resp.json()
+        if isinstance(body, dict) and "output" in body:
+            return str(body["output"])
+        return ""
+    except Exception as e:
+        logger.warning("invoke_realtime_tool_sync failed: %s", e)
+        return json.dumps({"error": "invoke_failed", "detail": str(e)})
+
+
 class BackendClient:
     """
     Client for MeetingBox backend API.
@@ -584,14 +621,12 @@ class BackendClient:
             self,
             message: str,
             meeting_id: Optional[str] = None,
-            *,
-            voice_optimized: bool = False,
     ) -> Dict:
         """POST /api/assistant/intent — route a natural-language request.
         Raises on failure so callers (voice assistant) can distinguish network
         errors from empty responses.
         """
-        payload: Dict = {"message": message, "voice_optimized": voice_optimized}
+        payload: Dict = {"message": message}
         if meeting_id:
             payload["meeting_id"] = meeting_id
         resp = await self.client.post(
@@ -813,6 +848,28 @@ class BackendClient:
         resp = await self.client.post(f"{self.base_url}/api/voice/realtime/session")
         resp.raise_for_status()
         return resp.json()
+
+    async def invoke_realtime_tool(
+        self,
+        *,
+        call_id: str,
+        name: str,
+        arguments: str = "{}",
+    ) -> str:
+        """POST /api/voice/realtime/tools/invoke — Mem0 / briefing tools for Realtime voice."""
+        resp = await self.client.post(
+            f"{self.base_url}/api/voice/realtime/tools/invoke",
+            json={
+                "call_id": (call_id or "").strip(),
+                "name": (name or "").strip(),
+                "arguments": arguments if (arguments is not None) else "{}",
+            },
+        )
+        resp.raise_for_status()
+        body = resp.json()
+        if isinstance(body, dict) and "output" in body:
+            return str(body["output"])
+        return ""
 
     # ==================================================================
     # GMAIL (same feed as dashboard: GET /api/integrations/gmail/recent)
