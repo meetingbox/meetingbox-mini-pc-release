@@ -2220,7 +2220,7 @@ class MeetingBoxApp(App):
 
             resp = httpx.post(
                 f"{BACKEND_URL}/api/tts/speak",
-                json={"text": text, "voice": os.environ.get("OPENAI_TTS_VOICE", "nova")},
+                json={"text": text, "voice": os.environ.get("OPENAI_TTS_VOICE", "shimmer")},
                 headers={"Authorization": f"Bearer {token}"},
                 timeout=20.0,
             )
