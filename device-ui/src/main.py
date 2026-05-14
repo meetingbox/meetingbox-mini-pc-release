@@ -594,6 +594,10 @@ class MeetingBoxApp(App):
         self._voice_cloud_qa_budget = 0
         # Serialises TTS calls — overlapping replies are dropped, not stacked
         self._speaking_lock = threading.Lock()
+        # Monotonic timestamp of when the last TTS finished playing.
+        # Used to suppress wake-phrase re-detection for a few seconds after the
+        # assistant speaks (prevents TTS audio echo from restarting the loop).
+        self._last_tts_end_monotonic: float = 0.0
 
     # ==================================================================
     # BUILD
@@ -1845,6 +1849,18 @@ class MeetingBoxApp(App):
         Arms at most one cloud Q&A reply for this wake. OpenAI Realtime may only start
         when voice_realtime_assistant is on and `_realtime_launch_permitted` is set here.
         """
+        import time as _time
+        quiet_until = getattr(self, "_last_tts_end_monotonic", 0.0) + 4.0
+        if _time.monotonic() < quiet_until:
+            # The assistant just spoke — the wake phrase was likely the TTS
+            # audio echoing back into the mic.  Suppress it to break the loop.
+            import logging as _logging
+            _logging.getLogger(__name__).debug(
+                "Wake phrase suppressed (post-TTS quiet period, %.1fs remaining)",
+                quiet_until - _time.monotonic(),
+            )
+            return
+
         if getattr(self, "voice_assistant_enabled", True):
             # During an active meeting recording, suppress cloud Q&A so the
             # ambient conversation is not sent to the AI. Local commands
@@ -2277,14 +2293,19 @@ class MeetingBoxApp(App):
                 except Exception as e:
                     logger.debug("mimic3 TTS failed: %s", e)
 
-            # --- 3. espeak-ng / espeak — try progressively simpler voice flags ---
+            # --- 3. espeak-ng / espeak ---
+            # IMPORTANT: use a SINGLE attempt per binary — the cascade previously
+            # tried multiple voice flags, and if en-us+f3 played audio but returned
+            # non-zero (voice data not installed), the next variant would ALSO play
+            # the same text (double/triple voice loop).  One attempt per binary;
+            # only fall through to the stdout|aplay pipe if the binary couldn't run
+            # at all (exception raised), not merely if it returned non-zero.
             esng = shutil.which("espeak-ng")
             esp = shutil.which("espeak")
+            _espeak_ran = False
             for exe, voice_flags in [
-                (esng, ["-v", "en-us+f3", "-s", "125", "-p", "46", "-g", "3"]),
-                (esng, ["-v", "en-us", "-s", "125"]),
-                (esng, ["-s", "125"]),
-                (esp,  ["-v", "en", "-s", "125"]),
+                (esng, ["-v", "en-us", "-s", "130"]),
+                (esp,  ["-v", "en",    "-s", "130"]),
             ]:
                 if not exe:
                     continue
@@ -2296,17 +2317,23 @@ class MeetingBoxApp(App):
                         stderr=subprocess.DEVNULL,
                         timeout=20,
                     )
+                    _espeak_ran = True
                     if result.returncode == 0:
                         return True
-                    logger.debug("espeak returncode=%s for flags %s", result.returncode, voice_flags)
+                    # Non-zero exit but subprocess ran — audio may already have been
+                    # produced (voice-data fallback).  Do NOT try the next variant;
+                    # stop here to prevent the same text being spoken twice.
+                    logger.debug("espeak returncode=%s (stopping cascade to avoid double-speak)",
+                                 result.returncode)
+                    break
                 except Exception as e:
                     logger.debug("espeak attempt failed (%s): %s", voice_flags, e)
 
-            # --- 4. espeak-ng --stdout | aplay (last resort) ---
-            if esng and aplay:
+            # --- 4. espeak-ng --stdout | aplay (only when binary couldn't run at all) ---
+            if esng and aplay and not _espeak_ran:
                 try:
                     proc = subprocess.Popen(
-                        [esng, "-v", "en-us", "-s", "125", "-a", amp, phrase, "--stdout"],
+                        [esng, "-v", "en-us", "-s", "130", "-a", amp, phrase, "--stdout"],
                         stdout=subprocess.PIPE,
                         stderr=subprocess.DEVNULL,
                     )
@@ -2322,7 +2349,10 @@ class MeetingBoxApp(App):
                     finally:
                         if proc.stdout:
                             proc.stdout.close()
-                        proc.wait(timeout=30)
+                        try:
+                            proc.wait(timeout=5)
+                        except Exception:
+                            proc.kill()
                     return True
                 except Exception as e:
                     logger.warning("Voice feedback via espeak-ng stdout | aplay failed: %s", e)
@@ -2331,10 +2361,14 @@ class MeetingBoxApp(App):
             return False
 
         finally:
-            # Wait 1.5 s after playback ends so the speaker tail decays before
-            # Vosk resumes — prevents the last syllable triggering a new command.
+            # Wait 2.5 s after playback ends so the speaker tail fully decays
+            # before Vosk resumes — prevents the TTS audio being re-transcribed
+            # as a new voice command.
             import time as _time
-            _time.sleep(1.5)
+            _time.sleep(2.5)
+            # Record when TTS finished so wake-phrase handler can suppress
+            # re-detection for a further 2 s (total ~4.5 s from TTS end).
+            self._last_tts_end_monotonic = _time.monotonic()
             try:
                 if va is not None:
                     va.set_tts_active(False)
@@ -2370,7 +2404,9 @@ class MeetingBoxApp(App):
 
     def _voice_reply_and_extend_listening(self, message: str, *, error: bool = False) -> None:
         """Speak assistant text; next question requires another wake phrase or mic tap."""
-        msg = self._trim_voice_text(message, 450)
+        # Strip markdown before TTS so symbols like ** aren't read aloud by espeak.
+        clean = self._strip_markdown(message)
+        msg = self._trim_voice_text(clean, 450)
         words = max(1, len(msg.split()))
         dur = min(45.0, max(2.5, words * 0.42))
         st = "error" if error else "speaking"
@@ -2389,6 +2425,29 @@ class MeetingBoxApp(App):
         if rem or not parts:
             parts.append(f"{rem} second" + ("s" if rem != 1 else ""))
         return " ".join(parts[:2])
+
+    @staticmethod
+    def _strip_markdown(text: str) -> str:
+        """Remove common markdown symbols so espeak does not read them aloud."""
+        import re as _re
+        s = text or ""
+        # Bold/italic markers: **text**, *text*, __text__, _text_
+        s = _re.sub(r"\*{1,3}([^*]+)\*{1,3}", r"\1", s)
+        s = _re.sub(r"_{1,3}([^_]+)_{1,3}", r"\1", s)
+        # Inline code / backtick
+        s = _re.sub(r"`([^`]+)`", r"\1", s)
+        # Markdown links [text](url) → text
+        s = _re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", s)
+        # Bare URLs
+        s = _re.sub(r"https?://\S+", "", s)
+        # Headings: # text
+        s = _re.sub(r"^#{1,6}\s+", "", s, flags=_re.MULTILINE)
+        # Bullet/numbered list markers
+        s = _re.sub(r"^\s*[-*•]\s+", "", s, flags=_re.MULTILINE)
+        s = _re.sub(r"^\s*\d+\.\s+", "", s, flags=_re.MULTILINE)
+        # Collapse extra whitespace
+        s = " ".join(s.split())
+        return s
 
     @staticmethod
     def _trim_voice_text(text: str, max_chars: int = 220) -> str:
@@ -2929,6 +2988,16 @@ class MeetingBoxApp(App):
         if intent.name == "show_calendar":
             self.goto_screen("calendar", "slide_left")
             self._voice_reply("Opening calendar.", duration=2.5)
+            return
+
+        if intent.name == "morning_brief":
+            self.goto_screen("morning_brief", "slide_left")
+            self._voice_reply("Opening your morning briefing.", duration=3.0)
+            return
+
+        if intent.name == "show_tasks":
+            self.goto_screen("meetings", "slide_left")
+            self._voice_reply("Opening meetings and action items.", duration=3.0)
             return
 
         if intent.name == "show_meetings":

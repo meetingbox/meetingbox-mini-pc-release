@@ -269,13 +269,22 @@ class BackendClient:
     def __init__(self, base_url: str = BACKEND_URL):
         self.base_url = base_url.rstrip('/')
         self.ws_url = BACKEND_WS_URL
-        headers = {}
-        token = get_device_auth_token()
-        if token:
-            headers["Authorization"] = f"Bearer {token}"
-        self.client = httpx.AsyncClient(timeout=API_TIMEOUT, headers=headers)
+        self.client = httpx.AsyncClient(timeout=API_TIMEOUT)
+        self._refresh_auth_header()
         self.ws_connection = None
         self._ws_reconnect_attempts = 0
+
+    def _refresh_auth_header(self) -> None:
+        """Re-read the device auth token and update the httpx client header.
+
+        Called at init and after claim_device so the token is always current
+        without requiring a full client restart.
+        """
+        token = (get_device_auth_token() or "").strip()
+        if token:
+            self.client.headers["Authorization"] = f"Bearer {token}"
+        else:
+            self.client.headers.pop("Authorization", None)
 
     async def close(self):
         await self.client.aclose()
@@ -318,7 +327,7 @@ class BackendClient:
         if not access:
             raise ValueError("Claim response missing access_token")
         persist_device_auth_token(access)
-        self.set_device_auth_header(access)
+        self._refresh_auth_header()
         return data
 
     # ==================================================================

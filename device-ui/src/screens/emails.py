@@ -1170,7 +1170,7 @@ class EmailsScreen(BaseScreen):
                 )
             self._list_container.add_widget(_lbl(
                 msg,
-                _FONT_MD, _ff(18), _MUTED,
+                _F_MED, _ff(18), _C_MUTED,
                 halign="center", valign="middle",
                 size_hint=(None, None),
                 size=(_ff(460), _ff(110)),
