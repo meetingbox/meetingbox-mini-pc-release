@@ -2206,6 +2206,61 @@ class MeetingBoxApp(App):
         v = max(0, min(100, v))
         return max(0, min(200, int(round(v * 2))))
 
+    def _speak_via_openai_tts(self, text: str) -> bool:
+        """
+        Call the server's /api/tts/speak endpoint (backed by OpenAI TTS).
+        Returns True if audio was played successfully.
+        Falls through silently on any error so espeak-ng can take over.
+        """
+        try:
+            from config import BACKEND_URL
+            token = get_device_auth_token().strip()
+            if not token:
+                return False
+
+            resp = httpx.post(
+                f"{BACKEND_URL}/api/tts/speak",
+                json={"text": text, "voice": os.environ.get("OPENAI_TTS_VOICE", "nova")},
+                headers={"Authorization": f"Bearer {token}"},
+                timeout=20.0,
+            )
+            if resp.status_code != 200:
+                logger.debug("OpenAI TTS server returned %s: %s", resp.status_code, resp.text[:200])
+                return False
+
+            audio_bytes = resp.content
+            if not audio_bytes:
+                return False
+
+            aplay = shutil.which("aplay")
+            if not aplay:
+                logger.debug("aplay not found — cannot play OpenAI TTS audio")
+                return False
+
+            import tempfile
+            with tempfile.NamedTemporaryFile(suffix=".pcm", delete=False) as tmp:
+                tmp.write(audio_bytes)
+                tmp_path = tmp.name
+
+            try:
+                subprocess.run(
+                    [aplay, "-q", "-r", "24000", "-f", "S16_LE", "-c", "1", tmp_path],
+                    check=False,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    timeout=60,
+                )
+                return True
+            finally:
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
+
+        except Exception as exc:
+            logger.debug("OpenAI TTS failed, falling back to espeak: %s", exc)
+            return False
+
     def _speak_text_blocking(self, text: str) -> bool:
         phrase = (text or "").strip()
         if not phrase:
@@ -2224,6 +2279,10 @@ class MeetingBoxApp(App):
             # device's own voice is not picked up and re-processed.
             if va is not None:
                 va.set_tts_active(True)
+
+            # --- 0. OpenAI TTS via server (natural AI voice — best quality) ---
+            if self._speak_via_openai_tts(phrase):
+                return True
 
             amp_n = self._espeak_amplitude()
             if amp_n <= 0:
