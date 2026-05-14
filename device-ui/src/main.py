@@ -2114,14 +2114,53 @@ class MeetingBoxApp(App):
         )
 
         async def _go():
+            def _friendly_realtime_failure(exc: BaseException) -> str:
+                if isinstance(exc, httpx.HTTPStatusError):
+                    code = exc.response.status_code
+                    detail = ""
+                    try:
+                        body = exc.response.json()
+                        if isinstance(body, dict) and body.get("detail"):
+                            detail = str(body["detail"])
+                    except Exception:
+                        detail = (exc.response.text or "").strip()[:240]
+                    if code == 503:
+                        return "Realtime voice is off or not configured on the server."
+                    if code == 502:
+                        return "Could not start cloud assistant session. Try again later."
+                    if code in (401, 403):
+                        return "Device not authorized — check pairing."
+                    tail = (detail or "").strip()
+                    if tail:
+                        return f"Assistant unavailable ({code}): {tail[:200]}"
+                    return f"Assistant unavailable ({code})."
+                if isinstance(
+                    exc,
+                    (
+                        httpx.ConnectError,
+                        httpx.ConnectTimeout,
+                        httpx.ReadTimeout,
+                        httpx.RemoteProtocolError,
+                        httpx.HTTPError,
+                    ),
+                ):
+                    return "Network error — could not reach the assistant."
+                return "Cloud assistant unavailable."
+
             try:
                 data = await self.backend.create_realtime_voice_session()
             except Exception as e:
                 logger.warning("Realtime voice session request failed: %s", e)
                 self._realtime_session_pending = False
-                Clock.schedule_once(lambda _dt: self._clear_voice_indicator_override(), 0)
+                label = _friendly_realtime_failure(e)
                 Clock.schedule_once(
-                    lambda _dt: self._begin_local_voice_command_session(), 0
+                    lambda _dt: self._set_voice_indicator_override(
+                        "wake", label, duration=5.5
+                    ),
+                    0,
+                )
+                Clock.schedule_once(
+                    lambda _dt: self._begin_local_voice_command_session(), 5.6
                 )
                 return
             Clock.schedule_once(lambda _dt, d=data: self._run_realtime_voice_session(d), 0)
