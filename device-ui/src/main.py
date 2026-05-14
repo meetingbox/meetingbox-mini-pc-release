@@ -2046,6 +2046,27 @@ class MeetingBoxApp(App):
             except Exception:
                 pass
 
+    def _realtime_voice_navigate(self, screen: str) -> None:
+        """Open a main UI screen when the cloud Realtime model calls navigate_device_ui."""
+        s = (screen or "").strip()
+        routes = {
+            "home": ("home", "fade"),
+            "calendar": ("calendar", "slide_left"),
+            "emails": ("emails", "slide_left"),
+            "meetings": ("meetings", "slide_left"),
+            "morning_brief": ("morning_brief", "slide_left"),
+            "settings": ("settings", "slide_left"),
+            "mic_test": ("mic_test", "slide_left"),
+        }
+        pair = routes.get(s)
+        if not pair:
+            return
+        name, tr = pair
+        try:
+            self.goto_screen(name, tr)
+        except Exception:
+            logger.exception("Realtime navigate to %s failed", name)
+
     def _end_realtime_voice_session(self) -> None:
         sess = self._realtime_voice_session
         started = getattr(self, "_realtime_session_start_monotonic", None)
@@ -2227,6 +2248,7 @@ class MeetingBoxApp(App):
                 on_session_end=_end,
                 on_error=_err,
                 on_connected=_on_rt_connected,
+                on_device_navigate=self._realtime_voice_navigate,
             )
             self._sync_voice_assistant_state()
             self._realtime_voice_session.start()

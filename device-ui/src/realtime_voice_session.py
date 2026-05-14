@@ -42,7 +42,7 @@ _APPEND_CHUNK_MS = 40
 
 def build_realtime_websocket_url(model: str) -> str:
     """Return OpenAI Realtime WebSocket URL with URL-encoded model id."""
-    m = (model or "").strip() or "gpt-realtime"
+    m = (model or "").strip() or "gpt-realtime-2"
     return f"wss://{_REALTIME_WS_HOST}/v1/realtime?model={quote(m, safe='')}"
 
 
@@ -76,6 +76,7 @@ class RealtimeVoiceSession:
         on_session_end,
         on_error,
         on_connected,
+        on_device_navigate=None,
     ):
         self._client_secret = (client_secret or "").strip()
         self._model = (model or "").strip()
@@ -84,6 +85,7 @@ class RealtimeVoiceSession:
         self._on_session_end_cb = on_session_end
         self._on_error_cb = on_error
         self._on_connected_cb = on_connected
+        self._on_device_navigate_cb = on_device_navigate
         self._thread: threading.Thread | None = None
         self._stop = threading.Event()
         self._loop: asyncio.AbstractEventLoop | None = None
@@ -158,6 +160,31 @@ class RealtimeVoiceSession:
                 self._on_session_end_cb()
             except Exception:
                 logger.exception("Realtime on_session_end callback failed")
+
+        Clock.schedule_once(_emit, 0)
+
+    def _emit_device_navigation(self, tool_output_json: str) -> None:
+        """Parse navigate_device_ui tool result and run Kivy navigation on the main thread."""
+        cb = self._on_device_navigate_cb
+        if not cb:
+            return
+        try:
+            data = json.loads(tool_output_json)
+        except (json.JSONDecodeError, TypeError):
+            return
+        if not isinstance(data, dict) or not data.get("ok"):
+            return
+        screen = data.get("device_navigate")
+        if not isinstance(screen, str) or not screen.strip():
+            return
+
+        nav = screen.strip()
+
+        def _emit(_dt):
+            try:
+                cb(nav)
+            except Exception:
+                logger.exception("Realtime on_device_navigate failed screen=%s", nav)
 
         Clock.schedule_once(_emit, 0)
 
@@ -387,6 +414,8 @@ class RealtimeVoiceSession:
                 name=name,
                 arguments=arguments,
             )
+            if name == "navigate_device_ui":
+                self._emit_device_navigation(out)
             out_evt = {
                 "type": "conversation.item.create",
                 "item": {

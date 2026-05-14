@@ -36,6 +36,11 @@ def test_build_realtime_websocket_url_encodes_model():
     assert "gpt-realtime-2" in u
 
 
+def test_build_realtime_websocket_url_defaults_when_blank():
+    u = build_realtime_websocket_url("")
+    assert "gpt-realtime-2" in u
+
+
 def test_resample_pcm16_mono_noop_at_same_rate():
     samples = (np.ones(100, dtype=np.int16) * 1000).tobytes()
     out = resample_pcm16_mono(samples, 24000, 24000)
