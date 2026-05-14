@@ -1171,7 +1171,7 @@ class EmailsScreen(BaseScreen):
                 _F_MED, _ff(18), _C_MUTED,
                 halign="center", valign="middle",
                 size_hint=(None, None),
-                size=(_ff(460), _ff(110)),
+                width=_ff(460), height=_ff(110),
                 pos_hint={"center_x": 0.5, "center_y": 0.5},
             ))
             self._list_container.height = _ff(567)
@@ -1183,7 +1183,7 @@ class EmailsScreen(BaseScreen):
                 _F_MED, _ff(16), (0.9, 0.75, 0.35, 1.0),
                 halign="center", valign="middle",
                 size_hint=(None, None),
-                size=(_ff(460), _ff(80)),
+                width=_ff(460), height=_ff(80),
                 pos_hint={"center_x": 0.5, "center_y": 0.5},
             ))
             self._list_container.height = _ff(567)
@@ -1195,7 +1195,7 @@ class EmailsScreen(BaseScreen):
                 msg, _F_MED, _ff(18), _C_MUTED,
                 halign="center", valign="middle",
                 size_hint=(None, None),
-                size=(_ff(200), _ff(40)),
+                width=_ff(200), height=_ff(40),
                 pos_hint={"center_x": 0.5, "center_y": 0.5},
             ))
             self._list_container.height = _ff(567)
