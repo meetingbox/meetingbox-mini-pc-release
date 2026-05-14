@@ -292,9 +292,9 @@ class VoiceCommandInterpreter:
         residual = [w for w in words if w not in wake_set and w not in fillers]
         if not residual:
             return True
-        # Wake phrase with transcript typos (e.g. "hey toni") — extras are small and very close.
+        # Wake phrase with transcript typos (e.g. "hey toni") — at most one extra word and very close.
         wake_wc = len(self.wake_phrase.split())
-        if len(words) <= wake_wc + 2 and _best_phrase_similarity(norm, self.wake_phrase) >= 0.88:
+        if len(words) <= wake_wc + 1 and _best_phrase_similarity(norm, self.wake_phrase) >= 0.88:
             return True
         return False
 
