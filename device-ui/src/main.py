@@ -1870,7 +1870,19 @@ class MeetingBoxApp(App):
             if self.recording_state.get("active"):
                 self._voice_cloud_qa_budget = 0
             else:
-                self._voice_cloud_qa_budget = 1
+                will_use_realtime = (
+                    getattr(self, "voice_realtime_assistant", False)
+                    and REALTIME_VOICE_IMPLEMENTED
+                    and bool(get_device_auth_token().strip())
+                    and not USE_MOCK_BACKEND
+                    and not WAKE_LOCAL_VOICE_ONLY
+                )
+                # OpenAI Realtime handles the whole spoken turn. If we leave the
+                # HTTP /assistant/intent "QA" budget at 1, Vosk often delivers
+                # wake + question in one Result() and fires on_conversation_turn
+                # in the same callback as on_wake_phrase — parallel to Realtime
+                # mint — so the user hears the wrong pipeline and Realtime feels broken.
+                self._voice_cloud_qa_budget = 0 if will_use_realtime else 1
         else:
             self._voice_cloud_qa_budget = 0
         self._realtime_launch_permitted = False
@@ -1948,6 +1960,15 @@ class MeetingBoxApp(App):
             self.voice_assistant.simulate_wake()
         except Exception:
             logger.exception("simulate_wake after wake phrase failed")
+        # Wake cleared QA budget when Realtime was armed; restore one HTTP reply
+        # for this mic window when we actually fell back to local listening.
+        if (
+            getattr(self, "voice_realtime_assistant", False)
+            and getattr(self, "voice_assistant_enabled", True)
+            and not self.recording_state.get("active")
+            and getattr(self, "_voice_cloud_qa_budget", 0) < 1
+        ):
+            self._voice_cloud_qa_budget = 1
         timeout = max(2.0, self.voice_assistant.command_timeout_seconds)
         if (
             self.screen_manager is not None
