@@ -348,7 +348,10 @@ class VoiceCommandInterpreter:
         intent = self._detect_intent(norm)
         heard_wake = self._heard_wake_phrase(norm)
 
-        if heard_wake and intent is not None:
+        # If the transcript is essentially just the wake phrase (plus uh/please),
+        # do NOT treat a spurious fuzzy intent hit as “wake + command” — otherwise
+        # the wake UI never runs and the user thinks wake is broken.
+        if heard_wake and intent is not None and not self.is_wake_only_utterance(norm):
             self.reset()
             self._last_action_at = now
             return intent
@@ -582,10 +585,11 @@ class VoiceAssistant:
         if not norm:
             return
         logger.debug("Voice assistant heard: %s", norm)
+        preempt = self._interpreter.detect_intent(norm)
         if (
             self._on_wake_phrase is not None
             and self._interpreter.heard_wake_phrase(norm)
-            and self._interpreter.detect_intent(norm) is None
+            and (preempt is None or self._interpreter.is_wake_only_utterance(norm))
         ):
             try:
                 self._on_wake_phrase(norm)

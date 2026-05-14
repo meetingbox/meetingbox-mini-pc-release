@@ -1850,7 +1850,9 @@ class MeetingBoxApp(App):
         when voice_realtime_assistant is on and `_realtime_launch_permitted` is set here.
         """
         import time as _time
-        quiet_until = getattr(self, "_last_tts_end_monotonic", 0.0) + 4.0
+        # After TTS, _speak_text_blocking already waits 2.5 s before reopening the
+        # mic, so an extra-long quiet window stacks and makes wake feel “dead”.
+        quiet_until = getattr(self, "_last_tts_end_monotonic", 0.0) + 1.5
         if _time.monotonic() < quiet_until:
             # The assistant just spoke — the wake phrase was likely the TTS
             # audio echoing back into the mic.  Suppress it to break the loop.
@@ -2425,8 +2427,7 @@ class MeetingBoxApp(App):
             # as a new voice command.
             import time as _time
             _time.sleep(2.5)
-            # Record when TTS finished so wake-phrase handler can suppress
-            # re-detection for a further 2 s (total ~4.5 s from TTS end).
+            # Record when wake suppression should taper off (~1.5 s after mic reopens).
             self._last_tts_end_monotonic = _time.monotonic()
             try:
                 if va is not None:
