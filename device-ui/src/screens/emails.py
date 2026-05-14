@@ -1083,6 +1083,20 @@ class EmailsScreen(BaseScreen):
                 err       = str(exc) or None
 
             def _apply(_dt):
+                # If the refresh failed but we already have emails on screen,
+                # keep showing the existing list — don't flash an error.
+                # Only replace with error/empty state on the very first load
+                # (no emails yet) or when Gmail is genuinely disconnected (401/403).
+                is_auth_error = err and (
+                    "401" in err or "403" in err
+                    or "not authenticated" in err
+                    or "not connected" in err
+                )
+                if not connected and self._all_emails and not is_auth_error:
+                    # Background refresh failed (network/timeout) — keep current data.
+                    logger.debug("EmailsScreen: background refresh failed (%s), keeping current emails", err)
+                    return
+
                 self._gmail_connected = connected
                 self._gmail_error     = err
                 self._all_emails      = emails
