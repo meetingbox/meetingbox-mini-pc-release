@@ -501,14 +501,19 @@ class EmailsScreen(BaseScreen):
     def __init__(self, **kw):
         super().__init__(**kw)
 
-        # State
-        self._all_emails: list         = []
-        self._filtered_emails: list    = []
-        self._selected_email: dict | None = None
-        self._active_tab: str          = "all"
-        self._search_q: str            = ""
-        self._gmail_connected: bool    = True
-        self._gmail_error: str | None  = None
+        # State — inbox/sent/drafts are fetched and cached separately
+        self._all_emails: list              = []   # inbox (all/today/unread)
+        self._sent_emails: list             = []
+        self._draft_emails: list            = []
+        self._filtered_emails: list         = []
+        self._selected_email: dict | None   = None
+        self._active_tab: str               = "all"
+        self._search_q: str                 = ""
+        self._gmail_connected: bool         = True
+        self._gmail_error: str | None       = None
+        # Track whether sent/drafts have been loaded at least once this session
+        self._sent_loaded: bool             = False
+        self._drafts_loaded: bool           = False
 
         # Widget refs set during _build_ui
         self._tab_labels: dict[str, Label]  = {}
@@ -620,14 +625,18 @@ class EmailsScreen(BaseScreen):
             pos_hint={"x": 37 / BW, "y": _fy(BH, 21, 36)},
         ))
 
-        # Tabs — positions from Figma
-        #   Today:  label x=37  count x=122   (active = blue)
-        #   All:    label x=212 count x=276
-        #   Unread: label x=365 count x=463
+        # Tabs — 5 tabs across the header (BW=1214, search bar starts x=925)
+        #   Today:  label x=37   count x=105
+        #   All:    label x=175  count x=220
+        #   Unread: label x=295  count x=378
+        #   Sent:   label x=460  count x=510
+        #   Drafts: label x=600  count x=668
         _tab_defs = [
-            ("today",  "Today",  37,  122),
-            ("all",    "All",    212, 276),
-            ("unread", "Unread", 365, 463),
+            ("today",  "Today",  37,  105),
+            ("all",    "All",    175, 220),
+            ("unread", "Unread", 295, 378),
+            ("sent",   "Sent",   460, 510),
+            ("drafts", "Drafts", 600, 668),
         ]
         for tab_id, tab_name, tx, cx in _tab_defs:
             active = (tab_id == self._active_tab)
@@ -635,17 +644,17 @@ class EmailsScreen(BaseScreen):
             cnt_col = _C_BLUE if active else _C_WHITE
 
             tab_lbl = _lbl(
-                tab_name, _F_SB, _ff(24), lbl_col,
+                tab_name, _F_SB, _ff(22), lbl_col,
                 halign="left", valign="middle",
                 size_hint=(None, 29 / BH),
-                width=_ff(90),
+                width=_ff(80),
                 pos_hint={"x": tx / BW, "y": _fy(BH, 62, 29)},
             )
             self._tab_labels[tab_id] = tab_lbl
             hdr.add_widget(tab_lbl)
 
             cnt_lbl = _lbl(
-                "0", _F_SB, _ff(24), cnt_col,
+                "0", _F_SB, _ff(22), cnt_col,
                 halign="left", valign="middle",
                 size_hint=(None, 29 / BH),
                 width=_ff(30),
@@ -655,7 +664,7 @@ class EmailsScreen(BaseScreen):
             hdr.add_widget(cnt_lbl)
 
             # Tap area covers label + count
-            tap_w = 170 if tab_id == "unread" else 140
+            tap_w = 130
             tap = _Tap(
                 draw_bg=False,
                 size_hint=(tap_w / BW, 45 / BH),
@@ -1041,10 +1050,13 @@ class EmailsScreen(BaseScreen):
     # ─────────────────────────────────────────────────────────────────────────
 
     def on_enter(self):
+        # Reset sent/drafts so they refresh on next tab visit
+        self._sent_loaded   = False
+        self._drafts_loaded = False
         self._load_emails()
         if not getattr(self, "_refresh_ev", None):
             self._refresh_ev = Clock.schedule_interval(
-                lambda _dt: self._load_emails(), 30.0,
+                lambda _dt: self._refresh_all(), 30.0,
             )
 
     def on_leave(self):
@@ -1053,48 +1065,86 @@ class EmailsScreen(BaseScreen):
             ev.cancel()
             self._refresh_ev = None
 
+    def _refresh_all(self):
+        """Background refresh — reload whichever folders have been visited."""
+        self._load_emails()
+        if self._sent_loaded:
+            self._load_folder("sent")
+        if self._drafts_loaded:
+            self._load_folder("drafts")
+
     # ─────────────────────────────────────────────────────────────────────────
     # Data layer (reuses existing backend / Gmail authentication)
     # ─────────────────────────────────────────────────────────────────────────
 
     def _load_emails(self):
+        """Load inbox emails (used for all/today/unread tabs)."""
+        self._load_folder("inbox")
+
+    def _load_folder(self, folder: str):
+        """
+        Fetch emails for the given folder and update the matching cache.
+        folder: "inbox" | "sent" | "drafts"
+        """
         async def _fetch():
             emails: list       = []
             connected          = True
             err: str | None    = None
+            api_folder         = "all" if folder == "inbox" else folder
             try:
                 fn = getattr(self.backend, "fetch_gmail_recent", None)
                 if fn is not None:
-                    data      = await fn(max_results=50, days=_GMAIL_RECENT_DAYS, q="")
+                    data      = await fn(
+                        max_results=50,
+                        days=_GMAIL_RECENT_DAYS,
+                        q="",
+                        folder=api_folder,
+                    )
                     connected = bool(data.get("connected"))
                     err       = (data.get("error") or "").strip() or None
                     rows      = data.get("messages") or []
-                    # fetch_gmail_recent always returns pre-shaped device-format dicts
-                    # (both /api/emails and the integrations fallback are mapped before
-                    # being returned) — no re-mapping needed here.
                     if isinstance(rows, list):
                         emails = [m for m in rows if isinstance(m, dict) and m.get("id")]
                 else:
-                    emails = await self.backend.get_emails(filter="all", limit=50)
+                    emails = await self.backend.get_emails(filter=api_folder, limit=50)
             except Exception as exc:
-                logger.warning("EmailsScreen._load_emails: %s", exc)
+                logger.warning("EmailsScreen._load_folder(%s): %s", folder, exc)
                 emails    = []
                 connected = False
                 err       = str(exc) or None
 
             def _apply(_dt):
-                # If the refresh failed but we already have emails on screen,
-                # keep showing the existing list — don't flash an error.
-                # Only replace with error/empty state on the very first load
-                # (no emails yet) or when Gmail is genuinely disconnected (401/403).
                 is_auth_error = err and (
                     "401" in err or "403" in err
                     or "not authenticated" in err
                     or "not connected" in err
                 )
+
+                if folder == "sent":
+                    # Keep existing sent emails on background refresh failure
+                    if not connected and self._sent_emails and not is_auth_error:
+                        return
+                    self._sent_loaded  = True
+                    self._sent_emails  = emails
+                    self._update_counts()
+                    if self._active_tab == "sent":
+                        self._apply_filter()
+                    return
+
+                if folder == "drafts":
+                    # Keep existing drafts on background refresh failure
+                    if not connected and self._draft_emails and not is_auth_error:
+                        return
+                    self._drafts_loaded  = True
+                    self._draft_emails   = emails
+                    self._update_counts()
+                    if self._active_tab == "drafts":
+                        self._apply_filter()
+                    return
+
+                # ── inbox ────────────────────────────────────────────────
                 if not connected and self._all_emails and not is_auth_error:
-                    # Background refresh failed (network/timeout) — keep current data.
-                    logger.debug("EmailsScreen: background refresh failed (%s), keeping current emails", err)
+                    logger.debug("EmailsScreen: inbox refresh failed (%s), keeping current", err)
                     return
 
                 self._gmail_connected = connected
@@ -1105,7 +1155,7 @@ class EmailsScreen(BaseScreen):
                     e.get("is_today") for e in emails
                 ):
                     self._set_tab("all")
-                else:
+                elif self._active_tab not in ("sent", "drafts"):
                     self._apply_filter()
                 if emails and self._selected_email is None:
                     self._select_email(emails[0])
@@ -1118,14 +1168,25 @@ class EmailsScreen(BaseScreen):
         today_n  = sum(1 for e in self._all_emails if e.get("is_today"))
         all_n    = len(self._all_emails)
         unread_n = sum(1 for e in self._all_emails if not e.get("is_read"))
-        counts   = {"today": today_n, "all": all_n, "unread": unread_n}
+        counts   = {
+            "today":  today_n,
+            "all":    all_n,
+            "unread": unread_n,
+            "sent":   len(self._sent_emails),
+            "drafts": len(self._draft_emails),
+        }
         for tid, lbl in self._count_labels.items():
             lbl.text = str(counts.get(tid, 0))
 
     def _apply_filter(self):
         tab = self._active_tab
         q   = self._search_q.lower().strip()
-        if tab == "today":
+
+        if tab == "sent":
+            base = list(self._sent_emails)
+        elif tab == "drafts":
+            base = list(self._draft_emails)
+        elif tab == "today":
             base = [e for e in self._all_emails if e.get("is_today")]
         elif tab == "unread":
             base = [e for e in self._all_emails if not e.get("is_read")]
@@ -1309,6 +1370,11 @@ class EmailsScreen(BaseScreen):
         if tab_id == self._active_tab:
             return
         self._set_tab(tab_id)
+        # Lazy-load sent/drafts on first visit to that tab
+        if tab_id == "sent" and not self._sent_loaded:
+            self._load_folder("sent")
+        elif tab_id == "drafts" and not self._drafts_loaded:
+            self._load_folder("drafts")
 
     def _set_tab(self, tab_id: str):
         self._active_tab = tab_id

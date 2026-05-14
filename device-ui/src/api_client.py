@@ -822,16 +822,18 @@ class BackendClient:
             max_results: int = 40,
             days: int = _GMAIL_RECENT_DAYS,
             q: str = "",
+            folder: str = "all",
     ) -> Dict:
         """
-        Fetch Gmail inbox. Tries the dedicated /api/emails endpoint first (purpose-built
-        for device + user Bearer), then falls back to /api/integrations/gmail/recent.
+        Fetch Gmail messages. folder= "all"|"today"|"unread"|"sent"|"drafts".
+        Tries the dedicated /api/emails endpoint first (purpose-built for device
+        + user Bearer), then falls back to /api/integrations/gmail/recent.
         """
         # --- Primary: /api/emails (returns list directly) ---
         try:
             resp = await self.client.get(
                 f"{self.base_url}/api/emails",
-                params={"filter": "all", "limit": int(max_results)},
+                params={"filter": folder, "limit": int(max_results)},
             )
             resp.raise_for_status()
             rows = resp.json()
