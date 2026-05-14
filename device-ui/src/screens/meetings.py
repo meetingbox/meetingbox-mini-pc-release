@@ -92,7 +92,10 @@ class MeetingsScreen(BaseScreen):
         self.add_widget(root)
 
     def on_enter(self):
-        self._load_meetings()
+        # If meetings are already cached, refresh silently in the background so
+        # the existing list stays visible while new data is fetched.  Only show
+        # the "Loading meetings…" spinner when there is nothing to display yet.
+        self._load_meetings(silent=bool(self.meetings))
         if getattr(self, "_poll_event", None):
             self._poll_event.cancel()
         self._poll_event = Clock.schedule_interval(

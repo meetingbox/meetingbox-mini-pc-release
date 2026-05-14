@@ -1116,12 +1116,16 @@ class CalendarScreen(BaseScreen):
         if self._datestr_lbl:
             self._datestr_lbl.text = _fmt_date(today)
 
-        if self._busy_lbl:
-            self._busy_lbl.text = "Loading calendar..."
-        if self._free_lbl:
-            self._free_lbl.text = ""
+        # Only show "Loading calendar..." when there is no cached data to display.
+        # If _week_data is already populated (e.g. returning from idle), keep the
+        # existing content visible and let _load_week() update it silently.
+        if not self._week_data:
+            if self._busy_lbl:
+                self._busy_lbl.text = "Loading calendar..."
+            if self._free_lbl:
+                self._free_lbl.text = ""
 
-        # Draw initial dots (all unfilled) while data is being fetched
+        # Draw dots from cached data immediately; _load_week() will refresh them.
         Clock.schedule_once(lambda _dt: self._rebuild_all_dots(), 0)
         Clock.schedule_once(lambda _dt: self._load_week(), 0)
         # Refresh meeting states every minute so glow follows the clock
