@@ -1069,13 +1069,11 @@ class EmailsScreen(BaseScreen):
                     connected = bool(data.get("connected"))
                     err       = (data.get("error") or "").strip() or None
                     rows      = data.get("messages") or []
-                    if connected and isinstance(rows, list):
-                        from api_client import _map_gmail_recent_row
-                        emails = [
-                            _map_gmail_recent_row(m)
-                            for m in rows
-                            if isinstance(m, dict) and m.get("id")
-                        ]
+                    # fetch_gmail_recent always returns pre-shaped device-format dicts
+                    # (both /api/emails and the integrations fallback are mapped before
+                    # being returned) — no re-mapping needed here.
+                    if isinstance(rows, list):
+                        emails = [m for m in rows if isinstance(m, dict) and m.get("id")]
                 else:
                     emails = await self.backend.get_emails(filter="all", limit=50)
             except Exception as exc:

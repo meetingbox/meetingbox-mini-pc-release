@@ -858,7 +858,20 @@ class BackendClient:
             data = resp.json()
             if not isinstance(data, dict):
                 return {"connected": False, "messages": [], "error": "Invalid response"}
-            return data
+            # This endpoint returns raw Gmail API format (from/date/snippet keys).
+            # Pre-map to device format here so callers always receive shaped data.
+            raw_msgs = data.get("messages") or []
+            mapped = [
+                _map_gmail_recent_row(m)
+                for m in raw_msgs
+                if isinstance(m, dict) and m.get("id")
+            ]
+            return {
+                "connected": bool(data.get("connected")),
+                "messages": mapped,
+                "count": len(mapped),
+                "error": data.get("error"),
+            }
         except httpx.HTTPStatusError as e:
             sc = e.response.status_code
             logger.warning("fetch_gmail_recent HTTP %s: %s", sc, (e.response.text or "")[:300])
