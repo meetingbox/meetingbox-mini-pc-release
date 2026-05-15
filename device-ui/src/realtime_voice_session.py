@@ -43,6 +43,7 @@ _REALTIME_TURN_DETECTION = {
     "threshold": 0.5,
     "prefix_padding_ms": _REALTIME_VAD_PREFIX_MS,
     "silence_duration_ms": _REALTIME_VAD_SILENCE_MS,
+    "interrupt_response": False,
 }
 _REALTIME_OUTPUT_VOICE_FALLBACK = "shimmer"
 
@@ -339,6 +340,8 @@ class RealtimeVoiceSession:
                 [
                     "aplay",
                     "-q",
+                    "-B",
+                    "400000",
                     "-t",
                     "raw",
                     "-f",
