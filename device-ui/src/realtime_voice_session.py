@@ -580,18 +580,11 @@ class RealtimeVoiceSession:
             ) as ws:
                 self._ws = ws
                 if self._on_before_open_mic_cb is not None:
-                    ev = threading.Event()
-
-                    def _sched(_dt):
-                        try:
-                            self._on_before_open_mic_cb()
-                        finally:
-                            ev.set()
-
-                    Clock.schedule_once(_sched, 0)
-                    if not ev.wait(timeout=3.0):
-                        logger.warning("Realtime: on_before_open_mic timed out waiting for main thread")
-                    await asyncio.sleep(0.12)
+                    try:
+                        self._on_before_open_mic_cb()
+                    except Exception:
+                        logger.exception("Realtime on_before_open_mic failed")
+                    await asyncio.sleep(0.18)
                 device_id = self._resolve_input_device()
                 if not self._open_mic(device_id):
                     self._emit_error("Realtime: microphone unavailable.")

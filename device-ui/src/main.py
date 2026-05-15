@@ -403,6 +403,17 @@ def _post_tts_wake_guard_seconds() -> float:
     return max(0.0, min(4.0, v))
 
 
+def _tts_aplay_device_argv() -> list[str]:
+    """
+    Extra aplay argv for ALSA playback device (speaker). Prefer default card unless
+    the appliance needs e.g. -D pulse or -D plughw:CARD=X,DEV=Y (see MEETINGBOX_APLAY_DEVICE).
+    """
+    dev = (os.getenv("MEETINGBOX_APLAY_DEVICE") or "").strip()
+    if dev:
+        return ["-D", dev]
+    return []
+
+
 def _xauth_cookie_has_display(xauth_bin: str, auth_path: str, disp: str) -> bool:
     """True if xauth reports a cookie for this DISPLAY (matches X11, not our string heuristics)."""
     variants = [disp]
@@ -2305,8 +2316,26 @@ class MeetingBoxApp(App):
         tok = get_device_auth_token().strip()
 
         def _before_realtime_mic() -> None:
+            # Run from Realtime asyncio thread — do NOT block on Kivy Clock/Event:
+            # schedule_once + threading.Event.wait is unreliable across threads on
+            # some installs and causes on_before_open_mic timeouts → mic opens while
+            # Vosk still holds ALSA → Realtime failures and silent assistant.
             self._realtime_mic_acquired = True
-            self._sync_voice_assistant_state()
+            try:
+                self.voice_assistant.set_paused(True)
+            except Exception:
+                logger.exception("pause local Vosk before Realtime mic failed")
+
+            def _ui_refresh(_dt):
+                try:
+                    self._refresh_voice_indicator()
+                except Exception:
+                    logger.debug("voice indicator refresh after Realtime mic handoff failed", exc_info=True)
+
+            try:
+                Clock.schedule_once(_ui_refresh, 0)
+            except Exception:
+                logger.debug("Clock.schedule_once for voice indicator skipped", exc_info=True)
 
         def _end() -> None:
             Clock.schedule_once(lambda _dt: self._end_realtime_voice_session(), 0)
@@ -2403,7 +2432,7 @@ class MeetingBoxApp(App):
 
             try:
                 r_play = subprocess.run(
-                    [aplay, "-q", "-r", "24000", "-f", "S16_LE", "-c", "1", tmp_path],
+                    [aplay, "-q", *_tts_aplay_device_argv(), "-r", "24000", "-f", "S16_LE", "-c", "1", tmp_path],
                     check=False,
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
@@ -2448,10 +2477,8 @@ class MeetingBoxApp(App):
 
             amp_n = self._espeak_amplitude()
             if amp_n <= 0:
-                # Volume at 0%: do not pretend playback succeeded — otherwise every
-                # offline engine is skipped and the assistant appears "broken".
-                logger.debug("_speak_text_blocking: assistant_speech_volume is 0 — skipping offline TTS")
-                return False
+                # UI can be slid to 0%; still attempt quiet offline fallback when cloud failed.
+                amp_n = max(72, int(round(40 * 2)))
             amp = str(amp_n)
 
             # --- 1. piper (neural TTS — best quality, fully offline) ---
@@ -2483,7 +2510,7 @@ class MeetingBoxApp(App):
                         )
                         if proc.returncode == 0 and os.path.getsize(tmp_path) > 0:
                             r_ap = subprocess.run(
-                                [aplay, "-q", tmp_path],
+                                [aplay, "-q", *_tts_aplay_device_argv(), tmp_path],
                                 check=False,
                                 stdout=subprocess.DEVNULL,
                                 stderr=subprocess.DEVNULL,
@@ -2562,9 +2589,11 @@ class MeetingBoxApp(App):
                         stdout=subprocess.PIPE,
                         stderr=subprocess.DEVNULL,
                     )
+                    r_ap = None
+                    es_rc = 1
                     try:
-                        subprocess.run(
-                            [aplay, "-q"],
+                        r_ap = subprocess.run(
+                            [aplay, "-q", *_tts_aplay_device_argv()],
                             stdin=proc.stdout,
                             stdout=subprocess.DEVNULL,
                             stderr=subprocess.DEVNULL,
@@ -2575,10 +2604,19 @@ class MeetingBoxApp(App):
                         if proc.stdout:
                             proc.stdout.close()
                         try:
-                            proc.wait(timeout=5)
+                            es_rc = proc.wait(timeout=5)
                         except Exception:
                             proc.kill()
-                    return True
+                            try:
+                                es_rc = int(proc.wait(timeout=2))
+                            except Exception:
+                                es_rc = 1
+                    if (
+                        r_ap is not None
+                        and r_ap.returncode == 0
+                        and es_rc == 0
+                    ):
+                        return True
                 except Exception as e:
                     logger.warning("Voice feedback via espeak-ng stdout | aplay failed: %s", e)
 
