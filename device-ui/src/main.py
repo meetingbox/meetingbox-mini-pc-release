@@ -605,6 +605,7 @@ class MeetingBoxApp(App):
         self._realtime_session_pending = False
         self._realtime_session_start_monotonic = None
         self._realtime_connected_ok = False
+        self._realtime_mic_acquired = False
         self.voice_realtime_assistant = False
         # Sync interpreter to the UI default immediately so wake works before
         # async device-settings load (VoiceAssistant env-var default is "hey tony").
@@ -1814,7 +1815,10 @@ class MeetingBoxApp(App):
             return False
         if not getattr(self, "voice_assistant_enabled", True):
             return False
-        if getattr(self, "_realtime_voice_session", None) is not None:
+        if (
+            getattr(self, "_realtime_voice_session", None) is not None
+            and getattr(self, "_realtime_mic_acquired", False)
+        ):
             return False
         if self._voice_start_in_flight:
             return False
@@ -2043,7 +2047,8 @@ class MeetingBoxApp(App):
         if getattr(self, "_voice_cloud_qa_budget", 0) <= 0:
             logger.debug("Cloud assistant Q&A skipped (no budget for this wake cycle)")
             return
-        if len(phrase) < 6:
+        norm_p = "".join((phrase or "").lower().split())
+        if len(norm_p) < 4:
             return
 
         self._voice_cloud_qa_budget -= 1
@@ -2149,6 +2154,7 @@ class MeetingBoxApp(App):
             logger.exception("Realtime navigate to %s failed", name)
 
     def _end_realtime_voice_session(self) -> None:
+        self._realtime_mic_acquired = False
         sess = self._realtime_voice_session
         started = getattr(self, "_realtime_session_start_monotonic", None)
         connected = getattr(self, "_realtime_connected_ok", False)
@@ -2298,6 +2304,10 @@ class MeetingBoxApp(App):
             return
         tok = get_device_auth_token().strip()
 
+        def _before_realtime_mic() -> None:
+            self._realtime_mic_acquired = True
+            self._sync_voice_assistant_state()
+
         def _end() -> None:
             Clock.schedule_once(lambda _dt: self._end_realtime_voice_session(), 0)
 
@@ -2307,12 +2317,7 @@ class MeetingBoxApp(App):
             Clock.schedule_once(lambda _dt: self._end_realtime_voice_session(), 0)
 
         def _on_rt_connected() -> None:
-            # Run on Realtime worker thread — release Vosk mic before opening Realtime input.
-            try:
-                self.voice_assistant.set_paused(True)
-            except Exception:
-                logger.exception("pause local voice for Realtime failed")
-
+            # Vosk is paused from on_before_open_mic right before ALSA opens for Realtime.
             def _ui(_dt):
                 self._realtime_connected_ok = True
                 self._clear_voice_indicator_override()
@@ -2338,12 +2343,14 @@ class MeetingBoxApp(App):
                 on_connected=_on_rt_connected,
                 on_device_navigate=self._realtime_voice_navigate,
                 output_voice=rt_voice or None,
+                on_before_open_mic=_before_realtime_mic,
             )
             self._sync_voice_assistant_state()
             self._realtime_voice_session.start()
         except Exception:
             logger.exception("Realtime voice session failed to start")
             self._realtime_voice_session = None
+            self._realtime_mic_acquired = False
             self._realtime_session_pending = False
             self._clear_voice_indicator_override()
             self._sync_voice_assistant_state()

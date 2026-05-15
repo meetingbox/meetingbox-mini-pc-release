@@ -106,6 +106,7 @@ class RealtimeVoiceSession:
         on_connected,
         on_device_navigate=None,
         output_voice: str | None = None,
+        on_before_open_mic=None,
     ):
         self._client_secret = (client_secret or "").strip()
         self._model = (model or "").strip()
@@ -115,6 +116,7 @@ class RealtimeVoiceSession:
         self._on_error_cb = on_error
         self._on_connected_cb = on_connected
         self._on_device_navigate_cb = on_device_navigate
+        self._on_before_open_mic_cb = on_before_open_mic
         self._thread: threading.Thread | None = None
         self._stop = threading.Event()
         self._loop: asyncio.AbstractEventLoop | None = None
@@ -577,6 +579,19 @@ class RealtimeVoiceSession:
                 ping_timeout=20,
             ) as ws:
                 self._ws = ws
+                if self._on_before_open_mic_cb is not None:
+                    ev = threading.Event()
+
+                    def _sched(_dt):
+                        try:
+                            self._on_before_open_mic_cb()
+                        finally:
+                            ev.set()
+
+                    Clock.schedule_once(_sched, 0)
+                    if not ev.wait(timeout=3.0):
+                        logger.warning("Realtime: on_before_open_mic timed out waiting for main thread")
+                    await asyncio.sleep(0.12)
                 device_id = self._resolve_input_device()
                 if not self._open_mic(device_id):
                     self._emit_error("Realtime: microphone unavailable.")
