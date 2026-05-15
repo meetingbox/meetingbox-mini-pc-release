@@ -2293,7 +2293,6 @@ class MeetingBoxApp(App):
                 on_connected=_on_rt_connected,
                 on_device_navigate=self._realtime_voice_navigate,
                 output_voice=rt_voice or None,
-                wake_for_farewell=(getattr(self.voice_assistant, "wake_phrase", "") or ""),
             )
             self._sync_voice_assistant_state()
             self._realtime_voice_session.start()

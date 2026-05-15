@@ -31,7 +31,6 @@ except ImportError:
     sd = None
 
 import websockets
-from voice_assistant import utterance_is_voice_farewell
 
 # Feature flag: main.py only launches Realtime when this is True.
 REALTIME_VOICE_IMPLEMENTED = True
@@ -106,7 +105,6 @@ class RealtimeVoiceSession:
         on_connected,
         on_device_navigate=None,
         output_voice: str | None = None,
-        wake_for_farewell: str = "",
     ):
         self._client_secret = (client_secret or "").strip()
         self._model = (model or "").strip()
@@ -122,7 +120,6 @@ class RealtimeVoiceSession:
         self._ws: Any = None
         ov = (output_voice or "").strip().lower() or _REALTIME_OUTPUT_VOICE_FALLBACK
         self._output_voice = ov
-        self._wake_for_farewell = (wake_for_farewell or "").strip()
         self._connected_fired = False
         self._audio_q: queue.Queue[bytes | None] = queue.Queue(maxsize=100)
         self._mic_stream = None
@@ -511,10 +508,6 @@ class RealtimeVoiceSession:
                                                     "type": "audio/pcm",
                                                     "rate": 24000,
                                                 },
-                                                "transcription": {
-                                                    "model": "whisper-1",
-                                                    "language": "en",
-                                                },
                                                 "turn_detection": _REALTIME_TURN_DETECTION,
                                             },
                                             "output": {
@@ -543,23 +536,6 @@ class RealtimeVoiceSession:
                 elif t == "response.done":
                     self._close_aplay()
                     await self._handle_response_done(msg)
-
-                elif (
-                    t == "conversation.item.input_audio_transcription.completed"
-                    and self._wake_for_farewell
-                ):
-                    tr = msg.get("transcript") or ""
-                    if utterance_is_voice_farewell(self._wake_for_farewell, str(tr)):
-                        logger.info(
-                            "Realtime: ending session after user farewell transcript %r.",
-                            str(tr).strip(),
-                        )
-                        self._stop.set()
-                        try:
-                            self._audio_q.put_nowait(None)
-                        except Exception:
-                            pass
-                        break
 
                 elif t == "error":
                     err = msg.get("error")
