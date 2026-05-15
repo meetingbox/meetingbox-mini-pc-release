@@ -36,11 +36,11 @@ import websockets
 REALTIME_VOICE_IMPLEMENTED = True
 
 # Keep sync with server/web/routes/voice.py — latency vs end-of-turn sensitivity.
-_REALTIME_VAD_SILENCE_MS = 580
-_REALTIME_VAD_PREFIX_MS = 280
+_REALTIME_VAD_SILENCE_MS = 480
+_REALTIME_VAD_PREFIX_MS = 240
 _REALTIME_TURN_DETECTION = {
     "type": "server_vad",
-    "threshold": 0.46,
+    "threshold": 0.47,
     "prefix_padding_ms": _REALTIME_VAD_PREFIX_MS,
     "silence_duration_ms": _REALTIME_VAD_SILENCE_MS,
     "interrupt_response": False,
@@ -49,15 +49,14 @@ _REALTIME_OUTPUT_VOICE_FALLBACK = "marin"
 
 _REALTIME_WS_HOST = "api.openai.com"
 _REALTIME_RATE = 24000
-# Smaller uploads → faster path to server VAD (more frames; modest CPU/network cost).
-# Smaller uploads → server VAD sees audio sooner (slightly more framing overhead).
-_APPEND_CHUNK_MS = 14
+# Smaller uploads → server VAD sees audio sooner (slightly higher CPU/WebSocket churn).
+_APPEND_CHUNK_MS = 10
 
-# Blocking wait in mic queue drain — keep low so uploads are not artificially delayed (~200 ms).
-_MIC_QUEUE_POLL_S = 0.025
+# Blocking wait in mic queue drain — keep low so uploads are not artificially delayed.
+_MIC_QUEUE_POLL_S = 0.015
 
 # ALSA playback buffer for model audio (µs-ish time hint; smaller = lower mouth-to-ear lag).
-_APLAY_BUFFER_TIME_US = "90000"
+_APLAY_BUFFER_TIME_US = "70000"
 
 
 def build_realtime_websocket_url(model: str) -> str:
@@ -609,7 +608,7 @@ class RealtimeVoiceSession:
                         self._on_before_open_mic_cb()
                     except Exception:
                         logger.exception("Realtime on_before_open_mic failed")
-                    await asyncio.sleep(0.10)
+                    await asyncio.sleep(0.05)
                 device_id = self._resolve_input_device()
                 if not self._open_mic(device_id):
                     self._emit_error("Realtime: microphone unavailable.")
