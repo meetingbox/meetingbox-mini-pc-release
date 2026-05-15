@@ -36,11 +36,12 @@ import websockets
 REALTIME_VOICE_IMPLEMENTED = True
 
 # Keep in sync with `server/web/routes/voice.py` (server VAD + GA audio envelope).
-_REALTIME_VAD_SILENCE_MS = 550
-_REALTIME_VAD_PREFIX_MS = 280
+# Slightly longer silence window so natural mid-sentence pauses do not end the turn early.
+_REALTIME_VAD_SILENCE_MS = 720
+_REALTIME_VAD_PREFIX_MS = 300
 _REALTIME_TURN_DETECTION = {
     "type": "server_vad",
-    "threshold": 0.5,
+    "threshold": 0.48,
     "prefix_padding_ms": _REALTIME_VAD_PREFIX_MS,
     "silence_duration_ms": _REALTIME_VAD_SILENCE_MS,
     "interrupt_response": False,
@@ -419,7 +420,11 @@ class RealtimeVoiceSession:
                     await ws.send(json.dumps(evt))
                 except Exception:
                     logger.exception("Realtime: append failed")
-                    return
+                    try:
+                        await ws.close()
+                    except Exception:
+                        pass
+                    break
 
     async def _handle_response_done(self, msg: dict) -> None:
         assert self._ws is not None
@@ -428,6 +433,7 @@ class RealtimeVoiceSession:
         outputs = response.get("output") or []
         if not isinstance(outputs, list):
             return
+        pending_out: list[dict[str, Any]] = []
         for item in outputs:
             if not isinstance(item, dict):
                 continue
@@ -451,19 +457,27 @@ class RealtimeVoiceSession:
             )
             if name == "navigate_device_ui":
                 self._emit_device_navigation(out)
-            out_evt = {
-                "type": "conversation.item.create",
-                "item": {
-                    "type": "function_call_output",
-                    "call_id": call_id,
-                    "output": out,
-                },
-            }
-            try:
+            pending_out.append(
+                {
+                    "type": "conversation.item.create",
+                    "item": {
+                        "type": "function_call_output",
+                        "call_id": call_id,
+                        "output": out,
+                    },
+                }
+            )
+
+        if not pending_out:
+            return
+        try:
+            for out_evt in pending_out:
                 await ws.send(json.dumps(out_evt))
-                await ws.send(json.dumps({"type": "response.create"}))
-            except Exception:
-                logger.exception("Realtime: tool round-trip send failed")
+            # One continuation turn for all tool outputs — avoids reply loops when the model
+            # batches several function_calls in a single response.done.
+            await ws.send(json.dumps({"type": "response.create"}))
+        except Exception:
+            logger.exception("Realtime: tool round-trip send failed")
 
     def _event_audio_delta(self, msg: dict) -> tuple[str | None, str]:
         """Return (response_id, base64_delta) from a streaming audio delta event."""
@@ -575,8 +589,8 @@ class RealtimeVoiceSession:
                 url,
                 additional_headers=headers,
                 max_size=None,
-                ping_interval=20,
-                ping_timeout=20,
+                ping_interval=25,
+                ping_timeout=45,
             ) as ws:
                 self._ws = ws
                 if self._on_before_open_mic_cb is not None:
@@ -595,20 +609,22 @@ class RealtimeVoiceSession:
                 recv_task = asyncio.create_task(self._recv_loop())
                 pump_task = asyncio.create_task(self._pump_out_audio())
 
-                done, _pending = await asyncio.wait(
-                    {recv_task, pump_task},
-                    return_when=asyncio.FIRST_COMPLETED,
-                )
-                for d in done:
-                    if d.done() and not d.cancelled():
-                        exc = d.exception()
-                        if exc:
-                            logger.debug("Realtime task failed: %s", exc)
-
-                self._stop.set()
-                recv_task.cancel()
-                pump_task.cancel()
-                await asyncio.gather(recv_task, pump_task, return_exceptions=True)
+                # Never use FIRST_COMPLETED: a single failed mic upload or transient send
+                # would cancel the recv loop and kill the session mid-conversation (silent UI).
+                try:
+                    await recv_task
+                finally:
+                    self._stop.set()
+                    try:
+                        self._audio_q.put_nowait(None)
+                    except Exception:
+                        pass
+                    try:
+                        await asyncio.wait_for(pump_task, timeout=4.0)
+                    except asyncio.TimeoutError:
+                        logger.warning("Realtime: pump task did not finish — cancelling")
+                        pump_task.cancel()
+                        await asyncio.gather(pump_task, return_exceptions=True)
 
         except Exception as e:
             logger.exception("Realtime WebSocket session failed")
