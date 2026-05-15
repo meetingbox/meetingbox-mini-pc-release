@@ -35,16 +35,15 @@ import websockets
 # Feature flag: main.py only launches Realtime when this is True.
 REALTIME_VOICE_IMPLEMENTED = True
 
-# Keep sync with server/web/routes/voice.py — latency vs end-of-turn sensitivity.
-_REALTIME_VAD_SILENCE_MS = 480
-_REALTIME_VAD_PREFIX_MS = 240
+# Keep sync with server/web/routes/voice.py (semantic VAD + input noise_reduction).
+_REALTIME_SEMANTIC_VAD_EAGERNESS = "high"
 _REALTIME_TURN_DETECTION = {
-    "type": "server_vad",
-    "threshold": 0.47,
-    "prefix_padding_ms": _REALTIME_VAD_PREFIX_MS,
-    "silence_duration_ms": _REALTIME_VAD_SILENCE_MS,
+    "type": "semantic_vad",
+    "create_response": True,
+    "eagerness": _REALTIME_SEMANTIC_VAD_EAGERNESS,
     "interrupt_response": False,
 }
+_REALTIME_INPUT_NOISE_REDUCTION = {"type": "far_field"}
 _REALTIME_OUTPUT_VOICE_FALLBACK = "marin"
 
 _REALTIME_WS_HOST = "api.openai.com"
@@ -537,6 +536,7 @@ class RealtimeVoiceSession:
                                                     "type": "audio/pcm",
                                                     "rate": 24000,
                                                 },
+                                                "noise_reduction": _REALTIME_INPUT_NOISE_REDUCTION,
                                                 "turn_detection": _REALTIME_TURN_DETECTION,
                                             },
                                             "output": {
