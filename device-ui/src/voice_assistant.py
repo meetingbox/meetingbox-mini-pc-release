@@ -564,6 +564,11 @@ class VoiceAssistant:
         now = time.monotonic()
         self._interpreter._awaiting_command_until = now + self.command_timeout_seconds
 
+    def exit_command_window(self) -> None:
+        """End post-wake follow-up mode; back to passive wake-word listening only."""
+        self._interpreter.reset()
+        self._clear_audio_queue()
+
     def in_command_window(self) -> bool:
         return self._interpreter.is_awaiting_command()
 
