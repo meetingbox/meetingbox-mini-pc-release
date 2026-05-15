@@ -155,6 +155,8 @@ if (os.getenv("MEETINGBOX_DISABLE_LOCAL_REDIS", "") or "").strip().lower() in (
 # MICROPHONE (mic test + should match mini-pc/audio capture device)
 # ============================================================================
 
+# Audio capture (device UI: wake word, mic test, realtime). If unset, USB-like
+# devices are preferred — see mic_input_resolve.resolve_sounddevice_capture_device_index.
 AUDIO_INPUT_DEVICE_INDEX = (os.getenv("AUDIO_INPUT_DEVICE_INDEX", "") or "").strip()
 AUDIO_INPUT_DEVICE_NAME = (os.getenv("AUDIO_INPUT_DEVICE_NAME", "") or "").strip()
 

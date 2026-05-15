@@ -697,6 +697,9 @@ class MeetingBoxApp(App):
         # assistant speaks (prevents TTS audio echo from restarting the loop).
         self._last_tts_end_monotonic: float = 0.0
 
+        # One-shot startup diagnostics overlay (see _run_startup_self_test_overlay).
+        self._startup_self_test_started = False
+
     # ==================================================================
     # BUILD
     # ==================================================================
@@ -936,6 +939,27 @@ class MeetingBoxApp(App):
             Clock.schedule_once(lambda _dt: self._push_appliance_metrics_tick(0), 6.0)
         else:
             self._metrics_push = None
+
+        # After UI + backend settle, run unobstructed connectivity / mic / model checks once.
+        Clock.schedule_once(self._run_startup_self_test_overlay, 2.6)
+
+    def _run_startup_self_test_overlay(self, _dt):
+        """Boot-time self-test modal (disable with MEETINGBOX_STARTUP_SELF_TEST=0)."""
+        raw = (os.environ.get("MEETINGBOX_STARTUP_SELF_TEST") or "1").strip().lower()
+        if raw in ("0", "false", "no", "off"):
+            return
+        if self._startup_self_test_started:
+            return
+        self._startup_self_test_started = True
+        try:
+            from components.startup_self_test_overlay import StartupSelfTestOverlay
+
+            overlay = StartupSelfTestOverlay()
+            self.root_layout.add_widget(overlay)
+            overlay.run(self)
+        except Exception:
+            self._startup_self_test_started = False
+            logger.exception("Startup self-test overlay failed to load")
 
     def _push_appliance_metrics_tick(self, _dt):
         if USE_MOCK_BACKEND:

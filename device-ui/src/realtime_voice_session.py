@@ -229,23 +229,9 @@ class RealtimeVoiceSession:
         Clock.schedule_once(_emit, 0)
 
     def _resolve_input_device(self):
-        from config import AUDIO_INPUT_DEVICE_INDEX, AUDIO_INPUT_DEVICE_NAME
+        from mic_input_resolve import resolve_sounddevice_capture_device_index
 
-        idx_s = (AUDIO_INPUT_DEVICE_INDEX or "").strip()
-        if idx_s.isdigit():
-            return int(idx_s)
-        name_sub = (AUDIO_INPUT_DEVICE_NAME or "").strip().lower()
-        if not name_sub or sd is None:
-            return None
-        try:
-            for idx, dev in enumerate(sd.query_devices()):
-                if int(dev.get("max_input_channels") or 0) > 0 and name_sub in (
-                    (dev.get("name") or "").lower()
-                ):
-                    return idx
-        except Exception:
-            logger.exception("Realtime: could not enumerate audio devices")
-        return None
+        return resolve_sounddevice_capture_device_index(sd)
 
     def _samplerates_to_try(self, device_id) -> list[int]:
         rates = [_REALTIME_RATE, 16000, 22050, 32000, 44100, 48000]
