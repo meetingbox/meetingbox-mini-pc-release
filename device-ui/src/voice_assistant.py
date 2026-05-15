@@ -678,17 +678,33 @@ class VoiceAssistant:
         return resolve_sounddevice_capture_device_index(sd)
 
     def _samplerates_to_try(self, device_id) -> list[int]:
-        out = [16000, 22050, 32000, 44100, 48000]
-        if sd is None or device_id is None:
-            return out
-        try:
-            info = sd.query_devices(device_id)
-            default_rate = int(float(info.get("default_samplerate") or 0))
-            if default_rate > 0 and default_rate not in out:
-                out.insert(0, default_rate)
-        except Exception:
-            pass
-        return out
+        # Prefer the device's default sample rate first — ALSA/USB often returns paInvalidSampleRate for everything else.
+        fallback = [16000, 22050, 32000, 44100, 48000]
+        ordered: list[int] = []
+
+        resolved_id = device_id
+        if sd is not None:
+            try:
+                if resolved_id is None:
+                    inp_idx = sd.default.device[0]
+                    if isinstance(inp_idx, int) and inp_idx >= 0:
+                        resolved_id = inp_idx
+            except Exception:
+                pass
+
+            try:
+                if resolved_id is not None:
+                    info = sd.query_devices(resolved_id)
+                    dr = int(float(info.get("default_samplerate") or 0))
+                    if dr > 0:
+                        ordered.append(dr)
+            except Exception:
+                pass
+
+        for r in fallback:
+            if r not in ordered:
+                ordered.append(r)
+        return ordered
 
     def _open_stream(self) -> bool:
         if sd is None or self._model is None:

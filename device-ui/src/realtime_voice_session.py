@@ -235,17 +235,35 @@ class RealtimeVoiceSession:
         return resolve_sounddevice_capture_device_index(sd)
 
     def _samplerates_to_try(self, device_id) -> list[int]:
-        rates = [_REALTIME_RATE, 16000, 22050, 32000, 44100, 48000]
-        if sd is None or device_id is None:
-            return rates
-        try:
-            info = sd.query_devices(device_id)
-            dr = int(float(info.get("default_samplerate") or 0))
-            if dr > 0 and dr not in rates:
-                rates.insert(0, dr)
-        except Exception:
-            pass
-        return rates
+        # ALSA/USB hardware often rejects 24 kHz capture; capture at common rates then resample in _pump_out_audio.
+        hw_rates = [48000, 44100, 32000, 16000, 22050]
+        ordered: list[int] = []
+
+        resolved_id = device_id
+        if sd is not None:
+            # Host default capture device when callers pass None
+            try:
+                if resolved_id is None:
+                    inp_idx = sd.default.device[0]
+                    if isinstance(inp_idx, int) and inp_idx >= 0:
+                        resolved_id = inp_idx
+            except Exception:
+                pass
+            try:
+                if resolved_id is not None:
+                    info = sd.query_devices(resolved_id)
+                    dr = int(float(info.get("default_samplerate") or 0))
+                    if dr > 0:
+                        ordered.append(dr)
+            except Exception:
+                pass
+
+        for r in hw_rates:
+            if r not in ordered:
+                ordered.append(r)
+        if _REALTIME_RATE not in ordered:
+            ordered.append(_REALTIME_RATE)
+        return ordered
 
     def _open_mic(self, device_id) -> bool:
         if sd is None:

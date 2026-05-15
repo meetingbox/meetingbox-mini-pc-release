@@ -133,15 +133,20 @@ class MicTestScreen(BaseScreen):
         return resolve_sounddevice_capture_device_index(sd)
 
     def _samplerates_to_try(self, device_id):
-        out = []
-        if device_id is not None:
-            try:
-                info = sd.query_devices(device_id)
+        out: list[int] = []
+        idx = device_id
+        try:
+            if idx is None:
+                inp_def = sd.default.device[0]
+                if isinstance(inp_def, int) and inp_def >= 0:
+                    idx = inp_def
+            if idx is not None:
+                info = sd.query_devices(idx)
                 dflt = int(float(info.get("default_samplerate") or 0))
                 if dflt > 0:
                     out.append(dflt)
-            except Exception:
-                pass
+        except Exception:
+            pass
         for sr in (48000, 44100, 32000, 22050, 16000, 8000):
             if sr not in out:
                 out.append(sr)

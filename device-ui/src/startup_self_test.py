@@ -62,15 +62,20 @@ def _mic_probe_blocking() -> tuple[bool, str]:
     device_id = resolve_sounddevice_capture_device_index(sd)
 
     def _rates():
-        out = []
-        if device_id is not None:
-            try:
-                info = sd.query_devices(device_id)
+        out: list[int] = []
+        idx = device_id
+        try:
+            if idx is None:
+                inp_def = sd.default.device[0]
+                if isinstance(inp_def, int) and inp_def >= 0:
+                    idx = inp_def
+            if idx is not None:
+                info = sd.query_devices(idx)
                 dflt = int(float(info.get("default_samplerate") or 0))
                 if dflt > 0:
                     out.append(dflt)
-            except Exception:
-                pass
+        except Exception:
+            logger.debug("startup mic: default samplerate probe skipped", exc_info=True)
         for sr in (48000, 44100, 32000, 22050, 16000):
             if sr not in out:
                 out.append(sr)
