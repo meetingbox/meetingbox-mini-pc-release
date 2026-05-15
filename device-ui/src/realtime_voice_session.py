@@ -35,13 +35,12 @@ import websockets
 # Feature flag: main.py only launches Realtime when this is True.
 REALTIME_VOICE_IMPLEMENTED = True
 
-# Keep in sync with `server/web/routes/voice.py` (server VAD + GA audio envelope).
-# Slightly longer silence window so natural mid-sentence pauses do not end the turn early.
-_REALTIME_VAD_SILENCE_MS = 720
+# Keep sync with server/web/routes/voice.py — tolerate mid‑sentence pauses so we do not cut the user off.
+_REALTIME_VAD_SILENCE_MS = 820
 _REALTIME_VAD_PREFIX_MS = 300
 _REALTIME_TURN_DETECTION = {
     "type": "server_vad",
-    "threshold": 0.48,
+    "threshold": 0.43,
     "prefix_padding_ms": _REALTIME_VAD_PREFIX_MS,
     "silence_duration_ms": _REALTIME_VAD_SILENCE_MS,
     "interrupt_response": False,
@@ -50,7 +49,14 @@ _REALTIME_OUTPUT_VOICE_FALLBACK = "shimmer"
 
 _REALTIME_WS_HOST = "api.openai.com"
 _REALTIME_RATE = 24000
-_APPEND_CHUNK_MS = 40
+# Smaller uploads → faster path to server VAD (more frames; modest CPU/network cost).
+_APPEND_CHUNK_MS = 20
+
+# Blocking wait in mic queue drain — keep low so uploads are not artificially delayed (~200 ms).
+_MIC_QUEUE_POLL_S = 0.05
+
+# ALSA playback buffer for model audio (µs-ish time hint; smaller = lower mouth-to-ear lag).
+_APLAY_BUFFER_TIME_US = "120000"
 
 
 def build_realtime_websocket_url(model: str) -> str:
@@ -125,7 +131,7 @@ class RealtimeVoiceSession:
         ov = (output_voice or "").strip().lower() or _REALTIME_OUTPUT_VOICE_FALLBACK
         self._output_voice = ov
         self._connected_fired = False
-        self._audio_q: queue.Queue[bytes | None] = queue.Queue(maxsize=100)
+        self._audio_q: queue.Queue[bytes | None] = queue.Queue(maxsize=400)
         self._mic_stream = None
         self._mic_native_sr = _REALTIME_RATE
         self._aplay_proc: subprocess.Popen | None = None
@@ -344,7 +350,7 @@ class RealtimeVoiceSession:
                     "aplay",
                     "-q",
                     "-B",
-                    "400000",
+                    _APLAY_BUFFER_TIME_US,
                     "-t",
                     "raw",
                     "-f",
@@ -387,7 +393,7 @@ class RealtimeVoiceSession:
 
     def _queue_get_audio(self):
         try:
-            return self._audio_q.get(timeout=0.2)
+            return self._audio_q.get(timeout=_MIC_QUEUE_POLL_S)
         except queue.Empty:
             return b""
 

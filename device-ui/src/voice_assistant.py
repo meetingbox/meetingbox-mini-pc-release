@@ -319,7 +319,8 @@ class VoiceCommandInterpreter:
         self._awaiting_confirmation_until = 0.0
 
     def _heard_wake_phrase(self, text: str) -> bool:
-        return _best_phrase_similarity(text, self.wake_phrase) >= 0.80
+        # Slightly looser fuzzy match so noisy rooms / small-model errors still wake reliably.
+        return _best_phrase_similarity(text, self.wake_phrase) >= 0.77
 
     def _matches_any(self, text: str, phrases: tuple[str, ...], threshold: float = 0.76) -> bool:
         return any(_best_phrase_similarity(text, phrase) >= threshold for phrase in phrases)

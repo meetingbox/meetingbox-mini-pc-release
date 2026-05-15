@@ -395,7 +395,7 @@ def _post_tts_wake_guard_seconds() -> float:
     """After the mic reopens, suppress wake-word for this long (TTS still bleeding into mic)."""
     raw = (os.getenv("MEETINGBOX_POST_TTS_WAKE_GUARD_SEC") or "").strip()
     if not raw:
-        return 0.6
+        return 0.42
     try:
         v = float(raw)
     except ValueError:
@@ -495,6 +495,68 @@ def _diagnose_xauthority_for_docker():
             )
     except Exception as ex:
         logger.debug("xauthority diagnose: %s", ex)
+
+
+def _tts_english_child_env() -> dict:
+    """Force English defaults for espeak-ng / Piper subprocesses (locale skew → wrong language)."""
+    e = os.environ.copy()
+    loc = (os.getenv("MEETINGBOX_TTS_LOCALE") or "en_US.UTF-8").strip()
+    if loc:
+        e["LANG"] = loc
+        e["LC_ALL"] = loc
+        e["LC_MESSAGES"] = loc
+        e["LANGUAGE"] = "en_US:en"
+    return e
+
+
+def _pick_english_piper_model_path() -> str | None:
+    """
+    English-only Piper ONNX. Do not glob arbitrary **/*.onnx — first hit may be non‑English.
+    Override with MEETINGBOX_PIPER_MODEL (full path).
+    """
+    import glob as _glob
+
+    explicit = (os.getenv("MEETINGBOX_PIPER_MODEL") or "").strip()
+    if explicit and os.path.isfile(explicit):
+        return explicit
+
+    for p in (
+        "/usr/share/piper/voices/en_US-amy-medium.onnx",
+        "/usr/share/piper/voices/en_US-lessac-medium.onnx",
+        "/usr/share/piper/voices/en_US-ryan-medium.onnx",
+        "/usr/local/share/piper/en_US-amy-medium.onnx",
+    ):
+        if os.path.isfile(p):
+            return p
+
+    found: list[str] = []
+    seen: set[str] = set()
+    for pattern in (
+        "/usr/share/piper/voices/en_US*.onnx",
+        "/usr/share/piper/voices/en-us*.onnx",
+        "/usr/share/piper/voices/en_*-*.onnx",
+        "/usr/share/piper/voices/en-*-*.onnx",
+        "/usr/local/share/piper/voices/en_US*.onnx",
+        "/usr/local/share/piper/voices/en_*-*.onnx",
+    ):
+        for fp in _glob.glob(pattern):
+            norm = os.path.normpath(fp)
+            if os.path.isfile(norm) and norm not in seen:
+                seen.add(norm)
+                found.append(norm)
+
+    def _key(path: str) -> tuple[int, str]:
+        bn = os.path.basename(path).lower()
+        if bn.startswith("en_us") or bn.startswith("en-us"):
+            return (0, bn)
+        if bn.startswith("en_gb") or bn.startswith("en-gb"):
+            return (5, bn)
+        if bn.startswith(("en_", "en-")):
+            return (10, bn)
+        return (50, bn)
+
+    found.sort(key=_key)
+    return found[0] if found else None
 
 
 # ==================================================================
@@ -2485,16 +2547,7 @@ class MeetingBoxApp(App):
             piper = shutil.which("piper")
             aplay = shutil.which("aplay")
             if piper and aplay:
-                import glob as _glob
-                model_candidates = [
-                    "/usr/share/piper/voices/en_US-amy-medium.onnx",
-                    "/usr/share/piper/voices/en_US-lessac-medium.onnx",
-                    "/usr/share/piper/voices/en_US-ryan-medium.onnx",
-                    "/usr/local/share/piper/en_US-amy-medium.onnx",
-                ]
-                model_candidates += _glob.glob("/usr/share/piper/voices/en_US-*.onnx")
-                model_candidates += _glob.glob("/usr/local/share/piper/**/*.onnx", recursive=True)
-                piper_model = next((m for m in model_candidates if os.path.isfile(m)), None)
+                piper_model = _pick_english_piper_model_path()
                 if piper_model:
                     try:
                         import tempfile
@@ -2507,6 +2560,7 @@ class MeetingBoxApp(App):
                             stderr=subprocess.DEVNULL,
                             timeout=15,
                             check=False,
+                            env=_tts_english_child_env(),
                         )
                         if proc.returncode == 0 and os.path.getsize(tmp_path) > 0:
                             r_ap = subprocess.run(
@@ -2539,6 +2593,7 @@ class MeetingBoxApp(App):
                         stdout=subprocess.DEVNULL,
                         stderr=subprocess.DEVNULL,
                         timeout=20,
+                        env=_tts_english_child_env(),
                     )
                     if result.returncode == 0:
                         return True
@@ -2568,6 +2623,7 @@ class MeetingBoxApp(App):
                         stdout=subprocess.DEVNULL,
                         stderr=subprocess.DEVNULL,
                         timeout=20,
+                        env=_tts_english_child_env(),
                     )
                     _espeak_ran = True
                     if result.returncode == 0:
@@ -2588,6 +2644,7 @@ class MeetingBoxApp(App):
                         [esng, "-v", "en-us", "-s", "130", "-a", amp, phrase, "--stdout"],
                         stdout=subprocess.PIPE,
                         stderr=subprocess.DEVNULL,
+                        env=_tts_english_child_env(),
                     )
                     r_ap = None
                     es_rc = 1
