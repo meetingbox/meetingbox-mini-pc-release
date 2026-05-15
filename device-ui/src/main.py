@@ -379,6 +379,30 @@ def _recording_start_error_screen_args(exc: BaseException) -> tuple[str, str]:
     return ("Recording failed", msg)
 
 
+def _tts_tail_silence_seconds() -> float:
+    """After TTS playback, wait this long before reopening the mic (speaker tail / echo)."""
+    raw = (os.getenv("MEETINGBOX_TTS_TAIL_SILENCE_SEC") or "").strip()
+    if not raw:
+        return 1.15
+    try:
+        v = float(raw)
+    except ValueError:
+        return 1.15
+    return max(0.25, min(5.0, v))
+
+
+def _post_tts_wake_guard_seconds() -> float:
+    """After the mic reopens, suppress wake-word for this long (TTS still bleeding into mic)."""
+    raw = (os.getenv("MEETINGBOX_POST_TTS_WAKE_GUARD_SEC") or "").strip()
+    if not raw:
+        return 0.6
+    try:
+        v = float(raw)
+    except ValueError:
+        return 0.6
+    return max(0.0, min(4.0, v))
+
+
 def _xauth_cookie_has_display(xauth_bin: str, auth_path: str, disp: str) -> bool:
     """True if xauth reports a cookie for this DISPLAY (matches X11, not our string heuristics)."""
     variants = [disp]
@@ -1861,9 +1885,9 @@ class MeetingBoxApp(App):
         when voice_realtime_assistant is on and `_realtime_launch_permitted` is set here.
         """
         import time as _time
-        # After TTS, _speak_text_blocking already waits 2.5 s before reopening the
-        # mic, so an extra-long quiet window stacks and makes wake feel “dead”.
-        quiet_until = getattr(self, "_last_tts_end_monotonic", 0.0) + 1.5
+        # After TTS, see _tts_tail_silence_seconds + _post_tts_wake_guard_seconds
+        # (defaults ~1.75 s total vs ~4 s before tuning).
+        quiet_until = getattr(self, "_last_tts_end_monotonic", 0.0) + _post_tts_wake_guard_seconds()
         if _time.monotonic() < quiet_until:
             # The assistant just spoke — the wake phrase was likely the TTS
             # audio echoing back into the mic.  Suppress it to break the loop.
@@ -2555,12 +2579,10 @@ class MeetingBoxApp(App):
             return False
 
         finally:
-            # Wait 2.5 s after playback ends so the speaker tail fully decays
-            # before Vosk resumes — prevents the TTS audio being re-transcribed
-            # as a new voice command.
+            # Pause before mic on — avoids TTS tail / room echo triggering Vosk.
             import time as _time
-            _time.sleep(2.5)
-            # Record when wake suppression should taper off (~1.5 s after mic reopens).
+            _time.sleep(_tts_tail_silence_seconds())
+            # Wake suppression extends a bit longer (see _handle_voice_wake_phrase).
             self._last_tts_end_monotonic = _time.monotonic()
             try:
                 if va is not None:
