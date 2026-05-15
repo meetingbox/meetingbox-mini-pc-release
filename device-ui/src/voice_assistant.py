@@ -94,17 +94,21 @@ _FAREWELL_SUBPHRASES = (
     "bye bye",
     "see you later",
     "see you soon",
-    "see ya",
     "talk to you later",
     "catch you later",
-    "later alligator",
-    "have a good day",
-    "have a great day",
     "thanks bye",
     "thank you bye",
     "ok bye",
     "okay bye",
 )
+# Dropped loose substrings (were false positives in normal questions): "have a good day",
+# "see ya", "later alligator", etc.
+
+
+def _farewell_fragment_word_bounded(u: str, frag: str) -> bool:
+    if frag not in u:
+        return False
+    return re.search(r"(^| )" + re.escape(frag) + r"( |$)", u) is not None
 
 
 def utterance_is_voice_farewell(wake_phrase: str, utterance: str) -> bool:
@@ -117,10 +121,15 @@ def utterance_is_voice_farewell(wake_phrase: str, utterance: str) -> bool:
     u = _normalize_text(utterance)
     if len(u) < 2:
         return False
+    words = u.split()
     for frag in _FAREWELL_SUBPHRASES:
-        if frag in u:
+        if not _farewell_fragment_word_bounded(u, frag):
+            continue
+        frag_w = frag.split()
+        # Tight slack for long stock phrases — avoids "see you later at five" style matches.
+        slack = 1 if len(frag_w) >= 3 else 2
+        if len(words) <= len(frag_w) + slack:
             return True
-
     vocab = frozenset(t for t in wake.split() if t and t not in _VOICE_TRIGGER_SKIP)
     bye_word = frozenset({"bye", "goodbye", "farewell"})
     nickname = vocab.union({"buddy", "tony", "pal", "mate", "there", "sir", "maam"})

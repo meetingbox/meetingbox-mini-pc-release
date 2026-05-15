@@ -696,6 +696,9 @@ class MeetingBoxApp(App):
         # Used to suppress wake-phrase re-detection for a few seconds after the
         # assistant speaks (prevents TTS audio echo from restarting the loop).
         self._last_tts_end_monotonic: float = 0.0
+        # OpenAI Realtime plays via aplay (not _speak_text_blocking); extend the same
+        # idea so speaker tail / room echo does not immediately re-trigger wake.
+        self._wake_suppress_until_monotonic: float = 0.0
 
         # One-shot startup diagnostics overlay (see _run_startup_self_test_overlay).
         self._startup_self_test_started = False
@@ -1963,6 +1966,16 @@ class MeetingBoxApp(App):
         self._refresh_voice_indicator()
         self._sync_voice_assistant_state()
 
+    def _voice_mark_post_realtime_wake_suppression(self) -> None:
+        """Realtime PCM uses aplay, not _speak_text_blocking — apply same tail/guard timeline."""
+        import time as _time
+
+        deadline = _time.monotonic() + (
+            _tts_tail_silence_seconds() + _post_tts_wake_guard_seconds()
+        )
+        prev = float(getattr(self, "_wake_suppress_until_monotonic", 0.0) or 0.0)
+        self._wake_suppress_until_monotonic = max(prev, deadline)
+
     def _set_voice_indicator_override(
         self,
         state: str,
@@ -1985,17 +1998,19 @@ class MeetingBoxApp(App):
         Arms at most one cloud Q&A reply for this wake. OpenAI Realtime may only start
         when voice_realtime_assistant is on and `_realtime_launch_permitted` is set here.
         """
+        import logging as _logging
         import time as _time
-        # After TTS, see _tts_tail_silence_seconds + _post_tts_wake_guard_seconds
-        # (defaults ~1.75 s total vs ~4 s before tuning).
-        quiet_until = getattr(self, "_last_tts_end_monotonic", 0.0) + _post_tts_wake_guard_seconds()
-        if _time.monotonic() < quiet_until:
-            # The assistant just spoke — the wake phrase was likely the TTS
-            # audio echoing back into the mic.  Suppress it to break the loop.
-            import logging as _logging
+
+        nowm = _time.monotonic()
+        # Local espeak TTS marks _last_tts_end_monotonic; Realtime marks _wake_suppress_until_monotonic.
+        quiet_until = max(
+            getattr(self, "_wake_suppress_until_monotonic", 0.0),
+            getattr(self, "_last_tts_end_monotonic", 0.0) + _post_tts_wake_guard_seconds(),
+        )
+        if nowm < quiet_until:
             _logging.getLogger(__name__).debug(
-                "Wake phrase suppressed (post-TTS quiet period, %.1fs remaining)",
-                quiet_until - _time.monotonic(),
+                "Wake phrase suppressed (post-voice-output quiet period, %.1fs remaining)",
+                quiet_until - nowm,
             )
             return
 
@@ -2265,6 +2280,8 @@ class MeetingBoxApp(App):
             and not connected
             and (time.monotonic() - float(started)) < 30.0
         )
+        if connected:
+            self._voice_mark_post_realtime_wake_suppression()
         self._realtime_session_start_monotonic = None
         self._realtime_connected_ok = False
         self._realtime_voice_session = None
@@ -2407,6 +2424,10 @@ class MeetingBoxApp(App):
             # some installs and causes on_before_open_mic timeouts → mic opens while
             # Vosk still holds ALSA → Realtime failures and silent assistant.
             self._realtime_mic_acquired = True
+            try:
+                self.voice_assistant.exit_command_window()
+            except Exception:
+                logger.exception("exit_command_window before realtime mic failed")
             try:
                 self.voice_assistant.set_paused(True)
             except Exception:
