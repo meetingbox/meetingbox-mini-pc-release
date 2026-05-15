@@ -86,6 +86,7 @@ def _normalize_text(text: str) -> str:
     return " ".join(_NON_ALNUM_RE.sub(" ", (text or "").lower()).split())
 
 
+<<<<<<< HEAD
 _VOICE_TRIGGER_SKIP = frozenset({"hey", "hi", "hello", "ok", "okay", "please", "yo"})
 _FAREWELL_SUBPHRASES = (
     "good bye",
@@ -138,6 +139,8 @@ def utterance_is_voice_farewell(wake_phrase: str, utterance: str) -> bool:
     return False
 
 
+=======
+>>>>>>> parent of 03ab7ee (fix)
 def _phrase_windows(text: str, target: str) -> list[str]:
     words = text.split()
     target_len = max(1, len(target.split()))
@@ -563,11 +566,6 @@ class VoiceAssistant:
         """Open the post-wake command window without a spoken transcript (mic orb, etc.)."""
         now = time.monotonic()
         self._interpreter._awaiting_command_until = now + self.command_timeout_seconds
-
-    def exit_command_window(self) -> None:
-        """End post-wake follow-up listening (back to passive wake-word only)."""
-        self._interpreter.reset()
-        self._clear_audio_queue()
 
     def in_command_window(self) -> bool:
         return self._interpreter.is_awaiting_command()
