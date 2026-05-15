@@ -17,10 +17,6 @@ logger = logging.getLogger(__name__)
 # BACKEND CONNECTION
 # ============================================================================
 
-_CLOUD_BACKEND_URL = "https://meetingboxai.lucratechsol.com"
-_LOCAL_BACKEND_DEFAULTS = {"http://127.0.0.1:8000", "http://localhost:8000"}
-
-
 def _strip_trailing_rest_api_path(url: str) -> str:
     """
     Client always calls ``{BASE}/api/...``. If BASE wrongly ends with ``/api``,
@@ -95,23 +91,9 @@ def _resolve_backend_url() -> str:
     issued the code (avoids claiming against localhost while the QR opened a cloud URL).
     """
     explicit = (os.getenv("BACKEND_URL") or "").strip().rstrip("/")
-    dash_env = (os.getenv("DASHBOARD_URL") or "").strip()
     if explicit:
-        if explicit in _LOCAL_BACKEND_DEFAULTS:
-            if dash_env:
-                _, pub = _normalize_dashboard_config(dash_env)
-                out = pub.strip().rstrip("/")
-                if out not in _LOCAL_BACKEND_DEFAULTS:
-                    logger.warning("Ignoring localhost BACKEND_URL; derived backend from DASHBOARD_URL: %s", out)
-                    return out
-            if (os.getenv("MEETINGBOX_ALLOW_LOCAL_BACKEND") or "").strip() != "1":
-                logger.warning(
-                    "BACKEND_URL is localhost — overriding with cloud backend: %s "
-                    "(set MEETINGBOX_ALLOW_LOCAL_BACKEND=1 to keep localhost)",
-                    _CLOUD_BACKEND_URL,
-                )
-                return _CLOUD_BACKEND_URL
         return explicit
+    dash_env = (os.getenv("DASHBOARD_URL") or "").strip()
     if not dash_env:
         return "http://localhost:8000"
     _, pub = _normalize_dashboard_config(dash_env)
@@ -141,8 +123,8 @@ DEVICE_AUTH_TOKEN_FILE_NAME = 'device_auth_token'
 # Use mock backend for testing (set MOCK_BACKEND=1)
 USE_MOCK_BACKEND = os.getenv('MOCK_BACKEND', '0') == '1'
 
-# API timeout in seconds (keep snappy; long uploads have their own timeout)
-API_TIMEOUT = 15
+# API timeout in seconds (most requests; assistant intent uses its own 120s timeout).
+API_TIMEOUT = 30
 
 # WebSocket reconnect settings
 WS_RECONNECT_DELAY = 1  # seconds (exponential backoff: 1 → 2 → 4 → … capped at 30)
