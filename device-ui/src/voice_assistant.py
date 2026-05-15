@@ -86,6 +86,65 @@ def _normalize_text(text: str) -> str:
     return " ".join(_NON_ALNUM_RE.sub(" ", (text or "").lower()).split())
 
 
+_VOICE_TRIGGER_SKIP = frozenset({"hey", "hi", "hello", "ok", "okay", "please", "yo"})
+_FAREWELL_SUBPHRASES = (
+    "good bye",
+    "goodbye",
+    "bye bye",
+    "see you",
+    "see ya",
+    "talk to you later",
+    "catch you later",
+    "later alligator",
+    "have a good day",
+    "have a great day",
+    "that's all",
+    "that is all",
+    "i'm done",
+    "im done",
+    "we're done",
+    "were done",
+    "no more questions",
+    "nothing else",
+    "thanks bye",
+    "thank you bye",
+    "ok bye",
+    "okay bye",
+)
+
+
+def utterance_is_voice_farewell(wake_phrase: str, utterance: str) -> bool:
+    """
+    True when the user is clearly ending conversation (bye / goodbye aligned with wake name).
+
+    Used to leave post-wake follow-up listening without invoking cloud Q&A again.
+    """
+    wake = _normalize_text(wake_phrase)
+    u = _normalize_text(utterance)
+    if len(u) < 2:
+        return False
+    for frag in _FAREWELL_SUBPHRASES:
+        if frag in u:
+            return True
+
+    vocab = frozenset(t for t in wake.split() if t and t not in _VOICE_TRIGGER_SKIP)
+    bye_word = frozenset({"bye", "goodbye", "farewell"})
+    nickname = vocab.union({"buddy", "tony", "pal", "mate", "there", "sir", "maam"})
+
+    toks = u.split()
+    if len(toks) == 1 and toks[0] in bye_word:
+        return True
+    if len(toks) == 2 and toks[0] in bye_word:
+        # "bye buddy" while wake ends with buddy, etc.
+        if toks[1] in vocab or toks[1] in nickname:
+            return True
+    if len(toks) >= 2 and toks[0] in bye_word and toks[1] in vocab:
+        return True
+    if len(toks) >= 2 and tuple(toks[:2]) == ("bye", "bye"):
+        return True
+    return False
+
+
 def _phrase_windows(text: str, target: str) -> list[str]:
     words = text.split()
     target_len = max(1, len(target.split()))
@@ -511,6 +570,11 @@ class VoiceAssistant:
         """Open the post-wake command window without a spoken transcript (mic orb, etc.)."""
         now = time.monotonic()
         self._interpreter._awaiting_command_until = now + self.command_timeout_seconds
+
+    def exit_command_window(self) -> None:
+        """End post-wake follow-up listening (back to passive wake-word only)."""
+        self._interpreter.reset()
+        self._clear_audio_queue()
 
     def in_command_window(self) -> bool:
         return self._interpreter.is_awaiting_command()

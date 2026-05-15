@@ -235,7 +235,7 @@ from hardware import (
 )
 from network_util import linux_ethernet_ready
 from profile_store import get_active_profile, clear_active_profile_selection
-from voice_assistant import VoiceAssistant, VoiceIntent
+from voice_assistant import VoiceAssistant, VoiceIntent, utterance_is_voice_farewell
 
 try:
     from realtime_voice_session import REALTIME_VOICE_IMPLEMENTED
@@ -1985,16 +1985,30 @@ class MeetingBoxApp(App):
             except Exception:
                 pass
 
+    def _finalize_voice_exchange_idle(self) -> None:
+        """End HTTP follow-up mic window on user farewell (no extra TTS/API)."""
+        self._voice_cloud_qa_budget = 0
+        try:
+            self.voice_assistant.exit_command_window()
+        except Exception:
+            logger.exception("exit_command_window failed")
+        Clock.schedule_once(lambda _dt: self._hide_home_listening_state(), 0)
+        self._clear_voice_indicator_override()
+        self._refresh_voice_indicator()
+
     def _handle_voice_conversation_turn(self, text: str) -> None:
         """Cloud assistant Q&A for speech that is not a rigid local intent (person-like dialogue)."""
         if not getattr(self, "voice_assistant_enabled", True):
             return
         if self._voice_pending_confirmation:
             return
+        phrase = (text or "").strip()
+        if utterance_is_voice_farewell(self.voice_assistant.wake_phrase, phrase):
+            self._finalize_voice_exchange_idle()
+            return
         if getattr(self, "_voice_cloud_qa_budget", 0) <= 0:
             logger.debug("Cloud assistant Q&A skipped (no budget for this wake cycle)")
             return
-        phrase = (text or "").strip()
         if len(phrase) < 6:
             return
 
@@ -2279,6 +2293,7 @@ class MeetingBoxApp(App):
                 on_connected=_on_rt_connected,
                 on_device_navigate=self._realtime_voice_navigate,
                 output_voice=rt_voice or None,
+                wake_for_farewell=(getattr(self.voice_assistant, "wake_phrase", "") or ""),
             )
             self._sync_voice_assistant_state()
             self._realtime_voice_session.start()
