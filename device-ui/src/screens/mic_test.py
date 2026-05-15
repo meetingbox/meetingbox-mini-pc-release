@@ -13,8 +13,12 @@ from kivy.clock import Clock
 from async_helper import run_async
 from screens.base_screen import BaseScreen
 from components.status_bar import StatusBar
-from audio_routing import get_audio_input_device_index, get_audio_input_device_name
-from config import COLORS, FONT_SIZES
+from config import (
+    AUDIO_INPUT_DEVICE_INDEX,
+    AUDIO_INPUT_DEVICE_NAME,
+    COLORS,
+    FONT_SIZES,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -130,10 +134,10 @@ class MicTestScreen(BaseScreen):
         """PortAudio device index, or None for host default."""
         if sd is None:
             return None
-        idx_s = get_audio_input_device_index()
+        idx_s = (AUDIO_INPUT_DEVICE_INDEX or "").strip()
         if idx_s.isdigit():
             return int(idx_s)
-        name_sub = get_audio_input_device_name().strip()
+        name_sub = (AUDIO_INPUT_DEVICE_NAME or "").strip()
         if name_sub:
             low = name_sub.lower()
             for i, dev in enumerate(sd.query_devices()):

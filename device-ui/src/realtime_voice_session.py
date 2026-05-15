@@ -32,8 +32,6 @@ except ImportError:
 
 import websockets
 
-from audio_routing import aplay_pcm_device_args
-
 # Feature flag: main.py only launches Realtime when this is True.
 REALTIME_VOICE_IMPLEMENTED = True
 
@@ -222,15 +220,12 @@ class RealtimeVoiceSession:
         Clock.schedule_once(_emit, 0)
 
     def _resolve_input_device(self):
-        from audio_routing import (
-            get_audio_input_device_index,
-            get_audio_input_device_name,
-        )
+        from config import AUDIO_INPUT_DEVICE_INDEX, AUDIO_INPUT_DEVICE_NAME
 
-        idx_s = get_audio_input_device_index()
+        idx_s = (AUDIO_INPUT_DEVICE_INDEX or "").strip()
         if idx_s.isdigit():
             return int(idx_s)
-        name_sub = get_audio_input_device_name().strip().lower()
+        name_sub = (AUDIO_INPUT_DEVICE_NAME or "").strip().lower()
         if not name_sub or sd is None:
             return None
         try:
@@ -341,12 +336,10 @@ class RealtimeVoiceSession:
             return
         self._close_aplay()
         try:
-            dac = aplay_pcm_device_args()
             self._aplay_proc = subprocess.Popen(
                 [
                     "aplay",
                     "-q",
-                    *dac,
                     "-B",
                     "400000",
                     "-t",

@@ -24,8 +24,7 @@ from tempfile import TemporaryDirectory
 from typing import Callable
 from urllib.request import Request, urlopen
 
-from audio_routing import get_audio_input_device_index, get_audio_input_device_name
-from config import resolve_device_config_dir
+from config import AUDIO_INPUT_DEVICE_INDEX, AUDIO_INPUT_DEVICE_NAME, resolve_device_config_dir
 
 logger = logging.getLogger(__name__)
 
@@ -595,10 +594,6 @@ class VoiceAssistant:
             confirmation_timeout_seconds=self.confirmation_timeout_seconds,
         )
 
-    def refresh_input_device(self) -> None:
-        """Re-open the microphone after AUDIO_INPUT_* environment changed."""
-        self._close_stream()
-
     def _can_run(self) -> bool:
         if not self.enabled:
             return False
@@ -678,10 +673,10 @@ class VoiceAssistant:
             logger.exception("Voice assistant callback failed")
 
     def _resolve_input_device(self):
-        idx_s = get_audio_input_device_index()
+        idx_s = (AUDIO_INPUT_DEVICE_INDEX or "").strip()
         if idx_s.isdigit():
             return int(idx_s)
-        name_sub = get_audio_input_device_name().strip().lower()
+        name_sub = (AUDIO_INPUT_DEVICE_NAME or "").strip().lower()
         if not name_sub or sd is None:
             return None
         try:

@@ -27,7 +27,6 @@ from config import (COLORS, FONT_SIZES, SPACING, DEVICE_MODEL,
 from hardware import request_system_poweroff, request_system_reboot
 from network_util import linux_ethernet_ready
 from weather_client import get_weather_client
-from audio_routing import apply_device_settings_audio_env
 
 logger = logging.getLogger(__name__)
 
@@ -243,14 +242,6 @@ class SettingsScreen(BaseScreen):
             on_press=lambda _: self.goto('speech_volume_picker', transition='slide_left'),
         )
         self.container.add_widget(self.speech_volume_item)
-
-        self.audio_devices_item = SettingsItem(
-            title='Microphone & speaker',
-            subtitle='Tap to scan and choose hardware',
-            mode='arrow',
-            on_press=lambda _: self.goto('audio_io_picker', transition='slide_left'),
-        )
-        self.container.add_widget(self.audio_devices_item)
 
         self.mic_test_item = SettingsItem(
             title='Microphone Test',
@@ -525,28 +516,6 @@ class SettingsScreen(BaseScreen):
                         self.speech_volume_item.subtitle_label.text = f'{sv}%'
                     except Exception:
                         pass
-
-                    ix_a = settings.get('audio_input_device_index')
-                    nm_a = settings.get('audio_input_device_name')
-                    pcm_a = settings.get('audio_output_pcm')
-                    mic_bits = []
-                    sid = str(ix_a or '').strip()
-                    if sid.isdigit():
-                        mic_bits.append(f'Mic #{sid}')
-                    elif (nm_a or '').strip():
-                        mic_bits.append(((nm_a or '').strip())[:42])
-                    else:
-                        mic_bits.append('Mic: default')
-                    pcm_s = str(pcm_a or '').strip()
-                    if pcm_s:
-                        mic_bits.append(f'Out {pcm_s}')
-                    else:
-                        mic_bits.append('Speaker: default')
-                    self.audio_devices_item.subtitle_label.text = ' · '.join(mic_bits)
-                    if apply_device_settings_audio_env(settings):
-                        va = getattr(self.app, 'voice_assistant', None)
-                        if va:
-                            va.refresh_input_device()
 
                     wifi_ok = bool(info.get('wifi_ssid'))
                     privacy = getattr(self.app, 'privacy_mode', False)
