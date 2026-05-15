@@ -918,7 +918,7 @@ class MeetingBoxApp(App):
                     vae = str(vae).strip().lower() in ("1", "true", "yes", "on")
                 self.voice_assistant_enabled = bool(vae)
 
-                vwp = (settings.get("voice_wake_phrase") or "hey buddy").strip()
+                vwp = (settings.get("voice_wake_phrase") or "hey buddy").strip().lower() or "hey buddy"
                 self.voice_wake_phrase_display = vwp[:1].upper() + vwp[1:] if vwp else "Hey buddy"
                 try:
                     sv = settings.get("assistant_speech_volume", 85)
@@ -1815,7 +1815,8 @@ class MeetingBoxApp(App):
             self.voice_indicator.set_state(state, message)
             return
         if self.voice_assistant.available and self._voice_assistant_should_listen():
-            self.voice_indicator.set_state("idle", 'Say "Hey Tony"')
+            wkd = getattr(self, "voice_wake_phrase_display", None) or "Hey buddy"
+            self.voice_indicator.set_state("idle", f'Say "{wkd}"')
             return
         self.voice_indicator.set_state("hidden")
 
@@ -2212,7 +2213,10 @@ class MeetingBoxApp(App):
     def _run_realtime_voice_session(self, data: dict) -> None:
         self._realtime_session_pending = False
         try:
-            from realtime_voice_session import RealtimeVoiceSession
+            from realtime_voice_session import (
+                RealtimeVoiceSession,
+                extract_realtime_output_voice,
+            )
         except ImportError:
             logger.exception("realtime_voice_session module missing")
             self._clear_voice_indicator_override()
@@ -2224,6 +2228,10 @@ class MeetingBoxApp(App):
 
         secret = (data.get("client_secret") or "").strip()
         model = (data.get("model") or "").strip()
+        sess_blob = data.get("session")
+        rt_voice = ""
+        if isinstance(sess_blob, dict):
+            rt_voice = extract_realtime_output_voice(sess_blob)
         if not secret or not model:
             self._clear_voice_indicator_override()
             self._sync_voice_assistant_state()
@@ -2270,6 +2278,7 @@ class MeetingBoxApp(App):
                 on_error=_err,
                 on_connected=_on_rt_connected,
                 on_device_navigate=self._realtime_voice_navigate,
+                output_voice=rt_voice or None,
             )
             self._sync_voice_assistant_state()
             self._realtime_voice_session.start()

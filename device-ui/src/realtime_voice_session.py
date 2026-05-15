@@ -35,6 +35,17 @@ import websockets
 # Feature flag: main.py only launches Realtime when this is True.
 REALTIME_VOICE_IMPLEMENTED = True
 
+# Keep in sync with `server/web/routes/voice.py` (server VAD + GA audio envelope).
+_REALTIME_VAD_SILENCE_MS = 550
+_REALTIME_VAD_PREFIX_MS = 280
+_REALTIME_TURN_DETECTION = {
+    "type": "server_vad",
+    "threshold": 0.5,
+    "prefix_padding_ms": _REALTIME_VAD_PREFIX_MS,
+    "silence_duration_ms": _REALTIME_VAD_SILENCE_MS,
+}
+_REALTIME_OUTPUT_VOICE_FALLBACK = "shimmer"
+
 _REALTIME_WS_HOST = "api.openai.com"
 _REALTIME_RATE = 24000
 _APPEND_CHUNK_MS = 40
@@ -44,6 +55,22 @@ def build_realtime_websocket_url(model: str) -> str:
     """Return OpenAI Realtime WebSocket URL with URL-encoded model id."""
     m = (model or "").strip() or "gpt-realtime-2"
     return f"wss://{_REALTIME_WS_HOST}/v1/realtime?model={quote(m, safe='')}"
+
+
+def extract_realtime_output_voice(session: dict | None) -> str:
+    """Read audio.output.voice from minted session metadata (GA shape)."""
+    if not isinstance(session, dict):
+        return ""
+    audio = session.get("audio")
+    if not isinstance(audio, dict):
+        return ""
+    out = audio.get("output")
+    if not isinstance(out, dict):
+        return ""
+    v = out.get("voice")
+    if isinstance(v, str) and v.strip():
+        return v.strip().lower()
+    return ""
 
 
 def resample_pcm16_mono(data: bytes, src_sr: int, dst_sr: int) -> bytes:
@@ -77,6 +104,7 @@ class RealtimeVoiceSession:
         on_error,
         on_connected,
         on_device_navigate=None,
+        output_voice: str | None = None,
     ):
         self._client_secret = (client_secret or "").strip()
         self._model = (model or "").strip()
@@ -90,6 +118,8 @@ class RealtimeVoiceSession:
         self._stop = threading.Event()
         self._loop: asyncio.AbstractEventLoop | None = None
         self._ws: Any = None
+        ov = (output_voice or "").strip().lower() or _REALTIME_OUTPUT_VOICE_FALLBACK
+        self._output_voice = ov
         self._connected_fired = False
         self._audio_q: queue.Queue[bytes | None] = queue.Queue(maxsize=100)
         self._mic_stream = None
@@ -472,13 +502,21 @@ class RealtimeVoiceSession:
                                     "type": "session.update",
                                     "session": {
                                         "type": "realtime",
-                                        "input_audio_format": "pcm16",
-                                        "output_audio_format": "pcm16",
-                                        "turn_detection": {
-                                            "type": "server_vad",
-                                            "threshold": 0.5,
-                                            "prefix_padding_ms": 300,
-                                            "silence_duration_ms": 800,
+                                        "audio": {
+                                            "input": {
+                                                "format": {
+                                                    "type": "audio/pcm",
+                                                    "rate": 24000,
+                                                },
+                                                "turn_detection": _REALTIME_TURN_DETECTION,
+                                            },
+                                            "output": {
+                                                "format": {
+                                                    "type": "audio/pcm",
+                                                    "rate": 24000,
+                                                },
+                                                "voice": self._output_voice,
+                                            },
                                         },
                                     },
                                 }

@@ -526,7 +526,7 @@ class VoiceAssistant:
         if enabled is not None:
             self.enabled = bool(enabled)
         if wake_phrase is not None:
-            wp = str(wake_phrase).strip()
+            wp = _normalize_text(str(wake_phrase).strip())
             if wp:
                 self.wake_phrase = wp
         self._interpreter = VoiceCommandInterpreter(
