@@ -86,7 +86,6 @@ def _normalize_text(text: str) -> str:
     return " ".join(_NON_ALNUM_RE.sub(" ", (text or "").lower()).split())
 
 
-<<<<<<< HEAD
 _VOICE_TRIGGER_SKIP = frozenset({"hey", "hi", "hello", "ok", "okay", "please", "yo"})
 _FAREWELL_SUBPHRASES = (
     "good bye",
@@ -139,8 +138,6 @@ def utterance_is_voice_farewell(wake_phrase: str, utterance: str) -> bool:
     return False
 
 
-=======
->>>>>>> parent of 03ab7ee (fix)
 def _phrase_windows(text: str, target: str) -> list[str]:
     words = text.split()
     target_len = max(1, len(target.split()))
