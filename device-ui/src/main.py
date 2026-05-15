@@ -813,7 +813,8 @@ class MeetingBoxApp(App):
             tok = get_device_auth_token().strip()
             if tok:
                 self.backend.set_device_auth_header(tok)
-        Clock.schedule_once(self._check_backend, 2.0)
+        # Defer only until Kivy/async loop are up; reach API quickly after boot/restart.
+        Clock.schedule_once(self._check_backend, 0.35)
         # Idle + home both consume weather; start the singleton refresh loop
         # once here so it's running by the time those screens are entered.
         try:
@@ -887,9 +888,18 @@ class MeetingBoxApp(App):
 
     def _check_backend(self, _dt):
         async def _health():
-            ok = await self.backend.health_check()
+            ok = False
+            for attempt in range(6):
+                ok = await self.backend.health_check()
+                if ok:
+                    break
+                if attempt < 5:
+                    await asyncio.sleep(0.35 * (attempt + 1))
             if not ok:
-                logger.error("Backend health check failed")
+                logger.error(
+                    "Backend health check failed (base_url=%s) — check BACKEND_URL / network",
+                    getattr(self.backend, "base_url", ""),
+                )
                 return
             try:
                 settings = await self.backend.get_settings()
@@ -1061,7 +1071,7 @@ class MeetingBoxApp(App):
             # Reset reconnect counter before the outer restart so the next
             # subscribe_events() run gets a full 10 fresh attempts.
             self.backend._ws_reconnect_attempts = 0
-            await asyncio.sleep(2)
+            await asyncio.sleep(1)
             Clock.schedule_once(lambda _: self.start_websocket_listener(), 0)
 
     # ==================================================================

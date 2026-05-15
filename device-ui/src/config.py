@@ -126,8 +126,8 @@ USE_MOCK_BACKEND = os.getenv('MOCK_BACKEND', '0') == '1'
 # API timeout in seconds (most requests; assistant intent uses its own 120s timeout).
 API_TIMEOUT = 30
 
-# WebSocket reconnect settings
-WS_RECONNECT_DELAY = 1  # seconds (exponential backoff: 1 → 2 → 4 → … capped at 30)
+# WebSocket reconnect settings (first wait ≈ WS_RECONNECT_DELAY × 2^0; see api_client backoff)
+WS_RECONNECT_DELAY = 0.5  # seconds; exponential: ~0.5 → 1 → 2 → … capped at 30
 WS_MAX_RECONNECT_ATTEMPTS = 10
 
 # ============================================================================

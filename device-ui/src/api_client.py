@@ -307,7 +307,13 @@ class BackendClient:
     def __init__(self, base_url: str = BACKEND_URL):
         self.base_url = _strip_trailing_rest_api_path(base_url.rstrip("/"))
         self.ws_url = BACKEND_WS_URL
-        self.client = httpx.AsyncClient(timeout=API_TIMEOUT)
+        # Short connect timeout so unreachable hosts fail fast; read/write use API_TIMEOUT.
+        self.client = httpx.AsyncClient(
+            timeout=httpx.Timeout(
+                float(API_TIMEOUT),
+                connect=min(10.0, float(API_TIMEOUT)),
+            ),
+        )
         self._refresh_auth_header()
         self.ws_connection = None
         self._ws_reconnect_attempts = 0
@@ -1165,7 +1171,13 @@ class BackendClient:
         while True:
             try:
                 ws_connect_url = build_websocket_url(self.ws_url)
-                async with websockets.connect(ws_connect_url) as ws:
+                async with websockets.connect(
+                    ws_connect_url,
+                    open_timeout=12,
+                    ping_interval=20,
+                    ping_timeout=20,
+                    max_size=None,
+                ) as ws:
                     logger.info("WebSocket connected")
                     self._ws_reconnect_attempts = 0
                     self.ws_connection = ws
@@ -1196,7 +1208,8 @@ class BackendClient:
         if self._ws_reconnect_attempts > WS_MAX_RECONNECT_ATTEMPTS:
             logger.error("Max WS reconnect attempts reached")
             raise ConnectionError("Failed to reconnect to backend WebSocket")
-        delay = min(WS_RECONNECT_DELAY * (2 ** self._ws_reconnect_attempts), 30)
+        exp = max(0, self._ws_reconnect_attempts - 1)
+        delay = min(WS_RECONNECT_DELAY * (2**exp), 30)
         logger.info(f"Reconnecting WS in {delay}s (attempt {self._ws_reconnect_attempts})")
         await asyncio.sleep(delay)
 
