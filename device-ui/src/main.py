@@ -2057,10 +2057,21 @@ class MeetingBoxApp(App):
                         ),
                         0,
                     )
-            finally:
-                Clock.schedule_once(lambda _dt: self._clear_voice_indicator_override(), 0)
+            # Do not schedule _clear_voice_indicator_override here: it races with delay=0
+            # callbacks above and cancels the timers _voice_reply just created, so the
+            # orb/text clears while audio plays (or labels the assistant as silent).
 
-        run_async(_go())
+        fut = run_async(_go())
+        if fut is None:
+            logger.error("Assistant Q&A skipped: background asyncio loop is not running")
+            self._voice_cloud_qa_budget += 1
+            Clock.schedule_once(
+                lambda _dt: self._voice_reply_and_extend_listening(
+                    "Voice assistant is not ready. Please restart the app.",
+                    error=True,
+                ),
+                0,
+            )
 
     def _hide_home_listening_state(self, *_args) -> None:
         """Called after wake-word timeout to restore the home screen to idle."""
@@ -2360,13 +2371,16 @@ class MeetingBoxApp(App):
                 tmp_path = tmp.name
 
             try:
-                subprocess.run(
+                r_play = subprocess.run(
                     [aplay, "-q", "-r", "24000", "-f", "S16_LE", "-c", "1", tmp_path],
                     check=False,
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
                     timeout=60,
                 )
+                if r_play.returncode != 0:
+                    logger.debug("OpenAI TTS aplay exited %s", r_play.returncode)
+                    return False
                 return True
             finally:
                 try:
@@ -2403,7 +2417,10 @@ class MeetingBoxApp(App):
 
             amp_n = self._espeak_amplitude()
             if amp_n <= 0:
-                return True
+                # Volume at 0%: do not pretend playback succeeded — otherwise every
+                # offline engine is skipped and the assistant appears "broken".
+                logger.debug("_speak_text_blocking: assistant_speech_volume is 0 — skipping offline TTS")
+                return False
             amp = str(amp_n)
 
             # --- 1. piper (neural TTS — best quality, fully offline) ---
@@ -2434,7 +2451,7 @@ class MeetingBoxApp(App):
                             check=False,
                         )
                         if proc.returncode == 0 and os.path.getsize(tmp_path) > 0:
-                            subprocess.run(
+                            r_ap = subprocess.run(
                                 [aplay, "-q", tmp_path],
                                 check=False,
                                 stdout=subprocess.DEVNULL,
@@ -2445,7 +2462,8 @@ class MeetingBoxApp(App):
                                 os.unlink(tmp_path)
                             except OSError:
                                 pass
-                            return True
+                            if r_ap.returncode == 0:
+                                return True
                         try:
                             os.unlink(tmp_path)
                         except OSError:
