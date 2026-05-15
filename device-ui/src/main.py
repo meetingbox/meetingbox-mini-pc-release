@@ -3368,6 +3368,10 @@ def main():
     _diagnose_xauthority_for_docker()
 
     logger.info("Starting MeetingBox Device UI")
+    print(
+        f"[MeetingBox] Kivy UI starting — full log: {LOG_FILE}",
+        flush=True,
+    )
     try:
         app = MeetingBoxApp()
         app.run()
