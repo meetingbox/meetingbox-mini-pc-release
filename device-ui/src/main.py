@@ -271,6 +271,7 @@ from screens.brightness_picker import BrightnessPickerScreen
 from screens.speech_volume_picker import SpeechVolumePickerScreen
 from screens.idle_timeout_picker import IdleTimeoutPickerScreen
 from screens.mic_test import MicTestScreen
+from screens.audio_io_picker import AudioDevicesPickerScreen
 from screens.update_check import UpdateCheckScreen
 from screens.update_install import UpdateInstallScreen
 
@@ -317,6 +318,7 @@ if _FULLSCREEN and _W == 1024 and _H == 600:
 
 # Import async helper (starts background loop on import)
 from async_helper import run_async, get_async_loop
+from audio_routing import apply_device_settings_audio_env, aplay_pcm_device_args
 
 # Recording start/stop uses optional auth; a 401 on pairing-status during this flow
 # would clear the local token and break summary/actions. Defer unpair until idle.
@@ -659,6 +661,7 @@ class MeetingBoxApp(App):
         self.screen_manager.add_widget(SpeechVolumePickerScreen(name='speech_volume_picker'))
         self.screen_manager.add_widget(IdleTimeoutPickerScreen(name='idle_timeout_picker'))
         self.screen_manager.add_widget(MicTestScreen(name='mic_test'))
+        self.screen_manager.add_widget(AudioDevicesPickerScreen(name='audio_io_picker'))
         self.screen_manager.add_widget(UpdateCheckScreen(name='update_check'))
         self.screen_manager.add_widget(UpdateInstallScreen(name='update_install'))
 
@@ -943,6 +946,8 @@ class MeetingBoxApp(App):
                     wake_phrase=vwp,
                     enabled=self.voice_assistant_enabled,
                 )
+                if apply_device_settings_audio_env(settings):
+                    self.voice_assistant.refresh_input_device()
             except Exception as e:
                 logger.warning("Could not load settings: %s", e)
             try:
@@ -2361,7 +2366,7 @@ class MeetingBoxApp(App):
 
             try:
                 subprocess.run(
-                    [aplay, "-q", "-r", "24000", "-f", "S16_LE", "-c", "1", tmp_path],
+                    [aplay, "-q", *aplay_pcm_device_args(), "-r", "24000", "-f", "S16_LE", "-c", "1", tmp_path],
                     check=False,
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
@@ -2435,7 +2440,7 @@ class MeetingBoxApp(App):
                         )
                         if proc.returncode == 0 and os.path.getsize(tmp_path) > 0:
                             subprocess.run(
-                                [aplay, "-q", tmp_path],
+                                [aplay, "-q", *aplay_pcm_device_args(), tmp_path],
                                 check=False,
                                 stdout=subprocess.DEVNULL,
                                 stderr=subprocess.DEVNULL,
@@ -2515,7 +2520,7 @@ class MeetingBoxApp(App):
                     )
                     try:
                         subprocess.run(
-                            [aplay, "-q"],
+                            [aplay, "-q", *aplay_pcm_device_args()],
                             stdin=proc.stdout,
                             stdout=subprocess.DEVNULL,
                             stderr=subprocess.DEVNULL,

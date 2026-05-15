@@ -152,11 +152,9 @@ if (os.getenv("MEETINGBOX_DISABLE_LOCAL_REDIS", "") or "").strip().lower() in (
     LOCAL_REDIS_ENABLED = False
 
 # ============================================================================
-# MICROPHONE (mic test + should match mini-pc/audio capture device)
+# MICROPHONE — read at RUNTIME via ``audio_routing.get_audio_input_device_*()`` only.
+# Compose may set AUDIO_INPUT_DEVICE_* env before start; synced settings PATCH overwrites env later.
 # ============================================================================
-
-AUDIO_INPUT_DEVICE_INDEX = (os.getenv("AUDIO_INPUT_DEVICE_INDEX", "") or "").strip()
-AUDIO_INPUT_DEVICE_NAME = (os.getenv("AUDIO_INPUT_DEVICE_NAME", "") or "").strip()
 
 # If true, wake word never starts OpenAI Realtime — only local Vosk + espeak (reliable on appliances).
 WAKE_LOCAL_VOICE_ONLY = str(os.getenv("MEETINGBOX_WAKE_LOCAL_VOICE_ONLY", "")).strip().lower() in (
