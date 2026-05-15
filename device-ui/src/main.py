@@ -3313,7 +3313,11 @@ class MeetingBoxApp(App):
 # ==================================================================
 
 def main():
-    print(f"[MeetingBox] Starting Device UI", flush=True)
+    _boot_ts = datetime.now().astimezone().strftime("%Y-%m-%d %H:%M:%S %Z")
+    print(
+        f"[MeetingBox] Starting Device UI (pid={os.getpid()}, time={_boot_ts})",
+        flush=True,
+    )
     disp = os.environ.get('DISPLAY', '(not set)')
     print(f"[MeetingBox] DISPLAY={disp}", flush=True)
     print(f"[MeetingBox] FULLSCREEN={os.environ.get('FULLSCREEN', '(not set)')}", flush=True)

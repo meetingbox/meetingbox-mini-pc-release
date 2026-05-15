@@ -32,6 +32,20 @@ from config import (
 
 logger = logging.getLogger(__name__)
 
+
+def _response_ok_json_api(resp: httpx.Response) -> bool:
+    """True when the response looks like our JSON API, not SPA index.html (nginx mis-route)."""
+    if resp.status_code != 200:
+        return False
+    ct = (resp.headers.get("content-type") or "").lower()
+    if "text/html" in ct:
+        return False
+    if "json" in ct:
+        return True
+    sample = (resp.text or "")[:512].lstrip()
+    return sample.startswith("{") or sample.startswith("[")
+
+
 # Match dashboard Emails tab (`frontend/src/pages/Emails.tsx`).
 _GMAIL_RECENT_DAYS = 90
 
@@ -1219,14 +1233,29 @@ class BackendClient:
 
     async def health_check(self) -> bool:
         """
-        GET /health  (note: no /api prefix)
-        Returns True if backend is up.
+        Reachability probe: many deployments only reverse-proxy ``/api/*`` to FastAPI, so
+        ``GET {base}/health`` never hits the API (404) or returns SPA HTML (200 + wrong body).
+        Try ``/health`` first, then ``/api/system/status`` (usually proxied; optional auth off by default).
         """
-        try:
-            resp = await self.client.get(
-                f"{self.base_url}/health", timeout=5)
-            return resp.status_code == 200
-        except Exception as e:
-            logger.error(f"Health check failed: {e}")
-            return False
+        probes = (
+            f"{self.base_url}/health",
+            f"{self.base_url}/api/system/status",
+        )
+        last_err: Exception | None = None
+        for url in probes:
+            try:
+                resp = await self.client.get(url, timeout=5)
+                if _response_ok_json_api(resp):
+                    return True
+                logger.warning(
+                    "Health probe not OK: %s → HTTP %s (not JSON API)",
+                    url,
+                    resp.status_code,
+                )
+            except Exception as e:
+                last_err = e
+                logger.warning("Health probe failed: %s — %s", url, e)
+        if last_err is not None:
+            logger.error("All health probes failed (last error: %s)", last_err)
+        return False
 
