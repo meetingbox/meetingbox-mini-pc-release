@@ -1244,7 +1244,10 @@ class BackendClient:
         last_err: Exception | None = None
         for url in probes:
             try:
-                resp = await self.client.get(url, timeout=5)
+                resp = await self.client.get(
+                    url,
+                    timeout=httpx.Timeout(connect=10.0, read=8.0, write=5.0, pool=5.0),
+                )
                 if _response_ok_json_api(resp):
                     return True
                 logger.warning(
