@@ -129,7 +129,7 @@ async def _check_websocket(app: Any, on_status: Callable[[str], None]) -> SelfCh
         url = build_websocket_url(app.backend.ws_url)
         async with websockets.connect(
             url,
-            open_timeout=8,
+            open_timeout=12,
             ping_interval=None,
             close_timeout=2,
             max_size=None,
