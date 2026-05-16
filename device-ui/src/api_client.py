@@ -1236,28 +1236,32 @@ class BackendClient:
         Reachability probe: many deployments only reverse-proxy ``/api/*`` to FastAPI, so
         ``GET {base}/health`` never hits the API (404) or returns SPA HTML (200 + wrong body).
         Try ``/health`` first, then ``/api/system/status`` (usually proxied; optional auth off by default).
+
+        Uses a dedicated one-shot client so the probe is never blocked waiting for a connection
+        from the shared pool (which may be busy with concurrent startup requests or long-polls).
         """
         probes = (
             f"{self.base_url}/health",
             f"{self.base_url}/api/system/status",
         )
         last_err: Exception | None = None
-        for url in probes:
-            try:
-                resp = await self.client.get(
-                    url,
-                    timeout=httpx.Timeout(connect=10.0, read=8.0, write=5.0, pool=5.0),
-                )
-                if _response_ok_json_api(resp):
-                    return True
-                logger.warning(
-                    "Health probe not OK: %s → HTTP %s (not JSON API)",
-                    url,
-                    resp.status_code,
-                )
-            except Exception as e:
-                last_err = e
-                logger.warning("Health probe failed: %s — %s", url, e)
+        async with httpx.AsyncClient(
+            timeout=httpx.Timeout(connect=10.0, read=8.0, write=5.0, pool=5.0),
+            follow_redirects=True,
+        ) as probe_client:
+            for url in probes:
+                try:
+                    resp = await probe_client.get(url)
+                    if _response_ok_json_api(resp):
+                        return True
+                    logger.warning(
+                        "Health probe not OK: %s → HTTP %s (not JSON API)",
+                        url,
+                        resp.status_code,
+                    )
+                except Exception as e:
+                    last_err = e
+                    logger.warning("Health probe failed: %s — %s", url, e)
         if last_err is not None:
             logger.error("All health probes failed (last error: %s)", last_err)
         return False
