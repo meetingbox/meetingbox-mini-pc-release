@@ -1025,6 +1025,9 @@ class MeetingBoxApp(App):
                     "Backend health check failed (base_url=%s) — check BACKEND_URL / network",
                     getattr(self.backend, "base_url", ""),
                 )
+                local_idle = self._load_local_idle_timeout()
+                if local_idle is not None:
+                    self._apply_idle_timeout(local_idle)
                 return
             try:
                 settings = await self.backend.get_settings()
@@ -1841,13 +1844,46 @@ class MeetingBoxApp(App):
         'idle',
     })
 
+    # ------------------------------------------------------------------
+    # Local settings cache helpers (survive backend outages across restarts)
+    # ------------------------------------------------------------------
+
+    def _local_ui_settings_path(self) -> Path:
+        from config import resolve_device_config_dir
+        return resolve_device_config_dir() / "local_ui_settings.json"
+
+    def _persist_local_idle_timeout(self, value: str) -> None:
+        try:
+            path = self._local_ui_settings_path()
+            existing: dict = {}
+            if path.is_file():
+                try:
+                    existing = json.loads(path.read_text(encoding="utf-8"))
+                except Exception:
+                    pass
+            existing["idle_screen_timeout"] = value
+            path.write_text(json.dumps(existing), encoding="utf-8")
+        except Exception as exc:
+            logger.debug("Could not persist idle timeout locally: %s", exc)
+
+    def _load_local_idle_timeout(self) -> str | None:
+        try:
+            path = self._local_ui_settings_path()
+            if path.is_file():
+                data = json.loads(path.read_text(encoding="utf-8"))
+                val = data.get("idle_screen_timeout")
+                if val is not None:
+                    return str(val)
+        except Exception:
+            pass
+        return None
+
     def _apply_idle_timeout(self, value: str):
         """Configure idle-screen timeout.
 
-        Accepts seconds as a string (``"30"``, ``"60"``, ``"120"``, ``"300"``)
-        or ``"never"``. The legacy ``screen_timeout`` value (which was in
-        minutes — ``"5"``, ``"10"``) is interpreted as minutes for backward
-        compatibility so existing devices don't break on first read.
+        Accepts seconds as a string (``"30"``, ``"60"``, ``"120"``, ``"300"``,
+        ``"1800"``) or ``"never"``. Also persists the value to a local cache
+        file so the setting survives backend outages across device restarts.
         """
         if self._idle_event:
             self._idle_event.cancel()
@@ -1856,22 +1892,19 @@ class MeetingBoxApp(App):
         v = (value or '').strip().lower()
         if v in ('', 'never', 'off', '0'):
             self._idle_timeout_seconds = 0
+            self._persist_local_idle_timeout('never')
             return
 
         try:
             n = int(v)
         except ValueError:
             self._idle_timeout_seconds = 30
+            self._persist_local_idle_timeout('30')
             self._reset_idle_timer()
             return
-        # Legacy `screen_timeout` was in minutes; treat very small numbers as
-        # minutes so a stored "5" still means "5 minutes" rather than 5s.
-        if n <= 30:
-            self._idle_timeout_seconds = n
-        elif n <= 60:
-            self._idle_timeout_seconds = n  # 60s sits in the new bucket
-        else:
-            self._idle_timeout_seconds = n
+
+        self._idle_timeout_seconds = n
+        self._persist_local_idle_timeout(value)
         self._reset_idle_timer()
 
     def _reset_idle_timer(self, *_args):
