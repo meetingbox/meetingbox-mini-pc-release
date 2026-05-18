@@ -555,6 +555,11 @@ class RealtimeVoiceSession:
                 url,
                 additional_headers=headers,
                 max_size=None,
+                # Default open_timeout is 10s — too tight for transient slowness
+                # during the TLS + HTTP-101 upgrade to api.openai.com, which
+                # surfaces as "timed out during opening handshake" and kills
+                # the session before the user even starts speaking.
+                open_timeout=30,
                 ping_interval=20,
                 ping_timeout=30,
                 close_timeout=3,
