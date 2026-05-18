@@ -20,7 +20,10 @@ import httpx
 
 from config import USE_MOCK_BACKEND, get_device_auth_token
 from voice_assistant import VoiceAssistant
-from mic_input_resolve import resolve_sounddevice_capture_device_index
+from mic_input_resolve import (
+    capture_device_fallback_candidates,
+    resolve_sounddevice_capture_device_index,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -59,9 +62,10 @@ def _mic_probe_blocking() -> tuple[bool, str]:
     except ImportError as e:
         return False, f"missing sounddevice/numpy ({e})"
 
-    device_id = resolve_sounddevice_capture_device_index(sd)
+    preferred_device_id = resolve_sounddevice_capture_device_index(sd)
+    candidate_device_ids = capture_device_fallback_candidates(sd, preferred_device_id)
 
-    def _rates():
+    def _rates(device_id):
         out: list[int] = []
         idx = device_id
         try:
@@ -82,35 +86,36 @@ def _mic_probe_blocking() -> tuple[bool, str]:
         return out
 
     last_err: Exception | None = None
-    for sr in _rates():
-        stream = None
-        try:
-            kwargs: dict = dict(
-                channels=1,
-                samplerate=sr,
-                blocksize=1024,
-                dtype="float32",
-            )
-            if device_id is not None:
-                kwargs["device"] = device_id
-            stream = sd.InputStream(**kwargs)
-            stream.start()
-            data, _overflowed = stream.read(1024)
-            if data is None or len(data) == 0:
-                raise RuntimeError("empty read")
-            block = np.asarray(data, dtype=np.float64).reshape(-1)
-            rms = float(np.sqrt(np.mean(np.square(block)))) if block.size else 0.0
-            dev_note = f"device {device_id}" if device_id is not None else "default"
-            return True, f"{dev_note}, {sr} Hz, rms={rms:.4f}"
-        except Exception as e:
-            last_err = e
-        finally:
-            if stream is not None:
-                try:
-                    stream.stop()
-                    stream.close()
-                except Exception:
-                    pass
+    for device_id in candidate_device_ids:
+        for sr in _rates(device_id):
+            stream = None
+            try:
+                kwargs: dict = dict(
+                    channels=1,
+                    samplerate=sr,
+                    blocksize=1024,
+                    dtype="float32",
+                )
+                if device_id is not None:
+                    kwargs["device"] = device_id
+                stream = sd.InputStream(**kwargs)
+                stream.start()
+                data, _overflowed = stream.read(1024)
+                if data is None or len(data) == 0:
+                    raise RuntimeError("empty read")
+                block = np.asarray(data, dtype=np.float64).reshape(-1)
+                rms = float(np.sqrt(np.mean(np.square(block)))) if block.size else 0.0
+                dev_note = f"device {device_id}" if device_id is not None else "default"
+                return True, f"{dev_note}, {sr} Hz, rms={rms:.4f}"
+            except Exception as e:
+                last_err = e
+            finally:
+                if stream is not None:
+                    try:
+                        stream.stop()
+                        stream.close()
+                    except Exception:
+                        pass
     return False, str(last_err or "microphone open failed")
 
 

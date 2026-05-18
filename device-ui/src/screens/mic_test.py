@@ -14,7 +14,10 @@ from async_helper import run_async
 from screens.base_screen import BaseScreen
 from components.status_bar import StatusBar
 from config import COLORS, FONT_SIZES
-from mic_input_resolve import resolve_sounddevice_capture_device_index
+from mic_input_resolve import (
+    capture_device_fallback_candidates,
+    resolve_sounddevice_capture_device_index,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -129,8 +132,9 @@ class MicTestScreen(BaseScreen):
     def _resolve_sounddevice_input_device(self):
         """PortAudio device index, or None for host default."""
         if sd is None:
-            return None
-        return resolve_sounddevice_capture_device_index(sd)
+            return None, [None]
+        preferred = resolve_sounddevice_capture_device_index(sd)
+        return preferred, capture_device_fallback_candidates(sd, preferred)
 
     def _samplerates_to_try(self, device_id):
         out: list[int] = []
@@ -186,7 +190,7 @@ class MicTestScreen(BaseScreen):
         if sd is None or np is None:
             return
         self._close_local_stream()
-        device_id = self._resolve_sounddevice_input_device()
+        _preferred_device_id, candidate_device_ids = self._resolve_sounddevice_input_device()
 
         def callback(indata, frames, t_info, status):
             if status and str(status):
@@ -203,29 +207,30 @@ class MicTestScreen(BaseScreen):
                 logger.exception("Mic test: callback error")
 
         last_err = None
-        for sr in self._samplerates_to_try(device_id):
-            try:
-                kwargs = dict(
-                    channels=1,
-                    samplerate=sr,
-                    blocksize=1024,
-                    dtype="float32",
-                    callback=callback,
-                )
-                if device_id is not None:
-                    kwargs["device"] = device_id
-                self._local_stream = sd.InputStream(**kwargs)
-                self._local_stream.start()
-                logger.info(
-                    "Mic test: local stream started (device=%s samplerate=%s)",
-                    device_id,
-                    sr,
-                )
-                return
-            except Exception as e:
-                last_err = e
-                self._close_local_stream()
-                continue
+        for device_id in candidate_device_ids:
+            for sr in self._samplerates_to_try(device_id):
+                try:
+                    kwargs = dict(
+                        channels=1,
+                        samplerate=sr,
+                        blocksize=1024,
+                        dtype="float32",
+                        callback=callback,
+                    )
+                    if device_id is not None:
+                        kwargs["device"] = device_id
+                    self._local_stream = sd.InputStream(**kwargs)
+                    self._local_stream.start()
+                    logger.info(
+                        "Mic test: local stream started (device=%s samplerate=%s)",
+                        device_id,
+                        sr,
+                    )
+                    return
+                except Exception as e:
+                    last_err = e
+                    self._close_local_stream()
+                    continue
 
         logger.warning(
             "Mic test: local capture failed (%s) — check /dev/snd, audio group, AUDIO_INPUT_DEVICE_*",

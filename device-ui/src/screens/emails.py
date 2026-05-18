@@ -519,11 +519,15 @@ class EmailsScreen(BaseScreen):
         self._tab_labels: dict[str, Label]  = {}
         self._count_labels: dict[str, Label] = {}
         self._list_container: FloatLayout | None = None
+        self._list_sv: ScrollView | None = None
+        self._list_pull_armed: bool = False
+        self._pull_refresh_pending: bool = False
         self._avatar_w: _AvatarCircle | None = None
         self._det_sender: Label | None = None
         self._det_to_val: Label | None = None
         self._det_subject: Label | None = None
         self._det_body: Label | None   = None
+        self._det_body_sv: ScrollView | None = None
         self._empty_lbl: Label | None  = None
         self._det_content: list        = []   # hidden until email selected
 
@@ -757,6 +761,7 @@ class EmailsScreen(BaseScreen):
             bar_width=0, bar_color=(0, 0, 0, 0), bar_inactive_color=(0, 0, 0, 0),
         )
         self._list_sv = sv
+        sv.bind(scroll_y=self._on_list_scroll_y)
         self._list_container = FloatLayout(size_hint=(1, None), height=_ff(PH))
         sv.add_widget(self._list_container)
         panel.add_widget(sv)
@@ -941,6 +946,7 @@ class EmailsScreen(BaseScreen):
             bar_width=0, bar_color=(0, 0, 0, 0),
             bar_inactive_color=(0, 0, 0, 0),
         ))
+        self._det_body_sv = body_sv
         self._det_body = Label(
             text="",
             font_name=_F_MED,
@@ -955,6 +961,8 @@ class EmailsScreen(BaseScreen):
             width=lambda w, v: setattr(w, "text_size", (v, None)),
             texture_size=lambda w, s: setattr(w, "height", s[1]),
         )
+        self._det_body.bind(on_touch_down=self._on_detail_body_touch_down)
+        body_sv.bind(on_touch_down=self._on_detail_body_touch_down)
         body_sv.add_widget(self._det_body)
         panel.add_widget(body_sv)
 
@@ -1053,35 +1061,90 @@ class EmailsScreen(BaseScreen):
         # Reset sent/drafts so they refresh on next tab visit
         self._sent_loaded   = False
         self._drafts_loaded = False
-        self._load_emails()
-        if not getattr(self, "_refresh_ev", None):
-            self._refresh_ev = Clock.schedule_interval(
-                lambda _dt: self._refresh_all(), 30.0,
-            )
+        # Keep tab deterministic on each open and ensure right pane defaults
+        # to first email from the currently visible list.
+        self._active_tab = "all"
+        self._selected_email = None
+        for tid, lbl in self._tab_labels.items():
+            lbl.color = _C_BLUE if tid == "all" else _C_MUTED
+        for tid, lbl in self._count_labels.items():
+            lbl.color = _C_BLUE if tid == "all" else _C_WHITE
+        self.app.ui_cache_subscribe("emails_inbox", self._on_cached_inbox)
+        cached_inbox = self.app.ui_cache_get("emails_inbox")
+        if isinstance(cached_inbox, list):
+            self._all_emails = list(cached_inbox)
+            self._update_counts()
+            self._apply_filter()
+            if self._filtered_emails:
+                self._show_default_email()
+        # Cache-fresh guard: centralized app sync loop keeps inbox hot.
+        if not self.app.ui_cache_is_fresh("emails_inbox"):
+            self._load_emails()
 
     def on_leave(self):
-        ev = getattr(self, "_refresh_ev", None)
-        if ev:
-            ev.cancel()
-            self._refresh_ev = None
+        self.app.ui_cache_unsubscribe("emails_inbox", self._on_cached_inbox)
 
-    def _refresh_all(self):
+    def _on_cached_inbox(self, rows: list):
+        def _apply(_dt):
+            if self.manager and self.manager.current != self.name:
+                return
+            self._all_emails = list(rows or [])
+            self._update_counts()
+            self._apply_filter()
+            if self._filtered_emails and (
+                self._selected_email is None
+                or not any(e.get("id") == self._selected_email.get("id") for e in self._filtered_emails)
+            ):
+                self._show_default_email()
+        Clock.schedule_once(_apply, 0)
+
+    def _show_default_email(self):
+        if not self._filtered_emails:
+            return
+        # Default preview must always be the top row, but opening screen
+        # must not auto-mark it as read until the user explicitly taps.
+        top = self._filtered_emails[0]
+        self._selected_email = top
+        self._show_detail(top)
+        self._rebuild_list()
+
+    def _on_list_scroll_y(self, _sv, scroll_y):
+        # Pull-to-refresh behavior for left pane:
+        # arm near top, refresh when user drags away/release.
+        try:
+            sy = float(scroll_y)
+            if sy >= 0.995:
+                self._list_pull_armed = True
+                return
+            if self._list_pull_armed and sy <= 0.98:
+                self._list_pull_armed = False
+                if not self._pull_refresh_pending:
+                    self._pull_refresh_pending = True
+                    self._refresh_all(force=True)
+                    Clock.schedule_once(
+                        lambda _dt: setattr(self, "_pull_refresh_pending", False),
+                        1.0,
+                    )
+        except Exception:
+            logger.debug("Emails pull-refresh handler failed", exc_info=True)
+
+    def _refresh_all(self, force: bool = False):
         """Background refresh — reload whichever folders have been visited."""
-        self._load_emails()
+        self._load_emails(force=force)
         if self._sent_loaded:
-            self._load_folder("sent")
+            self._load_folder("sent", force=force)
         if self._drafts_loaded:
-            self._load_folder("drafts")
+            self._load_folder("drafts", force=force)
 
     # ─────────────────────────────────────────────────────────────────────────
     # Data layer (reuses existing backend / Gmail authentication)
     # ─────────────────────────────────────────────────────────────────────────
 
-    def _load_emails(self):
+    def _load_emails(self, force: bool = False):
         """Load inbox emails (used for all/today/unread tabs)."""
-        self._load_folder("inbox")
+        self._load_folder("inbox", force=force)
 
-    def _load_folder(self, folder: str):
+    def _load_folder(self, folder: str, force: bool = False):
         """
         Fetch emails for the given folder and update the matching cache.
         folder: "inbox" | "sent" | "drafts"
@@ -1091,7 +1154,24 @@ class EmailsScreen(BaseScreen):
             connected          = True
             err: str | None    = None
             api_folder         = "all" if folder == "inbox" else folder
+            cache_key = {
+                "inbox": "emails_inbox",
+                "sent": "emails_sent",
+                "drafts": "emails_drafts",
+            }.get(folder)
+            if cache_key:
+                cached = self.app.ui_cache_get(cache_key)
+                if isinstance(cached, list) and folder == "inbox":
+                    def _paint_cached(_dt):
+                        self._all_emails = list(cached)
+                        self._update_counts()
+                        self._apply_filter()
+                    Clock.schedule_once(_paint_cached, 0)
             try:
+                if cache_key and not force and self.app.ui_cache_is_fresh(cache_key):
+                    return
+                if cache_key and not self.app.ui_cache_mark_inflight(cache_key):
+                    return
                 fn = getattr(self.backend, "fetch_gmail_recent", None)
                 if fn is not None:
                     data      = await fn(
@@ -1150,6 +1230,8 @@ class EmailsScreen(BaseScreen):
                 self._gmail_connected = connected
                 self._gmail_error     = err
                 self._all_emails      = emails
+                if cache_key and isinstance(emails, list):
+                    self.app.ui_cache_set(cache_key, list(emails))
                 self._update_counts()
                 if self._active_tab == "today" and not any(
                     e.get("is_today") for e in emails
@@ -1157,10 +1239,32 @@ class EmailsScreen(BaseScreen):
                     self._set_tab("all")
                 elif self._active_tab not in ("sent", "drafts"):
                     self._apply_filter()
-                if emails and self._selected_email is None:
-                    self._select_email(emails[0])
+                # Always keep selection aligned with currently filtered list.
+                if self._filtered_emails:
+                    if (
+                        self._selected_email is None
+                        or not any(
+                            e.get("id") == self._selected_email.get("id")
+                            for e in self._filtered_emails
+                        )
+                    ):
+                        self._show_default_email()
+                else:
+                    self._selected_email = None
+                    if self._det_sender:
+                        self._det_sender.text = ""
+                    if self._det_subject:
+                        self._det_subject.text = ""
+                    if self._det_body:
+                        self._det_body.text = ""
+                    for w in self._det_content:
+                        w.opacity = 0.0
+                    if self._empty_lbl:
+                        self._empty_lbl.opacity = 1.0
 
             Clock.schedule_once(_apply, 0)
+            if cache_key:
+                self.app.ui_cache_clear_inflight(cache_key)
 
         run_async(_fetch())
 
@@ -1213,6 +1317,7 @@ class EmailsScreen(BaseScreen):
             return
         self._list_container.clear_widgets()
         emails = self._filtered_emails
+        placed_widgets: list[Widget] = []
 
         # ── Error / empty states ─────────────────────────────────────────────
         if not self._gmail_connected:
@@ -1304,6 +1409,7 @@ class EmailsScreen(BaseScreen):
             )
             lbl.pos = (SEL_X, y_cur - lbl_h)
             self._list_container.add_widget(lbl)
+            placed_widgets.append(lbl)
             y_cur -= lbl_h + _ff(6)
 
         def _add_row(email: dict, row_h: int, row_w: int, row_x: int):
@@ -1318,9 +1424,12 @@ class EmailsScreen(BaseScreen):
                 size_hint=(None, None),
                 size=(row_w, row_h),
             )
+            # Container origin is bottom; stack from top by converting y_cur into
+            # a bottom-based y that grows with content height.
             row.pos = (row_x, y_cur - row_h)
             row.bind(on_release=lambda r, e=email: self._select_email(e))
             self._list_container.add_widget(row)
+            placed_widgets.append(row)
             y_cur -= row_h + _ff(10)
 
         # NEW section
@@ -1346,6 +1455,7 @@ class EmailsScreen(BaseScreen):
                 Color(1, 1, 1, 1)
                 Rectangle(pos=div.pos, size=div.size, texture=_divider_tex())
             self._list_container.add_widget(div)
+            placed_widgets.append(div)
             y_cur -= _ff(3) + _ff(8)
 
         # EARLIER section
@@ -1361,6 +1471,12 @@ class EmailsScreen(BaseScreen):
 
         used = PH_PX - y_cur
         self._list_container.height = max(PH_PX, used + _ff(24))
+        # Keep the first row pinned to the top of the scroll content even when
+        # content height exceeds one viewport; this makes all rows reachable.
+        top_offset = self._list_container.height - PH_PX
+        if top_offset > 0:
+            for w in placed_widgets:
+                w.y += top_offset
 
     # ─────────────────────────────────────────────────────────────────────────
     # Interactions
@@ -1372,9 +1488,9 @@ class EmailsScreen(BaseScreen):
         self._set_tab(tab_id)
         # Lazy-load sent/drafts on first visit to that tab
         if tab_id == "sent" and not self._sent_loaded:
-            self._load_folder("sent")
+            self._load_folder("sent", force=True)
         elif tab_id == "drafts" and not self._drafts_loaded:
-            self._load_folder("drafts")
+            self._load_folder("drafts", force=True)
 
     def _set_tab(self, tab_id: str):
         self._active_tab = tab_id
@@ -1390,9 +1506,44 @@ class EmailsScreen(BaseScreen):
 
     def _select_email(self, email: dict):
         self._selected_email = email
-        email["is_read"] = True
+        self._mark_selected_as_read(email)
         self._show_detail(email)
         self._rebuild_list()
+
+    def _mark_selected_as_read(self, email: dict | None = None):
+        email = email or self._selected_email
+        if not email:
+            return
+        was_unread = not bool(email.get("is_read", True))
+        if not was_unread:
+            return
+        email["is_read"] = True
+        target_id = email.get("id")
+        if target_id:
+            self.app.ui_set_email_read_override(target_id, True)
+        self.app.ui_cache_set("emails_inbox", list(self._all_emails))
+        self._update_counts()
+
+        bundle = self.app.ui_cache_get("home_summary_bundle")
+        if isinstance(bundle, dict):
+            gfeed = bundle.get("gfeed") if isinstance(bundle.get("gfeed"), dict) else {}
+            msgs = gfeed.get("messages") if isinstance(gfeed.get("messages"), list) else []
+            changed = False
+            for m in msgs:
+                if isinstance(m, dict) and m.get("id") == target_id and not m.get("is_read", True):
+                    m["is_read"] = True
+                    changed = True
+                    break
+            if changed:
+                self.app.ui_cache_set("home_summary_bundle", dict(bundle))
+
+        async def _mark_read():
+            try:
+                await self.backend.mark_email_read(email.get("id"))
+            except Exception as exc:
+                logger.debug("mark_email_read: %s", exc)
+
+        run_async(_mark_read())
 
     def _show_detail(self, email: dict):
         """Populate the right panel with email metadata, then async-fetch full body."""
@@ -1439,6 +1590,15 @@ class EmailsScreen(BaseScreen):
 
         run_async(_fetch_body())
 
+    def _on_detail_body_touch_down(self, widget, touch):
+        target = self._det_body_sv if self._det_body_sv is not None else widget
+        if not target.collide_point(*touch.pos):
+            return False
+        if self._selected_email is not None:
+            self._mark_selected_as_read(self._selected_email)
+            self._rebuild_list()
+        return False
+
     def _on_detail_back(self):
         self._selected_email = None
         if self._det_sender:  self._det_sender.text  = ""
@@ -1455,7 +1615,25 @@ class EmailsScreen(BaseScreen):
         if not email:
             return
         email["is_read"] = False
+        target_id = email.get("id")
+        if target_id:
+            self.app.ui_set_email_read_override(target_id, False)
+        self.app.ui_cache_set("emails_inbox", list(self._all_emails))
         self._rebuild_list()
+        self._update_counts()
+        bundle = self.app.ui_cache_get("home_summary_bundle")
+        if isinstance(bundle, dict):
+            gfeed = bundle.get("gfeed") if isinstance(bundle.get("gfeed"), dict) else {}
+            msgs = gfeed.get("messages") if isinstance(gfeed.get("messages"), list) else []
+            target_id = email.get("id")
+            changed = False
+            for m in msgs:
+                if isinstance(m, dict) and m.get("id") == target_id and m.get("is_read", True):
+                    m["is_read"] = False
+                    changed = True
+                    break
+            if changed:
+                self.app.ui_cache_set("home_summary_bundle", dict(bundle))
 
         async def _call():
             try:
