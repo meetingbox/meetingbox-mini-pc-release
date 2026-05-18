@@ -1886,6 +1886,10 @@ class HomeScreen(BaseScreen):
                     self._health_label_offline = True
                     self.health_label.text  = "Backend"
                     self.health_label.color = COLORS["red"]
+                    # Schedule a retry so temperature recovers automatically when
+                    # the backend comes back — without the user having to
+                    # navigate away and back.
+                    Clock.schedule_once(lambda _dt2: self._load_system_status(), 30.0)
                 Clock.schedule_once(_backend_offline, 0)
 
         run_async(_fetch())
