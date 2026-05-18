@@ -15,8 +15,9 @@ import subprocess
 import sys
 import threading
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
+from collections import defaultdict
 
 import httpx
 
@@ -220,6 +221,7 @@ from config import (
     LOCAL_REDIS_PORT,
     LOCAL_REDIS_ENABLED,
     display_now,
+    resolve_device_config_dir,
     setup_complete_marker_paths_for_read,
     get_device_auth_token,
     clear_stored_device_auth_token,
@@ -623,6 +625,25 @@ class MeetingBoxApp(App):
 
         # Restore processing UI if summary/transcript-ready arrived before the processing screen.
         self._processing_summary_cache = {}
+        # Lightweight shared data cache for instant screen paint (stale-while-refresh).
+        self._ui_data_cache: dict = {}
+        self._ui_data_cache_ts: dict[str, float] = {}
+        self._ui_data_cache_ttl: dict[str, float] = {
+            "emails_inbox": 45.0,
+            "emails_sent": 120.0,
+            "emails_drafts": 120.0,
+            "calendar_week": 45.0,
+            "morning_brief_context": 45.0,
+            "morning_brief_gmail": 45.0,
+            "home_summary_bundle": 30.0,
+        }
+        self._ui_cache_inflight: set[str] = set()
+        self._ui_cache_subscribers: dict[str, list] = defaultdict(list)
+        self._ui_sync_event = None
+        self._ui_sync_inflight = False
+        # Local read/unread overrides to prevent temporary Gmail lag from
+        # flipping home unread counts back and forth.
+        self._email_read_overrides: dict[str, bool] = {}
 
         # WebSocket
         self.ws_task = None
@@ -636,7 +657,7 @@ class MeetingBoxApp(App):
         # Replaces the older display-off timer: instead of cutting the
         # backlight we navigate to the dedicated `idle` screen, which is
         # itself dismissed by any touch (back to home).
-        self._idle_timeout_seconds = 30
+        self._idle_timeout_seconds = 600
         self._idle_event = None
 
         # Manual user pause for the wake-word assistant (toggled from the
@@ -679,11 +700,12 @@ class MeetingBoxApp(App):
         self._realtime_session_start_monotonic = None
         self._realtime_connected_ok = False
         self._realtime_mic_acquired = False
+        self._voice_runtime_state = "idle"
         self.voice_realtime_assistant = False
         # Sync interpreter to the UI default immediately so wake works before
         # async device-settings load (VoiceAssistant env-var default is "hey tony").
-        self.voice_wake_phrase_display = "Hey buddy"
-        self.voice_assistant.apply_server_settings(wake_phrase="hey buddy")
+        self.voice_wake_phrase_display = "Hey Tony"
+        self.voice_assistant.apply_server_settings(wake_phrase="hey tony")
         self.voice_assistant_enabled = True
         self.assistant_speech_volume = 85
         # Realtime may only start when _handle_voice_wake_phrase sets this True (one-shot).
@@ -702,6 +724,233 @@ class MeetingBoxApp(App):
 
         # One-shot startup diagnostics overlay (see _run_startup_self_test_overlay).
         self._startup_self_test_started = False
+
+    # ==================================================================
+    # SHARED UI CACHE (stale-while-refresh)
+    # ==================================================================
+    def ui_cache_get(self, key: str):
+        return self._ui_data_cache.get(key)
+
+    def ui_cache_set(self, key: str, value):
+        self._ui_data_cache[key] = value
+        self._ui_data_cache_ts[key] = time.time()
+        self._ui_cache_persist_to_disk()
+        for cb in list(self._ui_cache_subscribers.get(key, [])):
+            try:
+                cb(value)
+            except Exception:
+                logger.debug("ui_cache subscriber failed for %s", key, exc_info=True)
+
+    def ui_cache_is_fresh(self, key: str, ttl_s: float | None = None) -> bool:
+        ts = self._ui_data_cache_ts.get(key)
+        if ts is None:
+            return False
+        ttl = float(ttl_s if ttl_s is not None else self._ui_data_cache_ttl.get(key, 60.0))
+        return (time.time() - ts) <= ttl
+
+    def ui_cache_subscribe(self, key: str, callback):
+        if callback not in self._ui_cache_subscribers[key]:
+            self._ui_cache_subscribers[key].append(callback)
+
+    def ui_cache_unsubscribe(self, key: str, callback):
+        try:
+            self._ui_cache_subscribers[key].remove(callback)
+        except Exception:
+            pass
+
+    def ui_cache_mark_inflight(self, key: str) -> bool:
+        if key in self._ui_cache_inflight:
+            return False
+        self._ui_cache_inflight.add(key)
+        return True
+
+    def ui_cache_clear_inflight(self, key: str):
+        self._ui_cache_inflight.discard(key)
+
+    def ui_set_email_read_override(self, email_id: str, is_read: bool):
+        if not email_id:
+            return
+        self._email_read_overrides[str(email_id)] = bool(is_read)
+
+    def ui_apply_email_read_overrides(self, feed: dict) -> dict:
+        if not isinstance(feed, dict):
+            return feed
+        rows = feed.get("messages")
+        if not isinstance(rows, list):
+            return feed
+        changed = False
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            mid = row.get("id")
+            if not mid:
+                continue
+            if mid in self._email_read_overrides:
+                want_read = self._email_read_overrides[mid]
+                cur_read = bool(row.get("is_read", True))
+                if cur_read != want_read:
+                    row["is_read"] = want_read
+                    changed = True
+                else:
+                    # Backend has caught up to local override; stop forcing.
+                    self._email_read_overrides.pop(mid, None)
+        return feed if changed else feed
+
+    def _ui_cache_file_path(self) -> Path:
+        return resolve_device_config_dir() / "ui_data_cache.json"
+
+    def _ui_cache_persist_to_disk(self) -> None:
+        try:
+            payload = {
+                "saved_at": time.time(),
+                "cache": self._ui_data_cache,
+            }
+            p = self._ui_cache_file_path()
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text(json.dumps(payload), encoding="utf-8")
+        except Exception:
+            logger.debug("ui cache persist skipped", exc_info=True)
+
+    def _ui_cache_load_from_disk(self) -> None:
+        try:
+            p = self._ui_cache_file_path()
+            if not p.is_file():
+                return
+            payload = json.loads(p.read_text(encoding="utf-8"))
+            cache = payload.get("cache") if isinstance(payload, dict) else None
+            if not isinstance(cache, dict):
+                return
+            now = time.time()
+            for k, v in cache.items():
+                # Trust persisted cache for fast first paint; network refresh follows.
+                self._ui_data_cache[k] = v
+                self._ui_data_cache_ts[k] = now
+            logger.info("Loaded UI cache from disk (%d keys)", len(cache))
+        except Exception:
+            logger.debug("ui cache load skipped", exc_info=True)
+
+    async def _ui_cache_bootstrap_async(self) -> None:
+        """Prewarm cold-start data so first screen opens are near-instant."""
+        if USE_MOCK_BACKEND:
+            return
+        try:
+            if self.ui_cache_mark_inflight("emails_inbox"):
+                try:
+                    data = await self.backend.fetch_gmail_recent(
+                        max_results=50,
+                        days=90,
+                        q="",
+                        folder="all",
+                    )
+                    rows = data.get("messages") or []
+                    if isinstance(rows, list):
+                        self.ui_cache_set("emails_inbox", list(rows))
+                finally:
+                    self.ui_cache_clear_inflight("emails_inbox")
+        except Exception:
+            logger.debug("emails bootstrap prewarm failed", exc_info=True)
+
+        try:
+            monday = display_now().date() - timedelta(days=display_now().date().weekday())
+            key = f"calendar_week:{monday.isoformat()}"
+            if self.ui_cache_mark_inflight(key):
+                try:
+                    end_d = monday + timedelta(days=6)
+                    data = await self.backend.get_calendar_week(
+                        monday.isoformat(),
+                        end_d.isoformat(),
+                    )
+                    if isinstance(data, dict):
+                        self.ui_cache_set(key, dict(data))
+                finally:
+                    self.ui_cache_clear_inflight(key)
+        except Exception:
+            logger.debug("calendar bootstrap prewarm failed", exc_info=True)
+
+        try:
+            if self.ui_cache_mark_inflight("morning_brief_context"):
+                try:
+                    ctx = await self.backend.get_briefing_context(days_ahead=1)
+                    if isinstance(ctx, dict):
+                        self.ui_cache_set("morning_brief_context", dict(ctx))
+                finally:
+                    self.ui_cache_clear_inflight("morning_brief_context")
+        except Exception:
+            logger.debug("morning brief context prewarm failed", exc_info=True)
+
+        try:
+            if self.ui_cache_mark_inflight("morning_brief_gmail"):
+                try:
+                    gf = await self.backend.fetch_gmail_recent(
+                        max_results=40,
+                        days=90,
+                        q="",
+                        folder="all",
+                    )
+                    if isinstance(gf, dict):
+                        self.ui_cache_set("morning_brief_gmail", dict(gf))
+                finally:
+                    self.ui_cache_clear_inflight("morning_brief_gmail")
+        except Exception:
+            logger.debug("morning brief gmail prewarm failed", exc_info=True)
+
+    async def _ui_cache_refresh_once(self) -> None:
+        """Unified realtime-ish refresh: fetch once, fan out to all UI caches."""
+        if USE_MOCK_BACKEND:
+            return
+        today = display_now().date()
+        monday = today - timedelta(days=today.weekday())
+        week_key = f"calendar_week:{monday.isoformat()}"
+        end_d = monday + timedelta(days=6)
+        try:
+            results = await asyncio.gather(
+                self.backend.fetch_gmail_recent(max_results=50, days=90, q="", folder="all"),
+                self.backend.get_calendar_week(monday.isoformat(), end_d.isoformat()),
+                self.backend.get_briefing_context(days_ahead=1),
+                self.backend.get_home_summary(),
+                self.backend.get_meetings(limit=1),
+                return_exceptions=True,
+            )
+            gfeed = results[0] if not isinstance(results[0], BaseException) else {}
+            week = results[1] if not isinstance(results[1], BaseException) else {}
+            brief = results[2] if not isinstance(results[2], BaseException) else {}
+            home_summary = results[3] if not isinstance(results[3], BaseException) else {}
+            meetings = results[4] if not isinstance(results[4], BaseException) else []
+
+            if isinstance(gfeed, dict):
+                gfeed = self.ui_apply_email_read_overrides(dict(gfeed))
+                rows = gfeed.get("messages") or []
+                if isinstance(rows, list):
+                    self.ui_cache_set("emails_inbox", list(rows))
+                self.ui_cache_set("morning_brief_gmail", dict(gfeed))
+            if isinstance(week, dict):
+                self.ui_cache_set(week_key, dict(week))
+            if isinstance(brief, dict):
+                self.ui_cache_set("morning_brief_context", dict(brief))
+            if isinstance(home_summary, dict):
+                self.ui_cache_set(
+                    "home_summary_bundle",
+                    {
+                        "summary": dict(home_summary),
+                        "meetings": meetings if isinstance(meetings, list) else [],
+                        "gfeed": gfeed if isinstance(gfeed, dict) else {},
+                    },
+                )
+        except Exception:
+            logger.debug("ui cache unified refresh failed", exc_info=True)
+
+    def _ui_cache_sync_tick(self, _dt) -> None:
+        if self._ui_sync_inflight:
+            return
+        self._ui_sync_inflight = True
+
+        async def _go():
+            try:
+                await self._ui_cache_refresh_once()
+            finally:
+                self._ui_sync_inflight = False
+
+        run_async(_go())
 
     # ==================================================================
     # BUILD
@@ -910,6 +1159,7 @@ class MeetingBoxApp(App):
 
     def on_start(self):
         logger.info("MeetingBox UI started")
+        self._ui_cache_load_from_disk()
         self.voice_assistant.start()
         self._sync_voice_assistant_state()
         if not USE_MOCK_BACKEND:
@@ -943,14 +1193,34 @@ class MeetingBoxApp(App):
         else:
             self._metrics_push = None
 
-        # After UI + backend settle, run unobstructed connectivity / mic / model checks once.
-        Clock.schedule_once(self._run_startup_self_test_overlay, 2.6)
+        # After boot-time API bursts settle, run connectivity / mic / model checks once.
+        # A slightly later start avoids transient false-negatives during initial network churn.
+        Clock.schedule_once(self._run_startup_self_test_overlay, 8.0)
+        # Cold-start prewarm for instant first-open calendar/emails.
+        Clock.schedule_once(lambda _dt: run_async(self._ui_cache_bootstrap_async()), 0.8)
+        # Centralized sync loop to keep caches hot across all screens.
+        if self._ui_sync_event:
+            self._ui_sync_event.cancel()
+        self._ui_sync_event = Clock.schedule_interval(self._ui_cache_sync_tick, 5.0)
+        Clock.schedule_once(lambda _dt: self._ui_cache_sync_tick(0), 1.6)
 
     def _run_startup_self_test_overlay(self, _dt):
         """Boot-time self-test modal (disable with MEETINGBOX_STARTUP_SELF_TEST=0)."""
         raw = (os.environ.get("MEETINGBOX_STARTUP_SELF_TEST") or "1").strip().lower()
         if raw in ("0", "false", "no", "off"):
             return
+        # Do not interrupt active user navigation. If the user has already
+        # left home during boot, skip this one-shot overlay entirely.
+        try:
+            cur = self.screen_manager.current if self.screen_manager is not None else ""
+            if cur and cur != "home":
+                logger.info(
+                    "Skipping startup self-test overlay (current screen=%s, user already navigating).",
+                    cur,
+                )
+                return
+        except Exception:
+            pass
         if self._startup_self_test_started:
             return
         self._startup_self_test_started = True
@@ -1007,6 +1277,9 @@ class MeetingBoxApp(App):
         if getattr(self, '_metrics_push', None):
             self._metrics_push.cancel()
             self._metrics_push = None
+        if getattr(self, "_ui_sync_event", None):
+            self._ui_sync_event.cancel()
+            self._ui_sync_event = None
         if self.ws_task and not self.ws_task.done():
             self.ws_task.cancel()
         run_async(self.backend.close())
@@ -1040,7 +1313,7 @@ class MeetingBoxApp(App):
                 # Backend stores the value as seconds (or "never"). Default
                 # 30s matches the idle picker default.
                 self._apply_idle_timeout(
-                    settings.get('idle_screen_timeout', '30'))
+                    settings.get('idle_screen_timeout', '600'))
                 privacy = settings.get('privacy_mode', False)
                 self.privacy_mode = privacy
                 auto_record = settings.get('auto_record', False)
@@ -1056,8 +1329,8 @@ class MeetingBoxApp(App):
                     vae = str(vae).strip().lower() in ("1", "true", "yes", "on")
                 self.voice_assistant_enabled = bool(vae)
 
-                vwp = (settings.get("voice_wake_phrase") or "hey buddy").strip().lower() or "hey buddy"
-                self.voice_wake_phrase_display = vwp[:1].upper() + vwp[1:] if vwp else "Hey buddy"
+                vwp = (settings.get("voice_wake_phrase") or "hey tony").strip().lower() or "hey tony"
+                self.voice_wake_phrase_display = vwp[:1].upper() + vwp[1:] if vwp else "Hey Tony"
                 try:
                     sv = settings.get("assistant_speech_volume", 85)
                     if isinstance(sv, str):
@@ -1898,8 +2171,8 @@ class MeetingBoxApp(App):
         try:
             n = int(v)
         except ValueError:
-            self._idle_timeout_seconds = 30
-            self._persist_local_idle_timeout('30')
+            self._idle_timeout_seconds = 600
+            self._persist_local_idle_timeout('600')
             self._reset_idle_timer()
             return
 
@@ -1985,8 +2258,17 @@ class MeetingBoxApp(App):
             state, message = self._voice_indicator_override
             self.voice_indicator.set_state(state, message)
             return
+        rt = getattr(self, "_voice_runtime_state", "idle")
+        if rt in ("listening", "thinking", "speaking"):
+            if rt == "listening":
+                self.voice_indicator.set_state("wake", "Listening…")
+            elif rt == "thinking":
+                self.voice_indicator.set_state("wake", "Thinking…")
+            else:
+                self.voice_indicator.set_state("speaking", "Speaking…")
+            return
         if self.voice_assistant.available and self._voice_assistant_should_listen():
-            wkd = getattr(self, "voice_wake_phrase_display", None) or "Hey buddy"
+            wkd = getattr(self, "voice_wake_phrase_display", None) or "Hey Tony"
             self.voice_indicator.set_state("idle", f'Say "{wkd}"')
             return
         self.voice_indicator.set_state("hidden")
@@ -1998,6 +2280,10 @@ class MeetingBoxApp(App):
         self._voice_indicator_override = None
         self._refresh_voice_indicator()
         self._sync_voice_assistant_state()
+
+    def _set_voice_runtime_state(self, state: str) -> None:
+        self._voice_runtime_state = (state or "idle").strip().lower()
+        self._refresh_voice_indicator()
 
     def _voice_mark_post_realtime_wake_suppression(self) -> None:
         """Realtime PCM uses aplay, not _speak_text_blocking — apply same tail/guard timeline."""
@@ -2072,7 +2358,7 @@ class MeetingBoxApp(App):
         self._realtime_launch_permitted = False
 
         timeout = max(2.0, self.voice_assistant.command_timeout_seconds)
-        lbl = getattr(self, "voice_wake_phrase_display", "Hey buddy") or "Hey buddy"
+        lbl = getattr(self, "voice_wake_phrase_display", "Hey Tony") or "Hey Tony"
 
         def _wake_ui(_dt):
             self._set_voice_indicator_override(
@@ -2300,6 +2586,7 @@ class MeetingBoxApp(App):
 
     def _end_realtime_voice_session(self) -> None:
         self._realtime_mic_acquired = False
+        self._set_voice_runtime_state("idle")
         sess = self._realtime_voice_session
         started = getattr(self, "_realtime_session_start_monotonic", None)
         connected = getattr(self, "_realtime_connected_ok", False)
@@ -2478,7 +2765,34 @@ class MeetingBoxApp(App):
                 logger.debug("Clock.schedule_once for voice indicator skipped", exc_info=True)
 
         def _end() -> None:
-            Clock.schedule_once(lambda _dt: self._end_realtime_voice_session(), 0)
+            # If the session ended unexpectedly (WS dropped, OpenAI hit the
+            # ~15-60 min hard session cap), immediately start a fresh session
+            # so the user doesn't have to re-say the wake word mid-thought.
+            sess = self._realtime_voice_session
+            unexpected = False
+            try:
+                if sess is not None and hasattr(sess, "ended_unexpectedly"):
+                    unexpected = bool(sess.ended_unexpectedly())
+            except Exception:
+                unexpected = False
+
+            def _after_end(_dt):
+                self._end_realtime_voice_session()
+                if unexpected:
+                    logger.info("Realtime session ended unexpectedly; auto-reconnecting.")
+                    # Re-arm the launch permission (normally set by the wake
+                    # word) so the reconnect bypasses the arming check.
+                    self._realtime_launch_permitted = True
+
+                    def _reconnect(_dt2):
+                        try:
+                            self._start_realtime_voice_session()
+                        except Exception:
+                            logger.exception("Realtime auto-reconnect failed")
+
+                    Clock.schedule_once(_reconnect, 0.3)
+
+            Clock.schedule_once(_after_end, 0)
 
         def _err(msg: str) -> None:
             logger.error("Realtime voice error: %s", msg)
@@ -2489,6 +2803,7 @@ class MeetingBoxApp(App):
             # Vosk is paused from on_before_open_mic right before ALSA opens for Realtime.
             def _ui(_dt):
                 self._realtime_connected_ok = True
+                self._set_voice_runtime_state("listening")
                 self._clear_voice_indicator_override()
                 self._set_voice_indicator_override(
                     "assistant_live",
@@ -2498,6 +2813,20 @@ class MeetingBoxApp(App):
                 self._sync_voice_assistant_state()
 
             Clock.schedule_once(_ui, 0)
+
+        def _on_rt_state(state: str) -> None:
+            self._set_voice_runtime_state(state)
+
+            def _update_home(_dt):
+                if (self.screen_manager is not None
+                        and self.screen_manager.current == 'home'):
+                    try:
+                        home = self.screen_manager.get_screen('home')
+                        home.set_voice_session_state(state)
+                    except Exception:
+                        pass
+
+            Clock.schedule_once(_update_home, 0)
 
         try:
             self._realtime_connected_ok = False
@@ -2513,6 +2842,7 @@ class MeetingBoxApp(App):
                 on_device_navigate=self._realtime_voice_navigate,
                 output_voice=rt_voice or None,
                 on_before_open_mic=_before_realtime_mic,
+                on_state_change=_on_rt_state,
             )
             self._sync_voice_assistant_state()
             self._realtime_voice_session.start()
@@ -2520,6 +2850,7 @@ class MeetingBoxApp(App):
             logger.exception("Realtime voice session failed to start")
             self._realtime_voice_session = None
             self._realtime_mic_acquired = False
+            self._set_voice_runtime_state("idle")
             self._realtime_session_pending = False
             self._clear_voice_indicator_override()
             self._sync_voice_assistant_state()
@@ -2790,6 +3121,10 @@ class MeetingBoxApp(App):
     def _voice_reply(self, text: str, state: str = "speaking", duration: float | None = None) -> None:
         if not text:
             return
+        # Keep realtime voice identity consistent: do not play local fallback TTS
+        # while a realtime session is active.
+        if getattr(self, "_realtime_voice_session", None) is not None:
+            return
         self._set_voice_indicator_override(
             state,
             text,
@@ -2801,11 +3136,37 @@ class MeetingBoxApp(App):
         """Speak assistant text; next question requires another wake phrase or mic tap."""
         # Strip markdown before TTS so symbols like ** aren't read aloud by espeak.
         clean = self._strip_markdown(message)
+        clean = self._trim_realtime_reply(clean)
         msg = self._trim_voice_text(clean, 450)
         words = max(1, len(msg.split()))
         dur = min(45.0, max(2.5, words * 0.42))
         st = "error" if error else "speaking"
         self._voice_reply(msg, state=st, duration=dur)
+
+    @staticmethod
+    def _trim_realtime_reply(text: str) -> str:
+        """Remove repetitive closers and keep speech concise."""
+        s = " ".join((text or "").split())
+        if not s:
+            return s
+        lowers = s.lower()
+        closers = (
+            "let me know if there is anything else",
+            "let me know if you need anything else",
+            "anything else i can help with",
+            "take care",
+            "all good",
+        )
+        for c in closers:
+            pos = lowers.find(c)
+            if pos > 0:
+                s = s[:pos].rstrip(" ,.;:-")
+                break
+        # Keep default spoken output short unless user asks for detail.
+        parts = [p.strip() for p in s.replace("?", ".").split(".") if p.strip()]
+        if len(parts) > 3:
+            s = ". ".join(parts[:3]).strip() + "."
+        return s
 
     @staticmethod
     def _format_voice_duration(seconds: int) -> str:

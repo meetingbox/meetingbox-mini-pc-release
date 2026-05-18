@@ -25,7 +25,10 @@ from typing import Callable
 from urllib.request import Request, urlopen
 
 from config import resolve_device_config_dir
-from mic_input_resolve import resolve_sounddevice_capture_device_index
+from mic_input_resolve import (
+    capture_device_fallback_candidates,
+    resolve_sounddevice_capture_device_index,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -684,7 +687,8 @@ class VoiceAssistant:
             logger.exception("Voice assistant callback failed")
 
     def _resolve_input_device(self):
-        return resolve_sounddevice_capture_device_index(sd)
+        preferred = resolve_sounddevice_capture_device_index(sd)
+        return preferred, capture_device_fallback_candidates(sd, preferred)
 
     def _samplerates_to_try(self, device_id) -> list[int]:
         # Prefer the device's default sample rate first — ALSA/USB often returns paInvalidSampleRate for everything else.
@@ -719,7 +723,7 @@ class VoiceAssistant:
         if sd is None or self._model is None:
             return False
 
-        device_id = self._resolve_input_device()
+        preferred_device_id, candidate_device_ids = self._resolve_input_device()
 
         def callback(indata, frames, time_info, status):
             del frames, time_info
@@ -747,30 +751,31 @@ class VoiceAssistant:
                     pass
 
         last_err = None
-        for samplerate in self._samplerates_to_try(device_id):
-            try:
-                kwargs = {
-                    "channels": 1,
-                    "samplerate": samplerate,
-                    "blocksize": 4000,
-                    "dtype": "int16",
-                    "callback": callback,
-                }
-                if device_id is not None:
-                    kwargs["device"] = device_id
-                self._stream = sd.RawInputStream(**kwargs)
-                self._stream.start()
-                self._stream_samplerate = samplerate
-                self._recognizer = KaldiRecognizer(self._model, samplerate)
-                logger.info(
-                    "Voice assistant input stream started (device=%s samplerate=%s)",
-                    device_id,
-                    samplerate,
-                )
-                return True
-            except Exception as exc:
-                last_err = exc
-                self._close_stream()
+        for device_id in candidate_device_ids:
+            for samplerate in self._samplerates_to_try(device_id):
+                try:
+                    kwargs = {
+                        "channels": 1,
+                        "samplerate": samplerate,
+                        "blocksize": 4000,
+                        "dtype": "int16",
+                        "callback": callback,
+                    }
+                    if device_id is not None:
+                        kwargs["device"] = device_id
+                    self._stream = sd.RawInputStream(**kwargs)
+                    self._stream.start()
+                    self._stream_samplerate = samplerate
+                    self._recognizer = KaldiRecognizer(self._model, samplerate)
+                    logger.info(
+                        "Voice assistant input stream started (device=%s samplerate=%s)",
+                        device_id,
+                        samplerate,
+                    )
+                    return True
+                except Exception as exc:
+                    last_err = exc
+                    self._close_stream()
 
         logger.warning("Voice assistant could not open microphone: %s", last_err)
         return False
