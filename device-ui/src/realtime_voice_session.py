@@ -1,9 +1,34 @@
 """
-OpenAI Realtime voice bridge for the device UI.
+OpenAI Realtime voice bridge for the MeetingBox device UI.
 
-Connects to wss://api.openai.com/v1/realtime with the ephemeral client_secret from
-the MeetingBox API, streams PCM16 mic audio (24 kHz), plays model audio, and runs
-Mem0/briefing tools via POST /api/voice/realtime/tools/invoke.
+Minimal, low-latency rebuild.
+
+Design:
+- Connect to wss://api.openai.com/v1/realtime with the ephemeral
+  client_secret minted by the MeetingBox server.
+- Trust the server's semantic_vad for turn detection — server runs with
+  `create_response: true` and `interrupt_response: true`, so end-of-turn
+  and barge-in are handled at the source instead of being gated on a
+  second model hop (transcription + manual response.create on the
+  client). This removes ~0.5–1.5 s of dead air per turn.
+- Send ONE small session.update: nudge eagerness to "high" and enable
+  user-audio transcription (used only for farewell detection). The
+  server's full instructions, tools, voice, and audio format are left
+  exactly as configured.
+- Stream PCM16 mic audio at 24 kHz to input_audio_buffer.append.
+- Play model audio deltas through aplay; pipe writes run on a dedicated
+  single-thread executor so they never block the WebSocket heartbeat.
+- On user speech_started: hard-kill aplay so the user hears themselves,
+  not the assistant. The server will cancel the in-flight response on
+  its own via interrupt_response.
+- On user transcript completion: if the text is a farewell, close the
+  session. Otherwise the server creates the next response automatically.
+- On function-call output in response.done: invoke the backend tool via
+  HTTP, post the result back, send response.create to continue.
+
+No acoustic echo cancellation, no transcript-based echo guard, no
+deferred barge-in. With an external mic+speaker, the previous
+self-interruption loop does not occur.
 """
 
 from __future__ import annotations
@@ -14,14 +39,19 @@ import json
 import logging
 import queue
 import shutil
+import string
 import subprocess
 import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 from urllib.parse import quote
 
 import numpy as np
-from api_client import invoke_realtime_tool_sync
+import websockets
 from kivy.clock import Clock
+
+from api_client import invoke_realtime_tool_sync
 
 logger = logging.getLogger(__name__)
 
@@ -30,42 +60,123 @@ try:
 except ImportError:
     sd = None
 
-import websockets
-
-# Feature flag: main.py only launches Realtime when this is True.
 REALTIME_VOICE_IMPLEMENTED = True
 
-# Keep sync with server/web/routes/voice.py (semantic VAD + input noise_reduction).
-_REALTIME_SEMANTIC_VAD_EAGERNESS = "high"
-_REALTIME_TURN_DETECTION = {
-    "type": "semantic_vad",
-    "create_response": True,
-    "eagerness": _REALTIME_SEMANTIC_VAD_EAGERNESS,
-    "interrupt_response": False,
-}
-_REALTIME_INPUT_NOISE_REDUCTION = {"type": "far_field"}
-_REALTIME_OUTPUT_VOICE_FALLBACK = "marin"
+
+# ---------------------------------------------------------------------------
+# Tunables
+# ---------------------------------------------------------------------------
 
 _REALTIME_WS_HOST = "api.openai.com"
 _REALTIME_RATE = 24000
-# Smaller uploads → server VAD sees audio sooner (slightly higher CPU/WebSocket churn).
-_APPEND_CHUNK_MS = 10
 
-# Blocking wait in mic queue drain — keep low so uploads are not artificially delayed.
-_MIC_QUEUE_POLL_S = 0.015
+# Mic chunk duration. Smaller chunks let the server VAD see speech edges
+# sooner, which directly reduces the latency between user-stops and
+# response-starts. 5 ms = 240 bytes per chunk at 24 kHz mono PCM16.
+_APPEND_CHUNK_MS = 5
 
-# ALSA playback buffer for model audio (µs-ish time hint; smaller = lower mouth-to-ear lag).
+# How often the mic pump polls the audio queue. Kept tight so the
+# event loop never sleeps long enough to delay a flush.
+_MIC_QUEUE_POLL_S = 0.01
+
+# aplay ALSA buffer in microseconds. 70 ms keeps the speaker pipe from
+# starving while leaving room to hard-kill on barge-in.
 _APLAY_BUFFER_TIME_US = "70000"
 
+# After a barge-in, drop any further audio deltas for this long to flush
+# the trailing bytes of the cancelled response. Cleared as soon as a new
+# response.created event arrives so we never silence a fresh response.
+_BARGE_IN_SUPPRESS_AUDIO_S = 0.4
+
+# Close the session if the user is silent (and we're not speaking) for
+# this many seconds. Matches the previous behavior.
+_SESSION_IDLE_CLOSE_S = 40.0
+
+_REALTIME_OUTPUT_VOICE_FALLBACK = "marin"
+
+# Fast, low-cost STT for the farewell-detection-only transcript stream.
+_DEFAULT_INPUT_TRANSCRIPTION_MODEL = "gpt-4o-mini-transcribe"
+
+
+# ---------------------------------------------------------------------------
+# Farewell detection — only consulted on COMPLETED user transcripts
+# ---------------------------------------------------------------------------
+
+_PUNCT_TO_SPACE = str.maketrans({c: " " for c in string.punctuation})
+
+
+def _normalize_words(text: str) -> str:
+    """Lowercase, strip all punctuation, collapse whitespace."""
+    return " ".join((text or "").lower().translate(_PUNCT_TO_SPACE).split())
+
+
+_FAREWELL_EXACT = frozenset({
+    "bye", "bye bye", "goodbye", "good bye",
+    "okay bye", "ok bye", "alright bye",
+    "thanks", "thank you", "thanks bye", "thank you bye",
+    "im done", "i am done", "i'm done", "all done",
+    "thats all", "that's all", "thats all for now", "that's all for now",
+    "thats it", "that's it", "done for now",
+    "stop", "stop now", "shut up", "stop talking",
+    "be quiet", "quiet", "enough", "enough already",
+    "thats enough", "that's enough",
+    "we're done", "we are done", "were done",
+    "end session", "end the session", "session over",
+    "nothing else", "nothing more", "nothing else for now",
+    "exit", "close", "close session",
+})
+
+_FAREWELL_END_MARKERS = (
+    "bye", "goodbye", "good bye", "okay bye", "ok bye", "alright bye",
+    "thanks bye", "thank you bye",
+    "thats all", "that's all", "thats all for now", "that's all for now",
+    "thats it", "that's it",
+    "im done", "i'm done", "i am done", "all done",
+    "we're done", "we are done", "were done",
+    "end session", "end the session", "session over",
+    "nothing else", "nothing more",
+)
+
+
+def _is_farewell(text: str) -> bool:
+    t = _normalize_words(text)
+    if not t:
+        return False
+    if t in _FAREWELL_EXACT:
+        return True
+    return any(t.endswith(end) for end in _FAREWELL_END_MARKERS)
+
+
+# Server-side errors that are common during normal flow races and must
+# NEVER terminate the session — only protocol/auth failures will close
+# the underlying WebSocket and bubble up through the async exception
+# handler.
+_SAFE_TO_IGNORE_ERRORS = (
+    "cancellation failed",
+    "no active response",
+    "truncation failed",
+    "conversation item not found",
+    "missing required parameter",
+    "unknown parameter",
+    "invalid value",
+    "active response in progress",
+    "already has an active response",
+    "wait until the response is finished",
+)
+
+
+# ---------------------------------------------------------------------------
+# Module-level helpers (exported for tests and main.py)
+# ---------------------------------------------------------------------------
 
 def build_realtime_websocket_url(model: str) -> str:
-    """Return OpenAI Realtime WebSocket URL with URL-encoded model id."""
+    """Return the OpenAI Realtime WebSocket URL for a given model id."""
     m = (model or "").strip() or "gpt-realtime-2"
     return f"wss://{_REALTIME_WS_HOST}/v1/realtime?model={quote(m, safe='')}"
 
 
 def extract_realtime_output_voice(session: dict | None) -> str:
-    """Read audio.output.voice from minted session metadata (GA shape)."""
+    """Read audio.output.voice from the session blob the server returned."""
     if not isinstance(session, dict):
         return ""
     audio = session.get("audio")
@@ -81,7 +192,7 @@ def extract_realtime_output_voice(session: dict | None) -> str:
 
 
 def resample_pcm16_mono(data: bytes, src_sr: int, dst_sr: int) -> bytes:
-    """Linear resample mono int16 PCM bytes."""
+    """Linear-resample mono int16 PCM bytes to the target sample rate."""
     if src_sr == dst_sr or not data:
         return data
     s = np.frombuffer(data, dtype=np.int16).astype(np.float32) / 32768.0
@@ -93,12 +204,28 @@ def resample_pcm16_mono(data: bytes, src_sr: int, dst_sr: int) -> bytes:
     x_src = np.linspace(0.0, dur, num=n_src, endpoint=False)
     x_dst = np.linspace(0.0, dur, num=n_dst, endpoint=False)
     out = np.interp(x_dst, x_src, s)
-    out_i16 = (np.clip(out, -1.0, 1.0) * 32767.0).astype(np.int16)
-    return out_i16.tobytes()
+    return (np.clip(out, -1.0, 1.0) * 32767.0).astype(np.int16).tobytes()
 
+
+# ---------------------------------------------------------------------------
+# RealtimeVoiceSession
+# ---------------------------------------------------------------------------
 
 class RealtimeVoiceSession:
-    """Runs OpenAI Realtime WebSocket + mic capture on a background thread."""
+    """OpenAI Realtime WebSocket + mic capture on a background thread.
+
+    Public API expected by main.py:
+        .start()                   -- spawn the background thread
+        .stop()                    -- shut everything down
+        .ended_unexpectedly()      -- True iff session ended without user intent
+    Callbacks (all marshalled onto the Kivy main thread):
+        on_session_end()
+        on_error(msg: str)
+        on_connected()
+        on_device_navigate(screen: str)   [optional]
+        on_before_open_mic()              [optional, runs on worker thread]
+        on_state_change(state: str)       [optional]
+    """
 
     def __init__(
         self,
@@ -113,6 +240,7 @@ class RealtimeVoiceSession:
         on_device_navigate=None,
         output_voice: str | None = None,
         on_before_open_mic=None,
+        on_state_change=None,
     ):
         self._client_secret = (client_secret or "").strip()
         self._model = (model or "").strip()
@@ -123,87 +251,107 @@ class RealtimeVoiceSession:
         self._on_connected_cb = on_connected
         self._on_device_navigate_cb = on_device_navigate
         self._on_before_open_mic_cb = on_before_open_mic
+        self._on_state_change_cb = on_state_change
+        self._output_voice = (
+            (output_voice or "").strip().lower()
+            or _REALTIME_OUTPUT_VOICE_FALLBACK
+        )
+
+        # Worker thread + asyncio loop
         self._thread: threading.Thread | None = None
         self._stop = threading.Event()
         self._loop: asyncio.AbstractEventLoop | None = None
         self._ws: Any = None
-        ov = (output_voice or "").strip().lower() or _REALTIME_OUTPUT_VOICE_FALLBACK
-        self._output_voice = ov
         self._connected_fired = False
+        self._user_ended = False
+
+        # Mic input
         self._audio_q: queue.Queue[bytes | None] = queue.Queue(maxsize=400)
         self._mic_stream = None
         self._mic_native_sr = _REALTIME_RATE
+
+        # Playback (aplay) — pipe writes go through a dedicated
+        # single-thread executor. Writing on the asyncio loop would
+        # block the heartbeat for seconds if aplay's 64 KB pipe fills
+        # up, tripping ping_timeout and killing the session mid-reply.
         self._aplay_proc: subprocess.Popen | None = None
-        self._aplay_for_response: str | None = None
+        self._aplay_pid: int | None = None
+        self._aplay_writer = ThreadPoolExecutor(
+            max_workers=1, thread_name_prefix="rtv-aplay"
+        )
+        self._suppress_audio_until = 0.0
+
+        # State exposed to the UI / idle watchdog
+        self._state = "idle"            # idle | listening | thinking | speaking
+        self._response_in_progress = False
+        self._active_audio_item_id: str | None = None
+        self._active_audio_content_index = 0
+        self._last_activity_monotonic = time.monotonic()
+
+    # ------------------------------------------------------------------
+    # Lifecycle
+    # ------------------------------------------------------------------
 
     def start(self) -> None:
         def _run() -> None:
             try:
                 asyncio.run(self._async_main())
             except Exception:
-                logger.exception("Realtime voice asyncio.run failed")
+                logger.exception("Realtime asyncio.run failed")
                 self._emit_error("Realtime voice failed unexpectedly.")
 
-        self._thread = threading.Thread(target=_run, name="realtime-voice", daemon=True)
+        self._thread = threading.Thread(
+            target=_run, name="realtime-voice", daemon=True
+        )
         self._thread.start()
 
+    def ended_unexpectedly(self) -> bool:
+        """True if the session ended without user intent (WS drop, timeout)."""
+        return not self._user_ended
+
     def stop(self) -> None:
-        """Best-effort stop: close WebSocket and microphone stream."""
+        self._user_ended = True
         self._stop.set()
         try:
             self._audio_q.put_nowait(None)
         except Exception:
             pass
-        try:
-            loop = self._loop
-            ws = self._ws
-            if loop is not None and ws is not None and not loop.is_closed():
-
-                async def _close() -> None:
-                    try:
-                        await ws.close()
-                    except Exception:
-                        logger.debug("Realtime ws close", exc_info=True)
-
+        loop, ws = self._loop, self._ws
+        if loop and ws and not loop.is_closed():
+            async def _close():
                 try:
-                    fut = asyncio.run_coroutine_threadsafe(_close(), loop)
-                    fut.result(timeout=3.0)
+                    await ws.close()
                 except Exception:
-                    logger.debug("Realtime stop: could not close ws in time", exc_info=True)
-        except Exception:
-            logger.debug("Realtime stop", exc_info=True)
-        self._close_aplay()
+                    pass
+            try:
+                asyncio.run_coroutine_threadsafe(_close(), loop).result(timeout=3.0)
+            except Exception:
+                pass
+        self._abort_aplay()
         self._close_mic()
 
-    def _emit_error(self, msg: str) -> None:
-        def _emit(_dt):
-            try:
-                self._on_error_cb(msg)
-            except Exception:
-                logger.exception("Realtime on_error callback failed")
+    # ------------------------------------------------------------------
+    # Callbacks (Kivy-thread-safe)
+    # ------------------------------------------------------------------
 
-        Clock.schedule_once(_emit, 0)
+    def _emit_error(self, msg: str) -> None:
+        Clock.schedule_once(lambda _dt: self._safe_call(self._on_error_cb, msg), 0)
 
     def _emit_connected(self) -> None:
-        def _emit(_dt):
-            try:
-                self._on_connected_cb()
-            except Exception:
-                logger.exception("Realtime on_connected callback failed")
-
-        Clock.schedule_once(_emit, 0)
+        Clock.schedule_once(lambda _dt: self._safe_call(self._on_connected_cb), 0)
 
     def _emit_session_end(self) -> None:
-        def _emit(_dt):
-            try:
-                self._on_session_end_cb()
-            except Exception:
-                logger.exception("Realtime on_session_end callback failed")
+        Clock.schedule_once(lambda _dt: self._safe_call(self._on_session_end_cb), 0)
 
-        Clock.schedule_once(_emit, 0)
+    def _emit_state(self, state: str) -> None:
+        if state == self._state:
+            return
+        self._state = state
+        cb = self._on_state_change_cb
+        if cb:
+            Clock.schedule_once(lambda _dt: self._safe_call(cb, state), 0)
 
     def _emit_device_navigation(self, tool_output_json: str) -> None:
-        """Parse navigate_device_ui tool result and run Kivy navigation on the main thread."""
         cb = self._on_device_navigate_cb
         if not cb:
             return
@@ -216,373 +364,181 @@ class RealtimeVoiceSession:
         screen = data.get("device_navigate")
         if not isinstance(screen, str) or not screen.strip():
             return
+        Clock.schedule_once(lambda _dt: self._safe_call(cb, screen.strip()), 0)
 
-        nav = screen.strip()
+    @staticmethod
+    def _safe_call(cb, *args) -> None:
+        if not cb:
+            return
+        try:
+            cb(*args)
+        except Exception:
+            logger.exception("Realtime callback failed")
 
-        def _emit(_dt):
-            try:
-                cb(nav)
-            except Exception:
-                logger.exception("Realtime on_device_navigate failed screen=%s", nav)
+    def _touch(self) -> None:
+        self._last_activity_monotonic = time.monotonic()
 
-        Clock.schedule_once(_emit, 0)
+    # ------------------------------------------------------------------
+    # Mic input
+    # ------------------------------------------------------------------
 
     def _resolve_input_device(self):
-        from mic_input_resolve import resolve_sounddevice_capture_device_index
-
-        return resolve_sounddevice_capture_device_index(sd)
-
-    def _samplerates_to_try(self, device_id) -> list[int]:
-        # ALSA/USB hardware often rejects 24 kHz capture; capture at common rates then resample in _pump_out_audio.
-        hw_rates = [48000, 44100, 32000, 16000, 22050]
-        ordered: list[int] = []
-
-        resolved_id = device_id
-        if sd is not None:
-            # Host default capture device when callers pass None
-            try:
-                if resolved_id is None:
-                    inp_idx = sd.default.device[0]
-                    if isinstance(inp_idx, int) and inp_idx >= 0:
-                        resolved_id = inp_idx
-            except Exception:
-                pass
-            try:
-                if resolved_id is not None:
-                    info = sd.query_devices(resolved_id)
-                    dr = int(float(info.get("default_samplerate") or 0))
-                    if dr > 0:
-                        ordered.append(dr)
-            except Exception:
-                pass
-
-        for r in hw_rates:
-            if r not in ordered:
-                ordered.append(r)
-        if _REALTIME_RATE not in ordered:
-            ordered.append(_REALTIME_RATE)
-        return ordered
-
-    def _open_mic(self, device_id) -> bool:
+        from mic_input_resolve import (
+            capture_device_fallback_candidates,
+            resolve_sounddevice_capture_device_index,
+        )
         if sd is None:
+            return None, []
+        preferred = resolve_sounddevice_capture_device_index(sd)
+        return preferred, capture_device_fallback_candidates(sd, preferred)
+
+    def _open_mic(self, preferred_device_id, candidate_device_ids) -> bool:
+        if sd is None:
+            self._emit_error("sounddevice not installed; microphone unavailable.")
             return False
 
-        def callback(indata, frames, t_info, status):
-            del frames, t_info
-            if status and str(status):
-                logger.debug("Realtime mic: %s", status)
-            if self._stop.is_set():
-                return
-            try:
-                b = bytes(indata)
-                if self._audio_q.full():
-                    try:
-                        self._audio_q.get_nowait()
-                    except queue.Empty:
-                        pass
-                self._audio_q.put_nowait(b)
-            except Exception:
-                logger.debug("Realtime mic queue", exc_info=True)
-
-        last_err = None
-        for sr in self._samplerates_to_try(device_id):
-            blocksize = max(int(sr * _APPEND_CHUNK_MS / 1000), 400)
-            try:
-                kwargs: dict = {
-                    "channels": 1,
-                    "samplerate": sr,
-                    "blocksize": blocksize,
-                    "dtype": "int16",
-                    "callback": callback,
-                }
-                if device_id is not None:
-                    kwargs["device"] = device_id
-                stream = sd.RawInputStream(**kwargs)
-                stream.start()
-                self._mic_stream = stream
-                self._mic_native_sr = sr
-                logger.info("Realtime mic open: device=%s samplerate=%s", device_id, sr)
-                return True
-            except Exception as e:
-                last_err = e
-        logger.warning("Realtime: could not open microphone: %s", last_err)
+        tried: list = []
+        for dev in [preferred_device_id, *candidate_device_ids]:
+            if dev in tried:
+                continue
+            tried.append(dev)
+            for sr in (48000, 44100, 32000, 16000, _REALTIME_RATE):
+                try:
+                    stream = sd.RawInputStream(
+                        samplerate=sr,
+                        channels=1,
+                        dtype="int16",
+                        blocksize=max(1, int(sr * _APPEND_CHUNK_MS / 1000)),
+                        device=dev,
+                        callback=self._mic_callback,
+                    )
+                    stream.start()
+                    self._mic_stream = stream
+                    self._mic_native_sr = sr
+                    logger.info(
+                        "Realtime mic open: device=%s samplerate=%s", dev, sr
+                    )
+                    return True
+                except Exception as e:
+                    logger.debug(
+                        "Mic open failed device=%s sr=%s: %s", dev, sr, e
+                    )
         return False
 
+    def _mic_callback(self, indata, frames, time_info, status) -> None:
+        if status:
+            logger.debug("Realtime mic status: %s", status)
+        try:
+            self._audio_q.put_nowait(bytes(indata))
+        except queue.Full:
+            # Drop oldest if we can't keep up — better than blocking the
+            # PortAudio callback (which would distort the input stream).
+            try:
+                _ = self._audio_q.get_nowait()
+                self._audio_q.put_nowait(bytes(indata))
+            except Exception:
+                pass
+
     def _close_mic(self) -> None:
-        if self._mic_stream is not None:
+        s = self._mic_stream
+        self._mic_stream = None
+        if s is not None:
             try:
-                self._mic_stream.stop()
-                self._mic_stream.close()
+                s.stop()
             except Exception:
                 pass
-            self._mic_stream = None
+            try:
+                s.close()
+            except Exception:
+                pass
 
-    def _close_aplay(self) -> None:
-        proc = self._aplay_proc
-        self._aplay_proc = None
-        self._aplay_for_response = None
-        if proc is None:
+    # ------------------------------------------------------------------
+    # Playback (aplay subprocess)
+    # ------------------------------------------------------------------
+
+    def _ensure_aplay(self) -> None:
+        if self._aplay_proc is not None and self._aplay_proc.poll() is None:
             return
-        try:
-            if proc.stdin:
-                proc.stdin.close()
-        except Exception:
-            pass
-        try:
-            proc.wait(timeout=2.0)
-        except Exception:
-            try:
-                proc.kill()
-            except Exception:
-                pass
-
-    def _ensure_aplay(self, response_id: str | None) -> None:
         if not shutil.which("aplay"):
             return
-        rid = response_id or "_"
-        if (
-            self._aplay_proc
-            and self._aplay_for_response == rid
-            and self._aplay_proc.poll() is None
-        ):
-            return
-        self._close_aplay()
         try:
             self._aplay_proc = subprocess.Popen(
                 [
                     "aplay",
                     "-q",
-                    "-B",
-                    _APLAY_BUFFER_TIME_US,
-                    "-t",
-                    "raw",
-                    "-f",
-                    "S16_LE",
-                    "-r",
-                    str(_REALTIME_RATE),
-                    "-c",
-                    "1",
-                    "-",
+                    "-t", "raw",
+                    "-f", "S16_LE",
+                    "-r", str(_REALTIME_RATE),
+                    "-c", "1",
+                    "--buffer-time", _APLAY_BUFFER_TIME_US,
                 ],
                 stdin=subprocess.PIPE,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
             )
-            self._aplay_for_response = rid
+            self._aplay_pid = self._aplay_proc.pid
+            logger.info("Realtime aplay started pid=%s", self._aplay_pid)
         except Exception:
-            logger.exception("Realtime: could not start aplay")
+            logger.exception("Realtime: aplay start failed")
             self._aplay_proc = None
+            self._aplay_pid = None
 
-    def _play_delta(self, response_id: str | None, delta_b64: str) -> None:
+    def _play_delta(self, delta_b64: str) -> None:
         if not delta_b64:
             return
+        if time.monotonic() < self._suppress_audio_until:
+            return  # trailing bytes of a barge-in'd response
         try:
             raw = base64.b64decode(delta_b64)
         except Exception:
             return
         if not raw:
             return
-        self._ensure_aplay(response_id)
+        self._ensure_aplay()
         proc = self._aplay_proc
         if proc is None or proc.stdin is None:
             return
         try:
-            proc.stdin.write(raw)
-            proc.stdin.flush()
+            self._aplay_writer.submit(self._write_to_aplay, proc, raw)
+        except RuntimeError:
+            # Executor already shut down (session closing).
+            pass
+
+    @staticmethod
+    def _write_to_aplay(proc: subprocess.Popen, raw: bytes) -> None:
+        """Runs on the rtv-aplay thread. Blocking here is fine."""
+        stdin = proc.stdin
+        if stdin is None:
+            return
+        try:
+            stdin.write(raw)
         except BrokenPipeError:
-            self._close_aplay()
+            # Expected when we kill aplay for a barge-in.
+            pass
         except Exception:
-            logger.debug("Realtime aplay write", exc_info=True)
+            logger.debug("aplay write failed", exc_info=True)
 
-    def _queue_get_audio(self):
-        try:
-            return self._audio_q.get(timeout=_MIC_QUEUE_POLL_S)
-        except queue.Empty:
-            return b""
-
-    async def _pump_out_audio(self) -> None:
-        assert self._ws is not None
-        ws = self._ws
-        native_sr = getattr(self, "_mic_native_sr", _REALTIME_RATE)
-        # Size chunks in the *native* sample rate so each resampled block is
-        # _APPEND_CHUNK_MS of audio at 24 kHz (fix: using 24 kHz counts at 48 kHz
-        # halved the effective chunk duration).
-        _native_chunk_samples = max(1, int(native_sr * _APPEND_CHUNK_MS / 1000))
-        chunk_bytes = _native_chunk_samples * 2
-        buf = bytearray()
-        loop = asyncio.get_event_loop()
-
-        while not self._stop.is_set():
-            piece = await loop.run_in_executor(None, self._queue_get_audio)
-            if piece is None:
-                break
-            if piece == b"":
-                continue
-            buf.extend(piece)
-            while len(buf) >= chunk_bytes:
-                take = bytes(buf[:chunk_bytes])
-                del buf[:chunk_bytes]
-                out = resample_pcm16_mono(take, native_sr, _REALTIME_RATE)
-                payload = base64.b64encode(out).decode("ascii")
-                evt = {"type": "input_audio_buffer.append", "audio": payload}
-                try:
-                    await ws.send(json.dumps(evt))
-                except Exception:
-                    logger.exception("Realtime: append failed")
-                    try:
-                        await ws.close()
-                    except Exception:
-                        pass
-                    break
-
-    async def _handle_response_done(self, msg: dict) -> None:
-        assert self._ws is not None
-        ws = self._ws
-        response = msg.get("response") or {}
-        outputs = response.get("output") or []
-        if not isinstance(outputs, list):
-            return
-        pending_out: list[dict[str, Any]] = []
-        for item in outputs:
-            if not isinstance(item, dict):
-                continue
-            if item.get("type") != "function_call":
-                continue
-            call_id = (item.get("call_id") or "").strip()
-            name = (item.get("name") or "").strip()
-            arguments = item.get("arguments")
-            if arguments is None:
-                arguments = "{}"
-            elif not isinstance(arguments, str):
-                arguments = json.dumps(arguments)
-            if not call_id or not name:
-                continue
-            out = invoke_realtime_tool_sync(
-                self._backend_base_url,
-                self._device_token,
-                call_id=call_id,
-                name=name,
-                arguments=arguments,
-            )
-            if name == "navigate_device_ui":
-                self._emit_device_navigation(out)
-            pending_out.append(
-                {
-                    "type": "conversation.item.create",
-                    "item": {
-                        "type": "function_call_output",
-                        "call_id": call_id,
-                        "output": out,
-                    },
-                }
-            )
-
-        if not pending_out:
+    def _abort_aplay(self) -> None:
+        """Hard-kill the playback subprocess immediately."""
+        proc = self._aplay_proc
+        self._aplay_proc = None
+        self._aplay_pid = None
+        if proc is None:
             return
         try:
-            for out_evt in pending_out:
-                await ws.send(json.dumps(out_evt))
-            # One continuation turn for all tool outputs — avoids reply loops when the model
-            # batches several function_calls in a single response.done.
-            await ws.send(json.dumps({"type": "response.create"}))
-        except Exception:
-            logger.exception("Realtime: tool round-trip send failed")
-
-    def _event_audio_delta(self, msg: dict) -> tuple[str | None, str]:
-        """Return (response_id, base64_delta) from a streaming audio delta event."""
-        rid = msg.get("response_id")
-        if not isinstance(rid, str):
-            r = msg.get("response")
-            if isinstance(r, dict):
-                rid = r.get("id")
-        if not isinstance(rid, str):
-            rid = None
-        d = msg.get("delta")
-        if d is None:
-            d = msg.get("audio")
-        if isinstance(d, dict):
-            d = d.get("audio") or d.get("delta")
-        if d is None:
-            return rid, ""
-        return rid, str(d)
-
-    async def _recv_loop(self) -> None:
-        assert self._ws is not None
-        ws = self._ws
-        try:
-            async for raw in ws:
-                if self._stop.is_set():
-                    break
+            if proc.stdin is not None:
                 try:
-                    if isinstance(raw, (bytes, bytearray)):
-                        raw = raw.decode("utf-8")
-                    msg = json.loads(raw)
+                    proc.stdin.close()
                 except Exception:
-                    continue
-                t = msg.get("type", "")
-
-                if t == "session.created" and not self._connected_fired:
-                    self._connected_fired = True
-                    try:
-                        await ws.send(
-                            json.dumps(
-                                {
-                                    "type": "session.update",
-                                    "session": {
-                                        "type": "realtime",
-                                        "audio": {
-                                            "input": {
-                                                "format": {
-                                                    "type": "audio/pcm",
-                                                    "rate": 24000,
-                                                },
-                                                "noise_reduction": _REALTIME_INPUT_NOISE_REDUCTION,
-                                                "turn_detection": _REALTIME_TURN_DETECTION,
-                                            },
-                                            "output": {
-                                                "format": {
-                                                    "type": "audio/pcm",
-                                                    "rate": 24000,
-                                                },
-                                                "voice": self._output_voice,
-                                            },
-                                        },
-                                    },
-                                }
-                            )
-                        )
-                    except Exception:
-                        logger.debug("session.update", exc_info=True)
-                    self._emit_connected()
-
-                if t in ("response.output_audio.delta", "response.audio.delta"):
-                    rid, d64 = self._event_audio_delta(msg)
-                    self._play_delta(rid, d64)
-
-                elif t in ("response.output_audio.done", "response.audio.done"):
-                    self._close_aplay()
-
-                elif t == "response.done":
-                    self._close_aplay()
-                    await self._handle_response_done(msg)
-
-                elif t == "error":
-                    err = msg.get("error")
-                    if isinstance(err, dict):
-                        em = (err.get("message") or err.get("code") or str(err))
-                    else:
-                        em = str(err or msg)
-                    logger.warning("Realtime server error: %s", em)
-                    self._emit_error(str(em))
-                    break
-
-                elif t == "invalid_request_error":
-                    self._emit_error(msg.get("message") or "invalid_request_error")
-                    break
-        except asyncio.CancelledError:
-            raise
+                    pass
+            if proc.poll() is None:
+                proc.kill()
         except Exception:
-            logger.exception("Realtime recv loop failed")
+            pass
+
+    # ------------------------------------------------------------------
+    # Async main loop
+    # ------------------------------------------------------------------
 
     async def _async_main(self) -> None:
         if not self._client_secret or not self._model:
@@ -599,28 +555,31 @@ class RealtimeVoiceSession:
                 url,
                 additional_headers=headers,
                 max_size=None,
-                ping_interval=25,
-                ping_timeout=45,
+                ping_interval=20,
+                ping_timeout=30,
+                close_timeout=3,
             ) as ws:
                 self._ws = ws
+
+                # Let the UI close any local mic (e.g. Vosk wake word)
+                # before we open ALSA for the Realtime session.
                 if self._on_before_open_mic_cb is not None:
-                    try:
-                        self._on_before_open_mic_cb()
-                    except Exception:
-                        logger.exception("Realtime on_before_open_mic failed")
-                    await asyncio.sleep(0.05)
-                device_id = self._resolve_input_device()
-                if not self._open_mic(device_id):
+                    self._safe_call(self._on_before_open_mic_cb)
+                    await asyncio.sleep(0.01)
+
+                preferred, candidates = self._resolve_input_device()
+                if not self._open_mic(preferred, candidates):
                     self._emit_error("Realtime: microphone unavailable.")
                     await ws.close()
                     self._emit_session_end()
                     return
 
-                recv_task = asyncio.create_task(self._recv_loop())
-                pump_task = asyncio.create_task(self._pump_out_audio())
+                self._emit_state("listening")
 
-                # Never use FIRST_COMPLETED: a single failed mic upload or transient send
-                # would cancel the recv loop and kill the session mid-conversation (silent UI).
+                recv_task = asyncio.create_task(self._recv_loop())
+                pump_task = asyncio.create_task(self._pump_mic())
+                idle_task = asyncio.create_task(self._idle_watchdog())
+
                 try:
                     await recv_task
                 finally:
@@ -629,18 +588,369 @@ class RealtimeVoiceSession:
                         self._audio_q.put_nowait(None)
                     except Exception:
                         pass
-                    try:
-                        await asyncio.wait_for(pump_task, timeout=4.0)
-                    except asyncio.TimeoutError:
-                        logger.warning("Realtime: pump task did not finish — cancelling")
-                        pump_task.cancel()
-                        await asyncio.gather(pump_task, return_exceptions=True)
+                    pump_task.cancel()
+                    idle_task.cancel()
+                    await asyncio.gather(
+                        pump_task, idle_task, return_exceptions=True
+                    )
 
         except Exception as e:
-            logger.exception("Realtime WebSocket session failed")
+            logger.exception("Realtime WebSocket failed")
             self._emit_error(str(e))
         finally:
+            self._emit_state("idle")
             self._ws = None
-            self._close_aplay()
+            self._abort_aplay()
             self._close_mic()
+            try:
+                self._aplay_writer.shutdown(wait=False, cancel_futures=True)
+            except Exception:
+                pass
             self._emit_session_end()
+
+    # ------------------------------------------------------------------
+    # Mic pump (asyncio side)
+    # ------------------------------------------------------------------
+
+    async def _pump_mic(self) -> None:
+        assert self._ws is not None
+        ws = self._ws
+        loop = asyncio.get_running_loop()
+        native_sr = self._mic_native_sr
+
+        def _get() -> bytes:
+            try:
+                return self._audio_q.get(timeout=_MIC_QUEUE_POLL_S)
+            except queue.Empty:
+                return b""
+
+        while not self._stop.is_set():
+            piece = await loop.run_in_executor(None, _get)
+            if piece is None:
+                break
+            if not piece:
+                continue
+            try:
+                resampled = resample_pcm16_mono(piece, native_sr, _REALTIME_RATE)
+                payload = base64.b64encode(resampled).decode("ascii")
+                await ws.send(json.dumps({
+                    "type": "input_audio_buffer.append",
+                    "audio": payload,
+                }))
+                self._touch()
+            except websockets.ConnectionClosed:
+                break
+            except Exception:
+                logger.debug("Realtime mic upload failed", exc_info=True)
+                # Transient upload errors must not kill the session.
+                await asyncio.sleep(0.05)
+
+    # ------------------------------------------------------------------
+    # Idle watchdog
+    # ------------------------------------------------------------------
+
+    async def _idle_watchdog(self) -> None:
+        ws = self._ws
+        if ws is None:
+            return
+        while not self._stop.is_set():
+            await asyncio.sleep(1.0)
+            if self._state == "speaking" or self._response_in_progress:
+                continue
+            idle_for = time.monotonic() - self._last_activity_monotonic
+            if idle_for >= _SESSION_IDLE_CLOSE_S:
+                logger.info("Realtime: closing idle session after %.1fs", idle_for)
+                self._user_ended = True
+                self._stop.set()
+                try:
+                    await ws.close()
+                except Exception:
+                    pass
+                break
+
+    # ------------------------------------------------------------------
+    # Receive loop — dispatch OpenAI events
+    # ------------------------------------------------------------------
+
+    async def _recv_loop(self) -> None:
+        assert self._ws is not None
+        ws = self._ws
+        try:
+            async for raw in ws:
+                if self._stop.is_set():
+                    break
+                try:
+                    if isinstance(raw, (bytes, bytearray)):
+                        raw = raw.decode("utf-8")
+                    msg = json.loads(raw)
+                except Exception:
+                    continue
+
+                t = msg.get("type", "")
+
+                # ---- Session lifecycle --------------------------------
+                if t == "session.created":
+                    self._log_session_summary(msg, label="session.created")
+                    if not self._connected_fired:
+                        self._connected_fired = True
+                        await self._send_session_update(ws)
+                        self._emit_connected()
+
+                elif t == "session.updated":
+                    self._log_session_summary(msg, label="session.updated")
+
+                # ---- User speech --------------------------------------
+                elif t == "input_audio_buffer.speech_started":
+                    self._touch()
+                    # User started talking. Cut playback now so they hear
+                    # themselves, not the assistant. The server cancels
+                    # the in-flight response on its own (interrupt_response).
+                    self._abort_aplay()
+                    self._suppress_audio_until = (
+                        time.monotonic() + _BARGE_IN_SUPPRESS_AUDIO_S
+                    )
+                    self._emit_state("listening")
+
+                elif t == "input_audio_buffer.speech_stopped":
+                    self._touch()
+                    self._emit_state("thinking")
+
+                # ---- User transcript (farewell detection only) --------
+                elif t in (
+                    "conversation.item.input_audio_transcription.completed",
+                    "input_audio_buffer.transcription.completed",
+                ):
+                    self._touch()
+                    spoken = self._extract_transcript(msg)
+                    if spoken:
+                        logger.info("User said: %r", spoken)
+                        if _is_farewell(spoken):
+                            logger.info("Farewell detected, closing session.")
+                            self._user_ended = True
+                            self._abort_aplay()
+                            self._stop.set()
+                            try:
+                                await ws.close()
+                            except Exception:
+                                pass
+                            break
+                    # Server's create_response: true handles non-farewell
+                    # turns automatically — nothing else for us to do.
+
+                # ---- Model response lifecycle -------------------------
+                elif t in ("response.created", "response.started"):
+                    self._touch()
+                    # A new response is starting; clear any leftover
+                    # barge-in suppression so its audio plays cleanly.
+                    self._suppress_audio_until = 0.0
+                    self._response_in_progress = True
+                    self._emit_state("thinking")
+
+                elif t in ("response.output_audio.delta", "response.audio.delta"):
+                    item_id = msg.get("item_id")
+                    if isinstance(item_id, str) and item_id.strip():
+                        self._active_audio_item_id = item_id
+                    try:
+                        self._active_audio_content_index = int(
+                            msg.get("content_index") or 0
+                        )
+                    except (TypeError, ValueError):
+                        pass
+                    self._touch()
+                    self._response_in_progress = True
+                    self._emit_state("speaking")
+                    self._play_delta(self._extract_audio_delta(msg))
+
+                elif t in ("response.output_audio.done", "response.audio.done"):
+                    self._touch()
+                    # Don't close aplay between responses — the writer
+                    # queue may still hold seconds of buffered audio that
+                    # haven't reached the speaker yet. Closing now would
+                    # truncate the tail. aplay underruns silently between
+                    # responses and resumes on the next delta.
+                    self._emit_state("listening")
+
+                elif t == "response.done":
+                    self._touch()
+                    await self._handle_response_done(ws, msg)
+                    self._response_in_progress = False
+                    self._active_audio_item_id = None
+                    self._active_audio_content_index = 0
+                    self._emit_state("listening")
+
+                elif t == "response.function_call_arguments.done":
+                    logger.info(
+                        "Realtime function_call.done: name=%s call_id=%s args=%s",
+                        msg.get("name"),
+                        msg.get("call_id"),
+                        (msg.get("arguments") or "")[:200],
+                    )
+
+                # ---- Errors -------------------------------------------
+                elif t in ("error", "invalid_request_error"):
+                    err = msg.get("error") if t == "error" else msg
+                    if isinstance(err, dict):
+                        em = err.get("message") or err.get("code") or str(err)
+                    else:
+                        em = str(err or msg)
+                    em_lower = (em or "").lower()
+                    if any(s in em_lower for s in _SAFE_TO_IGNORE_ERRORS):
+                        logger.debug("Realtime ignorable error: %s", em)
+                        continue
+                    # Loud but NOT _emit_error: the UI terminates the
+                    # session on any error callback, and most server-side
+                    # errors here are non-fatal. Real failures close the
+                    # WS itself and surface via _async_main's except.
+                    logger.warning("Realtime server (non-fatal) error: %s", em)
+
+        except websockets.ConnectionClosed:
+            logger.info("Realtime WebSocket closed by server")
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("Realtime recv loop failed")
+
+    # ------------------------------------------------------------------
+    # Session update — minimal override
+    # ------------------------------------------------------------------
+
+    async def _send_session_update(self, ws) -> None:
+        """Override only what we need for latency and farewell detection.
+
+        The server already configured the session with the full system
+        prompt, tools, voice, audio format, and turn-detection (semantic
+        VAD with create_response and interrupt_response both true). We
+        do NOT resend instructions or tools — sending a partial session
+        with those fields omitted would silently wipe them.
+
+        We override only:
+          - input.turn_detection.eagerness = "high" (server default is
+            "low" for legacy hardware with no echo cancellation; with
+            external mic+speaker we want snappy end-of-turn detection).
+          - input.transcription.model — enables a transcript stream of
+            user speech so the client can detect farewell phrases.
+
+        create_response and interrupt_response stay TRUE.
+        """
+        try:
+            await ws.send(json.dumps({
+                "type": "session.update",
+                "session": {
+                    "type": "realtime",
+                    "audio": {
+                        "input": {
+                            "transcription": {
+                                "model": _DEFAULT_INPUT_TRANSCRIPTION_MODEL,
+                            },
+                            "turn_detection": {
+                                "type": "semantic_vad",
+                                "eagerness": "high",
+                                "create_response": True,
+                                "interrupt_response": True,
+                            },
+                        },
+                    },
+                },
+            }))
+        except Exception:
+            logger.warning("Realtime session.update failed", exc_info=True)
+
+    # ------------------------------------------------------------------
+    # Tool round-trip on response.done
+    # ------------------------------------------------------------------
+
+    async def _handle_response_done(self, ws, msg: dict) -> None:
+        response = msg.get("response") or {}
+        if not isinstance(response, dict):
+            return
+        outputs = response.get("output") or []
+        if not isinstance(outputs, list):
+            return
+
+        pending: list[dict] = []
+        for item in outputs:
+            if not isinstance(item, dict) or item.get("type") != "function_call":
+                continue
+            call_id = (item.get("call_id") or "").strip()
+            name = (item.get("name") or "").strip()
+            args = item.get("arguments")
+            if args is None:
+                args = "{}"
+            elif not isinstance(args, str):
+                args = json.dumps(args)
+            if not call_id or not name:
+                continue
+
+            logger.info(
+                "Realtime tool invoke: name=%s call_id=%s args=%s",
+                name, call_id, args[:200],
+            )
+            out = await asyncio.get_running_loop().run_in_executor(
+                None,
+                lambda _b=self._backend_base_url, _t=self._device_token,
+                       _c=call_id, _n=name, _a=args: invoke_realtime_tool_sync(
+                    _b, _t, call_id=_c, name=_n, arguments=_a,
+                ),
+            )
+            logger.info("Realtime tool result: name=%s out_len=%d", name, len(out or ""))
+
+            if name == "navigate_device_ui":
+                self._emit_device_navigation(out)
+
+            pending.append({
+                "type": "conversation.item.create",
+                "item": {
+                    "type": "function_call_output",
+                    "call_id": call_id,
+                    "output": out,
+                },
+            })
+
+        if not pending:
+            return
+
+        try:
+            for ev in pending:
+                await ws.send(json.dumps(ev))
+            # The server's turn-detection auto-create only fires on user
+            # audio commit, not on a tool-output commit, so we must
+            # always send response.create after function call outputs.
+            await ws.send(json.dumps({"type": "response.create"}))
+        except Exception:
+            logger.exception("Realtime: tool round-trip failed")
+
+    # ------------------------------------------------------------------
+    # Misc helpers
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _extract_audio_delta(msg: dict) -> str:
+        d = msg.get("delta") or msg.get("audio")
+        if isinstance(d, dict):
+            d = d.get("audio") or d.get("delta")
+        return str(d or "")
+
+    @staticmethod
+    def _extract_transcript(msg: dict) -> str:
+        for key in ("transcript", "text"):
+            v = msg.get(key)
+            if isinstance(v, str) and v.strip():
+                return v.strip()
+        return ""
+
+    def _log_session_summary(self, msg: dict, *, label: str) -> None:
+        sess = msg.get("session") or {}
+        if not isinstance(sess, dict):
+            return
+        tools = sess.get("tools") or []
+        tool_names = [t.get("name") for t in tools if isinstance(t, dict)]
+        voice = (sess.get("audio") or {}).get("output", {}).get("voice")
+        instr = sess.get("instructions") or ""
+        logger.info(
+            "Realtime %s: tools=%d %s voice=%s instructions_len=%d",
+            label,
+            len(tools),
+            tool_names,
+            voice,
+            len(instr) if isinstance(instr, str) else 0,
+        )

@@ -25,6 +25,8 @@ sys.modules.setdefault("kivy", _mod_kivy)
 sys.modules.setdefault("kivy.clock", _mod_clock)
 
 from realtime_voice_session import (  # noqa: E402
+    _APPEND_CHUNK_MS,
+    _MIC_QUEUE_POLL_S,
     build_realtime_websocket_url,
     resample_pcm16_mono,
 )
@@ -75,3 +77,63 @@ def test_invoke_realtime_tool_sync_uses_httpx(monkeypatch):
     )
     assert out == '{"snip":"ok"}'
     assert ctx.__enter__.return_value.post.called
+
+
+def test_resolve_sounddevice_capture_prefers_usb_then_builtin_then_first():
+    import mic_input_resolve as mir
+
+    class _SD:
+        @staticmethod
+        def query_devices():
+            return [
+                {"name": "Internal Mic Array", "max_input_channels": 2},
+                {"name": "USB PnP Sound Device", "max_input_channels": 1},
+                {"name": "HDMI Output", "max_input_channels": 0},
+            ]
+
+    assert mir.resolve_sounddevice_capture_device_index(_SD) == 1
+
+    class _SDNoUsb:
+        @staticmethod
+        def query_devices():
+            return [
+                {"name": "Built-in Audio Analog Stereo", "max_input_channels": 2},
+                {"name": "Another Capture", "max_input_channels": 1},
+            ]
+
+    assert mir.resolve_sounddevice_capture_device_index(_SDNoUsb) == 0
+
+    class _SDNoHints:
+        @staticmethod
+        def query_devices():
+            return [
+                {"name": "Mic Device A", "max_input_channels": 1},
+                {"name": "Mic Device B", "max_input_channels": 1},
+            ]
+
+    assert mir.resolve_sounddevice_capture_device_index(_SDNoHints) == 0
+
+
+def test_capture_device_fallback_candidates_include_default_and_none():
+    import mic_input_resolve as mir
+
+    class _SD:
+        default = type("D", (), {"device": [2, 0]})
+
+        @staticmethod
+        def query_devices():
+            return [
+                {"name": "A", "max_input_channels": 1},
+                {"name": "B", "max_input_channels": 1},
+                {"name": "C", "max_input_channels": 1},
+            ]
+
+    out = mir.capture_device_fallback_candidates(_SD, preferred=1)
+    assert out[0] == 1
+    assert 2 in out
+    assert None in out
+
+
+def test_realtime_latency_tuning_constants():
+    assert _APPEND_CHUNK_MS <= 8
+    assert _MIC_QUEUE_POLL_S <= 0.01
