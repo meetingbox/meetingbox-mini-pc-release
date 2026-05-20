@@ -110,6 +110,30 @@ def _normalize_words(text: str) -> str:
     return " ".join((text or "").lower().translate(_PUNCT_TO_SPACE).split())
 
 
+# Client-only tool the model can invoke when it judges that the
+# conversation has wrapped up (e.g. user said "bye", "thats it",
+# "thanks goodbye", "done for now" in a closing context). Unlike a
+# keyword check, this lets the model use context — saying "bye" in
+# the middle of a sentence about a person ("tell Bob bye for me")
+# will NOT trigger end-of-session.
+END_SESSION_TOOL: dict = {
+    "type": "function",
+    "name": "end_session",
+    "description": (
+        "Call this tool to close the voice session when the user "
+        "clearly signals that the conversation is over. Examples of "
+        "intent to end: 'bye', 'goodbye', \"that's it\", \"that's all\", "
+        "'done for now', 'thanks bye', 'nothing else', \"I'm done\", "
+        "'stop', 'exit'. Do NOT call it when the user says any of "
+        "these words as part of an unrelated thought (e.g. 'tell "
+        "Bob goodbye from me', 'no I'm not done yet, also...'). "
+        "Always say a brief friendly closing in your response BEFORE "
+        "calling this tool."
+    ),
+    "parameters": {"type": "object", "properties": {}, "required": []},
+}
+
+
 _FAREWELL_EXACT = frozenset({
     "bye", "bye bye", "goodbye", "good bye",
     "okay bye", "ok bye", "alright bye",
@@ -280,6 +304,37 @@ class RealtimeVoiceSession:
             max_workers=1, thread_name_prefix="rtv-aplay"
         )
         self._suppress_audio_until = 0.0
+        # Fallback mic-mute window — only used if AEC is unavailable. With
+        # speex AEC active we leave the mic open so the user can interrupt.
+        self._mute_mic_uplink_until = 0.0
+
+        # Acoustic echo canceller. The bytes we hand to aplay are also
+        # buffered as the far-end reference; the mic stream (after resample
+        # to 24 kHz) is the near-end. The canceller produces the
+        # echo-suppressed mic signal we forward to OpenAI.
+        try:
+            from _aec import SpeexAEC, is_available as _aec_available
+            if _aec_available():
+                self._aec = SpeexAEC(
+                    frame_size=480, filter_length=4800, sample_rate=_REALTIME_RATE
+                )
+                logger.info("Realtime AEC: speex echo canceller enabled")
+            else:
+                self._aec = None
+                logger.warning(
+                    "Realtime AEC: libspeexdsp not found — falling back to mic-mute"
+                )
+        except Exception:
+            self._aec = None
+            logger.exception("Realtime AEC: init failed — falling back to mic-mute")
+        self._aec_frame_bytes = 480 * 2
+        self._aec_far_buf = bytearray()
+        self._aec_near_buf = bytearray()
+        self._aec_buf_lock = threading.Lock()
+
+        # Tools we received from the server in session.created. Cached so
+        # we can re-send them in session.update with end_session appended.
+        self._server_tools: list[dict] = []
 
         # State exposed to the UI / idle watchdog
         self._state = "idle"            # idle | listening | thinking | speaking
@@ -494,6 +549,25 @@ class RealtimeVoiceSession:
             return
         if not raw:
             return
+        # Push the same PCM into the AEC far-end ring so the canceller knows
+        # what is about to come out of the speaker. Cap to ~5 s to keep memory
+        # bounded if the mic side stalls.
+        if self._aec is not None:
+            with self._aec_buf_lock:
+                self._aec_far_buf.extend(raw)
+                max_bytes = _REALTIME_RATE * 2 * 5
+                excess = len(self._aec_far_buf) - max_bytes
+                if excess > 0:
+                    del self._aec_far_buf[:excess]
+        # Extend the mic-mute window for the duration of this audio chunk plus
+        # a 600 ms tail for room echo to decay.  Speex AEC cannot reliably cancel
+        # echo without an exact acoustic delay measurement, so we always mute the
+        # uplink while the speaker is active regardless of whether AEC is running.
+        chunk_s = len(raw) / (_REALTIME_RATE * 2)   # PCM16 mono bytes → seconds
+        self._mute_mic_uplink_until = max(
+            self._mute_mic_uplink_until,
+            time.monotonic() + chunk_s + 0.6,
+        )
         self._ensure_aplay()
         proc = self._aplay_proc
         if proc is None or proc.stdin is None:
@@ -512,8 +586,8 @@ class RealtimeVoiceSession:
             return
         try:
             stdin.write(raw)
-        except BrokenPipeError:
-            # Expected when we kill aplay for a barge-in.
+        except (BrokenPipeError, ValueError):
+            # Expected when we kill aplay for a barge-in (pipe closed).
             pass
         except Exception:
             logger.debug("aplay write failed", exc_info=True)
@@ -561,7 +635,12 @@ class RealtimeVoiceSession:
                 # the session before the user even starts speaking.
                 open_timeout=30,
                 ping_interval=20,
-                ping_timeout=30,
+                # OpenAI Realtime can take 5–15 s to ACK a ping while a
+                # large tool call (e.g. get_briefing_context returns
+                # ~35 KB) is in flight. 30 s tripped 1011 keepalive
+                # timeouts mid-response; 120 s is generous enough to ride
+                # those stalls while still detecting a truly dead socket.
+                ping_timeout=120,
                 close_timeout=3,
             ) as ws:
                 self._ws = ws
@@ -611,7 +690,48 @@ class RealtimeVoiceSession:
                 self._aplay_writer.shutdown(wait=False, cancel_futures=True)
             except Exception:
                 pass
+            if self._aec is not None:
+                try:
+                    self._aec.close()
+                except Exception:
+                    pass
+                self._aec = None
             self._emit_session_end()
+
+    # ------------------------------------------------------------------
+    # Echo cancellation
+    # ------------------------------------------------------------------
+
+    def _aec_process(self, mic_pcm16: bytes) -> bytes:
+        """Run speex AEC on resampled mic bytes; return echo-cancelled PCM16.
+
+        Mic chunks arrive at arbitrary sizes; AEC needs fixed 20 ms frames
+        (480 samples = 960 bytes at 24 kHz). We accumulate near-end bytes
+        in a buffer, pull matching far-end bytes from the playback ring
+        (silence-padded if the agent is not speaking), and emit only whole
+        frames. Leftover bytes stay in the buffer for the next call.
+        """
+        aec = self._aec
+        if aec is None or not mic_pcm16:
+            return mic_pcm16
+        fbytes = self._aec_frame_bytes
+        out = bytearray()
+        with self._aec_buf_lock:
+            self._aec_near_buf.extend(mic_pcm16)
+            while len(self._aec_near_buf) >= fbytes:
+                near = bytes(self._aec_near_buf[:fbytes])
+                del self._aec_near_buf[:fbytes]
+                if len(self._aec_far_buf) >= fbytes:
+                    far = bytes(self._aec_far_buf[:fbytes])
+                    del self._aec_far_buf[:fbytes]
+                else:
+                    far = b"\x00" * fbytes
+                try:
+                    out.extend(aec.cancel(near, far))
+                except Exception:
+                    logger.debug("AEC cancel failed", exc_info=True)
+                    out.extend(near)
+        return bytes(out)
 
     # ------------------------------------------------------------------
     # Mic pump (asyncio side)
@@ -637,6 +757,34 @@ class RealtimeVoiceSession:
                 continue
             try:
                 resampled = resample_pcm16_mono(piece, native_sr, _REALTIME_RATE)
+                # Energy-based echo gate:
+                # While the agent is speaking, suppress mic frames whose energy
+                # is at or below the expected echo level (i.e. agent's own
+                # voice bouncing off the room).  Frames that are significantly
+                # louder than the playback reference pass through — that means
+                # the USER is speaking and wants to barge in.
+                # Threshold: mic RMS must exceed 40 % of the reference RMS
+                # AND be above a minimum voice floor (300 ≈ -82 dBFS).
+                # Both conditions ensure we don't pass near-silence or mild
+                # echo while still allowing clear speech to interrupt.
+                if time.monotonic() < self._mute_mic_uplink_until:
+                    mic_samples = np.frombuffer(resampled, dtype=np.int16).astype(np.float32)
+                    mic_rms = float(np.sqrt(np.mean(mic_samples ** 2))) if len(mic_samples) else 0.0
+                    with self._aec_buf_lock:
+                        ref = bytes(self._aec_far_buf[:len(resampled)])
+                    if ref:
+                        ref_samples = np.frombuffer(ref, dtype=np.int16).astype(np.float32)
+                        ref_rms = float(np.sqrt(np.mean(ref_samples ** 2)))
+                    else:
+                        ref_rms = 0.0
+                    # Let through only if mic is clearly louder than the echo
+                    barge_in = mic_rms > max(ref_rms * 0.4, 300.0)
+                    if not barge_in:
+                        continue
+                if self._aec is not None:
+                    resampled = self._aec_process(resampled)
+                    if not resampled:
+                        continue
                 payload = base64.b64encode(resampled).decode("ascii")
                 await ws.send(json.dumps({
                     "type": "input_audio_buffer.append",
@@ -714,13 +862,18 @@ class RealtimeVoiceSession:
                     self._suppress_audio_until = (
                         time.monotonic() + _BARGE_IN_SUPPRESS_AUDIO_S
                     )
+                    # Drop the queued AEC far-end reference: the audio it
+                    # represents is no longer going to the speaker.
+                    if self._aec is not None:
+                        with self._aec_buf_lock:
+                            self._aec_far_buf.clear()
                     self._emit_state("listening")
 
                 elif t == "input_audio_buffer.speech_stopped":
                     self._touch()
                     self._emit_state("thinking")
 
-                # ---- User transcript (farewell detection only) --------
+                # ---- User transcript (logged for debugging) -----------
                 elif t in (
                     "conversation.item.input_audio_transcription.completed",
                     "input_audio_buffer.transcription.completed",
@@ -729,18 +882,10 @@ class RealtimeVoiceSession:
                     spoken = self._extract_transcript(msg)
                     if spoken:
                         logger.info("User said: %r", spoken)
-                        if _is_farewell(spoken):
-                            logger.info("Farewell detected, closing session.")
-                            self._user_ended = True
-                            self._abort_aplay()
-                            self._stop.set()
-                            try:
-                                await ws.close()
-                            except Exception:
-                                pass
-                            break
-                    # Server's create_response: true handles non-farewell
-                    # turns automatically — nothing else for us to do.
+                    # End-of-session is now decided by the model via the
+                    # end_session tool (handled in _handle_response_done).
+                    # Server's create_response: true handles every other
+                    # user turn automatically — nothing else for us here.
 
                 # ---- Model response lifecycle -------------------------
                 elif t in ("response.created", "response.started"):
@@ -781,6 +926,8 @@ class RealtimeVoiceSession:
                     self._response_in_progress = False
                     self._active_audio_item_id = None
                     self._active_audio_content_index = 0
+                    # _play_delta already extended the mute window to cover
+                    # the audio tail; no extra holdoff needed here.
                     self._emit_state("listening")
 
                 elif t == "response.function_call_arguments.done":
@@ -820,23 +967,27 @@ class RealtimeVoiceSession:
     # ------------------------------------------------------------------
 
     async def _send_session_update(self, ws) -> None:
-        """Override only what we need for latency and farewell detection.
+        """Override only what we need + register the client-side end_session tool.
 
         The server already configured the session with the full system
         prompt, tools, voice, audio format, and turn-detection (semantic
         VAD with create_response and interrupt_response both true). We
-        do NOT resend instructions or tools — sending a partial session
-        with those fields omitted would silently wipe them.
+        do NOT resend instructions — sending a partial session with that
+        field omitted would silently wipe it. We DO resend tools, but
+        only after merging the server's tool list (cached from
+        session.created) with the client-only end_session tool.
 
-        We override only:
+        We override:
           - input.turn_detection.eagerness = "high" (server default is
             "low" for legacy hardware with no echo cancellation; with
-            external mic+speaker we want snappy end-of-turn detection).
+            external mic + AEC we want snappy end-of-turn detection).
           - input.transcription.model — enables a transcript stream of
-            user speech so the client can detect farewell phrases.
+            user speech (also used as a fallback farewell heuristic).
+          - tools — server tools + end_session.
 
         create_response and interrupt_response stay TRUE.
         """
+        merged_tools = list(self._server_tools) + [END_SESSION_TOOL]
         try:
             await ws.send(json.dumps({
                 "type": "session.update",
@@ -855,6 +1006,7 @@ class RealtimeVoiceSession:
                             },
                         },
                     },
+                    "tools": merged_tools,
                 },
             }))
         except Exception:
@@ -873,6 +1025,7 @@ class RealtimeVoiceSession:
             return
 
         pending: list[dict] = []
+        end_session_requested = False
         for item in outputs:
             if not isinstance(item, dict) or item.get("type") != "function_call":
                 continue
@@ -884,6 +1037,17 @@ class RealtimeVoiceSession:
             elif not isinstance(args, str):
                 args = json.dumps(args)
             if not call_id or not name:
+                continue
+
+            # Client-only tool: model decided the conversation is over.
+            # Don't HTTP-roundtrip it — just mark for close after the
+            # current audio finishes playing.
+            if name == "end_session":
+                logger.info(
+                    "Realtime: model called end_session (call_id=%s) — closing.",
+                    call_id,
+                )
+                end_session_requested = True
                 continue
 
             logger.info(
@@ -911,18 +1075,28 @@ class RealtimeVoiceSession:
                 },
             })
 
-        if not pending:
-            return
+        if pending:
+            try:
+                for ev in pending:
+                    await ws.send(json.dumps(ev))
+                # The server's turn-detection auto-create only fires on
+                # user audio commit, not on a tool-output commit, so we
+                # must always send response.create after function call
+                # outputs to keep the conversation flowing.
+                if not end_session_requested:
+                    await ws.send(json.dumps({"type": "response.create"}))
+            except Exception:
+                logger.exception("Realtime: tool round-trip failed")
 
-        try:
-            for ev in pending:
-                await ws.send(json.dumps(ev))
-            # The server's turn-detection auto-create only fires on user
-            # audio commit, not on a tool-output commit, so we must
-            # always send response.create after function call outputs.
-            await ws.send(json.dumps({"type": "response.create"}))
-        except Exception:
-            logger.exception("Realtime: tool round-trip failed")
+        if end_session_requested:
+            # The model has already spoken its goodbye in this response;
+            # close after the audio queue drains.
+            self._user_ended = True
+            self._stop.set()
+            try:
+                await ws.close()
+            except Exception:
+                pass
 
     # ------------------------------------------------------------------
     # Misc helpers
@@ -948,6 +1122,10 @@ class RealtimeVoiceSession:
         if not isinstance(sess, dict):
             return
         tools = sess.get("tools") or []
+        if label == "session.created" and isinstance(tools, list):
+            # Cache the full tool definitions so we can re-send them in
+            # session.update with end_session appended.
+            self._server_tools = [t for t in tools if isinstance(t, dict)]
         tool_names = [t.get("name") for t in tools if isinstance(t, dict)]
         voice = (sess.get("audio") or {}).get("output", {}).get("voice")
         instr = sess.get("instructions") or ""

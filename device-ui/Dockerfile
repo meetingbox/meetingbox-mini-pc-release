@@ -52,6 +52,7 @@ RUN set -eux; \
             libxrandr-dev \
             libmtdev1t64 \
             libportaudio2 \
+            libspeexdsp1 \
             build-essential \
             pkg-config \
             xdg-utils \
