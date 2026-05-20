@@ -3286,6 +3286,22 @@ class MeetingBoxApp(App):
         Clock.schedule_once(lambda _dt, iv=intent: self._process_voice_intent(iv), 0)
 
     def _process_voice_intent(self, intent: VoiceIntent) -> None:
+        # When OpenAI Realtime is on it handles the whole spoken turn.
+        # Vosk often delivers wake-phrase + the follow-up question in a
+        # single Result(), which fires this intent callback in parallel
+        # with the Realtime mint. Without this guard the device plays
+        # an espeak reply ("Opening inbox.") on top of Realtime's audio.
+        if (
+            getattr(self, "voice_realtime_assistant", False)
+            and REALTIME_VOICE_IMPLEMENTED
+            and bool(get_device_auth_token().strip())
+            and not USE_MOCK_BACKEND
+            and not WAKE_LOCAL_VOICE_ONLY
+            # confirm/cancel are answers to a local prompt, not new commands
+            and intent.name not in ("confirm", "cancel")
+        ):
+            return
+
         if intent.name == "confirm":
             if not self._voice_pending_confirmation:
                 self._voice_reply("There is nothing to confirm right now.", duration=3.0)
