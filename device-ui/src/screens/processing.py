@@ -963,21 +963,6 @@ class ProcessingScreen(BaseScreen):
                 False,
                 "Waiting for transcript — you can retry from Meetings if this takes too long.",
             )
-        if not text:
-            return
-        low = text.lower()
-        if "transcribing" in low:
-            self._set_active_stage(0)
-            self.subtitle_label.text = text
-        elif "transcription done" in low or "building" in low:
-            self._set_active_stage(1)
-            self.subtitle_label.text = text
-        elif "structuring" in low or "key points" in low or "action item" in low:
-            self._set_active_stage(2)
-            self.subtitle_label.text = text
-        else:
-            # Generic update — surface it as the subtitle hint.
-            self.subtitle_label.text = text
 
     # ------------------------------------------------------------------
     # Helpers — interaction

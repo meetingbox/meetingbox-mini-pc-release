@@ -2260,6 +2260,14 @@ class MeetingBoxApp(App):
             'setup_progress',
             'all_set',
             'mic_test',
+            # 'recording' blocks the wake-word listener while a meeting is being
+            # recorded. The listener uses sd.RawInputStream on PortAudio's
+            # default device, which on this hardware routes to the USB mic via
+            # PulseAudio/PipeWire. Holding it open starves audio_capture.py
+            # (the recorder) — it falls back to the silent built-in mic, so the
+            # WAV ends up silent and the on-screen waveform stays flat. Pausing
+            # here triggers _close_stream(), releasing the mic for the recorder.
+            'recording',
         }
         return self.screen_manager.current not in blocked
 

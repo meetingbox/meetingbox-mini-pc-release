@@ -78,6 +78,12 @@ class AudioCaptureService:
       self.upload_audio_timeout_seconds = max(60, int(os.getenv("UPLOAD_AUDIO_TIMEOUT_SECONDS", "1200")))
     except ValueError:
       self.upload_audio_timeout_seconds = 1200
+    try:
+      self.input_gain = max(1.0, float(os.getenv("AUDIO_INPUT_GAIN", "1")))
+    except ValueError:
+      self.input_gain = 1.0
+    if self.input_gain > 1.0:
+      logger.info("Applying AUDIO_INPUT_GAIN=%sx to captured microphone samples", self.input_gain)
     # Same token as device-ui: paired device Bearer so uploads/command polling
     # keep working after pairing without copying the token into .env manually.
     self._upload_auth_token = _load_device_auth_token()
@@ -643,6 +649,7 @@ class AudioCaptureService:
         assert self.stream is not None
         chunk = self.stream.read(self.CHUNK, exception_on_overflow=False)
         audio_bytes = self._prepare_audio_bytes(chunk)
+        audio_bytes = self._apply_input_gain(audio_bytes)
 
         now = time.monotonic()
         if now - self._last_level_emit_at >= 0.08:
@@ -688,6 +695,15 @@ class AudioCaptureService:
       return self.vad.is_speech(vad_chunk, vad_rate)
     except Exception:
       return True  # Assume speech on VAD error
+
+  def _apply_input_gain(self, audio_bytes: bytes) -> bytes:
+    """Apply optional digital gain for quiet USB headset/dongle microphones."""
+    if self.input_gain <= 1.0 or not audio_bytes:
+      return audio_bytes
+    samples = np.frombuffer(audio_bytes, dtype=np.int16).astype(np.float32)
+    samples *= self.input_gain
+    samples = np.clip(samples, -32768, 32767).astype(np.int16)
+    return samples.tobytes()
 
   def _check_silent_audio(self, audio_bytes: bytes, segment_num: int) -> None:
     """Warn if the captured audio appears to be silent (wrong device or muted mic)."""
@@ -752,6 +768,7 @@ class AudioCaptureService:
         if self.is_paused:
           continue
         audio_bytes = self._prepare_audio_bytes(chunk)
+        audio_bytes = self._apply_input_gain(audio_bytes)
 
         # Emit near-real-time audio level for UI waveform (throttled).
         now = time.monotonic()
