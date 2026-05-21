@@ -144,6 +144,12 @@ def capture_device_fallback_candidates(sd, preferred: int | None) -> list[int | 
     return out
 
 
+def _strict_usb_enabled() -> bool:
+    """Match audio_capture.py's MEETINGBOX_USB_MIC_STRICT default (on)."""
+    v = (os.getenv("MEETINGBOX_USB_MIC_STRICT") or "1").strip().lower()
+    return v not in ("0", "false", "no", "off")
+
+
 def resolve_sounddevice_capture_device_index(sd) -> int | None:
     """
     Return a PortAudio device index for input, or None to use the host default device.
@@ -153,9 +159,10 @@ def resolve_sounddevice_capture_device_index(sd) -> int | None:
     2. AUDIO_INPUT_DEVICE_NAME (substring match, case-insensitive)
     3. If MEETINGBOX_AUTO_SELECT_USB_MIC is not disabled: first capture device whose
        name suggests USB / UAC (see _usb_like_name)
-    4. First built-in-like capture device
-    5. First available capture device
-    6. None — PortAudio default (only if enumeration failed)
+    4. (Only if MEETINGBOX_USB_MIC_STRICT=0) first built-in-like capture device
+    5. (Only if MEETINGBOX_USB_MIC_STRICT=0) first available capture device
+    6. None — PortAudio default (used when strict USB mode finds no USB device
+       OR when device enumeration failed)
     """
     if sd is None:
         return None
@@ -174,6 +181,17 @@ def resolve_sounddevice_capture_device_index(sd) -> int | None:
     usb = _first_usb_like_capture(sd)
     if usb is not None:
         return usb
+
+    # No USB mic visible. In strict mode (default) we deliberately do NOT
+    # fall back to the built-in/HDMI mic — the user explicitly wants the
+    # USB mic to drive the meeting. Returning None makes the mic-test path
+    # report "no USB mic" instead of silently capturing the wrong device.
+    if _strict_usb_enabled():
+        logger.warning(
+            "MEETINGBOX_USB_MIC_STRICT=1 and no USB-class capture device found; "
+            "returning None so callers do not fall back to a built-in mic.",
+        )
+        return None
 
     built_in = _first_built_in_capture(sd)
     if built_in is not None:

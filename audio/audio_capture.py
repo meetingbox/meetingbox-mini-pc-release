@@ -94,6 +94,38 @@ class AudioCaptureService:
 
   # --- Device handling -------------------------------------------------
 
+  def _reinit_portaudio(self) -> None:
+    """Re-enumerate audio devices via PortAudio so USB hot-plug is picked up.
+
+    PortAudio (and therefore PyAudio) snapshots the ALSA device list at
+    ``Pa_Initialize()``. Without this re-init, unplugging and re-plugging the
+    USB mic leaves the cached list stale and ``find_mic_device`` keeps picking
+    the gone device / the wrong default — currently a restart of the container
+    is the only workaround. We tear down PortAudio (no active stream at this
+    point) and create a new ``PyAudio`` instance so the next ``get_device_*``
+    call reflects the current kernel state.
+    """
+    if self.stream is not None:
+      try:
+        self.stream.stop_stream()
+      except Exception:
+        logger.debug("PortAudio reinit: stop_stream failed", exc_info=True)
+      try:
+        self.stream.close()
+      except Exception:
+        logger.debug("PortAudio reinit: stream.close failed", exc_info=True)
+      self.stream = None
+    try:
+      self.audio.terminate()
+    except Exception:
+      logger.debug("PortAudio reinit: terminate failed", exc_info=True)
+    self.audio = pyaudio.PyAudio()
+    try:
+      count = self.audio.get_device_count()
+    except Exception:
+      count = -1
+    logger.info("PortAudio re-initialized (device_count=%s)", count)
+
   def find_mic_device(self) -> int | None:
     """
     Auto-detect the best available input device.
@@ -101,15 +133,20 @@ class AudioCaptureService:
     Strategy (no hardcoded mic names):
       1. If AUDIO_INPUT_DEVICE_INDEX is set, use that index directly.
       2. If AUDIO_INPUT_DEVICE_NAME is set, use first device whose name contains it.
-      3. Enumerate all input-capable devices.
+      3. Re-enumerate the PortAudio device list (hot-plug support).
       4. Test each one to see if it actually supports our sample rate.
-      5. Prefer USB / external devices over built-in ones (they're almost
-         always the meeting mic).
+      5. Prefer USB / external devices over built-in ones (and when any USB
+         device is detected, ignore non-USB devices entirely unless
+         ``MEETINGBOX_USB_MIC_STRICT=0`` is set).
       6. If nothing passes the sample-rate test, return None (system default).
 
     This way any USB mic -- ReSpeaker, Jabra, Samson, cheap USB dongle,
-    etc. -- works automatically without code changes.
+    etc. -- works automatically without code changes, and a re-plug of the
+    USB mic during runtime is picked up on the next ``start_recording`` /
+    ``start_mic_test`` instead of requiring a container restart.
     """
+    # Force PortAudio to re-scan ALSA before any device-list read below.
+    self._reinit_portaudio()
     self.CAPTURE_CHANNELS = self.TARGET_CHANNELS
 
     def supports_rate(dev: dict, rate: int, channels: int) -> bool:
@@ -262,6 +299,28 @@ class AudioCaptureService:
     logger.info("Found %d input device(s):", len(candidates))
     for c in candidates:
       logger.info("  [%d] %s  (rate=%s)", c['index'], c['name'], c['info'].get('defaultSampleRate'))
+
+    # Strict USB-only mode: when any USB-like candidate is present, drop
+    # non-USB candidates entirely so we never silently fall back to the
+    # built-in/HDMI/loopback mic. Disable with MEETINGBOX_USB_MIC_STRICT=0
+    # to restore the legacy "prefer USB, fall back to built-in" behavior.
+    strict_usb_raw = (os.getenv("MEETINGBOX_USB_MIC_STRICT") or "1").strip().lower()
+    strict_usb = strict_usb_raw not in ("0", "false", "no", "off")
+    if strict_usb:
+      usb_keywords = (
+        "usb", "uac", "respeaker", "jabra", "samson", "blue", "yeti",
+        "rode", "fifine", "tonor", "boya", "maono", "external",
+      )
+      usb_candidates = [
+        c for c in candidates
+        if any(kw in c["name"].lower() for kw in usb_keywords)
+      ]
+      if usb_candidates:
+        logger.info(
+          "MEETINGBOX_USB_MIC_STRICT=1 → restricting to %d USB-like device(s)",
+          len(usb_candidates),
+        )
+        candidates = usb_candidates
 
     # Sort: concrete USB/external first, built-ins next, generic aliases last.
     # This avoids choosing wrappers like "sysdefault" over the actual USB device.

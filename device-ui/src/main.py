@@ -15,6 +15,7 @@ import subprocess
 import sys
 import threading
 import time
+import traceback
 from datetime import datetime, timedelta
 from pathlib import Path
 from collections import defaultdict
@@ -3997,7 +3998,13 @@ def main():
         logger.info("Interrupted by user")
         sys.exit(0)
     except Exception as e:
-        print(f"[MeetingBox] FATAL: {e}", flush=True)
+        print(
+            f"[MeetingBox] FATAL: {type(e).__name__}: {e!r}",
+            flush=True,
+        )
+        traceback.print_exc()
+        sys.stderr.flush()
+        sys.stdout.flush()
         logger.exception(f"Fatal error: {e}")
         sys.exit(1)
 
