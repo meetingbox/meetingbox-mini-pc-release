@@ -3,7 +3,7 @@
 Enabled with ``MEETINGBOX_SPAWN_AUDIO=1`` (the Docker image sets this by
 default in the merged image). This is the in-process alternative to running
 ``audio_capture.py`` as its own Docker / systemd service. Use only one at a
-time — two audio processes would compete for the mic and Redis channels.
+time ΓÇö two audio processes would compete for the mic and Redis channels.
 
 Responsibilities:
 * Locate ``audio_capture.py`` next to device-ui (Docker or native checkout).
@@ -40,17 +40,22 @@ def _resolve_audio_script() -> Optional[Path]:
         p = Path(env_path).expanduser().resolve()
         return p if p.is_file() else None
     here = Path(__file__).resolve()
-    candidates = [
-        # Docker image: device-ui src at /app/src, audio copied to /app/audio.
-        here.parents[1] / "audio" / "audio_capture.py",
-        # Native checkout: mini-pc/device-ui/src/audio_supervisor.py → ../audio/.
-        here.parents[2] / "audio" / "audio_capture.py",
-        # Monorepo fallback: meetingbox/mini-pc/.../src → meetingbox/mini-pc/audio/.
-        here.parents[3] / "mini-pc" / "audio" / "audio_capture.py",
-    ]
-    for c in candidates:
-        if c.is_file():
-            return c
+    # ``Path.parents[n]`` raises IndexError when n exceeds the number of
+    # ancestors. In Docker /app/src has only 2 ancestors (/app and /), so
+    # the old eager list construction crashed at parents[3] before the
+    # valid candidate at parents[1] was checked.
+    parents = here.parents
+    layout_specs = (
+        (1, ("audio",)),                   # Docker image: /app/src → /app/audio
+        (2, ("audio",)),                   # Native checkout: device-ui/src → device-ui/audio
+        (3, ("mini-pc", "audio")),         # Monorepo: meetingbox/mini-pc/.../src → meetingbox/mini-pc/audio
+    )
+    for parent_idx, suffix in layout_specs:
+        if parent_idx >= len(parents):
+            continue
+        candidate = parents[parent_idx].joinpath(*suffix, "audio_capture.py")
+        if candidate.is_file():
+            return candidate
     return None
 
 
