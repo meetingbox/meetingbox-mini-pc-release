@@ -3998,12 +3998,14 @@ def main():
         logger.info("Interrupted by user")
         sys.exit(0)
     except Exception as e:
+        tb_str = "".join(traceback.format_exception(type(e), e, e.__traceback__))
         print(
             f"[MeetingBox] FATAL: {type(e).__name__}: {e!r}",
             flush=True,
         )
-        traceback.print_exc()
-        sys.stderr.flush()
+        print("[MeetingBox] Traceback:", flush=True)
+        for _line in tb_str.rstrip().splitlines():
+            print(f"[MeetingBox]   {_line}", flush=True)
         sys.stdout.flush()
         logger.exception(f"Fatal error: {e}")
         sys.exit(1)
