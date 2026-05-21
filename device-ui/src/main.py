@@ -649,9 +649,16 @@ class MeetingBoxApp(App):
         self.ws_task = None
         self._pairing_poll = None
 
-        # Local Redis subscriber (audio_level / mic_test_level from audio container)
+        # Local Redis subscriber (audio_level / mic_test_level from audio process)
         self._local_redis_thread = None
         self._local_redis_stop = threading.Event()
+
+        # Optional in-process audio capture child (MEETINGBOX_SPAWN_AUDIO=1, the
+        # default inside the merged docker image). Replaces the separate audio
+        # container / systemd unit. Never enable simultaneously with another
+        # audio_capture instance — they would race for the mic and Redis topics.
+        from audio_supervisor import maybe_create_from_env as _maybe_audio
+        self._audio_supervisor = _maybe_audio()
 
         # Idle screen timeout (seconds; 0 = never).
         # Replaces the older display-off timer: instead of cutting the
@@ -1160,6 +1167,11 @@ class MeetingBoxApp(App):
     def on_start(self):
         logger.info("MeetingBox UI started")
         self._ui_cache_load_from_disk()
+        if self._audio_supervisor is not None:
+            try:
+                self._audio_supervisor.start()
+            except Exception:
+                logger.exception("Failed to start in-process audio supervisor")
         self.voice_assistant.start()
         self._sync_voice_assistant_state()
         if not USE_MOCK_BACKEND:
@@ -1268,6 +1280,11 @@ class MeetingBoxApp(App):
     def on_stop(self):
         logger.info("MeetingBox UI stopping")
         self.voice_assistant.stop()
+        if self._audio_supervisor is not None:
+            try:
+                self._audio_supervisor.stop()
+            except Exception:
+                logger.exception("Audio supervisor stop failed")
         self._local_redis_stop.set()
         if getattr(self, '_setup_poll', None):
             self._setup_poll.cancel()

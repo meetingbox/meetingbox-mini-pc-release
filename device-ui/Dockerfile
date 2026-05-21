@@ -52,6 +52,9 @@ RUN set -eux; \
             libxrandr-dev \
             libmtdev1t64 \
             libportaudio2 \
+            portaudio19-dev \
+            libasound2-dev \
+            python3-dev \
             libspeexdsp1 \
             build-essential \
             pkg-config \
@@ -84,6 +87,11 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy application code
 COPY . .
+
+# Pull mini-pc/audio/ into /app/audio so device-ui's audio_supervisor can spawn
+# audio_capture.py as a child process. ``audio`` is provided via Compose
+# ``additional_contexts`` (see ../docker-compose.yml device-ui service).
+COPY --from=audio . /app/audio/
 
 RUN chmod +x /app/docker-entrypoint.sh
 

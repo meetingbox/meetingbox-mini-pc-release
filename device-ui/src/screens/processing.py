@@ -879,6 +879,23 @@ class ProcessingScreen(BaseScreen):
         self.meeting_title_label.text = title
         self.duration_label.text = self._format_duration(duration)
 
+    def set_processing_status(self, text: str) -> None:
+        """Update the small status line under the ``Summarizing your meeting…``
+        headline. Called from ``main.py`` for backend ``progress``,
+        ``summary_progress`` and ``transcription_complete`` events. Safe to
+        call before the subtitle widget is built (no-op in that case).
+        """
+        msg = (text or "").strip()
+        if not msg:
+            return
+        label = getattr(self, "subtitle_label", None)
+        if label is None:
+            return
+        try:
+            label.text = msg
+        except Exception:
+            logger.debug("set_processing_status: subtitle update failed", exc_info=True)
+
     def on_backend_progress(self, progress: int, status: str, eta: int):
         """Drive the 3-stage checklist from a 0-100 progress value."""
         if status:
