@@ -283,3 +283,45 @@ def connect_wifi_network(ssid: str, password: Optional[str]) -> dict:
                 "See scripts/sudoers.meetingbox-nmcli.example or scripts/polkit/"
             )
     return {"status": "failed", "message": msg}
+
+
+def list_saved_wifi_connection_names() -> list[str]:
+    """Return NetworkManager connection profile names that are Wi‑Fi type."""
+    if not has_nmcli():
+        return []
+    try:
+        res = nmcli_run(["-t", "-f", "NAME,TYPE", "connection", "show"], timeout=12)
+        if res.returncode != 0:
+            return []
+        names: list[str] = []
+        for line in (res.stdout or "").splitlines():
+            if ":" not in line:
+                continue
+            name, typ = line.split(":", 1)
+            name = name.strip()
+            low = typ.strip().lower()
+            if not name:
+                continue
+            if "wireless" in low or "wifi" in low or low == "802-11-wireless":
+                names.append(name)
+        return sorted(set(names))
+    except Exception:
+        return []
+
+
+def forget_wifi_connection(con_name: str) -> dict:
+    """Delete a saved Wi‑Fi profile by connection name (``nmcli connection delete``)."""
+    if not has_nmcli():
+        return {"ok": False, "message": "nmcli not available"}
+    con = (con_name or "").strip()
+    if not con:
+        return {"ok": False, "message": "No connection name"}
+    try:
+        res = nmcli_run(["connection", "delete", con], timeout=20)
+        if res.returncode == 0:
+            return {"ok": True, "message": ""}
+        msg = (res.stderr or res.stdout or "").strip() or "Delete failed"
+        return {"ok": False, "message": msg[:400]}
+    except Exception as e:
+        return {"ok": False, "message": str(e)[:400]}
+

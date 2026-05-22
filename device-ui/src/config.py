@@ -369,6 +369,20 @@ def display_horizontal_scale_raw() -> float:
 HOME_CONTENT_SCALE = _parse_unit_scale("MEETINGBOX_HOME_CONTENT_SCALE", 1.0)
 OTHER_CONTENT_SCALE = HOME_CONTENT_SCALE * 1.2
 
+# Multiplier driven by Settings → Font size (small / medium / large).
+_FONT_USER_SCALE = 1.0
+
+
+def set_ui_font_preset(name: str) -> None:
+    """Called when device loads ``font_size`` from backend settings."""
+    global _FONT_USER_SCALE
+    key = (name or "medium").strip().lower()
+    _FONT_USER_SCALE = {"small": 0.92, "medium": 1.0, "large": 1.1}.get(key, 1.0)
+
+
+def ui_font_scale_multiplier() -> float:
+    return _FONT_USER_SCALE
+
 
 def home_layout_vertical_scale() -> float:
     return min(display_vertical_scale_raw(), 2.25) * HOME_CONTENT_SCALE
@@ -379,11 +393,19 @@ def home_layout_horizontal_scale() -> float:
 
 
 def other_screen_vertical_scale() -> float:
-    return min(display_vertical_scale_raw(), 2.25) * OTHER_CONTENT_SCALE
+    return (
+        min(display_vertical_scale_raw(), 2.25)
+        * OTHER_CONTENT_SCALE
+        * ui_font_scale_multiplier()
+    )
 
 
 def other_screen_horizontal_scale() -> float:
-    return display_horizontal_scale_raw() * OTHER_CONTENT_SCALE
+    return (
+        display_horizontal_scale_raw()
+        * OTHER_CONTENT_SCALE
+        * ui_font_scale_multiplier()
+    )
 
 
 def home_center_column_width() -> int:

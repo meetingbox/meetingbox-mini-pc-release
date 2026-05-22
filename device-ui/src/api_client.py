@@ -1242,6 +1242,233 @@ class BackendClient:
         await asyncio.sleep(delay)
 
     # ==================================================================
+    # NEW DEVICE SETTINGS ENDPOINTS
+    # ==================================================================
+
+    async def wifi_radio(self, enabled: bool) -> Dict:
+        """POST /api/device/wifi/radio — toggle WiFi radio on/off."""
+        try:
+            resp = await self.client.post(
+                f"{self.base_url}/api/device/wifi/radio",
+                json={"enabled": enabled},
+            )
+            resp.raise_for_status()
+            return resp.json()
+        except Exception as e:
+            logger.error("wifi_radio failed: %s", e)
+            raise
+
+    async def wifi_saved(self) -> Dict:
+        """GET /api/device/wifi/saved — list saved WiFi connection names."""
+        try:
+            resp = await self.client.get(f"{self.base_url}/api/device/wifi/saved")
+            resp.raise_for_status()
+            return resp.json()
+        except Exception as e:
+            logger.error("wifi_saved failed: %s", e)
+            raise
+
+    async def wifi_forget(self, connection_name: str) -> Dict:
+        """POST /api/device/wifi/forget — delete a saved WiFi profile by NM connection name."""
+        try:
+            resp = await self.client.post(
+                f"{self.base_url}/api/device/wifi/forget",
+                json={"connection_name": connection_name},
+            )
+            resp.raise_for_status()
+            return resp.json()
+        except Exception as e:
+            logger.error("wifi_forget failed: %s", e)
+            raise
+
+    async def bluetooth_radio(self, enabled: bool) -> Dict:
+        """POST /api/device/bluetooth/radio — toggle Bluetooth on/off."""
+        try:
+            resp = await self.client.post(
+                f"{self.base_url}/api/device/bluetooth/radio",
+                json={"enabled": enabled},
+            )
+            resp.raise_for_status()
+            return resp.json()
+        except Exception as e:
+            logger.error("bluetooth_radio failed: %s", e)
+            raise
+
+    async def bluetooth_devices(self) -> Dict:
+        """GET /api/device/bluetooth/devices — list paired Bluetooth devices."""
+        try:
+            resp = await self.client.get(f"{self.base_url}/api/device/bluetooth/devices")
+            resp.raise_for_status()
+            return resp.json()
+        except Exception as e:
+            logger.error("bluetooth_devices failed: %s", e)
+            raise
+
+    async def bluetooth_pair(self, mac: str) -> Dict:
+        """POST /api/device/bluetooth/pair — pair a Bluetooth device by MAC."""
+        try:
+            resp = await self.client.post(
+                f"{self.base_url}/api/device/bluetooth/pair",
+                json={"mac": mac},
+                timeout=60.0,
+            )
+            resp.raise_for_status()
+            return resp.json()
+        except Exception as e:
+            logger.error("bluetooth_pair failed: %s", e)
+            raise
+
+    async def set_timezone(self, tz: str) -> Dict:
+        """POST /api/device/system/timezone — set system timezone."""
+        try:
+            resp = await self.client.post(
+                f"{self.base_url}/api/device/system/timezone",
+                json={"timezone": tz},
+            )
+            resp.raise_for_status()
+            return resp.json()
+        except Exception as e:
+            logger.error("set_timezone failed: %s", e)
+            raise
+
+    async def set_datetime(self, *, iso: str = "", ntp: Optional[bool] = None) -> Dict:
+        """POST /api/device/system/datetime — set date/time manually (iso_datetime field).
+        NTP toggle is handled separately via timedatectl on the device side; the backend
+        endpoint only accepts iso_datetime for a manual time set.
+        """
+        try:
+            if ntp is not None and not iso:
+                # NTP toggle only — not supported by the backend endpoint; handled locally
+                return {"ok": True, "ntp_only": True}
+            payload: Dict = {"iso_datetime": iso.strip()}
+            resp = await self.client.post(
+                f"{self.base_url}/api/device/system/datetime",
+                json=payload,
+            )
+            resp.raise_for_status()
+            return resp.json()
+        except Exception as e:
+            logger.error("set_datetime failed: %s", e)
+            raise
+
+    async def storage_breakdown(self) -> Dict:
+        """GET /api/device/storage-breakdown — disk usage by category."""
+        try:
+            resp = await self.client.get(f"{self.base_url}/api/device/storage-breakdown")
+            resp.raise_for_status()
+            return resp.json()
+        except Exception as e:
+            logger.error("storage_breakdown failed: %s", e)
+            raise
+
+    async def clear_cache(self) -> Dict:
+        """POST /api/device/clear-cache — delete temp/cache files."""
+        try:
+            resp = await self.client.post(f"{self.base_url}/api/device/clear-cache")
+            resp.raise_for_status()
+            return resp.json()
+        except Exception as e:
+            logger.error("clear_cache failed: %s", e)
+            raise
+
+    async def clear_all_recordings(self) -> Dict:
+        """POST /api/device/recordings/clear-all — bulk delete all recordings."""
+        try:
+            resp = await self.client.post(
+                f"{self.base_url}/api/device/recordings/clear-all"
+            )
+            resp.raise_for_status()
+            return resp.json()
+        except Exception as e:
+            logger.error("clear_all_recordings failed: %s", e)
+            raise
+
+    async def clear_all_transcripts(self) -> Dict:
+        """POST /api/device/transcripts/clear-all — bulk delete all transcript files."""
+        try:
+            resp = await self.client.post(
+                f"{self.base_url}/api/device/transcripts/clear-all"
+            )
+            resp.raise_for_status()
+            return resp.json()
+        except Exception as e:
+            logger.error("clear_all_transcripts failed: %s", e)
+            raise
+
+    async def connectivity_check(self) -> Dict:
+        """GET /api/device/connectivity — HTTP probe to check backend + internet."""
+        try:
+            resp = await self.client.get(
+                f"{self.base_url}/api/device/connectivity",
+                timeout=20.0,
+            )
+            resp.raise_for_status()
+            return resp.json()
+        except Exception as e:
+            logger.error("connectivity_check failed: %s", e)
+            raise
+
+    async def diagnostic_log(self, lines: int = 100) -> Dict:
+        """GET /api/device/diagnostic-log — recent journalctl lines."""
+        try:
+            resp = await self.client.get(
+                f"{self.base_url}/api/device/diagnostic-log",
+                params={"lines": int(lines)},
+            )
+            resp.raise_for_status()
+            return resp.json()
+        except Exception as e:
+            logger.error("diagnostic_log failed: %s", e)
+            raise
+
+    async def send_diagnostic_report(self) -> Dict:
+        """POST /api/device/diagnostic-report — fetch last 200 log lines, then submit."""
+        try:
+            log_text = ""
+            try:
+                log_data = await self.diagnostic_log(lines=200)
+                log_text = (log_data.get("lines") or "")[:2000]
+            except Exception:
+                log_text = "(could not retrieve log lines)"
+            message = log_text or "(no log output)"
+            resp = await self.client.post(
+                f"{self.base_url}/api/device/diagnostic-report",
+                json={"message": message},
+                timeout=30.0,
+            )
+            resp.raise_for_status()
+            return resp.json()
+        except Exception as e:
+            logger.error("send_diagnostic_report failed: %s", e)
+            raise
+
+    async def send_feedback(self, message: str) -> Dict:
+        """POST /api/device/feedback — submit user feedback."""
+        try:
+            resp = await self.client.post(
+                f"{self.base_url}/api/device/feedback",
+                json={"message": message},
+            )
+            resp.raise_for_status()
+            return resp.json()
+        except Exception as e:
+            logger.error("send_feedback failed: %s", e)
+            raise
+
+    async def integration_sync(self, integration_id: str) -> Dict:
+        """POST /api/device/integrations/{id}/sync — request manual re-sync."""
+        try:
+            resp = await self.client.post(
+                f"{self.base_url}/api/device/integrations/{integration_id}/sync",
+                timeout=30.0,
+            )
+            resp.raise_for_status()
+            return resp.json()
+        except Exception as e:
+            logger.error("integration_sync failed: %s", e)
+            raise
+
+    # ==================================================================
     # HEALTH CHECK
     # ==================================================================
 
