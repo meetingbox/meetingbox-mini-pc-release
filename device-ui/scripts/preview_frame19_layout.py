@@ -1,4 +1,4 @@
-"""Preview Frame 19 with uniform scale-to-fit (matches device behaviour)."""
+"""Preview Frame 19 on 1260×800 canvas (matches device behaviour)."""
 
 from __future__ import annotations
 
@@ -14,7 +14,11 @@ from frame19_layout import (  # noqa: E402
     BG_RGB,
     CANVAS_H,
     CANVAS_W,
+    ELLIPSE17,
     LEFT_VEC,
+    RING_DARK,
+    RING_GLOW,
+    RING_GRADIENT,
     RIGHT_VEC,
     STATUS,
     STATUS_FS_RATIO,
@@ -26,8 +30,16 @@ from frame19_layout import (  # noqa: E402
 
 ASSETS = ROOT / "assets" / "recording" / "figma"
 OUT = ASSETS / "frame19_layout_preview.png"
-
 SCREEN_W, SCREEN_H = 1260, 800
+
+_LAYERS: tuple[tuple[str, dict], ...] = (
+    ("frame19_ellipse17.png", ELLIPSE17),
+    ("frame19_ring_glow.png", RING_GLOW),
+    ("frame19_ring_dark.png", RING_DARK),
+    ("frame19_ring_gradient.png", RING_GRADIENT),
+    ("frame19_vector_left.png", LEFT_VEC),
+    ("frame19_vector_right.png", RIGHT_VEC),
+)
 
 
 def _rect(box, cw: float, ch: float, ox: float, oy: float) -> tuple[int, int, int, int]:
@@ -44,13 +56,14 @@ def main() -> None:
     ox = (SCREEN_W - cw) / 2
     oy = (SCREEN_H - ch) / 2
 
-    for name, box in (("frame19_vector_left.png", LEFT_VEC), ("frame19_vector_right.png", RIGHT_VEC)):
+    for name, box in _LAYERS:
         path = ASSETS / name
-        if path.is_file():
-            asset = Image.open(path).convert("RGBA")
-            x0, y0, x1, y1 = _rect(box, cw, ch, ox, oy)
-            asset = asset.resize((max(1, x1 - x0), max(1, y1 - y0)), Image.Resampling.LANCZOS)
-            img.paste(asset, (x0, y0), asset)
+        if not path.is_file():
+            continue
+        asset = Image.open(path).convert("RGBA")
+        x0, y0, x1, y1 = _rect(box, cw, ch, ox, oy)
+        asset = asset.resize((max(1, x1 - x0), max(1, y1 - y0)), Image.Resampling.LANCZOS)
+        img.paste(asset, (x0, y0), asset)
 
     draw = ImageDraw.Draw(img)
     try:
@@ -60,20 +73,13 @@ def main() -> None:
         ft = fs = ImageFont.load_default()
 
     tx0, ty0, tx1, ty1 = _rect(TIMER, cw, ch, ox, oy)
-    draw.text(((tx0 + tx1) // 2, (ty0 + ty1) // 2), "00 : 12 : 45", fill=(255, 255, 255), font=ft, anchor="mm")
+    draw.text(((tx0 + tx1) / 2, ty0), "00 : 12 : 45", fill=(255, 255, 255), font=ft, anchor="ma")
     sx0, sy0, sx1, sy1 = _rect(STATUS, cw, ch, ox, oy)
-    draw.text(((sx0 + sx1) // 2, sy0), "Recording in progress", fill=(182, 186, 242), font=fs, anchor="ma")
-
-    # Outline scaled canvas (debug — shows letterbox vs stretch)
-    draw.rectangle(
-        [int(ox), int(oy), int(ox + cw), int(oy + ch)],
-        outline=(40, 60, 100),
-        width=1,
-    )
+    draw.text(((sx0 + sx1) / 2, sy0), "Recording in progress", fill=(182, 186, 242), font=fs, anchor="ma")
 
     OUT.parent.mkdir(parents=True, exist_ok=True)
     img.save(OUT)
-    print(f"Wrote {OUT} screen={SCREEN_W}x{SCREEN_H} canvas={cw:.0f}x{ch:.0f} ref={CANVAS_W:.0f}x{CANVAS_H:.0f}")
+    print(f"Wrote {OUT}")
 
 
 if __name__ == "__main__":

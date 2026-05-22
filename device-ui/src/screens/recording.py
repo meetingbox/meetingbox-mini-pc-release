@@ -1,7 +1,6 @@
 """Recording screen — Frame 19 only (`863:635`).
 
-Responsive: ratios inside the Figma reference frame, uniform scale-to-fit on any
-display size (see ``frame19_layout``).
+Scaled 1260×800 canvas; Frame 19 children only (updated Figma layout).
 """
 
 from __future__ import annotations
@@ -19,7 +18,11 @@ from kivy.uix.label import Label
 from config import ASSETS_DIR
 from frame19_layout import (
     BG_RGB,
+    ELLIPSE17,
     LEFT_VEC,
+    RING_DARK,
+    RING_GLOW,
+    RING_GRADIENT,
     RIGHT_VEC,
     STATUS,
     STATUS_FS_RATIO,
@@ -38,6 +41,16 @@ _BG = (BG_RGB[0] / 255, BG_RGB[1] / 255, BG_RGB[2] / 255, 1.0)
 _WHITE = (1.0, 1.0, 1.0, 1.0)
 _MUTED = (182 / 255, 186 / 255, 242 / 255, 1.0)
 _FONT_BOLD = "42dot-Sans"
+
+# (asset filename, layout box) — back → front
+_IMAGES: tuple[tuple[str, dict], ...] = (
+    ("frame19_ellipse17.png", ELLIPSE17),
+    ("frame19_ring_glow.png", RING_GLOW),
+    ("frame19_ring_dark.png", RING_DARK),
+    ("frame19_ring_gradient.png", RING_GRADIENT),
+    ("frame19_vector_left.png", LEFT_VEC),
+    ("frame19_vector_right.png", RIGHT_VEC),
+)
 
 
 def _png(name: str) -> str:
@@ -75,25 +88,16 @@ class RecordingScreen(BaseScreen):
         self._canvas = FloatLayout(size_hint=(None, None))
         anchor.add_widget(self._canvas)
 
-        left = _png("frame19_vector_left.png")
-        if left:
-            self._canvas.add_widget(Image(
-                source=left,
-                allow_stretch=True,
-                keep_ratio=True,
-                fit_mode="contain",
-                **kivy_hints(LEFT_VEC),
-            ))
-
-        right = _png("frame19_vector_right.png")
-        if right:
-            self._canvas.add_widget(Image(
-                source=right,
-                allow_stretch=True,
-                keep_ratio=True,
-                fit_mode="contain",
-                **kivy_hints(RIGHT_VEC),
-            ))
+        for filename, box in _IMAGES:
+            src = _png(filename)
+            if src:
+                self._canvas.add_widget(Image(
+                    source=src,
+                    allow_stretch=True,
+                    keep_ratio=True,
+                    fit_mode="contain",
+                    **kivy_hints(box),
+                ))
 
         self.timer_label = Label(
             text="00 : 12 : 45",

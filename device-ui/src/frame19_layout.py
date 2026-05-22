@@ -1,8 +1,7 @@
-"""Frame 19 layout — Figma `863:635` inside `863:626` (1260×800).
+"""Frame 19 layout — Figma `863:635` inside recording screen `863:626`.
 
-Reference canvas = full recording screen.  Frame 19 is a child at (389, 105),
-size 420×420.  Element positions are absolute within 1260×800, then the whole
-canvas scales uniformly to fit any device screen.
+Reference canvas = 1260×800.  Frame 19 sits at (389, 105), size 420×420.
+All positions are absolute fractions of the canvas; scale uniformly to device.
 """
 
 from __future__ import annotations
@@ -20,30 +19,33 @@ class Box(TypedDict):
 CANVAS_W = 1260.0
 CANVAS_H = 800.0
 
-# Frame 19 — updated Figma metadata (863:635)
+# Frame 19 origin on the 1260×800 canvas (updated Figma 2026-05-22)
 _F19_X = 389.0
 _F19_Y = 105.0
-_F19_W = 420.0
-_F19_H = 420.0
 
 
-def _abs(local_x: float, local_y: float, local_w: float, local_h: float) -> Box:
-    """Frame-19-local px → absolute ratio box on the 1260×800 canvas."""
+def _abs(lx: float, ly: float, lw: float, lh: float) -> Box:
+    """Frame-19-local px → canvas ratio box."""
     return dict(
-        x=(_F19_X + local_x) / CANVAS_W,
-        y_top=(_F19_Y + local_y) / CANVAS_H,
-        w=local_w / CANVAS_W,
-        h=local_h / CANVAS_H,
+        x=(_F19_X + lx) / CANVAS_W,
+        y_top=(_F19_Y + ly) / CANVAS_H,
+        w=lw / CANVAS_W,
+        h=lh / CANVAS_H,
     )
 
 
-LEFT_VEC: Box = _abs(52.0, 67.47265625, 36.975, 173.3189239501953)
-RIGHT_VEC: Box = _abs(331.0299987792969, 67.47265625, 36.97499084472656, 173.3189239501953)
-TIMER: Box = _abs(89.0, 300.0, 243.0, 42.0)
-STATUS: Box = _abs(65.0, 346.0, 290.0, 34.0)
+# Back → front draw order
+ELLIPSE17 = _abs(68.9921875, 12.0, 285.7979431152344, 283.25390625)
+RING_GLOW = _abs(101.97265625, 44.68359375, 219.8445587158203, 217.8876190185547)
+RING_DARK = _abs(101.97265625, 46.6640625, 219.8445587158203, 217.8876190185547)
+RING_GRADIENT = _abs(101.97265625, 44.68359375, 219.8445587158203, 217.8876190185547)
+LEFT_VEC = _abs(52.0, 67.47265625, 36.974998474121094, 173.3189239501953)
+RIGHT_VEC = _abs(331.0299987792969, 67.47265625, 36.97499084472656, 173.3189239501953)
+TIMER = _abs(89.0, 300.0, 243.0, 42.0)
+STATUS = _abs(65.0, 346.0, 290.0, 34.0)
 
 TIMER_FS_RATIO = 35.0 / CANVAS_H
-STATUS_FS_RATIO = 28.251 / CANVAS_H
+STATUS_FS_RATIO = 28.251121520996094 / CANVAS_H
 
 BG_RGB = (1, 8, 26)
 
