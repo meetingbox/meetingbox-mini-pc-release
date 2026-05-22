@@ -287,45 +287,60 @@ def pactl_available() -> bool:
     return shutil.which("pactl") is not None
 
 
-# Cache: None = not checked, True/False = last known state
-_pactl_reachable: bool | None = None
+def _wpctl_set_volume(pct: int, target: str = "@DEFAULT_AUDIO_SINK@") -> bool:
+    """Set volume via wpctl (PipeWire native). Returns True on success."""
+    exe = shutil.which("wpctl")
+    if not exe:
+        return False
+    try:
+        # wpctl uses 0.0–1.0 scale
+        vol = round(pct / 100.0, 2)
+        r = subprocess.run(
+            [exe, "set-volume", target, str(vol)],
+            capture_output=True,
+            timeout=3,
+            check=False,
+        )
+        if r.returncode == 0:
+            logger.info("wpctl set-volume %s %s", target, vol)
+            return True
+    except Exception as e:
+        logger.debug("wpctl set-volume: %s", e)
+    return False
 
 
 def _pactl_runs() -> bool:
-    """Check whether pactl can reach the PulseAudio daemon. Result is cached."""
-    global _pactl_reachable
+    """Check whether pactl can reach the PulseAudio/PipeWire daemon (no permanent cache)."""
     exe = shutil.which("pactl")
     if not exe:
-        _pactl_reachable = False
         return False
-    if _pactl_reachable is not None:
-        return _pactl_reachable
     try:
         r = subprocess.run(
             [exe, "info"], capture_output=True, timeout=2, check=False
         )
-        _pactl_reachable = r.returncode == 0
+        return r.returncode == 0
     except Exception:
-        _pactl_reachable = False
-    return _pactl_reachable
+        return False
 
 
-def _amixer_master_controls() -> list[str]:
-    """Return ALSA Master-like control names that actually exist on this device."""
+def _amixer_master_controls(device: str | None = None) -> list[str]:
+    """Return ALSA playback control names that exist on this device/card."""
     exe = shutil.which("amixer")
     if not exe:
         return []
     try:
+        cmd = [exe]
+        if device:
+            cmd += ["-D", device]
+        cmd += ["scontrols"]
         out = subprocess.check_output(
-            [exe, "scontrols"], timeout=3, stderr=subprocess.DEVNULL
+            cmd, timeout=3, stderr=subprocess.DEVNULL
         ).decode(errors="ignore")
         names: list[str] = []
         for line in out.splitlines():
-            # Lines look like: Simple mixer control 'Master',0
             if "'" in line:
                 name = line.split("'")[1]
                 names.append(name)
-        # Prefer: Master > PCM > Speaker > Headphone > first available
         for preferred in ("Master", "PCM", "Speaker", "Headphone"):
             if preferred in names:
                 return [preferred]
@@ -334,32 +349,37 @@ def _amixer_master_controls() -> list[str]:
         return []
 
 
-def _amixer_set_volume_pct(pct: int) -> None:
-    """ALSA fallback: set playback volume via amixer using the best available control."""
+def _amixer_set_volume_pct(pct: int) -> bool:
+    """ALSA fallback: set playback volume. Returns True on success."""
     exe = shutil.which("amixer")
     if not exe:
-        return
-    controls = _amixer_master_controls()
-    if not controls:
-        controls = ["Master"]
-    for ctrl in controls:
-        try:
-            r = subprocess.run(
-                [exe, "set", ctrl, f"{pct}%"],
-                capture_output=True,
-                timeout=3,
-                check=False,
-            )
-            if r.returncode == 0:
-                logger.info("amixer set %s %s%%", ctrl, pct)
-                return
-        except Exception as e:
-            logger.debug("amixer set %s: %s", ctrl, e)
+        return False
+    # Try: default device, then pulse (PipeWire ALSA plugin), then hw:0
+    for device in (None, "pulse", "default"):
+        controls = _amixer_master_controls(device)
+        if not controls:
+            controls = ["Master"]
+        for ctrl in controls:
+            try:
+                cmd = [exe]
+                if device:
+                    cmd += ["-D", device]
+                cmd += ["set", ctrl, f"{pct}%"]
+                r = subprocess.run(cmd, capture_output=True, timeout=3, check=False)
+                if r.returncode == 0:
+                    logger.info("amixer -D %s set %s %s%%", device or "default", ctrl, pct)
+                    return True
+            except Exception as e:
+                logger.debug("amixer -D %s set %s: %s", device, ctrl, e)
+    return False
 
 
 def set_sink_volume_pct(pct: int) -> None:
-    """Set default output sink volume 0–100% (PulseAudio, fallback to ALSA amixer)."""
+    """Set default output sink volume 0–100%.
+    Priority: wpctl (PipeWire) → pactl (PulseAudio) → amixer (ALSA)."""
     pct = max(0, min(100, int(pct)))
+    if _wpctl_set_volume(pct, "@DEFAULT_AUDIO_SINK@"):
+        return
     exe = shutil.which("pactl")
     if exe and _pactl_runs():
         try:
@@ -376,8 +396,11 @@ def set_sink_volume_pct(pct: int) -> None:
 
 
 def set_source_volume_pct(pct: int) -> None:
-    """Set default capture source volume / gain 0–150% (PulseAudio, fallback to ALSA amixer)."""
+    """Set default capture source volume / gain 0–150%.
+    Priority: wpctl (PipeWire) → pactl (PulseAudio) → amixer (ALSA)."""
     pct = max(0, min(150, int(pct)))
+    if _wpctl_set_volume(pct, "@DEFAULT_AUDIO_SOURCE@"):
+        return
     exe = shutil.which("pactl")
     if exe and _pactl_runs():
         try:

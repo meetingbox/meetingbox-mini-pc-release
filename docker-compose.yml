@@ -107,10 +107,11 @@ services:
       - MEETINGBOX_LOCAL_POWEROFF_CMD=${MEETINGBOX_LOCAL_POWEROFF_CMD:-}
       - MEETINGBOX_LOCAL_REBOOT_HELPER=${MEETINGBOX_LOCAL_REBOOT_HELPER:-}
       - MEETINGBOX_LOCAL_POWEROFF_HELPER=${MEETINGBOX_LOCAL_POWEROFF_HELPER:-}
-      # PulseAudio user session socket on the kiosk host — enables pactl/amixer speaker changes from the UI container.
-      # Set MEETINGBOX_PULSE_SERVER in .env to opt in (e.g. unix:/run/user/1000/pulse/native).
-      # Leave unset to preserve existing ALSA/PulseAudio auto-discovery used by the voice agent.
+      # Audio control: these env vars let pactl/wpctl inside the container reach
+      # the host PipeWire/PulseAudio daemon via the mounted /run/user/1000/pulse socket.
       - XDG_RUNTIME_DIR=/run/user/1000
+      - PULSE_RUNTIME_PATH=/run/user/1000/pulse
+      - PIPEWIRE_RUNTIME_DIR=/run/user/1000
       - PULSE_SERVER=${MEETINGBOX_PULSE_SERVER:-}
     volumes:
       # Backlight sysfs on the appliance — brightness slider touches the physical panel (rw; needs privileged or matching perms).

@@ -71,6 +71,8 @@ RUN set -eux; \
             sudo \
             bluez \
             pulseaudio-utils \
+            pipewire \
+            wireplumber \
         ; then \
             success=1; \
             break; \
