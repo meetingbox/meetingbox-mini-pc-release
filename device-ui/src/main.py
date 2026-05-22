@@ -685,6 +685,7 @@ class MeetingBoxApp(App):
         self._voice_pending_confirmation: VoiceIntent | None = None
         self._voice_confirmation_reset_ev = None
         self._voice_confirmation_timeout = 8.0
+        self._voice_recording_suspended = False
         self._recording_elapsed_started_at = None
         self._recording_elapsed_before_pause = 0.0
         self.voice_confirmation_text = (
@@ -1607,8 +1608,7 @@ class MeetingBoxApp(App):
         self._transcript_cta_poll_meeting_id = None
         self.recording_state.update(active=True, paused=False, elapsed=0)
         self._reset_recording_elapsed_clock()
-        self._announce_voice_start_success()
-        Clock.schedule_once(lambda _: self._sync_voice_assistant_state(), 0)
+        Clock.schedule_once(lambda _: self._suspend_voice_assistant_for_recording(), 0)
         Clock.schedule_once(lambda _: self.goto_screen('recording', 'fade'), 0)
 
     def _kick_post_stop_meeting_polls(self, sid):
@@ -1628,7 +1628,7 @@ class MeetingBoxApp(App):
         self._kick_post_stop_meeting_polls(sid)
         self._voice_start_in_flight = False
         self._clear_recording_elapsed_clock()
-        Clock.schedule_once(lambda _: self._sync_voice_assistant_state(), 0)
+        Clock.schedule_once(lambda _: self._resume_voice_assistant_after_recording(), 0)
         Clock.schedule_once(lambda _: self.goto_screen('processing', 'fade'), 0)
 
     def on_recording_paused(self, data):
@@ -2018,6 +2018,8 @@ class MeetingBoxApp(App):
         async def _start():
             last_exc: BaseException | None = None
             max_attempts = 3
+            Clock.schedule_once(lambda _: self._suspend_voice_assistant_for_recording(), 0)
+            await asyncio.sleep(0.35)
             for attempt in range(max_attempts):
                 if attempt > 0:
                     delay = 2.0 * attempt
@@ -2034,8 +2036,7 @@ class MeetingBoxApp(App):
                     self.recording_state.update(active=True, paused=False, elapsed=0)
                     self._voice_start_in_flight = False
                     self._reset_recording_elapsed_clock()
-                    Clock.schedule_once(lambda _: self._announce_voice_start_success(), 0)
-                    Clock.schedule_once(lambda _: self._sync_voice_assistant_state(), 0)
+                    Clock.schedule_once(lambda _: self._suspend_voice_assistant_for_recording(), 0)
                     Clock.schedule_once(
                         lambda _: self.goto_screen('recording', 'fade'), 0)
                     return
@@ -2055,6 +2056,7 @@ class MeetingBoxApp(App):
                     break
             self._voice_start_in_flight = False
             self._voice_start_confirmation_pending = False
+            self._voice_recording_suspended = False
             Clock.schedule_once(lambda _: self._clear_voice_indicator_override(), 0)
             Clock.schedule_once(lambda _: self._sync_voice_assistant_state(), 0)
             title, message = _recording_start_error_screen_args(
@@ -2077,7 +2079,7 @@ class MeetingBoxApp(App):
                 self.recording_state['active'] = False
                 self._voice_start_in_flight = False
                 self._clear_recording_elapsed_clock()
-                Clock.schedule_once(lambda _: self._sync_voice_assistant_state(), 0)
+                Clock.schedule_once(lambda _: self._resume_voice_assistant_after_recording(), 0)
                 logger.info("Recording stopped successfully")
                 # Device-initiated stop never goes through on_recording_stopped (Redis/WS).
                 self._kick_post_stop_meeting_polls(sid)
@@ -2239,6 +2241,10 @@ class MeetingBoxApp(App):
             return False
         if not getattr(self, "voice_assistant_enabled", True):
             return False
+        if getattr(self, "_voice_recording_suspended", False):
+            return False
+        if self.recording_state.get("active"):
+            return False
         if (
             getattr(self, "_realtime_voice_session", None) is not None
             and getattr(self, "_realtime_mic_acquired", False)
@@ -2270,6 +2276,33 @@ class MeetingBoxApp(App):
             'recording',
         }
         return self.screen_manager.current not in blocked
+
+    def _suspend_voice_assistant_for_recording(self) -> None:
+        """Guarantee meeting audio is not mixed with assistant mic/speaker use."""
+        self._voice_recording_suspended = True
+        self._voice_start_confirmation_pending = False
+        self._voice_start_in_flight = False
+        self._clear_voice_indicator_override()
+        try:
+            if getattr(self, "voice_assistant", None) is not None:
+                self.voice_assistant.set_paused(True)
+                self.voice_assistant.clear_confirmation()
+                self.voice_assistant.exit_command_window()
+        except Exception:
+            logger.exception("Failed to pause local voice assistant for recording")
+        if getattr(self, "_realtime_voice_session", None) is not None or self._realtime_session_pending:
+            try:
+                logger.info("Recording active — stopping Realtime voice assistant")
+                self._end_realtime_voice_session()
+            except Exception:
+                logger.exception("Failed to stop Realtime voice session for recording")
+        self._set_voice_runtime_state("idle")
+        self._sync_voice_assistant_state()
+        self._refresh_voice_indicator()
+
+    def _resume_voice_assistant_after_recording(self) -> None:
+        self._voice_recording_suspended = False
+        self._sync_voice_assistant_state()
 
     def _sync_voice_assistant_state(self) -> None:
         if not getattr(self, 'voice_assistant', None):
@@ -2633,6 +2666,11 @@ class MeetingBoxApp(App):
         self._realtime_voice_session = None
         self._realtime_session_pending = False
         self._sync_voice_assistant_state()
+        if self.recording_state.get("active"):
+            self._clear_voice_indicator_override()
+            self._hide_home_listening_state()
+            self._refresh_voice_indicator()
+            return
         if short_failed:
             # Do not hide listening here — local fallback re-shows it for the full timeout.
             Clock.schedule_once(
@@ -2644,6 +2682,9 @@ class MeetingBoxApp(App):
         self._refresh_voice_indicator()
 
     def _start_realtime_voice_session(self) -> None:
+        if self.recording_state.get("active"):
+            logger.info("Realtime voice session blocked while recording is active")
+            return
         if self._realtime_voice_session is not None:
             logger.info(
                 "Ending prior Realtime voice session before starting a new one"
@@ -2737,6 +2778,10 @@ class MeetingBoxApp(App):
 
     def _run_realtime_voice_session(self, data: dict) -> None:
         self._realtime_session_pending = False
+        if self.recording_state.get("active"):
+            logger.info("Realtime voice session launch cancelled because recording is active")
+            self._sync_voice_assistant_state()
+            return
         try:
             from realtime_voice_session import (
                 RealtimeVoiceSession,
@@ -3147,6 +3192,9 @@ class MeetingBoxApp(App):
     def _voice_reply(self, text: str, state: str = "speaking", duration: float | None = None) -> None:
         if not text:
             return
+        if self.recording_state.get("active"):
+            logger.debug("Voice reply suppressed while recording is active")
+            return
         # Keep realtime voice identity consistent: do not play local fallback TTS
         # while a realtime session is active.
         if getattr(self, "_realtime_voice_session", None) is not None:
@@ -3303,6 +3351,9 @@ class MeetingBoxApp(App):
         }.get(topic or "", "I can't do that yet.")
 
     def _announce_voice_start_success(self) -> None:
+        if self.recording_state.get("active"):
+            self._voice_start_confirmation_pending = False
+            return
         if not self._voice_start_confirmation_pending:
             return
         self._voice_start_confirmation_pending = False

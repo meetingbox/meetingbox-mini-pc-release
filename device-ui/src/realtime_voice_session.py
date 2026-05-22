@@ -37,6 +37,7 @@ import asyncio
 import base64
 import json
 import logging
+import os
 import queue
 import shutil
 import string
@@ -516,23 +517,31 @@ class RealtimeVoiceSession:
             return
         if not shutil.which("aplay"):
             return
+        output_device = (os.getenv("AUDIO_OUTPUT_DEVICE") or "").strip()
+        cmd = [
+            "aplay",
+            "-q",
+        ]
+        if output_device:
+            cmd.extend(["-D", output_device])
+        cmd.extend(
+            [
+                "-t", "raw",
+                "-f", "S16_LE",
+                "-r", str(_REALTIME_RATE),
+                "-c", "1",
+                "--buffer-time", _APLAY_BUFFER_TIME_US,
+            ]
+        )
         try:
             self._aplay_proc = subprocess.Popen(
-                [
-                    "aplay",
-                    "-q",
-                    "-t", "raw",
-                    "-f", "S16_LE",
-                    "-r", str(_REALTIME_RATE),
-                    "-c", "1",
-                    "--buffer-time", _APLAY_BUFFER_TIME_US,
-                ],
+                cmd,
                 stdin=subprocess.PIPE,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
             )
             self._aplay_pid = self._aplay_proc.pid
-            logger.info("Realtime aplay started pid=%s", self._aplay_pid)
+            logger.info("Realtime aplay started pid=%s device=%s", self._aplay_pid, output_device or "default")
         except Exception:
             logger.exception("Realtime: aplay start failed")
             self._aplay_proc = None
