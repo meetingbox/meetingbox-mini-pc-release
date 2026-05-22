@@ -1,4 +1,7 @@
-"""Recording screen — Frame 19 only (`863:635`).  Layout = pure ratios (see frame19_layout)."""
+"""Recording screen — Frame 19 only (`863:635`).
+
+Scaled 1260×800 canvas; Frame 19 children only (updated Figma layout).
+"""
 
 from __future__ import annotations
 
@@ -7,14 +10,19 @@ import time
 
 from kivy.clock import Clock
 from kivy.graphics import Color, Rectangle
+from kivy.uix.anchorlayout import AnchorLayout
 from kivy.uix.floatlayout import FloatLayout
 from kivy.uix.image import Image
 from kivy.uix.label import Label
 
-from config import ASSETS_DIR, DISPLAY_HEIGHT
+from config import ASSETS_DIR
 from frame19_layout import (
     BG_RGB,
+    ELLIPSE17,
     LEFT_VEC,
+    RING_DARK,
+    RING_GLOW,
+    RING_GRADIENT,
     RIGHT_VEC,
     STATUS,
     STATUS_FS_RATIO,
@@ -22,6 +30,7 @@ from frame19_layout import (
     TIMER_FS_RATIO,
     font_px,
     kivy_hints,
+    scaled_canvas,
 )
 from screens.base_screen import BaseScreen
 
@@ -33,26 +42,20 @@ _WHITE = (1.0, 1.0, 1.0, 1.0)
 _MUTED = (182 / 255, 186 / 255, 242 / 255, 1.0)
 _FONT_BOLD = "42dot-Sans"
 
+# (asset filename, layout box) — back → front
+_IMAGES: tuple[tuple[str, dict], ...] = (
+    ("frame19_ellipse17.png", ELLIPSE17),
+    ("frame19_ring_glow.png", RING_GLOW),
+    ("frame19_ring_dark.png", RING_DARK),
+    ("frame19_ring_gradient.png", RING_GRADIENT),
+    ("frame19_vector_left.png", LEFT_VEC),
+    ("frame19_vector_right.png", RIGHT_VEC),
+)
+
 
 def _png(name: str) -> str:
     p = _FIGMA_DIR / name
     return str(p) if p.is_file() else ""
-
-
-def _lbl(text: str, *, fs_ratio: float, color: tuple, box, **kw) -> Label:
-    label = Label(
-        text=text,
-        font_name=_FONT_BOLD,
-        font_size=font_px(fs_ratio, DISPLAY_HEIGHT),
-        bold=True,
-        color=color,
-        halign="left",
-        valign="middle",
-        **kivy_hints(box),
-        **kw,
-    )
-    label.bind(size=label.setter("text_size"))
-    return label
 
 
 class RecordingScreen(BaseScreen):
@@ -63,50 +66,72 @@ class RecordingScreen(BaseScreen):
         self._is_paused = False
         self._rec_base_elapsed = 0.0
         self._rec_active_start = None
+        self._root = None
+        self._canvas = None
+        self.timer_label = None
+        self.status_label = None
         self._build_ui()
 
     def _build_ui(self):
-        root = FloatLayout(size_hint=(1, 1))
-        with root.canvas.before:
+        self._root = FloatLayout(size_hint=(1, 1))
+        with self._root.canvas.before:
             Color(*_BG)
-            self._bg = Rectangle(pos=root.pos, size=root.size)
-        root.bind(
+            self._bg = Rectangle(pos=self._root.pos, size=self._root.size)
+        self._root.bind(
             pos=lambda w, _v: setattr(self._bg, "pos", w.pos),
-            size=lambda w, _v: setattr(self._bg, "size", w.size),
+            size=self._on_root_resize,
         )
 
-        left = _png("frame19_vector_left.png")
-        if left:
-            root.add_widget(Image(
-                source=left,
-                allow_stretch=True,
-                keep_ratio=True,
-                fit_mode="contain",
-                **kivy_hints(LEFT_VEC),
-            ))
+        anchor = AnchorLayout(anchor_x="center", anchor_y="center", size_hint=(1, 1))
+        self._root.add_widget(anchor)
 
-        right = _png("frame19_vector_right.png")
-        if right:
-            root.add_widget(Image(
-                source=right,
-                allow_stretch=True,
-                keep_ratio=True,
-                fit_mode="contain",
-                **kivy_hints(RIGHT_VEC),
-            ))
+        self._canvas = FloatLayout(size_hint=(None, None))
+        anchor.add_widget(self._canvas)
 
-        self.timer_label = _lbl("00 : 12 : 45", fs_ratio=TIMER_FS_RATIO, color=_WHITE, box=TIMER)
-        root.add_widget(self.timer_label)
+        for filename, box in _IMAGES:
+            src = _png(filename)
+            if src:
+                self._canvas.add_widget(Image(
+                    source=src,
+                    allow_stretch=True,
+                    keep_ratio=True,
+                    fit_mode="contain",
+                    **kivy_hints(box),
+                ))
 
-        self.status_label = _lbl(
-            "Recording in progress",
-            fs_ratio=STATUS_FS_RATIO,
+        self.timer_label = Label(
+            text="00 : 12 : 45",
+            font_name=_FONT_BOLD,
+            bold=True,
+            color=_WHITE,
+            halign="center",
+            valign="middle",
+            **kivy_hints(TIMER),
+        )
+        self.timer_label.bind(size=self.timer_label.setter("text_size"))
+        self._canvas.add_widget(self.timer_label)
+
+        self.status_label = Label(
+            text="Recording in progress",
+            font_name=_FONT_BOLD,
+            bold=True,
             color=_MUTED,
-            box=STATUS,
+            halign="center",
+            valign="middle",
+            **kivy_hints(STATUS),
         )
-        root.add_widget(self.status_label)
+        self.status_label.bind(size=self.status_label.setter("text_size"))
+        self._canvas.add_widget(self.status_label)
 
-        self.add_widget(root)
+        self.add_widget(self._root)
+        Clock.schedule_once(lambda _dt: self._on_root_resize(self._root, self._root.size), 0)
+
+    def _on_root_resize(self, _root, size):
+        self._bg.size = size
+        w, h = scaled_canvas(size[0], size[1])
+        self._canvas.size = (w, h)
+        self.timer_label.font_size = font_px(TIMER_FS_RATIO, h)
+        self.status_label.font_size = font_px(STATUS_FS_RATIO, h)
 
     def on_enter(self):
         if self.timer_event:
