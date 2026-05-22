@@ -287,34 +287,74 @@ def pactl_available() -> bool:
     return shutil.which("pactl") is not None
 
 
+# Cache: None = not checked, True/False = last known state
+_pactl_reachable: bool | None = None
+
+
 def _pactl_runs() -> bool:
-    """Quick check: can pactl actually reach the PulseAudio daemon right now?"""
+    """Check whether pactl can reach the PulseAudio daemon. Result is cached."""
+    global _pactl_reachable
     exe = shutil.which("pactl")
     if not exe:
+        _pactl_reachable = False
         return False
+    if _pactl_reachable is not None:
+        return _pactl_reachable
     try:
         r = subprocess.run(
             [exe, "info"], capture_output=True, timeout=2, check=False
         )
-        return r.returncode == 0
+        _pactl_reachable = r.returncode == 0
     except Exception:
-        return False
+        _pactl_reachable = False
+    return _pactl_reachable
+
+
+def _amixer_master_controls() -> list[str]:
+    """Return ALSA Master-like control names that actually exist on this device."""
+    exe = shutil.which("amixer")
+    if not exe:
+        return []
+    try:
+        out = subprocess.check_output(
+            [exe, "scontrols"], timeout=3, stderr=subprocess.DEVNULL
+        ).decode(errors="ignore")
+        names: list[str] = []
+        for line in out.splitlines():
+            # Lines look like: Simple mixer control 'Master',0
+            if "'" in line:
+                name = line.split("'")[1]
+                names.append(name)
+        # Prefer: Master > PCM > Speaker > Headphone > first available
+        for preferred in ("Master", "PCM", "Speaker", "Headphone"):
+            if preferred in names:
+                return [preferred]
+        return names[:1]
+    except Exception:
+        return []
 
 
 def _amixer_set_volume_pct(pct: int) -> None:
-    """ALSA fallback: set Master playback volume via amixer."""
+    """ALSA fallback: set playback volume via amixer using the best available control."""
     exe = shutil.which("amixer")
     if not exe:
         return
-    try:
-        subprocess.run(
-            [exe, "set", "Master", f"{pct}%"],
-            capture_output=True,
-            timeout=3,
-            check=False,
-        )
-    except Exception as e:
-        logger.debug("amixer set Master: %s", e)
+    controls = _amixer_master_controls()
+    if not controls:
+        controls = ["Master"]
+    for ctrl in controls:
+        try:
+            r = subprocess.run(
+                [exe, "set", ctrl, f"{pct}%"],
+                capture_output=True,
+                timeout=3,
+                check=False,
+            )
+            if r.returncode == 0:
+                logger.info("amixer set %s %s%%", ctrl, pct)
+                return
+        except Exception as e:
+            logger.debug("amixer set %s: %s", ctrl, e)
 
 
 def set_sink_volume_pct(pct: int) -> None:
