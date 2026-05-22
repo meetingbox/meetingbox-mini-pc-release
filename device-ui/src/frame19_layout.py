@@ -1,11 +1,11 @@
 """Frame 19 layout — Figma `863:635`.
 
-Figma pixel sizes are a **design reference only**.  On device:
-1. Keep internal layout as ratios inside the reference frame (423×438).
-2. Scale that frame **uniformly** to fit the real screen (preserve aspect ratio).
-3. Centre the result; full-screen background fills any letterbox margins.
+The parent screen in Figma is 1260×800 (Frame 18).
+Frame 19 sits inside it at (392, 104) with size 423×438.
 
-This matches how Figma previews relate to production screens of different sizes.
+All ratios are expressed relative to the 1260×800 screen — the entire parent
+frame is what gets uniformly scaled to fill the real device screen.
+That way every element is positioned exactly as seen in Figma, on any display.
 """
 
 from __future__ import annotations
@@ -14,43 +14,66 @@ from typing import TypedDict
 
 
 class Box(TypedDict):
-    x: float
-    y_top: float
-    w: float
-    h: float
+    x: float       # left edge fraction of screen width
+    y_top: float   # top edge fraction of screen height (Figma top-down)
+    w: float       # width fraction
+    h: float       # height fraction
 
 
-# Figma Frame 19 reference size (aspect ratio lock — not the device resolution)
-DESIGN_W = 423.0
-DESIGN_H = 438.0
+# Figma parent screen size — the ONE coordinate system
+SCREEN_W = 1260.0
+SCREEN_H = 800.0
 
-LEFT_VEC: Box = dict(x=52 / DESIGN_W, y_top=67.47 / DESIGN_H, w=36.97 / DESIGN_W, h=173.32 / DESIGN_H)
-RIGHT_VEC: Box = dict(x=335.8 / DESIGN_W, y_top=67.47 / DESIGN_H, w=36.97 / DESIGN_W, h=173.32 / DESIGN_H)
-TIMER: Box = dict(x=104 / DESIGN_W, y_top=298 / DESIGN_H, w=178 / DESIGN_W, h=42 / DESIGN_H)
-STATUS: Box = dict(x=62 / DESIGN_W, y_top=346 / DESIGN_H, w=290 / DESIGN_W, h=34 / DESIGN_H)
+# Frame 19 origin inside the parent screen
+_F19_X = 392.0
+_F19_Y = 104.0
+_F19_W = 423.0
+_F19_H = 438.0
 
-TIMER_FS_RATIO = 35 / DESIGN_H
-STATUS_FS_RATIO = 28.251121520996094 / DESIGN_H
+
+def _box(local_x: float, local_y: float, w: float, h: float) -> Box:
+    """Convert Frame-19-local Figma px to parent-screen ratios."""
+    return dict(
+        x=(_F19_X + local_x) / SCREEN_W,
+        y_top=(_F19_Y + local_y) / SCREEN_H,
+        w=w / SCREEN_W,
+        h=h / SCREEN_H,
+    )
+
+
+# Frame 19 children expressed in parent-screen ratios
+LEFT_VEC  = _box(52.0,   67.47,  36.97, 173.32)
+RIGHT_VEC = _box(335.8,  67.47,  36.97, 173.32)
+TIMER     = _box(104.0, 298.0,  178.0,   42.0)
+STATUS    = _box(62.0,  346.0,  290.0,   34.0)
+
+# Font sizes relative to the parent screen height
+TIMER_FS_RATIO  = 35.0  / SCREEN_H
+STATUS_FS_RATIO = 28.251121520996094 / SCREEN_H
 
 BG_RGB = (1, 8, 26)
 
 
-def fit_canvas_size(screen_w: float, screen_h: float) -> tuple[float, float]:
-    """Uniform scale-to-fit: largest size that preserves DESIGN aspect ratio."""
+def uniform_scale(screen_w: float, screen_h: float) -> float:
+    """Scale factor to fit the 1260×800 reference frame on any real screen."""
     if screen_w <= 0 or screen_h <= 0:
-        return DESIGN_W, DESIGN_H
-    scale = min(screen_w / DESIGN_W, screen_h / DESIGN_H)
-    return DESIGN_W * scale, DESIGN_H * scale
+        return 1.0
+    return min(screen_w / SCREEN_W, screen_h / SCREEN_H)
+
+
+def scaled_canvas(screen_w: float, screen_h: float) -> tuple[float, float]:
+    """Pixel size of the scaled 1260×800 reference frame."""
+    s = uniform_scale(screen_w, screen_h)
+    return SCREEN_W * s, SCREEN_H * s
 
 
 def kivy_hints(box: Box) -> dict:
-    """Ratio box → Kivy hints inside the scaled design canvas."""
+    """Ratio box → Kivy size_hint + pos_hint (bottom-left origin)."""
     return {
         "size_hint": (box["w"], box["h"]),
         "pos_hint": {"x": box["x"], "y": 1.0 - box["y_top"] - box["h"]},
     }
 
 
-def font_px(fs_ratio: float, canvas_height: float) -> int:
-    """Font size tracks the scaled canvas height (same proportion as Figma)."""
-    return max(6, round(fs_ratio * canvas_height))
+def font_px(fs_ratio: float, canvas_h: float) -> int:
+    return max(6, round(fs_ratio * canvas_h))
