@@ -287,38 +287,80 @@ def pactl_available() -> bool:
     return shutil.which("pactl") is not None
 
 
-def set_sink_volume_pct(pct: int) -> None:
-    """Set default output sink volume 0–100%."""
-    pct = max(0, min(100, int(pct)))
+def _pactl_runs() -> bool:
+    """Quick check: can pactl actually reach the PulseAudio daemon right now?"""
     exe = shutil.which("pactl")
+    if not exe:
+        return False
+    try:
+        r = subprocess.run(
+            [exe, "info"], capture_output=True, timeout=2, check=False
+        )
+        return r.returncode == 0
+    except Exception:
+        return False
+
+
+def _amixer_set_volume_pct(pct: int) -> None:
+    """ALSA fallback: set Master playback volume via amixer."""
+    exe = shutil.which("amixer")
     if not exe:
         return
     try:
         subprocess.run(
-            [exe, "set-sink-volume", "@DEFAULT_SINK@", f"{pct}%"],
+            [exe, "set", "Master", f"{pct}%"],
             capture_output=True,
             timeout=3,
             check=False,
         )
     except Exception as e:
-        logger.debug("set_sink_volume_pct: %s", e)
+        logger.debug("amixer set Master: %s", e)
+
+
+def set_sink_volume_pct(pct: int) -> None:
+    """Set default output sink volume 0–100% (PulseAudio, fallback to ALSA amixer)."""
+    pct = max(0, min(100, int(pct)))
+    exe = shutil.which("pactl")
+    if exe and _pactl_runs():
+        try:
+            subprocess.run(
+                [exe, "set-sink-volume", "@DEFAULT_SINK@", f"{pct}%"],
+                capture_output=True,
+                timeout=3,
+                check=False,
+            )
+            return
+        except Exception as e:
+            logger.debug("set_sink_volume_pct pactl: %s", e)
+    _amixer_set_volume_pct(pct)
 
 
 def set_source_volume_pct(pct: int) -> None:
-    """Set default capture source volume / gain 0–150%."""
+    """Set default capture source volume / gain 0–150% (PulseAudio, fallback to ALSA amixer)."""
     pct = max(0, min(150, int(pct)))
     exe = shutil.which("pactl")
-    if not exe:
-        return
-    try:
-        subprocess.run(
-            [exe, "set-source-volume", "@DEFAULT_SOURCE@", f"{pct}%"],
-            capture_output=True,
-            timeout=3,
-            check=False,
-        )
-    except Exception as e:
-        logger.debug("set_source_volume_pct: %s", e)
+    if exe and _pactl_runs():
+        try:
+            subprocess.run(
+                [exe, "set-source-volume", "@DEFAULT_SOURCE@", f"{pct}%"],
+                capture_output=True,
+                timeout=3,
+                check=False,
+            )
+            return
+        except Exception as e:
+            logger.debug("set_source_volume_pct pactl: %s", e)
+    exe_amixer = shutil.which("amixer")
+    if exe_amixer:
+        try:
+            subprocess.run(
+                [exe_amixer, "set", "Capture", f"{pct}%"],
+                capture_output=True,
+                timeout=3,
+                check=False,
+            )
+        except Exception as e:
+            logger.debug("set_source_volume_pct amixer: %s", e)
 
 
 def list_pulse_sinks() -> list[tuple[str, str]]:
