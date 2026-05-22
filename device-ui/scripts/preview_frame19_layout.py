@@ -1,4 +1,4 @@
-"""Preview Frame 19 at correct position inside the 1260×800 parent screen."""
+"""Preview Frame 19 with uniform scale-to-fit (matches device behaviour)."""
 
 from __future__ import annotations
 
@@ -7,30 +7,38 @@ from pathlib import Path
 
 from PIL import Image, ImageDraw, ImageFont
 
-ROOT   = Path(__file__).resolve().parent.parent
-ASSETS = ROOT / "assets" / "recording" / "figma"
-OUT    = ASSETS / "frame19_layout_preview.png"
-
+ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "src"))
 
 from frame19_layout import (  # noqa: E402
-    BG_RGB, LEFT_VEC, RIGHT_VEC, STATUS, STATUS_FS_RATIO,
-    TIMER, TIMER_FS_RATIO, font_px, scaled_canvas,
+    BG_RGB,
+    CANVAS_H,
+    CANVAS_W,
+    LEFT_VEC,
+    RIGHT_VEC,
+    STATUS,
+    STATUS_FS_RATIO,
+    TIMER,
+    TIMER_FS_RATIO,
+    font_px,
+    scaled_canvas,
 )
 
-SCREEN_W, SCREEN_H = 1260, 800   # target device resolution for preview
+ASSETS = ROOT / "assets" / "recording" / "figma"
+OUT = ASSETS / "frame19_layout_preview.png"
+
+SCREEN_W, SCREEN_H = 1260, 800
 
 
-def _px(box, cw, ch, ox, oy):
-    return (
-        int(ox + box["x"] * cw),
-        int(oy + box["y_top"] * ch),
-        int(ox + (box["x"] + box["w"]) * cw),
-        int(oy + (box["y_top"] + box["h"]) * ch),
-    )
+def _rect(box, cw: float, ch: float, ox: float, oy: float) -> tuple[int, int, int, int]:
+    x0 = int(ox + box["x"] * cw)
+    y0 = int(oy + box["y_top"] * ch)
+    x1 = int(ox + (box["x"] + box["w"]) * cw)
+    y1 = int(oy + (box["y_top"] + box["h"]) * ch)
+    return x0, y0, x1, y1
 
 
-def main():
+def main() -> None:
     img = Image.new("RGB", (SCREEN_W, SCREEN_H), BG_RGB)
     cw, ch = scaled_canvas(SCREEN_W, SCREEN_H)
     ox = (SCREEN_W - cw) / 2
@@ -40,7 +48,7 @@ def main():
         path = ASSETS / name
         if path.is_file():
             asset = Image.open(path).convert("RGBA")
-            x0, y0, x1, y1 = _px(box, cw, ch, ox, oy)
+            x0, y0, x1, y1 = _rect(box, cw, ch, ox, oy)
             asset = asset.resize((max(1, x1 - x0), max(1, y1 - y0)), Image.Resampling.LANCZOS)
             img.paste(asset, (x0, y0), asset)
 
@@ -51,14 +59,21 @@ def main():
     except OSError:
         ft = fs = ImageFont.load_default()
 
-    tx0, ty0, *_ = _px(TIMER, cw, ch, ox, oy)
+    tx0, ty0, _, _ = _rect(TIMER, cw, ch, ox, oy)
     draw.text((tx0, ty0), "00 : 12 : 45", fill=(255, 255, 255), font=ft)
-
-    sx0, sy0, *_ = _px(STATUS, cw, ch, ox, oy)
+    sx0, sy0, _, _ = _rect(STATUS, cw, ch, ox, oy)
     draw.text((sx0, sy0), "Recording in progress", fill=(182, 186, 242), font=fs)
 
+    # Outline scaled canvas (debug — shows letterbox vs stretch)
+    draw.rectangle(
+        [int(ox), int(oy), int(ox + cw), int(oy + ch)],
+        outline=(40, 60, 100),
+        width=1,
+    )
+
+    OUT.parent.mkdir(parents=True, exist_ok=True)
     img.save(OUT)
-    print(f"Saved {OUT}  screen={SCREEN_W}×{SCREEN_H}  canvas={cw:.0f}×{ch:.0f}")
+    print(f"Wrote {OUT} screen={SCREEN_W}x{SCREEN_H} canvas={cw:.0f}x{ch:.0f} ref={CANVAS_W:.0f}x{CANVAS_H:.0f}")
 
 
 if __name__ == "__main__":

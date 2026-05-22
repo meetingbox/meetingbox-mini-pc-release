@@ -1,8 +1,7 @@
 """Recording screen — Frame 19 only (`863:635`).
 
-Coordinate system: Figma 1260×800 parent screen.
-Frame 19 sits inside that at (392, 104) / 423×438 — exact Figma position.
-The whole 1260×800 canvas is scaled uniformly to fit any real device screen.
+Responsive: ratios inside the Figma reference frame, uniform scale-to-fit on any
+display size (see ``frame19_layout``).
 """
 
 from __future__ import annotations
@@ -35,10 +34,10 @@ from screens.base_screen import BaseScreen
 logger = logging.getLogger(__name__)
 
 _FIGMA_DIR = ASSETS_DIR / "recording" / "figma"
-_BG    = (BG_RGB[0] / 255, BG_RGB[1] / 255, BG_RGB[2] / 255, 1.0)
+_BG = (BG_RGB[0] / 255, BG_RGB[1] / 255, BG_RGB[2] / 255, 1.0)
 _WHITE = (1.0, 1.0, 1.0, 1.0)
 _MUTED = (182 / 255, 186 / 255, 242 / 255, 1.0)
-_FONT  = "42dot-Sans"
+_FONT_BOLD = "42dot-Sans"
 
 
 def _png(name: str) -> str:
@@ -47,58 +46,62 @@ def _png(name: str) -> str:
 
 
 class RecordingScreen(BaseScreen):
-
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
-        self.elapsed_seconds   = 0
-        self.timer_event       = None
-        self._is_paused        = False
+        self.elapsed_seconds = 0
+        self.timer_event = None
+        self._is_paused = False
         self._rec_base_elapsed = 0.0
         self._rec_active_start = None
-        self._canvas           = None
-        self.timer_label       = None
-        self.status_label      = None
-        self._bg_rect          = None
+        self._root = None
+        self._canvas = None
+        self.timer_label = None
+        self.status_label = None
         self._build_ui()
 
-    # ------------------------------------------------------------------
     def _build_ui(self):
-        root = FloatLayout(size_hint=(1, 1))
-
-        with root.canvas.before:
+        self._root = FloatLayout(size_hint=(1, 1))
+        with self._root.canvas.before:
             Color(*_BG)
-            self._bg_rect = Rectangle(pos=root.pos, size=root.size)
-        root.bind(
-            pos =lambda w, _: setattr(self._bg_rect, "pos",  w.pos),
-            size=self._on_resize,
+            self._bg = Rectangle(pos=self._root.pos, size=self._root.size)
+        self._root.bind(
+            pos=lambda w, _v: setattr(self._bg, "pos", w.pos),
+            size=self._on_root_resize,
         )
 
-        # Centred canvas: the scaled 1260×800 reference frame
         anchor = AnchorLayout(anchor_x="center", anchor_y="center", size_hint=(1, 1))
-        root.add_widget(anchor)
+        self._root.add_widget(anchor)
 
         self._canvas = FloatLayout(size_hint=(None, None))
         anchor.add_widget(self._canvas)
 
-        # ── Frame 19 children ──────────────────────────────────────────
-        for name, box in (
-            ("frame19_vector_left.png",  LEFT_VEC),
-            ("frame19_vector_right.png", RIGHT_VEC),
-        ):
-            src = _png(name)
-            if src:
-                self._canvas.add_widget(Image(
-                    source=src,
-                    allow_stretch=True,
-                    keep_ratio=True,
-                    fit_mode="contain",
-                    **kivy_hints(box),
-                ))
+        left = _png("frame19_vector_left.png")
+        if left:
+            self._canvas.add_widget(Image(
+                source=left,
+                allow_stretch=True,
+                keep_ratio=True,
+                fit_mode="contain",
+                **kivy_hints(LEFT_VEC),
+            ))
+
+        right = _png("frame19_vector_right.png")
+        if right:
+            self._canvas.add_widget(Image(
+                source=right,
+                allow_stretch=True,
+                keep_ratio=True,
+                fit_mode="contain",
+                **kivy_hints(RIGHT_VEC),
+            ))
 
         self.timer_label = Label(
             text="00 : 12 : 45",
-            font_name=_FONT, bold=True, color=_WHITE,
-            halign="left", valign="middle",
+            font_name=_FONT_BOLD,
+            bold=True,
+            color=_WHITE,
+            halign="left",
+            valign="middle",
             **kivy_hints(TIMER),
         )
         self.timer_label.bind(size=self.timer_label.setter("text_size"))
@@ -106,32 +109,36 @@ class RecordingScreen(BaseScreen):
 
         self.status_label = Label(
             text="Recording in progress",
-            font_name=_FONT, bold=True, color=_MUTED,
-            halign="left", valign="middle",
+            font_name=_FONT_BOLD,
+            bold=True,
+            color=_MUTED,
+            halign="left",
+            valign="middle",
             **kivy_hints(STATUS),
         )
         self.status_label.bind(size=self.status_label.setter("text_size"))
         self._canvas.add_widget(self.status_label)
 
-        self.add_widget(root)
-        Clock.schedule_once(lambda _: self._on_resize(root, root.size), 0)
+        self.add_widget(self._root)
+        Clock.schedule_once(lambda _dt: self._on_root_resize(self._root, self._root.size), 0)
 
-    def _on_resize(self, widget, size):
-        self._bg_rect.size = size
-        cw, ch = scaled_canvas(size[0], size[1])
-        self._canvas.size          = (cw, ch)
-        self.timer_label.font_size  = font_px(TIMER_FS_RATIO,  ch)
-        self.status_label.font_size = font_px(STATUS_FS_RATIO, ch)
+    def _on_root_resize(self, _root, size):
+        self._bg.size = size
+        w, h = scaled_canvas(size[0], size[1])
+        self._canvas.size = (w, h)
+        self.timer_label.font_size = font_px(TIMER_FS_RATIO, h)
+        self.status_label.font_size = font_px(STATUS_FS_RATIO, h)
 
-    # ------------------------------------------------------------------
     def on_enter(self):
         if self.timer_event:
             self.timer_event.cancel()
-        self._is_paused        = False
-        self.elapsed_seconds   = 0
+            self.timer_event = None
+
+        self._is_paused = False
+        self.elapsed_seconds = 0
         self._rec_base_elapsed = 0.0
         self._rec_active_start = time.monotonic()
-        self.timer_label.text  = "00 : 00 : 00"
+        self.timer_label.text = "00 : 00 : 00"
         self.status_label.text = "Recording in progress"
         self.timer_event = Clock.schedule_interval(self._tick_timer, 0.5)
 
@@ -140,36 +147,40 @@ class RecordingScreen(BaseScreen):
             self.timer_event.cancel()
             self.timer_event = None
 
-    # ------------------------------------------------------------------
     def _elapsed_from_monotonic(self) -> int:
         if self._is_paused or self._rec_active_start is None:
             return int(self._rec_base_elapsed)
         return int(self._rec_base_elapsed + (time.monotonic() - self._rec_active_start))
 
     def _tick_timer(self, _dt):
-        self.elapsed_seconds  = self._elapsed_from_monotonic()
+        self.elapsed_seconds = self._elapsed_from_monotonic()
         self.timer_label.text = self._fmt_time(self.elapsed_seconds)
 
     @staticmethod
-    def _fmt_time(s: int) -> str:
-        return f"{s // 3600:02d} : {(s % 3600) // 60:02d} : {s % 60:02d}"
+    def _fmt_time(secs: int) -> str:
+        h = secs // 3600
+        m = (secs % 3600) // 60
+        s = secs % 60
+        return f"{h:02d} : {m:02d} : {s:02d}"
 
-    # ------------------------------------------------------------------
     def on_paused(self):
         if self._is_paused:
             return
         self._is_paused = True
         if self._rec_active_start is not None:
             self._rec_base_elapsed += time.monotonic() - self._rec_active_start
-            self._rec_active_start  = None
+            self._rec_active_start = None
         self.status_label.text = "Recording paused"
 
     def on_resumed(self):
         if not self._is_paused:
             return
-        self._is_paused        = False
+        self._is_paused = False
         self._rec_active_start = time.monotonic()
         self.status_label.text = "Recording in progress"
 
-    def on_audio_level(self, level: float):    del level
-    def on_audio_segment(self, segment: int):  del segment
+    def on_audio_level(self, level: float):
+        del level
+
+    def on_audio_segment(self, segment_num: int):
+        del segment_num
