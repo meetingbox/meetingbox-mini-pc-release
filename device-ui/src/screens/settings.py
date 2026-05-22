@@ -124,16 +124,56 @@ class SettingsScreen(BaseScreen):
         self.model_item.height = self.suv(70)
         self.container.add_widget(self.model_item)
 
+        self.room_label_item = SettingsItem(
+            title='Room / Location',
+            subtitle='',
+            mode='arrow',
+            on_press=lambda _: self.goto('room_label_screen', transition='slide_left'),
+        )
+        self.container.add_widget(self.room_label_item)
+
         # ---- NETWORK ----
         self.container.add_widget(self._section_header('NETWORK'))
 
-        self.wifi_item = SettingsItem(
+        self.wifi_radio_item = SettingsItem(
             title='WiFi',
+            subtitle='',
+            mode='toggle',
+            active=True,
+            on_toggle=self._on_wifi_radio_toggled,
+        )
+        self.container.add_widget(self.wifi_radio_item)
+
+        self.wifi_item = SettingsItem(
+            title='WiFi network',
             subtitle='Loading…',
             mode='arrow',
             on_press=lambda _: self.goto('wifi', transition='slide_left'),
         )
         self.container.add_widget(self.wifi_item)
+
+        self.ethernet_item = SettingsItem(
+            title='Ethernet',
+            subtitle='Checking…',
+            mode='info',
+        )
+        self.container.add_widget(self.ethernet_item)
+
+        self.wifi_forget_item = SettingsItem(
+            title='Forget saved networks',
+            subtitle='',
+            mode='arrow',
+            on_press=lambda _: self.goto('wifi_forget_screen', transition='slide_left'),
+        )
+        self.container.add_widget(self.wifi_forget_item)
+
+        self.bluetooth_item = SettingsItem(
+            title='Bluetooth',
+            subtitle='',
+            mode='arrow',
+            on_press=lambda _: self.goto('bluetooth_screen', transition='slide_left'),
+        )
+        self.container.add_widget(self.bluetooth_item)
 
         # ---- STORAGE ----
         self.container.add_widget(self._section_header('STORAGE'))
@@ -152,6 +192,14 @@ class SettingsScreen(BaseScreen):
             on_press=lambda _: self.goto('auto_delete_picker', transition='slide_left'),
         )
         self.container.add_widget(self.auto_delete_item)
+
+        self.storage_breakdown_item = SettingsItem(
+            title='Storage breakdown',
+            subtitle='Recordings · transcripts · cache',
+            mode='arrow',
+            on_press=lambda _: self.goto('storage_breakdown', transition='slide_left'),
+        )
+        self.container.add_widget(self.storage_breakdown_item)
 
         # ---- SYSTEM ----
         self.container.add_widget(self._section_header('SYSTEM'))
@@ -178,6 +226,47 @@ class SettingsScreen(BaseScreen):
         )
         self.container.add_widget(self.uptime_item)
 
+        self.auto_update_item = SettingsItem(
+            title='Auto-update',
+            subtitle='Keep firmware up to date automatically',
+            mode='toggle',
+            active=True,
+            on_toggle=lambda v: self._save_setting('auto_update_enabled', v),
+        )
+        self.container.add_widget(self.auto_update_item)
+
+        self.update_channel_item = SettingsItem(
+            title='Update channel',
+            subtitle='Stable',
+            mode='arrow',
+            on_press=lambda _: self.goto('update_channel_picker', transition='slide_left'),
+        )
+        self.container.add_widget(self.update_channel_item)
+
+        self.datetime_item = SettingsItem(
+            title='Date & Time',
+            subtitle='',
+            mode='arrow',
+            on_press=lambda _: self.goto('datetime_screen', transition='slide_left'),
+        )
+        self.container.add_widget(self.datetime_item)
+
+        self.timezone_item = SettingsItem(
+            title='Timezone',
+            subtitle='',
+            mode='arrow',
+            on_press=lambda _: self.goto('timezone_picker', transition='slide_left'),
+        )
+        self.container.add_widget(self.timezone_item)
+
+        self.diag_logs_item = SettingsItem(
+            title='Diagnostic logs',
+            subtitle='View system log output',
+            mode='arrow',
+            on_press=lambda _: self.goto('diagnostic_logs', transition='slide_left'),
+        )
+        self.container.add_widget(self.diag_logs_item)
+
         # ---- PRIVACY ----
         self.container.add_widget(self._section_header('PRIVACY'))
 
@@ -199,14 +288,57 @@ class SettingsScreen(BaseScreen):
         )
         self.container.add_widget(self.auto_record_item)
 
+        self.auto_summarize_item = SettingsItem(
+            title='Auto-summarize meetings',
+            subtitle='Generate summary after each recording',
+            mode='toggle',
+            active=True,
+            on_toggle=lambda v: self._save_setting('auto_summarize', v),
+        )
+        self.container.add_widget(self.auto_summarize_item)
+
+        self.transcript_storage_item = SettingsItem(
+            title='Save transcripts',
+            subtitle='Store transcript text on device',
+            mode='toggle',
+            active=True,
+            on_toggle=lambda v: self._save_setting('transcript_storage_enabled', v),
+        )
+        self.container.add_widget(self.transcript_storage_item)
+
+        self.consent_reminder_item = SettingsItem(
+            title='Recording consent reminder',
+            subtitle='Show reminder when recording starts',
+            mode='toggle',
+            active=True,
+            on_toggle=lambda v: self._save_setting('recording_consent_reminder', v),
+        )
+        self.container.add_widget(self.consent_reminder_item)
+
+        self.clear_recordings_item = SettingsItem(
+            title='Clear all recordings',
+            subtitle='Bulk delete all recorded files',
+            mode='arrow',
+            on_press=lambda _: self._confirm_clear_all('recordings'),
+        )
+        self.container.add_widget(self.clear_recordings_item)
+
+        self.clear_transcripts_item = SettingsItem(
+            title='Clear all transcripts',
+            subtitle='Bulk delete all transcript files',
+            mode='arrow',
+            on_press=lambda _: self._confirm_clear_all('transcripts'),
+        )
+        self.container.add_widget(self.clear_transcripts_item)
+
         # ---- DISPLAY ----
         self.container.add_widget(self._section_header('DISPLAY'))
 
         self.brightness_item = SettingsItem(
             title='Screen Brightness',
-            subtitle='High',
+            subtitle='',
             mode='arrow',
-            on_press=lambda _: self.goto('brightness_picker', transition='slide_left'),
+            on_press=lambda _: self.goto('brightness_slider', transition='slide_left'),
         )
         self.container.add_widget(self.brightness_item)
 
@@ -232,6 +364,23 @@ class SettingsScreen(BaseScreen):
         )
         self.container.add_widget(self.weather_location_item)
 
+        self.font_size_item = SettingsItem(
+            title='Font size',
+            subtitle='Medium',
+            mode='arrow',
+            on_press=lambda _: self.goto('font_size_picker', transition='slide_left'),
+        )
+        self.container.add_widget(self.font_size_item)
+
+        self.screen_always_on_item = SettingsItem(
+            title='Screen always-on during recording',
+            subtitle='Prevent idle screen while recording',
+            mode='toggle',
+            active=True,
+            on_toggle=lambda v: self._save_setting('screen_always_on_recording', v),
+        )
+        self.container.add_widget(self.screen_always_on_item)
+
         # ---- AUDIO ----
         self.container.add_widget(self._section_header('AUDIO'))
 
@@ -243,6 +392,38 @@ class SettingsScreen(BaseScreen):
         )
         self.container.add_widget(self.speech_volume_item)
 
+        self.notif_volume_item = SettingsItem(
+            title='System / notification volume',
+            subtitle='',
+            mode='arrow',
+            on_press=lambda _: self.goto('notification_volume_picker', transition='slide_left'),
+        )
+        self.container.add_widget(self.notif_volume_item)
+
+        self.mic_gain_item = SettingsItem(
+            title='Microphone input gain',
+            subtitle='',
+            mode='arrow',
+            on_press=lambda _: self.goto('mic_gain_picker', transition='slide_left'),
+        )
+        self.container.add_widget(self.mic_gain_item)
+
+        self.audio_output_item = SettingsItem(
+            title='Output device',
+            subtitle='',
+            mode='arrow',
+            on_press=lambda _: self.goto('audio_output_picker', transition='slide_left'),
+        )
+        self.container.add_widget(self.audio_output_item)
+
+        self.audio_input_item = SettingsItem(
+            title='Input (microphone) device',
+            subtitle='',
+            mode='arrow',
+            on_press=lambda _: self.goto('audio_input_picker', transition='slide_left'),
+        )
+        self.container.add_widget(self.audio_input_item)
+
         self.mic_test_item = SettingsItem(
             title='Microphone Test',
             subtitle='',
@@ -250,6 +431,24 @@ class SettingsScreen(BaseScreen):
             on_press=lambda _: self.goto('mic_test', transition='slide_left'),
         )
         self.container.add_widget(self.mic_test_item)
+
+        self.meeting_chime_item = SettingsItem(
+            title='Meeting start/end chime',
+            subtitle='',
+            mode='toggle',
+            active=True,
+            on_toggle=lambda v: self._save_setting('meeting_chime_enabled', v),
+        )
+        self.container.add_widget(self.meeting_chime_item)
+
+        self.alert_sounds_item = SettingsItem(
+            title='Alert / notification sounds',
+            subtitle='',
+            mode='toggle',
+            active=True,
+            on_toggle=lambda v: self._save_setting('alert_sounds_enabled', v),
+        )
+        self.container.add_widget(self.alert_sounds_item)
 
         self.voice_assistant_enabled_item = SettingsItem(
             title='Voice assistant',
@@ -282,17 +481,50 @@ class SettingsScreen(BaseScreen):
 
         self.gmail_item = SettingsItem(
             title='Gmail',
-            subtitle=f'Configure at {DASHBOARD_URL}',
-            mode='info',
+            subtitle='Loading…',
+            mode='arrow',
+            on_press=lambda _: self._open_integration_detail('gmail'),
         )
         self.container.add_widget(self.gmail_item)
 
         self.calendar_item = SettingsItem(
-            title='Calendar',
-            subtitle=f'Configure at {DASHBOARD_URL}',
-            mode='info',
+            title='Google Calendar',
+            subtitle='Loading…',
+            mode='arrow',
+            on_press=lambda _: self._open_integration_detail('calendar'),
         )
         self.container.add_widget(self.calendar_item)
+
+        # ---- NOTIFICATIONS ----
+        self.container.add_widget(self._section_header('NOTIFICATIONS'))
+
+        self.notif_master_item = SettingsItem(
+            title='Notifications',
+            subtitle='Master on/off',
+            mode='toggle',
+            active=True,
+            on_toggle=lambda v: self._save_setting('notification_enabled', v),
+        )
+        self.container.add_widget(self.notif_master_item)
+
+        self.notif_settings_item = SettingsItem(
+            title='Notification preferences',
+            subtitle='Reminders, DND, per-category',
+            mode='arrow',
+            on_press=lambda _: self.goto('notifications_settings', transition='slide_left'),
+        )
+        self.container.add_widget(self.notif_settings_item)
+
+        # ---- SECURITY ----
+        self.container.add_widget(self._section_header('SECURITY'))
+
+        self.security_item = SettingsItem(
+            title='Security settings',
+            subtitle='PIN lock, session timeout',
+            mode='arrow',
+            on_press=lambda _: self.goto('security_settings', transition='slide_left'),
+        )
+        self.container.add_widget(self.security_item)
 
         # ---- MAINTENANCE ----
         self.container.add_widget(self._section_header('MAINTENANCE'))
@@ -329,8 +561,48 @@ class SettingsScreen(BaseScreen):
         )
         self.container.add_widget(self.reset_item)
 
+        self.connectivity_item = SettingsItem(
+            title='Server connectivity check',
+            subtitle='Ping backend + internet',
+            mode='arrow',
+            on_press=lambda _: self.goto('connectivity_check', transition='slide_left'),
+        )
+        self.container.add_widget(self.connectivity_item)
+
+        self.usb_info_item = SettingsItem(
+            title='Connected USB devices',
+            subtitle='Peripheral info',
+            mode='arrow',
+            on_press=lambda _: self.goto('usb_info', transition='slide_left'),
+        )
+        self.container.add_widget(self.usb_info_item)
+
+        self.diag_report_item = SettingsItem(
+            title='Send diagnostic report',
+            subtitle='Submit system logs to support',
+            mode='arrow',
+            on_press=lambda _: self._send_diag_report(),
+        )
+        self.container.add_widget(self.diag_report_item)
+
         # ---- SUPPORT ----
         self.container.add_widget(self._section_header('SUPPORT'))
+
+        self.about_item = SettingsItem(
+            title='About / Licenses',
+            subtitle='Firmware build, open-source notices',
+            mode='arrow',
+            on_press=lambda _: self.goto('about_screen', transition='slide_left'),
+        )
+        self.container.add_widget(self.about_item)
+
+        self.feedback_item = SettingsItem(
+            title='Send feedback',
+            subtitle='',
+            mode='arrow',
+            on_press=lambda _: self.goto('send_feedback', transition='slide_left'),
+        )
+        self.container.add_widget(self.feedback_item)
 
         self.support_item = SettingsItem(
             title='Help',
@@ -417,8 +689,11 @@ class SettingsScreen(BaseScreen):
                 up_h = (up_s % 86400) // 3600
 
                 ad = settings.get('auto_delete_days', 'never')
-                ad_labels = {'never': 'Never', '30': 'After 30 days',
-                             '60': 'After 60 days', '90': 'After 90 days'}
+                ad_labels = {
+                    'never': 'Never', '30': 'After 30 days',
+                    '60': 'After 60 days', '90': 'After 90 days',
+                    '180': 'After 180 days', '365': 'After 1 year',
+                }
                 br = settings.get('brightness', 'high')
                 br_labels = {'low': 'Low', 'medium': 'Medium', 'high': 'High'}
                 idle = settings.get('idle_screen_timeout', '30')
@@ -432,22 +707,21 @@ class SettingsScreen(BaseScreen):
                     'never': 'Never',
                 }
 
-                gmail_status = f'Configure at {DASHBOARD_URL}'
-                cal_status = f'Configure at {DASHBOARD_URL}'
+                gmail_status = 'Not connected'
+                cal_status = 'Not connected'
                 for integ in integrations:
                     iid = (integ.get('id') or '').lower()
                     iname = (integ.get('name') or '').lower()
                     connected = bool(integ.get('connected'))
                     email = (integ.get('email') or '').strip()
-                    acct = f' · {email}' if email else ''
+                    last_sync = (integ.get('last_sync') or '').strip()
+                    acct = email if email else ('Connected' if connected else 'Not connected')
+                    if last_sync:
+                        acct = f'{acct} · {last_sync[:10]}'
                     if iid == 'gmail' or 'gmail' in iname or 'mail' in iname:
-                        gmail_status = (
-                            f'Connected{acct}' if connected else f'Not connected · use {DASHBOARD_URL}'
-                        )
+                        gmail_status = acct if connected else 'Not connected'
                     elif iid == 'calendar' or 'calendar' in iname:
-                        cal_status = (
-                            f'Connected{acct}' if connected else f'Not connected · use {DASHBOARD_URL}'
-                        )
+                        cal_status = acct if connected else 'Not connected'
 
                 def _update(_dt):
                     self.wifi_item.subtitle_label.text = wifi_text
@@ -461,8 +735,37 @@ class SettingsScreen(BaseScreen):
                     self.app.device_name = name
 
                     self.auto_delete_item.subtitle_label.text = ad_labels.get(ad, ad)
-                    self.brightness_item.subtitle_label.text = br_labels.get(br, br)
+                    br_val = settings.get('brightness', 'high')
+                    try:
+                        br_pct = int(br_val)
+                        self.brightness_item.subtitle_label.text = f'{br_pct}%'
+                    except (TypeError, ValueError):
+                        self.brightness_item.subtitle_label.text = br_labels.get(br_val, str(br_val))
                     self.idle_timeout_item.subtitle_label.text = idle_labels.get(idle, f'After {idle}s')
+                    self.room_label_item.subtitle_label.text = settings.get('room_label', '') or ''
+                    self.timezone_item.subtitle_label.text = settings.get('timezone', '') or ''
+                    self.update_channel_item.subtitle_label.text = (
+                        settings.get('update_channel', 'stable') or 'stable').title()
+                    self.auto_update_item.toggle.active = bool(settings.get('auto_update_enabled', True))
+                    self.screen_always_on_item.toggle.active = bool(settings.get('screen_always_on_recording', True))
+                    fs = settings.get('font_size', 'medium') or 'medium'
+                    self.font_size_item.subtitle_label.text = fs.title()
+                    self.auto_summarize_item.toggle.active = bool(settings.get('auto_summarize', True))
+                    self.transcript_storage_item.toggle.active = bool(settings.get('transcript_storage_enabled', True))
+                    self.consent_reminder_item.toggle.active = bool(settings.get('recording_consent_reminder', True))
+                    self.notif_master_item.toggle.active = bool(settings.get('notification_enabled', True))
+                    self.meeting_chime_item.toggle.active = bool(settings.get('meeting_chime_enabled', True))
+                    self.alert_sounds_item.toggle.active = bool(settings.get('alert_sounds_enabled', True))
+                    sys_vol = settings.get('system_output_volume', 80)
+                    try:
+                        self.notif_volume_item.subtitle_label.text = f'{int(sys_vol)}%'
+                    except (TypeError, ValueError):
+                        pass
+                    mic_vol = settings.get('mic_input_volume', 100)
+                    try:
+                        self.mic_gain_item.subtitle_label.text = f'{int(mic_vol)}%'
+                    except (TypeError, ValueError):
+                        pass
 
                     weather_loc = get_weather_client().location
                     if weather_loc:
@@ -519,13 +822,17 @@ class SettingsScreen(BaseScreen):
                     except Exception:
                         pass
 
+                    eth_ok = linux_ethernet_ready()
+                    self.ethernet_item.subtitle_label.text = (
+                        f'Connected · {ip}' if eth_ok else 'Not connected'
+                    )
                     wifi_ok = bool(info.get('wifi_ssid'))
                     privacy = getattr(self.app, 'privacy_mode', False)
                     self.update_footer(
                         wifi_ok=wifi_ok,
                         free_gb=sf,
                         privacy_mode=privacy,
-                        wired_lan_ok=linux_ethernet_ready(),
+                        wired_lan_ok=eth_ok,
                     )
 
                 Clock.schedule_once(_update, 0)
@@ -535,18 +842,119 @@ class SettingsScreen(BaseScreen):
         run_async(_fetch())
 
     # ------------------------------------------------------------------
-    # Device name info dialog
+    # Device name inline edit dialog
     # ------------------------------------------------------------------
     def _show_device_name_dialog(self):
-        dialog = ModalDialog(
+        dialog = TextInputDialog(
             title='Device Name',
-            message=(f'To change your device name,\n'
-                     f'visit {DASHBOARD_URL} on your\n'
-                     f'phone or laptop.'),
-            confirm_text='OK',
-            cancel_text='',
+            message='Enter a new name for this device.',
+            initial_value=self.device_name_item.subtitle_label.text or 'MeetingBox',
+            placeholder='MeetingBox',
+            on_confirm=self._apply_device_name,
         )
         self.add_widget(dialog)
+
+    def _apply_device_name(self, value: str):
+        name = (value or '').strip()
+        if not name:
+            return
+        self.device_name_item.subtitle_label.text = name
+        self.app.device_name = name
+
+        async def _save():
+            try:
+                await self.backend.update_settings({'device_name': name})
+            except Exception:
+                pass
+
+        run_async(_save())
+
+    # ------------------------------------------------------------------
+    # Generic setting saver
+    # ------------------------------------------------------------------
+    def _save_setting(self, key: str, value):
+        async def _s():
+            try:
+                await self.backend.update_settings({key: value})
+            except Exception:
+                pass
+        run_async(_s())
+
+    # ------------------------------------------------------------------
+    # WiFi radio toggle
+    # ------------------------------------------------------------------
+    def _on_wifi_radio_toggled(self, active: bool):
+        async def _toggle():
+            try:
+                await self.backend.wifi_radio(active)
+            except Exception:
+                pass
+        run_async(_toggle())
+
+    # ------------------------------------------------------------------
+    # Integration detail helper
+    # ------------------------------------------------------------------
+    def _open_integration_detail(self, integration_id: str):
+        try:
+            screen = self.app.screen_manager.get_screen('integration_detail')
+            screen.integration_id = integration_id
+        except Exception:
+            pass
+        self.goto('integration_detail', transition='slide_left')
+
+    # ------------------------------------------------------------------
+    # Clear all recordings / transcripts
+    # ------------------------------------------------------------------
+    def _confirm_clear_all(self, which: str):
+        if which == 'recordings':
+            title = 'Clear all recordings?'
+            msg = 'All recorded audio files will be permanently deleted.'
+        else:
+            title = 'Clear all transcripts?'
+            msg = 'All transcript text files will be permanently deleted.'
+        self.add_widget(
+            ModalDialog(
+                title=title,
+                message=msg,
+                confirm_text='DELETE ALL',
+                cancel_text='CANCEL',
+                danger=True,
+                on_confirm=lambda: self._execute_clear_all(which),
+            )
+        )
+
+    def _execute_clear_all(self, which: str):
+        async def _run():
+            try:
+                if which == 'recordings':
+                    await self.backend.clear_all_recordings()
+                else:
+                    await self.backend.clear_all_transcripts()
+            except Exception as e:
+                logger.warning('clear_all_%s: %s', which, e)
+        run_async(_run())
+
+    # ------------------------------------------------------------------
+    # Send diagnostic report
+    # ------------------------------------------------------------------
+    def _send_diag_report(self):
+        self.add_widget(
+            ModalDialog(
+                title='Send diagnostic report?',
+                message='The last 200 log lines will be sent to MeetingBox support.',
+                confirm_text='SEND',
+                cancel_text='CANCEL',
+                on_confirm=self._execute_send_diag_report,
+            )
+        )
+
+    def _execute_send_diag_report(self):
+        async def _send():
+            try:
+                await self.backend.send_diagnostic_report()
+            except Exception as e:
+                logger.warning('send_diagnostic_report: %s', e)
+        run_async(_send())
 
     # ------------------------------------------------------------------
     # Privacy toggle

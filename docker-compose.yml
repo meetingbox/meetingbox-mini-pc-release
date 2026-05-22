@@ -107,7 +107,14 @@ services:
       - MEETINGBOX_LOCAL_POWEROFF_CMD=${MEETINGBOX_LOCAL_POWEROFF_CMD:-}
       - MEETINGBOX_LOCAL_REBOOT_HELPER=${MEETINGBOX_LOCAL_REBOOT_HELPER:-}
       - MEETINGBOX_LOCAL_POWEROFF_HELPER=${MEETINGBOX_LOCAL_POWEROFF_HELPER:-}
+      # PulseAudio user session socket on the kiosk host — enables pactl/amixer speaker changes from the UI container.
+      - XDG_RUNTIME_DIR=/run/user/1000
+      - PULSE_SERVER=unix:${MEETINGBOX_PULSE_UNIX:-/run/user/1000/pulse/native}
     volumes:
+      # Backlight sysfs on the appliance — brightness slider touches the physical panel (rw; needs privileged or matching perms).
+      - /sys/class/backlight:/sys/class/backlight
+      # PulseAudio runtime dir from the HOST (uid 1000). Override via MEETINGBOX_HOST_PULSE if your kiosk user differs.
+      - ${MEETINGBOX_HOST_PULSE:-/run/user/1000/pulse}:/run/user/1000/pulse
       - /tmp/.X11-unix:/tmp/.X11-unix:rw
       # X11 cookie: boot script sets MEETINGBOX_X11_COOKIE (not in .env) so it wins over XAUTHORITY_HOST.
       - ${MEETINGBOX_X11_COOKIE:-${XAUTHORITY_HOST:-${HOME}/.Xauthority}}:/home/uiuser/.Xauthority:ro

@@ -51,9 +51,57 @@ def _get_max_brightness() -> int:
     return 255
 
 
+def set_brightness_pct(pct: int) -> None:
+    """Set backlight brightness 0–100 (% of sysfs max_brightness)."""
+    pct = max(0, min(100, int(pct)))
+    max_br = _get_max_brightness()
+    value = max(1, min(max_br, int(round(max_br * (pct / 100.0)))))
+    bp = _find_path("brightness")
+    if not bp:
+        logger.debug("No backlight sysfs found — skipping brightness change")
+        return
+    try:
+        bp.write_text(str(value))
+        logger.info("Brightness set to %s%% (%d/%d)", pct, value, max_br)
+    except PermissionError:
+        try:
+            subprocess.run(
+                ["sudo", "tee", str(bp)],
+                input=str(value).encode(), capture_output=True, timeout=5,
+            )
+            logger.info("Brightness set via sudo to %s%% (%d/%d)", pct, value, max_br)
+        except Exception as e:
+            logger.warning("Failed to set brightness: %s", e)
+    except Exception as e:
+        logger.warning("Failed to set brightness: %s", e)
+
+
+def get_brightness_pct() -> int | None:
+    """Read current brightness as 0–100, or None if sysfs unavailable."""
+    max_br = _get_max_brightness()
+    bp = _find_path("brightness")
+    if not bp or max_br <= 0:
+        return None
+    try:
+        cur = int(bp.read_text().strip())
+        return max(0, min(100, int(round(100.0 * cur / max_br))))
+    except Exception:
+        return None
+
+
 def set_brightness(level: str) -> None:
-    """Set display brightness. level: 'low', 'medium', or 'high'."""
-    fraction = BRIGHTNESS_MAP.get(level, 1.0)
+    """Set display brightness. level: 'low', 'medium', 'high', or numeric percent string/int."""
+    pct: int | None = None
+    if isinstance(level, (int, float)):
+        pct = max(0, min(100, int(level)))
+    else:
+        s = (level or "").strip().lower()
+        if s.isdigit():
+            pct = max(0, min(100, int(s)))
+    if pct is not None:
+        set_brightness_pct(pct)
+        return
+    fraction = BRIGHTNESS_MAP.get(str(level).strip().lower(), 1.0)
     max_br = _get_max_brightness()
     value = max(1, int(max_br * fraction))
     bp = _find_path("brightness")
@@ -229,3 +277,150 @@ def request_system_poweroff() -> bool:
         "Local poweroff not started — allow systemctl poweroff or passwordless sudo."
     )
     return False
+
+
+# ---------------------------------------------------------------------------
+# PulseAudio helpers (speaker / mic routing on the kiosk host session)
+# ---------------------------------------------------------------------------
+
+def pactl_available() -> bool:
+    return shutil.which("pactl") is not None
+
+
+def set_sink_volume_pct(pct: int) -> None:
+    """Set default output sink volume 0–100%."""
+    pct = max(0, min(100, int(pct)))
+    exe = shutil.which("pactl")
+    if not exe:
+        return
+    try:
+        subprocess.run(
+            [exe, "set-sink-volume", "@DEFAULT_SINK@", f"{pct}%"],
+            capture_output=True,
+            timeout=3,
+            check=False,
+        )
+    except Exception as e:
+        logger.debug("set_sink_volume_pct: %s", e)
+
+
+def set_source_volume_pct(pct: int) -> None:
+    """Set default capture source volume / gain 0–150%."""
+    pct = max(0, min(150, int(pct)))
+    exe = shutil.which("pactl")
+    if not exe:
+        return
+    try:
+        subprocess.run(
+            [exe, "set-source-volume", "@DEFAULT_SOURCE@", f"{pct}%"],
+            capture_output=True,
+            timeout=3,
+            check=False,
+        )
+    except Exception as e:
+        logger.debug("set_source_volume_pct: %s", e)
+
+
+def list_pulse_sinks() -> list[tuple[str, str]]:
+    """Return [(sink_name, description), …]"""
+    exe = shutil.which("pactl")
+    if not exe:
+        return []
+    try:
+        out = subprocess.check_output(
+            [exe, "list", "sinks", "short"], timeout=4, stderr=subprocess.DEVNULL
+        ).decode(errors="ignore")
+    except Exception:
+        return []
+    rows: list[tuple[str, str]] = []
+    for line in out.splitlines():
+        parts = line.split("\t")
+        if len(parts) >= 2 and parts[1].startswith("sink"):
+            name = parts[1].strip()
+            desc = parts[-1].strip() if len(parts) >= 5 else name
+            rows.append((name, desc or name))
+    return rows
+
+
+def list_pulse_sources() -> list[tuple[str, str]]:
+    """Return [(source_name, description), …]"""
+    exe = shutil.which("pactl")
+    if not exe:
+        return []
+    try:
+        out = subprocess.check_output(
+            [exe, "list", "sources", "short"], timeout=4, stderr=subprocess.DEVNULL
+        ).decode(errors="ignore")
+    except Exception:
+        return []
+    rows: list[tuple[str, str]] = []
+    for line in out.splitlines():
+        parts = line.split("\t")
+        if len(parts) >= 2 and parts[1].startswith("source") and ".monitor" not in parts[1]:
+            name = parts[1].strip()
+            desc = parts[-1].strip() if len(parts) >= 5 else name
+            rows.append((name, desc or name))
+    return rows
+
+
+def set_default_sink(name: str) -> bool:
+    exe = shutil.which("pactl")
+    if not exe or not (name or "").strip():
+        return False
+    try:
+        r = subprocess.run(
+            [exe, "set-default-sink", name.strip()],
+            capture_output=True,
+            timeout=4,
+            check=False,
+        )
+        return r.returncode == 0
+    except Exception:
+        return False
+
+
+def set_default_source(name: str) -> bool:
+    exe = shutil.which("pactl")
+    if not exe or not (name or "").strip():
+        return False
+    try:
+        r = subprocess.run(
+            [exe, "set-default-source", name.strip()],
+            capture_output=True,
+            timeout=4,
+            check=False,
+        )
+        return r.returncode == 0
+    except Exception:
+        return False
+
+
+def get_usb_devices_one_liners() -> list[str]:
+    """Best-effort USB device list — ``lsusb`` or sysfs."""
+    exe = shutil.which("lsusb")
+    if exe:
+        try:
+            out = subprocess.check_output(
+                [exe], timeout=5, stderr=subprocess.DEVNULL
+            ).decode(errors="ignore")
+            return [ln.strip() for ln in out.splitlines() if ln.strip()]
+        except Exception:
+            pass
+    root = Path("/sys/bus/usb/devices")
+    if not root.exists():
+        return []
+    rows: list[str] = []
+    try:
+        for p in sorted(root.iterdir()):
+            prod = p / "product"
+            manu = p / "manufacturer"
+            if prod.is_file():
+                try:
+                    pr = prod.read_text().strip()
+                    mf = manu.read_text().strip() if manu.is_file() else ""
+                    rows.append((f"{mf} {pr}").strip() or p.name)
+                except OSError:
+                    rows.append(p.name)
+    except Exception:
+        pass
+    return sorted(set(rows))[:48]

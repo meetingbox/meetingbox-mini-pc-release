@@ -271,11 +271,32 @@ from screens.idle import IdleScreen
 from screens.settings import SettingsScreen
 from screens.auto_delete_picker import AutoDeletePickerScreen
 from screens.brightness_picker import BrightnessPickerScreen
+from screens.brightness_slider import BrightnessSliderScreen
 from screens.speech_volume_picker import SpeechVolumePickerScreen
+from screens.notification_volume_picker import NotificationVolumePickerScreen
+from screens.mic_gain_picker import MicGainPickerScreen
 from screens.idle_timeout_picker import IdleTimeoutPickerScreen
 from screens.mic_test import MicTestScreen
 from screens.update_check import UpdateCheckScreen
 from screens.update_install import UpdateInstallScreen
+from screens.update_channel_picker import UpdateChannelPickerScreen
+from screens.timezone_picker import TimezonePickerScreen
+from screens.font_size_picker import FontSizePickerScreen
+from screens.audio_sink_picker import AudioSinkPickerScreen
+from screens.audio_source_picker import AudioSourcePickerScreen
+from screens.wifi_forget_screen import WiFiForgetScreen
+from screens.bluetooth_screen import BluetoothScreen
+from screens.datetime_screen import DateTimeScreen
+from screens.storage_breakdown import StorageBreakdownScreen
+from screens.diagnostic_logs import DiagnosticLogsScreen
+from screens.about_screen import AboutScreen
+from screens.send_feedback import SendFeedbackScreen
+from screens.notifications_settings import NotificationsSettingsScreen
+from screens.security_settings import SecuritySettingsScreen
+from screens.integration_detail import IntegrationDetailScreen
+from screens.usb_info import UsbInfoScreen
+from screens.room_label_screen import RoomLabelScreen
+from screens.connectivity_check import ConnectivityCheckScreen
 
 # Retained screens (still useful)
 from screens.meetings import MeetingsScreen
@@ -1018,11 +1039,32 @@ class MeetingBoxApp(App):
         self.screen_manager.add_widget(SettingsScreen(name='settings'))
         self.screen_manager.add_widget(AutoDeletePickerScreen(name='auto_delete_picker'))
         self.screen_manager.add_widget(BrightnessPickerScreen(name='brightness_picker'))
+        self.screen_manager.add_widget(BrightnessSliderScreen(name='brightness_slider'))
         self.screen_manager.add_widget(SpeechVolumePickerScreen(name='speech_volume_picker'))
+        self.screen_manager.add_widget(NotificationVolumePickerScreen(name='notification_volume_picker'))
+        self.screen_manager.add_widget(MicGainPickerScreen(name='mic_gain_picker'))
         self.screen_manager.add_widget(IdleTimeoutPickerScreen(name='idle_timeout_picker'))
         self.screen_manager.add_widget(MicTestScreen(name='mic_test'))
         self.screen_manager.add_widget(UpdateCheckScreen(name='update_check'))
         self.screen_manager.add_widget(UpdateInstallScreen(name='update_install'))
+        self.screen_manager.add_widget(UpdateChannelPickerScreen(name='update_channel_picker'))
+        self.screen_manager.add_widget(TimezonePickerScreen(name='timezone_picker'))
+        self.screen_manager.add_widget(FontSizePickerScreen(name='font_size_picker'))
+        self.screen_manager.add_widget(AudioSinkPickerScreen(name='audio_output_picker'))
+        self.screen_manager.add_widget(AudioSourcePickerScreen(name='audio_input_picker'))
+        self.screen_manager.add_widget(WiFiForgetScreen(name='wifi_forget_screen'))
+        self.screen_manager.add_widget(BluetoothScreen(name='bluetooth_screen'))
+        self.screen_manager.add_widget(DateTimeScreen(name='datetime_screen'))
+        self.screen_manager.add_widget(StorageBreakdownScreen(name='storage_breakdown'))
+        self.screen_manager.add_widget(DiagnosticLogsScreen(name='diagnostic_logs'))
+        self.screen_manager.add_widget(AboutScreen(name='about_screen'))
+        self.screen_manager.add_widget(SendFeedbackScreen(name='send_feedback'))
+        self.screen_manager.add_widget(NotificationsSettingsScreen(name='notifications_settings'))
+        self.screen_manager.add_widget(SecuritySettingsScreen(name='security_settings'))
+        self.screen_manager.add_widget(IntegrationDetailScreen(name='integration_detail'))
+        self.screen_manager.add_widget(UsbInfoScreen(name='usb_info'))
+        self.screen_manager.add_widget(RoomLabelScreen(name='room_label_screen'))
+        self.screen_manager.add_widget(ConnectivityCheckScreen(name='connectivity_check'))
 
         self.screen_manager.add_widget(MeetingsScreen(name='meetings'))
         self.screen_manager.add_widget(MeetingDetailScreen(name='meeting_detail'))

@@ -69,6 +69,8 @@ RUN set -eux; \
             alsa-utils \
             network-manager \
             sudo \
+            bluez \
+            pulseaudio-utils \
         ; then \
             success=1; \
             break; \
