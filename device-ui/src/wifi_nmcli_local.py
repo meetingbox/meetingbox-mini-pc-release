@@ -264,6 +264,20 @@ def scan_wifi_networks(rescan: bool = False) -> list[dict]:
     return nets
 
 
+def _is_connected_to(ssid: str) -> bool:
+    """Return True if NetworkManager reports an active connection to the given SSID."""
+    try:
+        r = nmcli_run(["-t", "-f", "ACTIVE,SSID", "dev", "wifi"], timeout=6)
+        for line in (r.stdout or "").splitlines():
+            parts = line.split(":", 1)
+            if len(parts) == 2 and parts[0].strip().lower() == "yes":
+                if parts[1].strip() == ssid:
+                    return True
+    except Exception:
+        pass
+    return False
+
+
 def connect_wifi_network(ssid: str, password: Optional[str]) -> dict:
     iface = detect_wifi_iface()
     args = ["device", "wifi", "connect", ssid]
@@ -274,7 +288,23 @@ def connect_wifi_network(ssid: str, password: Optional[str]) -> dict:
     res = nmcli_run(args, timeout=30)
     if res.returncode == 0:
         return {"status": "connected", "message": f"Connected to {ssid}"}
-    msg = (res.stderr or "").strip() or (res.stdout or "").strip() or "Connection failed"
+
+    stderr = (res.stderr or "").strip()
+    stdout = (res.stdout or "").strip()
+
+    # nmcli version skew between Docker container and host NetworkManager is
+    # common and causes a non-zero exit even when the operation succeeded.
+    # If the only output is the skew advisory, verify the actual connection state.
+    if _nmcli_version_skew_warning(stderr) or _nmcli_version_skew_warning(stdout):
+        time.sleep(1.5)
+        if _is_connected_to(ssid):
+            logger.info(
+                "connect_wifi_network: connected to %s (nmcli version-skew warning ignored)",
+                ssid,
+            )
+            return {"status": "connected", "message": f"Connected to {ssid}"}
+
+    msg = stderr or stdout or "Connection failed"
     ml = msg.lower()
     if "password" not in ml and "802" not in ml:
         if any(s in ml for s in ("sudo", "privileges", "not authorized", "polkit")):
