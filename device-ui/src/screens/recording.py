@@ -1,8 +1,9 @@
 """Recording screen — Figma Frame 19 / `863:635` inside `863:626` (yJqcY4KovVjJ11vjysW533).
 
-Only Frame 19 is rendered: side dot vectors, elapsed timer, and status caption
-on the #01081A background. Recording state (timer, pause/resume hooks) is kept
-for ``main.py``; controls are voice / backend driven until later frames are added.
+Renders Frame 19 with PNG assets only (Kivy does not reliably display SVG on device):
+- Center wave ring (Group 48 / Ellipse 17)
+- Side dot vectors
+- Elapsed timer + status caption
 """
 
 from __future__ import annotations
@@ -21,11 +22,9 @@ from screens.base_screen import BaseScreen
 
 logger = logging.getLogger(__name__)
 
-# Figma Frame 18 root (parent of Frame 19)
 _FW = 1260.0
 _FH = 800.0
 
-# Frame 19 — `863:635`
 _F19_X = 392.0
 _F19_Y = 104.0
 _F19_W = 423.0
@@ -33,15 +32,20 @@ _F19_H = 438.0
 
 _FIGMA_DIR = ASSETS_DIR / "recording" / "figma"
 
-_BG = (1 / 255, 8 / 255, 26 / 255, 1.0)       # #01081A
+_BG = (1 / 255, 8 / 255, 26 / 255, 1.0)
 _WHITE = (1.0, 1.0, 1.0, 1.0)
-_MUTED = (182 / 255, 186 / 255, 242 / 255, 1.0)  # #B6BAF2
+_MUTED = (182 / 255, 186 / 255, 242 / 255, 1.0)
 
 _FONT_BOLD = "42dot-Sans"
 
+# Group 48 ring — centered between the side vectors inside Frame 19
+_RING_X = 71.5
+_RING_Y = 13.0
+_RING_W = 280.0
+_RING_H = 280.0
+
 
 def _ph(fx: float, fy: float, fw: float, fh: float) -> dict:
-    """Figma absolute px → Kivy size_hint + pos_hint for the 1260×800 root."""
     return {
         "size_hint": (fw / _FW, fh / _FH),
         "pos_hint": {"x": fx / _FW, "y": (_FH - fy - fh) / _FH},
@@ -49,7 +53,6 @@ def _ph(fx: float, fy: float, fw: float, fh: float) -> dict:
 
 
 def _ph_f19(fx: float, fy: float, fw: float, fh: float) -> dict:
-    """Figma px relative to Frame 19 origin → Kivy hints inside the frame."""
     return {
         "size_hint": (fw / _F19_W, fh / _F19_H),
         "pos_hint": {"x": fx / _F19_W, "y": (_F19_H - fy - fh) / _F19_H},
@@ -61,20 +64,15 @@ def _ff(fs: float) -> int:
     return max(6, round(fs * scale))
 
 
-def _asset(name: str) -> str:
-    p = _FIGMA_DIR / name
-    return str(p) if p.is_file() else ""
+def _png(*names: str) -> str:
+    for name in names:
+        p = _FIGMA_DIR / name
+        if p.is_file():
+            return str(p)
+    return ""
 
 
-def _lbl(
-    text: str,
-    *,
-    fs: float,
-    color: tuple,
-    ha: str = "left",
-    va: str = "top",
-    **kw,
-) -> Label:
+def _lbl(text: str, *, fs: float, color: tuple, ha: str = "left", **kw) -> Label:
     label = Label(
         text=text,
         font_name=_FONT_BOLD,
@@ -82,11 +80,21 @@ def _lbl(
         bold=True,
         color=color,
         halign=ha,
-        valign=va,
+        valign="middle",
         **kw,
     )
     label.bind(size=label.setter("text_size"))
     return label
+
+
+def _img(source: str, **layout) -> Image:
+    return Image(
+        source=source,
+        allow_stretch=True,
+        keep_ratio=True,
+        fit_mode="contain",
+        **layout,
+    )
 
 
 class RecordingScreen(BaseScreen):
@@ -112,30 +120,23 @@ class RecordingScreen(BaseScreen):
         frame = FloatLayout(**_ph(_F19_X, _F19_Y, _F19_W, _F19_H))
         root.add_widget(frame)
 
-        left_src = _asset("frame19_vector_left.svg")
-        if left_src:
-            frame.add_widget(Image(
-                source=left_src,
-                allow_stretch=True,
-                fit_mode="contain",
-                **_ph_f19(52.0, 67.47, 36.97, 173.32),
-            ))
+        ring_src = _png("ellipse_17_group48_2x.png", "ellipse_17_group48.png", "ellipse_17.png")
+        if ring_src:
+            frame.add_widget(_img(ring_src, **_ph_f19(_RING_X, _RING_Y, _RING_W, _RING_H)))
 
-        right_src = _asset("frame19_vector_right.svg")
+        left_src = _png("frame19_vector_left.png")
+        if left_src:
+            frame.add_widget(_img(left_src, **_ph_f19(52.0, 67.47, 36.97, 173.32)))
+
+        right_src = _png("frame19_vector_right.png")
         if right_src:
-            frame.add_widget(Image(
-                source=right_src,
-                allow_stretch=True,
-                fit_mode="contain",
-                **_ph_f19(335.8, 67.47, 36.97, 173.32),
-            ))
+            frame.add_widget(_img(right_src, **_ph_f19(335.8, 67.47, 36.97, 173.32)))
 
         self.timer_label = _lbl(
             "00 : 12 : 45",
             fs=35,
             color=_WHITE,
             ha="left",
-            va="top",
             **_ph_f19(104.0, 298.0, 178.0, 42.0),
         )
         frame.add_widget(self.timer_label)
@@ -145,16 +146,12 @@ class RecordingScreen(BaseScreen):
             fs=28.251121520996094,
             color=_MUTED,
             ha="left",
-            va="top",
             **_ph_f19(62.0, 346.0, 290.0, 34.0),
         )
         frame.add_widget(self.status_label)
 
         self.add_widget(root)
 
-    # ------------------------------------------------------------------
-    # Lifecycle
-    # ------------------------------------------------------------------
     def on_enter(self):
         if self.timer_event:
             self.timer_event.cancel()
@@ -173,9 +170,6 @@ class RecordingScreen(BaseScreen):
             self.timer_event.cancel()
             self.timer_event = None
 
-    # ------------------------------------------------------------------
-    # Timer
-    # ------------------------------------------------------------------
     def _elapsed_from_monotonic(self) -> int:
         if self._is_paused or self._rec_active_start is None:
             return int(self._rec_base_elapsed)
@@ -192,9 +186,6 @@ class RecordingScreen(BaseScreen):
         s = secs % 60
         return f"{h:02d} : {m:02d} : {s:02d}"
 
-    # ------------------------------------------------------------------
-    # Pause / resume (called from main.py)
-    # ------------------------------------------------------------------
     def on_paused(self):
         if self._is_paused:
             return
