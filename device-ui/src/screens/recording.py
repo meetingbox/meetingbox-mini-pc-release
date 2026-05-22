@@ -1,13 +1,4 @@
-"""Recording screen — Figma Frame 19 / `863:635` (yJqcY4KovVjJ11vjysW533).
-
-Frame 19 layout (1260×800 parent, frame at 392×104, 423×438):
-- Center Group 48 composite PNG (ring + waveform + orbit dots)
-- Elapsed timer + status caption (live text)
-
-All bitmaps are PNG — Kivy does not render SVG reliably on device.
-Re-export after Figma edits:
-  python mini-pc/device-ui/scripts/export_recording_frame19_pngs.py
-"""
+"""Recording screen — Frame 19 only (`863:635`).  Layout = pure ratios (see frame19_layout)."""
 
 from __future__ import annotations
 
@@ -20,88 +11,48 @@ from kivy.uix.floatlayout import FloatLayout
 from kivy.uix.image import Image
 from kivy.uix.label import Label
 
-from config import ASSETS_DIR, DISPLAY_HEIGHT, DISPLAY_WIDTH
+from config import ASSETS_DIR, DISPLAY_HEIGHT
+from frame19_layout import (
+    BG_RGB,
+    LEFT_VEC,
+    RIGHT_VEC,
+    STATUS,
+    STATUS_FS_RATIO,
+    TIMER,
+    TIMER_FS_RATIO,
+    font_px,
+    kivy_hints,
+)
 from screens.base_screen import BaseScreen
 
 logger = logging.getLogger(__name__)
 
-_FW = 1260.0
-_FH = 800.0
-
-# Frame 19 — `863:635` (relative to 1260×800 root)
-_F19_X = 392.0
-_F19_Y = 104.0
-_F19_W = 423.0
-_F19_H = 438.0
-
-# Group 48 center graphic inside Frame 19 (892 design px → scaled into frame)
-_G48_X = 0.0
-_G48_Y = 0.0
-_G48_W = 423.0
-_G48_H = 320.0
-
-# Text nodes inside Frame 19
-_TIMER = dict(x=104.0, y=298.0, w=178.0, h=42.0, fs=35.0)
-_STATUS = dict(x=62.0, y=346.0, w=290.0, h=34.0, fs=28.251121520996094)
-
 _FIGMA_DIR = ASSETS_DIR / "recording" / "figma"
-
-_BG = (1 / 255, 8 / 255, 26 / 255, 1.0)
+_BG = (BG_RGB[0] / 255, BG_RGB[1] / 255, BG_RGB[2] / 255, 1.0)
 _WHITE = (1.0, 1.0, 1.0, 1.0)
 _MUTED = (182 / 255, 186 / 255, 242 / 255, 1.0)
 _FONT_BOLD = "42dot-Sans"
 
 
-def _ph(fx: float, fy: float, fw: float, fh: float) -> dict:
-    return {
-        "size_hint": (fw / _FW, fh / _FH),
-        "pos_hint": {"x": fx / _FW, "y": (_FH - fy - fh) / _FH},
-    }
+def _png(name: str) -> str:
+    p = _FIGMA_DIR / name
+    return str(p) if p.is_file() else ""
 
 
-def _ph_f19(fx: float, fy: float, fw: float, fh: float) -> dict:
-    return {
-        "size_hint": (fw / _F19_W, fh / _F19_H),
-        "pos_hint": {"x": fx / _F19_W, "y": (_F19_H - fy - fh) / _F19_H},
-    }
-
-
-def _ff(fs: float) -> int:
-    scale = min(DISPLAY_WIDTH / _FW, DISPLAY_HEIGHT / _FH)
-    return max(6, round(fs * scale))
-
-
-def _png(*names: str) -> str:
-    for name in names:
-        p = _FIGMA_DIR / name
-        if p.is_file():
-            return str(p)
-    return ""
-
-
-def _lbl(text: str, *, fs: float, color: tuple, ha: str = "center", **kw) -> Label:
+def _lbl(text: str, *, fs_ratio: float, color: tuple, box, **kw) -> Label:
     label = Label(
         text=text,
         font_name=_FONT_BOLD,
-        font_size=_ff(fs),
+        font_size=font_px(fs_ratio, DISPLAY_HEIGHT),
         bold=True,
         color=color,
-        halign=ha,
+        halign="left",
         valign="middle",
+        **kivy_hints(box),
         **kw,
     )
     label.bind(size=label.setter("text_size"))
     return label
-
-
-def _img(source: str, **layout) -> Image:
-    return Image(
-        source=source,
-        allow_stretch=True,
-        keep_ratio=True,
-        fit_mode="contain",
-        **layout,
-    )
 
 
 class RecordingScreen(BaseScreen):
@@ -115,7 +66,7 @@ class RecordingScreen(BaseScreen):
         self._build_ui()
 
     def _build_ui(self):
-        root = FloatLayout()
+        root = FloatLayout(size_hint=(1, 1))
         with root.canvas.before:
             Color(*_BG)
             self._bg = Rectangle(pos=root.pos, size=root.size)
@@ -124,34 +75,36 @@ class RecordingScreen(BaseScreen):
             size=lambda w, _v: setattr(self._bg, "size", w.size),
         )
 
-        frame = FloatLayout(**_ph(_F19_X, _F19_Y, _F19_W, _F19_H))
-        root.add_widget(frame)
+        left = _png("frame19_vector_left.png")
+        if left:
+            root.add_widget(Image(
+                source=left,
+                allow_stretch=True,
+                keep_ratio=True,
+                fit_mode="contain",
+                **kivy_hints(LEFT_VEC),
+            ))
 
-        center_src = _png(
-            "frame19_group48.png",
-            "ellipse_17_group48.png",
-            "ellipse_17.png",
-        )
-        if center_src:
-            frame.add_widget(_img(center_src, **_ph_f19(_G48_X, _G48_Y, _G48_W, _G48_H)))
+        right = _png("frame19_vector_right.png")
+        if right:
+            root.add_widget(Image(
+                source=right,
+                allow_stretch=True,
+                keep_ratio=True,
+                fit_mode="contain",
+                **kivy_hints(RIGHT_VEC),
+            ))
 
-        self.timer_label = _lbl(
-            "00 : 12 : 45",
-            fs=_TIMER["fs"],
-            color=_WHITE,
-            ha="center",
-            **_ph_f19(_TIMER["x"], _TIMER["y"], _TIMER["w"], _TIMER["h"]),
-        )
-        frame.add_widget(self.timer_label)
+        self.timer_label = _lbl("00 : 12 : 45", fs_ratio=TIMER_FS_RATIO, color=_WHITE, box=TIMER)
+        root.add_widget(self.timer_label)
 
         self.status_label = _lbl(
             "Recording in progress",
-            fs=_STATUS["fs"],
+            fs_ratio=STATUS_FS_RATIO,
             color=_MUTED,
-            ha="center",
-            **_ph_f19(_STATUS["x"], _STATUS["y"], _STATUS["w"], _STATUS["h"]),
+            box=STATUS,
         )
-        frame.add_widget(self.status_label)
+        root.add_widget(self.status_label)
 
         self.add_widget(root)
 
