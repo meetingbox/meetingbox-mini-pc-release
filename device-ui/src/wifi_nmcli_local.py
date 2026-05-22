@@ -86,12 +86,18 @@ def _nmcli_version_skew_warning(stderr: str) -> bool:
     s = (stderr or "").lower()
     if not s.strip():
         return False
-    if "don't match" in s or "do not match" in s:
-        if "networkmanager" in s or "nmcli" in s:
-            return True
-    if "restarting network manager" in s or "restart networkmanager" in s:
+    # Covers: "don't match", "doesn't match", "do not match", "does not match"
+    has_mismatch = (
+        "don't match" in s
+        or "doesn't match" in s
+        or "do not match" in s
+        or "does not match" in s
+        or "versions don't match" in s
+        or "versions doesn't match" in s
+    )
+    if has_mismatch and ("networkmanager" in s or "nmcli" in s):
         return True
-    if "versions don't match" in s:
+    if "restarting network manager" in s or "restart networkmanager" in s:
         return True
     return False
 
