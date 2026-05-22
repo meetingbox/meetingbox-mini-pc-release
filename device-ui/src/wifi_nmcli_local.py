@@ -292,23 +292,39 @@ def connect_wifi_network(ssid: str, password: Optional[str]) -> dict:
     if iface:
         args += ["ifname", iface]
     res = nmcli_run(args, timeout=30)
-    if res.returncode == 0:
-        return {"status": "connected", "message": f"Connected to {ssid}"}
 
     stderr = (res.stderr or "").strip()
     stdout = (res.stdout or "").strip()
+    combined = (stderr + " " + stdout).lower()
 
-    # nmcli version skew between Docker container and host NetworkManager is
-    # common and causes a non-zero exit even when the operation succeeded.
-    # If the only output is the skew advisory, verify the actual connection state.
+    # Immediate success
+    if res.returncode == 0:
+        return {"status": "connected", "message": f"Connected to {ssid}"}
+
+    # nmcli reports "successfully activated" in stdout even when exit != 0
+    if "successfully activated" in combined or "successfully connected" in combined:
+        return {"status": "connected", "message": f"Connected to {ssid}"}
+
+    # Version skew between the container's nmcli and the host's NetworkManager
+    # causes a non-zero exit regardless of whether the operation succeeded.
+    # Wait up to 4 s and verify via the actual device state.
     if _nmcli_version_skew_warning(stderr) or _nmcli_version_skew_warning(stdout):
-        time.sleep(1.5)
-        if _is_connected_to(ssid):
-            logger.info(
-                "connect_wifi_network: connected to %s (nmcli version-skew warning ignored)",
-                ssid,
-            )
-            return {"status": "connected", "message": f"Connected to {ssid}"}
+        for _attempt in range(4):
+            time.sleep(1.0)
+            if _is_connected_to(ssid):
+                logger.info(
+                    "connect_wifi_network: connected to %s (nmcli version-skew warning ignored)",
+                    ssid,
+                )
+                return {"status": "connected", "message": f"Connected to {ssid}"}
+        # Still not connected — real failure, but strip the version warning from the
+        # user-facing message so only the actionable part is shown.
+        real_lines = [
+            ln for ln in (stderr + "\n" + stdout).splitlines()
+            if ln.strip() and not _nmcli_version_skew_warning(ln)
+        ]
+        msg = "\n".join(real_lines).strip() or "Connection failed"
+        return {"status": "failed", "message": msg}
 
     msg = stderr or stdout or "Connection failed"
     ml = msg.lower()
