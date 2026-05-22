@@ -59,10 +59,10 @@ def main() -> None:
     except OSError:
         ft = fs = ImageFont.load_default()
 
-    tx0, ty0, _, _ = _rect(TIMER, cw, ch, ox, oy)
-    draw.text((tx0, ty0), "00 : 12 : 45", fill=(255, 255, 255), font=ft)
-    sx0, sy0, _, _ = _rect(STATUS, cw, ch, ox, oy)
-    draw.text((sx0, sy0), "Recording in progress", fill=(182, 186, 242), font=fs)
+    tx0, ty0, tx1, ty1 = _rect(TIMER, cw, ch, ox, oy)
+    draw.text(((tx0 + tx1) // 2, (ty0 + ty1) // 2), "00 : 12 : 45", fill=(255, 255, 255), font=ft, anchor="mm")
+    sx0, sy0, sx1, sy1 = _rect(STATUS, cw, ch, ox, oy)
+    draw.text(((sx0 + sx1) // 2, sy0), "Recording in progress", fill=(182, 186, 242), font=fs, anchor="ma")
 
     # Outline scaled canvas (debug — shows letterbox vs stretch)
     draw.rectangle(

@@ -100,7 +100,7 @@ class RecordingScreen(BaseScreen):
             font_name=_FONT_BOLD,
             bold=True,
             color=_WHITE,
-            halign="left",
+            halign="center",
             valign="middle",
             **kivy_hints(TIMER),
         )
@@ -112,7 +112,7 @@ class RecordingScreen(BaseScreen):
             font_name=_FONT_BOLD,
             bold=True,
             color=_MUTED,
-            halign="left",
+            halign="center",
             valign="middle",
             **kivy_hints(STATUS),
         )

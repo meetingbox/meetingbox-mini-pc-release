@@ -1,11 +1,8 @@
-"""Frame 19 layout — Figma `863:635` inside `863:626`.
+"""Frame 19 layout — Figma `863:635` inside `863:626` (1260×800).
 
-The correct approach:
-- Reference canvas = full recording screen 1260×800 (same as Figma)
-- Frame 19 sits at (392, 104), size 423×438 inside that canvas
-- All element positions are absolute within 1260×800
-- Scale the 1260×800 canvas uniformly to fit the device screen
-- Frame 19 then appears at the same proportional position as in Figma
+Reference canvas = full recording screen.  Frame 19 is a child at (389, 105),
+size 420×420.  Element positions are absolute within 1260×800, then the whole
+canvas scales uniformly to fit any device screen.
 """
 
 from __future__ import annotations
@@ -14,56 +11,44 @@ from typing import TypedDict
 
 
 class Box(TypedDict):
-    x: float       # left edge as fraction of CANVAS_W
-    y_top: float   # top edge as fraction of CANVAS_H  (Figma top-down)
-    w: float       # width fraction of CANVAS_W
-    h: float       # height fraction of CANVAS_H
+    x: float
+    y_top: float
+    w: float
+    h: float
 
 
-# Full recording screen canvas (Figma Frame 18 — parent of Frame 19)
 CANVAS_W = 1260.0
 CANVAS_H = 800.0
 
-# Frame 19 origin inside the canvas
-_F19_X = 392.0
-_F19_Y = 104.0
+# Frame 19 — updated Figma metadata (863:635)
+_F19_X = 389.0
+_F19_Y = 105.0
+_F19_W = 420.0
+_F19_H = 420.0
 
-# Absolute positions of Frame 19 children in 1260×800 space
-# (Frame 19 local coords + Frame 19 origin)
-LEFT_VEC: Box = dict(
-    x=(_F19_X + 52.0) / CANVAS_W,
-    y_top=(_F19_Y + 67.47) / CANVAS_H,
-    w=36.97 / CANVAS_W,
-    h=173.32 / CANVAS_H,
-)
-RIGHT_VEC: Box = dict(
-    x=(_F19_X + 335.8) / CANVAS_W,
-    y_top=(_F19_Y + 67.47) / CANVAS_H,
-    w=36.97 / CANVAS_W,
-    h=173.32 / CANVAS_H,
-)
-TIMER: Box = dict(
-    x=(_F19_X + 104.0) / CANVAS_W,
-    y_top=(_F19_Y + 298.0) / CANVAS_H,
-    w=178.0 / CANVAS_W,
-    h=42.0 / CANVAS_H,
-)
-STATUS: Box = dict(
-    x=(_F19_X + 62.0) / CANVAS_W,
-    y_top=(_F19_Y + 346.0) / CANVAS_H,
-    w=290.0 / CANVAS_W,
-    h=34.0 / CANVAS_H,
-)
 
-# Font sizes as fraction of canvas height (preserves Figma proportions)
+def _abs(local_x: float, local_y: float, local_w: float, local_h: float) -> Box:
+    """Frame-19-local px → absolute ratio box on the 1260×800 canvas."""
+    return dict(
+        x=(_F19_X + local_x) / CANVAS_W,
+        y_top=(_F19_Y + local_y) / CANVAS_H,
+        w=local_w / CANVAS_W,
+        h=local_h / CANVAS_H,
+    )
+
+
+LEFT_VEC: Box = _abs(52.0, 67.47265625, 36.975, 173.3189239501953)
+RIGHT_VEC: Box = _abs(331.0299987792969, 67.47265625, 36.97499084472656, 173.3189239501953)
+TIMER: Box = _abs(89.0, 300.0, 243.0, 42.0)
+STATUS: Box = _abs(65.0, 346.0, 290.0, 34.0)
+
 TIMER_FS_RATIO = 35.0 / CANVAS_H
-STATUS_FS_RATIO = 28.251121520996094 / CANVAS_H
+STATUS_FS_RATIO = 28.251 / CANVAS_H
 
 BG_RGB = (1, 8, 26)
 
 
 def scaled_canvas(screen_w: float, screen_h: float) -> tuple[float, float]:
-    """Uniform scale-to-fit: 1260×800 canvas scaled to fit the device screen."""
     if screen_w <= 0 or screen_h <= 0:
         return CANVAS_W, CANVAS_H
     scale = min(screen_w / CANVAS_W, screen_h / CANVAS_H)
@@ -71,7 +56,6 @@ def scaled_canvas(screen_w: float, screen_h: float) -> tuple[float, float]:
 
 
 def kivy_hints(box: Box) -> dict:
-    """Box ratios → Kivy size_hint + pos_hint (bottom-left origin)."""
     return {
         "size_hint": (box["w"], box["h"]),
         "pos_hint": {"x": box["x"], "y": 1.0 - box["y_top"] - box["h"]},
@@ -79,5 +63,4 @@ def kivy_hints(box: Box) -> dict:
 
 
 def font_px(fs_ratio: float, canvas_height: float) -> int:
-    """Font px scales with the canvas height, same proportion as Figma."""
     return max(6, round(fs_ratio * canvas_height))
