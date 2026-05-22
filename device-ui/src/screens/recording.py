@@ -1,9 +1,12 @@
-"""Recording screen — Figma Frame 19 / `863:635` inside `863:626` (yJqcY4KovVjJ11vjysW533).
+"""Recording screen — Figma Frame 19 / `863:635` (yJqcY4KovVjJ11vjysW533).
 
-Renders Frame 19 with PNG assets only (Kivy does not reliably display SVG on device):
-- Center wave ring (Group 48 / Ellipse 17)
-- Side dot vectors
-- Elapsed timer + status caption
+Frame 19 layout (1260×800 parent, frame at 392×104, 423×438):
+- Center Group 48 composite PNG (ring + waveform + orbit dots)
+- Elapsed timer + status caption (live text)
+
+All bitmaps are PNG — Kivy does not render SVG reliably on device.
+Re-export after Figma edits:
+  python mini-pc/device-ui/scripts/export_recording_frame19_pngs.py
 """
 
 from __future__ import annotations
@@ -25,24 +28,28 @@ logger = logging.getLogger(__name__)
 _FW = 1260.0
 _FH = 800.0
 
+# Frame 19 — `863:635` (relative to 1260×800 root)
 _F19_X = 392.0
 _F19_Y = 104.0
 _F19_W = 423.0
 _F19_H = 438.0
+
+# Group 48 center graphic inside Frame 19 (892 design px → scaled into frame)
+_G48_X = 0.0
+_G48_Y = 0.0
+_G48_W = 423.0
+_G48_H = 320.0
+
+# Text nodes inside Frame 19
+_TIMER = dict(x=104.0, y=298.0, w=178.0, h=42.0, fs=35.0)
+_STATUS = dict(x=62.0, y=346.0, w=290.0, h=34.0, fs=28.251121520996094)
 
 _FIGMA_DIR = ASSETS_DIR / "recording" / "figma"
 
 _BG = (1 / 255, 8 / 255, 26 / 255, 1.0)
 _WHITE = (1.0, 1.0, 1.0, 1.0)
 _MUTED = (182 / 255, 186 / 255, 242 / 255, 1.0)
-
 _FONT_BOLD = "42dot-Sans"
-
-# Group 48 ring — centered between the side vectors inside Frame 19
-_RING_X = 71.5
-_RING_Y = 13.0
-_RING_W = 280.0
-_RING_H = 280.0
 
 
 def _ph(fx: float, fy: float, fw: float, fh: float) -> dict:
@@ -72,7 +79,7 @@ def _png(*names: str) -> str:
     return ""
 
 
-def _lbl(text: str, *, fs: float, color: tuple, ha: str = "left", **kw) -> Label:
+def _lbl(text: str, *, fs: float, color: tuple, ha: str = "center", **kw) -> Label:
     label = Label(
         text=text,
         font_name=_FONT_BOLD,
@@ -120,33 +127,29 @@ class RecordingScreen(BaseScreen):
         frame = FloatLayout(**_ph(_F19_X, _F19_Y, _F19_W, _F19_H))
         root.add_widget(frame)
 
-        ring_src = _png("ellipse_17_group48_2x.png", "ellipse_17_group48.png", "ellipse_17.png")
-        if ring_src:
-            frame.add_widget(_img(ring_src, **_ph_f19(_RING_X, _RING_Y, _RING_W, _RING_H)))
-
-        left_src = _png("frame19_vector_left.png")
-        if left_src:
-            frame.add_widget(_img(left_src, **_ph_f19(52.0, 67.47, 36.97, 173.32)))
-
-        right_src = _png("frame19_vector_right.png")
-        if right_src:
-            frame.add_widget(_img(right_src, **_ph_f19(335.8, 67.47, 36.97, 173.32)))
+        center_src = _png(
+            "frame19_group48.png",
+            "ellipse_17_group48.png",
+            "ellipse_17.png",
+        )
+        if center_src:
+            frame.add_widget(_img(center_src, **_ph_f19(_G48_X, _G48_Y, _G48_W, _G48_H)))
 
         self.timer_label = _lbl(
             "00 : 12 : 45",
-            fs=35,
+            fs=_TIMER["fs"],
             color=_WHITE,
-            ha="left",
-            **_ph_f19(104.0, 298.0, 178.0, 42.0),
+            ha="center",
+            **_ph_f19(_TIMER["x"], _TIMER["y"], _TIMER["w"], _TIMER["h"]),
         )
         frame.add_widget(self.timer_label)
 
         self.status_label = _lbl(
             "Recording in progress",
-            fs=28.251121520996094,
+            fs=_STATUS["fs"],
             color=_MUTED,
-            ha="left",
-            **_ph_f19(62.0, 346.0, 290.0, 34.0),
+            ha="center",
+            **_ph_f19(_STATUS["x"], _STATUS["y"], _STATUS["w"], _STATUS["h"]),
         )
         frame.add_widget(self.status_label)
 

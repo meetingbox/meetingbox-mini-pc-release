@@ -16,6 +16,7 @@ _ASSETS = Path(__file__).resolve().parent.parent / "assets" / "recording" / "fig
 _EXPORTS: tuple[tuple[str, int], ...] = (
     ("frame19_vector_left.svg", 74),
     ("frame19_vector_right.svg", 74),
+    ("frame19_group48.svg", 846),
     ("ellipse_17_group48.svg", 846),
     ("ellipse_17.svg", 286),
 )
@@ -42,8 +43,13 @@ def main() -> None:
     for svg_name, width in _EXPORTS:
         svg = _ASSETS / svg_name
         if not svg.is_file():
-            print(f"SKIP missing {svg}")
-            continue
+            # wave_circle export lives at recording/ until copied to figma/
+            alt = _ASSETS.parent / svg_name.replace("frame19_group48", "wave_circle_bg")
+            if svg_name == "frame19_group48.svg" and alt.is_file():
+                svg = alt
+            else:
+                print(f"SKIP missing {svg}")
+                continue
         png = _ASSETS / svg_name.replace(".svg", ".png")
         try:
             _resvg(svg, png, width)
