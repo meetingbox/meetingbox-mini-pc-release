@@ -282,6 +282,16 @@ class RealtimeVoiceSession:
             or _REALTIME_OUTPUT_VOICE_FALLBACK
         )
 
+        # Resolve audio device pair (combined USB mic+speaker detection).
+        # Done once at init so aplay and the mic stream use a consistent device.
+        try:
+            from audio_device_resolve import resolve_audio_pair
+            self._audio_pair = resolve_audio_pair(sd)
+        except Exception:
+            logger.exception("AudioPair: resolution failed — using system defaults")
+            from audio_device_resolve import AudioDevicePair
+            self._audio_pair = AudioDevicePair()
+
         # Worker thread + asyncio loop
         self._thread: threading.Thread | None = None
         self._stop = threading.Event()
@@ -446,7 +456,21 @@ class RealtimeVoiceSession:
         if sd is None:
             return None, []
         preferred = resolve_sounddevice_capture_device_index(sd)
-        return preferred, capture_device_fallback_candidates(sd, preferred)
+        candidates = capture_device_fallback_candidates(sd, preferred)
+
+        # If the ALSA pair found a USB capture device that sounddevice missed
+        # (common when PortAudio doesn't enumerate all ALSA cards), inject the
+        # ALSA string as the first candidate so _open_mic tries it before the
+        # PortAudio default.
+        pair_capture = self._audio_pair.capture
+        if pair_capture is not None and pair_capture not in candidates:
+            candidates = [pair_capture, *candidates]
+            if preferred is None:
+                preferred = pair_capture
+            label = self._audio_pair.capture_name or str(pair_capture)
+            logger.info("Realtime mic: injecting ALSA capture device: %s", label)
+
+        return preferred, candidates
 
     def _open_mic(self, preferred_device_id, candidate_device_ids) -> bool:
         if sd is None:
@@ -534,6 +558,23 @@ class RealtimeVoiceSession:
             ]
         )
         try:
+            cmd = [
+                "aplay",
+                "-q",
+                "-t", "raw",
+                "-f", "S16_LE",
+                "-r", str(_REALTIME_RATE),
+                "-c", "1",
+                "--buffer-time", _APLAY_BUFFER_TIME_US,
+            ]
+            playback_device = self._audio_pair.playback
+            if playback_device:
+                cmd += ["-D", playback_device]
+                logger.info(
+                    "Realtime aplay: using output device %s (%s)",
+                    playback_device,
+                    self._audio_pair.playback_name or playback_device,
+                )
             self._aplay_proc = subprocess.Popen(
                 cmd,
                 stdin=subprocess.PIPE,

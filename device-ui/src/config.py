@@ -160,6 +160,11 @@ if (os.getenv("MEETINGBOX_DISABLE_LOCAL_REDIS", "") or "").strip().lower() in (
 AUDIO_INPUT_DEVICE_INDEX = (os.getenv("AUDIO_INPUT_DEVICE_INDEX", "") or "").strip()
 AUDIO_INPUT_DEVICE_NAME = (os.getenv("AUDIO_INPUT_DEVICE_NAME", "") or "").strip()
 
+# Explicit ALSA output device for aplay (speaker). When unset, audio_device_resolve
+# auto-detects a combined USB device (same card for mic+speaker). Set this to
+# override, e.g. AUDIO_OUTPUT_DEVICE_NAME=plughw:1,0 or plughw:CARD=Jabra,DEV=0.
+AUDIO_OUTPUT_DEVICE_NAME = (os.getenv("AUDIO_OUTPUT_DEVICE_NAME", "") or "").strip()
+
 # If true, wake word never starts OpenAI Realtime — only local Vosk + espeak (reliable on appliances).
 WAKE_LOCAL_VOICE_ONLY = str(os.getenv("MEETINGBOX_WAKE_LOCAL_VOICE_ONLY", "")).strip().lower() in (
     "1",

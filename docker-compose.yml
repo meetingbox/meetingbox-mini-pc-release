@@ -78,10 +78,18 @@ services:
       - MOCK_BACKEND=${MOCK_BACKEND:-0}
       - AUDIO_INPUT_DEVICE_INDEX=${AUDIO_INPUT_DEVICE_INDEX:-}
       - AUDIO_INPUT_DEVICE_NAME=${AUDIO_INPUT_DEVICE_NAME:-}
+<<<<<<< Updated upstream
       - ALSA_CARD=${ALSA_CARD:-}
       - AUDIO_INPUT_GAIN=${AUDIO_INPUT_GAIN:-1}
       - AUDIO_CAPTURE_BACKEND=${AUDIO_CAPTURE_BACKEND:-pyaudio}
       - AUDIO_OUTPUT_DEVICE=${AUDIO_OUTPUT_DEVICE:-}
+=======
+      # Explicit ALSA output device for the speaker (aplay -D). Leave unset to
+      # auto-detect: if a USB device has both mic and speaker on the same card
+      # (e.g. a conference puck), it is automatically used for both.
+      # Example: AUDIO_OUTPUT_DEVICE_NAME=plughw:1,0
+      - AUDIO_OUTPUT_DEVICE_NAME=${AUDIO_OUTPUT_DEVICE_NAME:-}
+>>>>>>> Stashed changes
       # --- Merged audio capture (formerly the standalone "audio" container) ---
       # device-ui spawns mini-pc/audio/audio_capture.py via audio_supervisor.py.
       # Set MEETINGBOX_SPAWN_AUDIO=0 if you reintroduce a separate audio process.
