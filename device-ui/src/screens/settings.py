@@ -677,13 +677,13 @@ class SettingsScreen(BaseScreen):
 
             def _apply(_dt):
                 if wifi_on is not None:
-                    self.wifi_radio_item.active = wifi_on
-                    self.wifi_radio_item.subtitle = "On" if wifi_on else "Off"
+                    self.wifi_radio_item.toggle.active = wifi_on
+                    self.wifi_radio_item.subtitle_label.text = "On" if wifi_on else "Off"
                 if bt_on is not None:
-                    self.bluetooth_radio_item.active = bt_on
-                    self.bluetooth_radio_item.subtitle = "On" if bt_on else "Off"
+                    self.bluetooth_radio_item.toggle.active = bt_on
+                    self.bluetooth_radio_item.subtitle_label.text = "On" if bt_on else "Off"
                 else:
-                    self.bluetooth_radio_item.subtitle = ""
+                    self.bluetooth_radio_item.subtitle_label.text = ""
 
             Clock.schedule_once(_apply, 0)
 
@@ -934,13 +934,13 @@ class SettingsScreen(BaseScreen):
         import bluetooth_local
         from kivy.clock import Clock
 
-        self.bluetooth_radio_item.subtitle = "Turning " + ("on" if active else "off") + "…"
+        self.bluetooth_radio_item.subtitle_label.text = "Turning " + ("on" if active else "off") + "…"
 
         def _do():
             result = bluetooth_local.set_power(active)
 
             def _apply(_dt):
-                self.bluetooth_radio_item.subtitle = "On" if active else "Off"
+                self.bluetooth_radio_item.subtitle_label.text = "On" if active else "Off"
                 if not result.get("ok"):
                     logger.warning("Bluetooth toggle failed: %s", result.get("message"))
 

@@ -88,7 +88,11 @@ class BluetoothScreen(BaseScreen):
     def _load_paired(self):
         """Show currently paired devices immediately (fast, no scan)."""
         def _fetch():
-            paired = bluetooth_local.list_paired_devices()
+            try:
+                paired = bluetooth_local.list_paired_devices()
+            except Exception as e:
+                logger.warning("list_paired_devices failed: %s", e)
+                paired = []
 
             def _apply(_dt):
                 self._render_devices(paired, scanning=False)
@@ -107,7 +111,11 @@ class BluetoothScreen(BaseScreen):
         self.status_lbl.text = "Scanning (7 s)…"
 
         def _fetch():
-            devices = bluetooth_local.scan_and_list_nearby(scan_seconds=7)
+            try:
+                devices = bluetooth_local.scan_and_list_nearby(scan_seconds=7)
+            except Exception as e:
+                logger.warning("scan_and_list_nearby failed: %s", e)
+                devices = []
 
             def _apply(_dt):
                 self._scanning = False

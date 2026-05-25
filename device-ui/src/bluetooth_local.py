@@ -78,18 +78,45 @@ def _run_interactive(commands: list[str], timeout: float = 12) -> str:
         return ""
 
 
+_RFKILL_PATHS = ["/usr/bin/rfkill", "/usr/sbin/rfkill", "/sbin/rfkill", "rfkill"]
+
+
+def _find_rfkill() -> Optional[str]:
+    for p in _RFKILL_PATHS:
+        found = shutil.which(p)
+        if found:
+            return found
+    return None
+
+
 def _rfkill_run(args: list[str], timeout: float = 8) -> subprocess.CompletedProcess:
-    """Run rfkill, retrying with sudo if permission denied."""
-    exe = shutil.which("rfkill")
+    """Run rfkill, trying each known path and retrying with sudo if needed."""
+    exe = _find_rfkill()
     if not exe:
         return subprocess.CompletedProcess(args, 127, "", "rfkill not found")
+
+    # Try direct first (works in privileged container)
     res = subprocess.run([exe, *args], capture_output=True, text=True, timeout=timeout)
-    if res.returncode != 0 and shutil.which("sudo"):
-        res2 = subprocess.run(
-            ["sudo", "-n", exe, *args], capture_output=True, text=True, timeout=timeout
-        )
-        if res2.returncode == 0:
-            return res2
+    if res.returncode == 0:
+        return res
+
+    # Retry with sudo using every known path so the sudoers entry always matches
+    sudo = shutil.which("sudo")
+    if sudo:
+        for path in _RFKILL_PATHS:
+            full = shutil.which(path)
+            if not full:
+                continue
+            try:
+                res2 = subprocess.run(
+                    [sudo, "-n", full, *args],
+                    capture_output=True, text=True, timeout=timeout,
+                )
+                if res2.returncode == 0:
+                    logger.debug("rfkill via sudo %s succeeded", full)
+                    return res2
+            except Exception:
+                continue
     return res
 
 
@@ -119,18 +146,37 @@ def get_power_state() -> Optional[bool]:
 
 
 def set_power(enabled: bool) -> dict:
-    """Enable or disable Bluetooth using rfkill (kernel-level, no D-Bus needed)."""
+    """Enable or disable Bluetooth (rfkill + bluetoothctl for reliability)."""
+    errors: list[str] = []
+    action = "unblock" if enabled else "block"
+
+    # Step 1: kernel RF kill switch
     try:
-        action = "unblock" if enabled else "block"
         r = _rfkill_run([action, "bluetooth"])
         if r.returncode != 0:
-            return {"ok": False, "message": (r.stderr or r.stdout or "rfkill failed").strip()[:400]}
-        # Also tell BlueZ to power on when unblocking (best-effort)
-        if enabled:
-            _run(["power", "on"], allow_sudo=True, timeout=5)
-        return {"ok": True}
+            errors.append(f"rfkill {action}: " + (r.stderr or r.stdout or "failed").strip()[:200])
+        else:
+            logger.info("rfkill %s bluetooth: ok", action)
     except Exception as e:
-        return {"ok": False, "message": str(e)[:400]}
+        errors.append(f"rfkill exception: {e}")
+
+    # Step 2: bluetoothctl power on/off (BlueZ software switch)
+    bt_arg = "on" if enabled else "off"
+    try:
+        r2 = _run(["power", bt_arg], allow_sudo=True, timeout=6)
+        out2 = (r2.stdout or "").lower()
+        if r2.returncode == 0 or f"power: {bt_arg}" in out2 or "succeeded" in out2:
+            logger.info("bluetoothctl power %s: ok", bt_arg)
+        else:
+            errors.append(f"bluetoothctl power {bt_arg}: " + (r2.stderr or r2.stdout or "failed").strip()[:200])
+    except Exception as e:
+        errors.append(f"bluetoothctl exception: {e}")
+
+    # Success if at least one method worked (no errors, or only partial errors)
+    if len(errors) < 2:
+        return {"ok": True}
+    logger.warning("set_power(%s) both methods failed: %s", enabled, errors)
+    return {"ok": False, "message": "; ".join(errors)}
 
 
 def list_paired_devices() -> list[dict]:
