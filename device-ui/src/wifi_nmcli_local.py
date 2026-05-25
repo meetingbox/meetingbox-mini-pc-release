@@ -45,10 +45,11 @@ def nmcli_run(args: list, timeout: float = 30):
     )
     if res.returncode != 0 and priv:
         # Try the nsenter helper first (bypasses polkit — runs nmcli as root on host)
-        helper = _WIFI_HELPER if shutil.which(_WIFI_HELPER) or Path(_WIFI_HELPER).exists() else None
+        helper = _WIFI_HELPER if Path(_WIFI_HELPER).exists() else None
         if helper:
+            # Call via 'sh' so no execute bit is needed on the mounted script file.
             res2 = subprocess.run(
-                [helper] + args,
+                ["sudo", "-n", "sh", helper] + args,
                 capture_output=True,
                 text=True,
                 timeout=timeout,
