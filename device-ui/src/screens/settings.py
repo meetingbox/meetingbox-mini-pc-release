@@ -7,6 +7,7 @@ PRIVACY, DISPLAY, AUDIO, INTEGRATIONS, MAINTENANCE, SUPPORT.
 
 import asyncio
 import logging
+import shutil
 
 from kivy.uix.boxlayout import BoxLayout
 from kivy.uix.scrollview import ScrollView
@@ -711,9 +712,15 @@ class SettingsScreen(BaseScreen):
                 ip = info.get('ip_address', '?')
                 wifi_text = f'{wifi_ssid}  ({sig}%)\nIP: {ip}'
 
-                su = info.get('storage_used', 0) / (1024 ** 3)
-                st = info.get('storage_total', 1) / (1024 ** 3)
-                sf = st - su
+                try:
+                    _du = shutil.disk_usage('/')
+                    su = _du.used / (1024 ** 3)
+                    st = _du.total / (1024 ** 3)
+                    sf = _du.free / (1024 ** 3)
+                except Exception:
+                    su = info.get('storage_used', 0) / (1024 ** 3)
+                    st = info.get('storage_total', 1) / (1024 ** 3)
+                    sf = st - su
                 mc = info.get('meetings_count', 0)
                 storage_text = f'{su:.0f}/{st:.0f}GB used · {sf:.0f}GB free\n{mc} meetings'
 

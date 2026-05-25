@@ -3,6 +3,7 @@ Storage breakdown — shows usage by category and offers a Clear Cache button.
 """
 
 import logging
+import shutil
 
 from kivy.clock import Clock
 from kivy.uix.boxlayout import BoxLayout
@@ -52,11 +53,21 @@ class StorageBreakdownScreen(BaseScreen):
             spacing=self.suv(8),
         )
 
+        self.disk_item = SettingsItem(title="Disk (total)", subtitle="Reading…", mode="info")
         self.recordings_item = SettingsItem(title="Recordings", subtitle="Loading…", mode="info")
         self.transcripts_item = SettingsItem(title="Transcripts cache", subtitle="Loading…", mode="info")
         self.app_cache_item = SettingsItem(title="App cache", subtitle="Loading…", mode="info")
-        for w in (self.recordings_item, self.transcripts_item, self.app_cache_item):
+        for w in (self.disk_item, self.recordings_item, self.transcripts_item, self.app_cache_item):
             inner.add_widget(w)
+        try:
+            _du = shutil.disk_usage('/')
+            self.disk_item.subtitle_label.text = (
+                f"{_fmt(_du.used / (1024**3))} used · "
+                f"{_fmt(_du.free / (1024**3))} free · "
+                f"{_fmt(_du.total / (1024**3))} total"
+            )
+        except Exception:
+            self.disk_item.subtitle_label.text = "Unavailable"
 
         self.clear_btn = DangerButton(
             text="CLEAR CACHE",
