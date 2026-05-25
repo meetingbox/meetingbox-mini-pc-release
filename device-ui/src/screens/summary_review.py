@@ -583,18 +583,18 @@ class SummaryReviewScreen(BaseScreen):
     def _show_tab(self, tab_id: str) -> None:
         if tab_id not in _TAB_IDS:
             return
-        # Remove currently-shown tab widgets
+        # Remove currently-shown tab widgets (defensively skip None / unparented).
         for w in self._tab_widgets[self._active_tab]:
-            if w.parent is self._canvas:
+            if w is not None and w.parent is self._canvas:
                 self._canvas.remove_widget(w)
         self._active_tab = tab_id
 
         widgets = self._tab_widgets[tab_id]
         if not widgets:
-            widgets = self._build_tab(tab_id)
+            widgets = [w for w in self._build_tab(tab_id) if w is not None]
             self._tab_widgets[tab_id] = widgets
         for w in widgets:
-            if w.parent is None:
+            if w is not None and w.parent is None:
                 self._canvas.add_widget(w)
 
         for tid, tab in self._sidebar_tabs.items():
@@ -625,7 +625,9 @@ class SummaryReviewScreen(BaseScreen):
         ai_card = _GradientCard(**kivy_hints(OV_AI_CARD))
         widgets.append(ai_card)
         ai_icon_box, ai_title_box = content_header(OV_AI_CARD, icon_w=30.0, title_w=200.0)
-        widgets.append(self._make_image("ai_summary_icon.png", ai_icon_box))
+        ai_icon = self._make_image("ai_summary_icon.png", ai_icon_box)
+        if ai_icon is not None:
+            widgets.append(ai_icon)
         widgets.append(
             self._make_label(
                 "AI Summary",
@@ -696,7 +698,9 @@ class SummaryReviewScreen(BaseScreen):
         actions_card = _GradientCard(**kivy_hints(OV_ACTIONS_CARD))
         widgets.append(actions_card)
         ai2_box, at_box = content_header(OV_ACTIONS_CARD, icon_w=26.0, title_w=240.0)
-        widgets.append(self._make_image("action_items_icon.png", ai2_box))
+        ai2_icon = self._make_image("action_items_icon.png", ai2_box)
+        if ai2_icon is not None:
+            widgets.append(ai2_icon)
         widgets.append(
             self._make_label(
                 "Action Items",
@@ -750,7 +754,9 @@ class SummaryReviewScreen(BaseScreen):
         decisions_card = _GradientCard(**kivy_hints(OV_DECISIONS_CARD))
         widgets.append(decisions_card)
         di_box, dt_box = content_header(OV_DECISIONS_CARD, icon_w=26.0, title_w=240.0)
-        widgets.append(self._make_image("decisions_icon.png", di_box))
+        di_icon = self._make_image("decisions_icon.png", di_box)
+        if di_icon is not None:
+            widgets.append(di_icon)
         widgets.append(
             self._make_label(
                 "Decisions Made",
@@ -1216,8 +1222,12 @@ class SummaryReviewScreen(BaseScreen):
     # ------------------------------------------------------------------
     def set_meeting_data(self, meeting_id: str, summary_data: dict):
         """Bind summary content + trigger backend hydration for missing fields."""
+        new_meeting = meeting_id and meeting_id != self.meeting_id
         self.meeting_id = meeting_id
         self._summary_data = dict(summary_data or {})
+        # For a new meeting always start the user on the Overview tab.
+        if new_meeting and self._active_tab != "overview":
+            self._show_tab("overview")
         self._apply_local_data()
         self._fetch_meeting_detail()
 
@@ -1258,32 +1268,55 @@ class SummaryReviewScreen(BaseScreen):
         # Topics
         self._topics = list(self._coerce_topics(data.get("topics") or []))
 
-        # Stash the summary text on the Overview label if it exists
-        if getattr(self, "ov_summary_text", None):
-            self.ov_summary_text.text = (
-                (summary_text or "").strip()
-                or "Summary will appear here once processing finishes."
-            )
+        # Refresh the on-screen content. Overview widgets are already built
+        # (they're created once in __init__) so we update their labels
+        # in-place via _render_overview_data — no destroy/rebuild.
+        self._refresh_after_data_change()
 
-        # Re-render whichever tab is showing right now with the latest data.
-        # We rebuild from scratch so list contents reflect the new state.
-        self._invalidate_and_rerender_active_tab()
+    def _refresh_after_data_change(self) -> None:
+        """Apply the latest ``_summary_data`` to existing widgets.
 
-    def _invalidate_and_rerender_active_tab(self) -> None:
+        - Overview tab: refresh its labels / rows in place via
+          ``_render_overview_data`` (no widget destruction).
+        - Other tabs: their list contents depend on the new data, so we
+          invalidate their cached widget trees. The widgets get rebuilt
+          lazily the next time the user clicks that sidebar tab. If a
+          non-Overview tab is currently active, we rebuild it now.
+        """
+        # Always update Overview labels — they were built in __init__ and
+        # the widget refs (self.ov_summary_text, self._ov_action_rows, …)
+        # remain valid even when Overview isn't the active tab.
+        try:
+            self._render_overview_data()
+        except Exception:  # noqa: BLE001
+            logger.exception("Overview data refresh failed")
+
         active = self._active_tab
-        for w in self._tab_widgets[active]:
-            if w.parent is self._canvas:
-                self._canvas.remove_widget(w)
-        self._tab_widgets[active] = []
-        # Clear the others' caches too so they pick up fresh data on first switch
+        # Invalidate every non-Overview tab so the next visit rebuilds with
+        # fresh data. Detach them from the canvas first if they happen to
+        # be attached (shouldn't normally happen, but guards against the
+        # rare case of multiple refreshes interleaving).
         for tid in _TAB_IDS:
-            if tid != active:
-                self._tab_widgets[tid] = []
-        widgets = self._build_tab(active)
-        self._tab_widgets[active] = widgets
-        for w in widgets:
-            if w.parent is None:
-                self._canvas.add_widget(w)
+            if tid == "overview":
+                continue
+            for w in self._tab_widgets.get(tid, ()):
+                if w is not None and w.parent is self._canvas:
+                    self._canvas.remove_widget(w)
+            self._tab_widgets[tid] = []
+
+        if active != "overview":
+            # Rebuild the currently-shown non-Overview tab right now so the
+            # user sees fresh data without having to click the tab again.
+            try:
+                widgets = [w for w in self._build_tab(active) if w is not None]
+            except Exception:  # noqa: BLE001
+                logger.exception("Tab %s rebuild failed", active)
+                widgets = []
+            self._tab_widgets[active] = widgets
+            for w in widgets:
+                if w.parent is None:
+                    self._canvas.add_widget(w)
+
         Clock.schedule_once(
             lambda _dt: self._on_root_resize(self._root, self._root.size), 0
         )
@@ -1466,4 +1499,4 @@ class SummaryReviewScreen(BaseScreen):
             item["completed"] = not bool(item.get("completed"))
             # Re-render the action_items tab so the checkbox icon swaps.
             if self._active_tab == "action_items":
-                self._invalidate_and_rerender_active_tab()
+                self._refresh_after_data_change()
