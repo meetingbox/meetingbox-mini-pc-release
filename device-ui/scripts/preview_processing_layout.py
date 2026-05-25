@@ -56,7 +56,7 @@ _RESOLUTIONS: tuple[tuple[int, int, str], ...] = (
     (600, 1024, "portrait_600x1024"),
 )
 
-_LAYERS: tuple[tuple[str, dict], ...] = (
+_LAYERS_PROCESSING: tuple[tuple[str, dict], ...] = (
     ("orb_glow.png", ORB_GLOW),
     ("ring_glow.png", RING_GLOW),
     ("ring_lighten.png", RING_LIGHTEN),
@@ -69,6 +69,12 @@ _LAYERS: tuple[tuple[str, dict], ...] = (
     ("dot_separator.png", DOT_SEPARATOR),
     ("steps_card.png", STEPS_CARD),
     ("notify_bar.png", NOTIFY_BAR),
+)
+
+# Same set minus notify_bar — replaced at runtime by the "View Meeting
+# Summary" CTA button (drawn separately below).
+_LAYERS_READY: tuple[tuple[str, dict], ...] = tuple(
+    layer for layer in _LAYERS_PROCESSING if layer[0] != "notify_bar.png"
 )
 
 
@@ -88,14 +94,31 @@ def _draw_text(draw, box, cw, ch, ox, oy, text, fill, font, anchor="lm"):
         draw.text(((x0 + x1) // 2, y0), text, fill=fill, font=font, anchor="ma")
 
 
-def _render(screen_w: int, screen_h: int, out_path: Path) -> None:
+def _draw_view_summary_btn(draw, box, cw, ch, ox, oy, font) -> None:
+    """Mirror the runtime ``_ViewSummaryButton`` widget for static previews."""
+    x0, y0, x1, y1 = _rect(box, cw, ch, ox, oy)
+    radius = max(2, int(38.139 * min(cw / 1260.0, ch / 800.0)))
+    draw.rounded_rectangle(
+        [x0, y0, x1, y1], radius=radius, fill=(0, 107, 249), outline=(63, 66, 83), width=2
+    )
+    draw.text(
+        ((x0 + x1) // 2, (y0 + y1) // 2),
+        "View Meeting Summary",
+        fill=(255, 255, 255),
+        font=font,
+        anchor="mm",
+    )
+
+
+def _render(screen_w: int, screen_h: int, out_path: Path, *, ready: bool = False) -> None:
     """Render the processing screen layout at the given screen size."""
     img = Image.new("RGB", (screen_w, screen_h), BG_RGB)
     cw, ch = scaled_canvas(screen_w, screen_h)
     ox = (screen_w - cw) / 2
     oy = (screen_h - ch) / 2
 
-    for name, box in _LAYERS:
+    layers = _LAYERS_READY if ready else _LAYERS_PROCESSING
+    for name, box in layers:
         path = ASSETS / name
         if not path.is_file():
             print(f"SKIP {name}")
@@ -112,14 +135,30 @@ def _render(screen_w: int, screen_h: int, out_path: Path) -> None:
         ft_title = ImageFont.truetype("arial.ttf", font_px(TITLE_FS_RATIO, ch))
         ft_dur = ImageFont.truetype("arial.ttf", font_px(DURATION_FS_RATIO, ch))
         ft_sub = ImageFont.truetype("arial.ttf", font_px(SUBTITLE_FS_RATIO, ch))
+        ft_cta = ImageFont.truetype("arialbd.ttf", font_px(HEADLINE_FS_RATIO, ch))
     except OSError:
-        ft_h = ft_title = ft_dur = ft_sub = ImageFont.load_default()
+        ft_h = ft_title = ft_dur = ft_sub = ft_cta = ImageFont.load_default()
+
+    if ready:
+        _draw_view_summary_btn(draw, NOTIFY_BAR, cw, ch, ox, oy, ft_cta)
 
     _draw_text(draw, HEADLINE_LABEL, cw, ch, ox, oy, "Recording complete", (255, 255, 255), ft_h, "lm")
     _draw_text(draw, TITLE_LABEL, cw, ch, ox, oy, "Product Sync", (182, 186, 242), ft_title, "lm")
     _draw_text(draw, DURATION_LABEL, cw, ch, ox, oy, "32min", (182, 186, 242), ft_dur, "lm")
-    _draw_text(draw, HEADLINE_BOTTOM, cw, ch, ox, oy, "Summarizing your meeting...", (255, 255, 255), ft_h, "lm")
-    _draw_text(draw, SUBTITLE_BOTTOM, cw, ch, ox, oy, "This may take a few seconds", (182, 186, 242), ft_sub, "lm")
+    if ready:
+        _draw_text(draw, HEADLINE_BOTTOM, cw, ch, ox, oy, "Analysis complete!", (255, 255, 255), ft_h, "lm")
+        _draw_text(
+            draw,
+            SUBTITLE_BOTTOM,
+            cw, ch, ox, oy,
+            "Your meeting highlights, transcript, and action items are ready.",
+            (182, 186, 242),
+            ft_sub,
+            "lm",
+        )
+    else:
+        _draw_text(draw, HEADLINE_BOTTOM, cw, ch, ox, oy, "Summarizing your meeting...", (255, 255, 255), ft_h, "lm")
+        _draw_text(draw, SUBTITLE_BOTTOM, cw, ch, ox, oy, "This may take a few seconds", (182, 186, 242), ft_sub, "lm")
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
     img.save(out_path)
@@ -128,6 +167,9 @@ def _render(screen_w: int, screen_h: int, out_path: Path) -> None:
 
 def main() -> None:
     _render(SCREEN_W, SCREEN_H, OUT)
+    # Always render the "summary ready" variant next to the default one so
+    # the CTA placement is obvious at a glance.
+    _render(SCREEN_W, SCREEN_H, ASSETS / "processing_layout_preview_ready.png", ready=True)
     if len(sys.argv) > 1:
         for sw, sh, tag in _RESOLUTIONS:
             _render(sw, sh, ASSETS / f"processing_layout_preview_{tag}.png")

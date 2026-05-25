@@ -23,12 +23,13 @@ import math
 from typing import Optional
 
 from kivy.clock import Clock
-from kivy.graphics import Color, PopMatrix, PushMatrix, Rectangle, Rotate
+from kivy.graphics import Color, Line, PopMatrix, PushMatrix, Rectangle, Rotate, RoundedRectangle
 from kivy.uix.anchorlayout import AnchorLayout
 from kivy.uix.behaviors import ButtonBehavior
 from kivy.uix.floatlayout import FloatLayout
 from kivy.uix.image import Image
 from kivy.uix.label import Label
+from kivy.uix.widget import Widget
 
 from config import ASSETS_DIR
 from processing_layout import (
@@ -96,6 +97,71 @@ class _RotatingImage(Image):
 
     def set_angle(self, angle: float):
         self._rot.angle = angle
+
+
+class _ViewSummaryButton(ButtonBehavior, Widget):
+    """Bright blue CTA button shown when the meeting summary is ready.
+
+    Lives at the same canvas slot as the ``notify_bar`` informational pill
+    — when the summary lands we hide the pill (opacity 0) and reveal this
+    button (opacity 1, ``disabled=False``) so the user has an obvious
+    "View Meeting Summary" action that opens the summary review screen.
+
+    Drawn with Kivy primitives (no Figma asset for this state) so the
+    button is fully responsive and integrates with the rest of the
+    processing-screen canvas.
+    """
+
+    _FILL = (0 / 255, 107 / 255, 249 / 255, 1.0)        # #006BF9
+    _BORDER = (0x3F / 255, 0x42 / 255, 0x53 / 255, 1.0)  # #3F4253
+    _BORDER_W = 1.4
+    _RADIUS = 38.139  # matches the notify_bar pill radius
+    _LABEL_COLOR = (1.0, 1.0, 1.0, 1.0)
+
+    def __init__(self, *, label_text: str = "View Meeting Summary", fs_ratio: float = 28.251 / 800.0, **kwargs):
+        super().__init__(**kwargs)
+        self._fs_ratio = fs_ratio
+        with self.canvas:
+            self._fill_color = Color(*self._FILL)
+            self._rect = RoundedRectangle(pos=self.pos, size=self.size, radius=[self._RADIUS])
+            self._border_color = Color(*self._BORDER)
+            self._line = Line(
+                rounded_rectangle=(self.x, self.y, self.width, self.height, self._RADIUS),
+                width=self._BORDER_W,
+            )
+        self._label = Label(
+            text=label_text,
+            color=self._LABEL_COLOR,
+            font_name="42dot-Sans",
+            bold=True,
+            halign="center",
+            valign="middle",
+            size_hint=(1, 1),
+            pos_hint={"x": 0, "y": 0},
+        )
+        self._label.bind(size=self._label.setter("text_size"))
+        self.add_widget(self._label)
+        self.bind(pos=self._sync, size=self._sync)
+
+    def _sync(self, *_):
+        self._rect.pos = self.pos
+        self._rect.size = self.size
+        self._rect.radius = [self._RADIUS]
+        self._line.rounded_rectangle = (self.x, self.y, self.width, self.height, self._RADIUS)
+        self._label.pos = self.pos
+        self._label.size = self.size
+
+    def set_pressed(self, pressed: bool) -> None:
+        """Slight dim while held down for tactile feedback."""
+        a = 0.85 if pressed else 1.0
+        r, g, b, _ = self._FILL
+        self._fill_color.rgba = (r, g, b, a)
+
+    def on_press(self):  # ButtonBehavior hook
+        self.set_pressed(True)
+
+    def on_release(self):  # ButtonBehavior hook
+        self.set_pressed(False)
 
 
 class ProcessingScreen(BaseScreen):
@@ -197,6 +263,18 @@ class ProcessingScreen(BaseScreen):
             "notify_bar.png", NOTIFY_BAR, on_release=lambda *_: self._open_summary()
         )
 
+        # "View Meeting Summary" CTA — sits in the same slot as the
+        # notify_bar. We start it hidden + disabled and only reveal it
+        # when on_summary_ready fires (see _set_summary_cta_visible).
+        self.view_summary_btn = _ViewSummaryButton(
+            label_text="View Meeting Summary",
+            fs_ratio=HEADLINE_FS_RATIO,
+            **kivy_hints(NOTIFY_BAR),
+        )
+        self.view_summary_btn.bind(on_release=lambda *_: self._open_summary())
+        self._canvas.add_widget(self.view_summary_btn)
+        self._set_summary_cta_visible(False)
+
         self.add_widget(self._root)
         Clock.schedule_once(lambda _dt: self._on_root_resize(self._root, self._root.size), 0)
 
@@ -294,6 +372,22 @@ class ProcessingScreen(BaseScreen):
         ):
             if lbl is not None:
                 lbl.font_size = font_px(lbl._fs_ratio, h)  # noqa: SLF001
+        btn = getattr(self, "view_summary_btn", None)
+        if btn is not None:
+            btn._label.font_size = font_px(btn._fs_ratio, h)  # noqa: SLF001
+
+    def _set_summary_cta_visible(self, ready: bool) -> None:
+        """Swap between the informational notify pill (still processing) and
+        the bright "View Meeting Summary" CTA (summary ready).
+        """
+        btn = getattr(self, "view_summary_btn", None)
+        pill = getattr(self, "notify_pill", None)
+        if btn is not None:
+            btn.opacity = 1.0 if ready else 0.0
+            btn.disabled = not ready
+        if pill is not None:
+            pill.opacity = 0.0 if ready else 1.0
+            pill.disabled = ready
 
     # ------------------------------------------------------------- lifecycle
     def on_enter(self):
@@ -335,6 +429,7 @@ class ProcessingScreen(BaseScreen):
         elif self._transcript_ready:
             self.subtitle_label.text = "Transcription done. Building meeting report..."
 
+        self._set_summary_cta_visible(self._summary_ready)
         self._start_animations()
 
     def on_leave(self):
@@ -404,6 +499,7 @@ class ProcessingScreen(BaseScreen):
         self.subtitle_label.text = (
             "Your meeting highlights, transcript, and action items are ready."
         )
+        self._set_summary_cta_visible(True)
 
     def on_summary_failed(self, meeting_id: str, detail: str):
         """Full report failed — keep transcript path usable."""
@@ -413,6 +509,7 @@ class ProcessingScreen(BaseScreen):
         self._summary_data = {}
         self.headline_label.text = "Transcript ready"
         self.subtitle_label.text = (detail or "Full report could not be generated.")[:240]
+        self._set_summary_cta_visible(False)
 
     # ------------------------------------------------------------------
     # Helpers — interaction
