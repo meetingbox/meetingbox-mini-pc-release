@@ -440,13 +440,41 @@ def set_source_volume_pct(pct: int) -> None:
             logger.debug("set_source_volume_pct amixer: %s", e)
 
 
-def list_pulse_sinks() -> list[tuple[str, str]]:
-    """Return [(sink_name, description), …]
+def _pactl_descriptions(object_type: str) -> dict[str, str]:
+    """Return {name: description} from ``pactl list <object_type>`` verbose output.
 
-    ``pactl list sinks short`` output format (tab-delimited):
-      INDEX  NAME  MODULE  FORMAT/SAMPLERATE  STATE
-    Sink names are e.g. ``alsa_output.pci-0000_00_1f.3.analog-stereo`` — they do
-    NOT start with "sink", so no prefix filter is applied.
+    Parses blocks like:
+      Sink #0
+          Name: alsa_output.pci-0000_00_1f.3.analog-stereo
+          Description: Built-in Audio Analog Stereo
+    """
+    exe = shutil.which("pactl")
+    if not exe:
+        return {}
+    try:
+        out = subprocess.check_output(
+            [exe, "list", object_type], timeout=6, stderr=subprocess.DEVNULL
+        ).decode(errors="ignore")
+    except Exception:
+        return {}
+    result: dict[str, str] = {}
+    current_name = ""
+    for line in out.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("Name:"):
+            current_name = stripped[len("Name:"):].strip()
+        elif stripped.startswith("Description:") and current_name:
+            result[current_name] = stripped[len("Description:"):].strip()
+    return result
+
+
+def list_pulse_sinks() -> list[tuple[str, str]]:
+    """Return [(sink_name, friendly_description), …]
+
+    Uses ``pactl list sinks short`` for the name list and the verbose
+    ``pactl list sinks`` for human-readable descriptions (e.g.
+    "Built-in Audio Analog Stereo").  The STATE column from the short
+    output (SUSPENDED / RUNNING / IDLE) is intentionally ignored.
     """
     exe = shutil.which("pactl")
     if not exe:
@@ -457,21 +485,21 @@ def list_pulse_sinks() -> list[tuple[str, str]]:
         ).decode(errors="ignore")
     except Exception:
         return []
+    descriptions = _pactl_descriptions("sinks")
     rows: list[tuple[str, str]] = []
     for line in out.splitlines():
         parts = line.split("\t")
         if len(parts) >= 2 and parts[1].strip():
             name = parts[1].strip()
-            desc = parts[-1].strip() if len(parts) >= 5 else name
-            rows.append((name, desc or name))
+            desc = descriptions.get(name) or name
+            rows.append((name, desc))
     return rows
 
 
 def list_pulse_sources() -> list[tuple[str, str]]:
-    """Return [(source_name, description), …]
+    """Return [(source_name, friendly_description), …]
 
-    Source names are e.g. ``alsa_input.usb-MeetingBox...`` — they do NOT start
-    with "source".  Monitor sources (virtual loopbacks) are excluded.
+    Monitor sources (virtual loopbacks) are excluded.
     """
     exe = shutil.which("pactl")
     if not exe:
@@ -482,13 +510,14 @@ def list_pulse_sources() -> list[tuple[str, str]]:
         ).decode(errors="ignore")
     except Exception:
         return []
+    descriptions = _pactl_descriptions("sources")
     rows: list[tuple[str, str]] = []
     for line in out.splitlines():
         parts = line.split("\t")
         if len(parts) >= 2 and parts[1].strip() and ".monitor" not in parts[1]:
             name = parts[1].strip()
-            desc = parts[-1].strip() if len(parts) >= 5 else name
-            rows.append((name, desc or name))
+            desc = descriptions.get(name) or name
+            rows.append((name, desc))
     return rows
 
 
