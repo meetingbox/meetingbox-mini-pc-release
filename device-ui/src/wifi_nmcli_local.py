@@ -11,7 +11,6 @@ import logging
 import shutil
 import subprocess
 import time
-from pathlib import Path
 from typing import Optional
 
 logger = logging.getLogger(__name__)
@@ -21,13 +20,11 @@ def has_nmcli() -> bool:
     return shutil.which("nmcli") is not None
 
 
-_WIFI_HELPER = "/usr/local/bin/meetingbox-wifi-nmcli"
-
-
 def nmcli_run(args: list, timeout: float = 30):
     """
-    Run nmcli; on PolicyKit denial retry via the meetingbox-wifi-nmcli helper
-    (nsenter into PID 1 namespace as root, bypassing polkit).
+    Run nmcli; on PolicyKit denial retry with sudo -n nmcli (root bypasses polkit).
+    /usr/bin/nmcli is in the container sudoers NOPASSWD list so this works without
+    a password prompt.
     """
     cmd = ["nmcli"] + args
     res = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
@@ -43,42 +40,21 @@ def nmcli_run(args: list, timeout: float = 30):
             "not authorized to control",
         )
     )
-    if res.returncode != 0 and priv:
-        # Try the nsenter helper first (bypasses polkit — runs nmcli as root on host)
-        helper = _WIFI_HELPER if Path(_WIFI_HELPER).exists() else None
-        if helper:
-            # Call via 'sh' so no execute bit is needed on the mounted script file.
-            res2 = subprocess.run(
-                ["sudo", "-n", "sh", helper] + args,
-                capture_output=True,
-                text=True,
-                timeout=timeout,
-            )
-            if res2.returncode == 0:
-                return res2
-            # Helper exists but also failed — return its result (more informative)
-            return res2
-        # Fallback: sudo -n nmcli (works only if nmcli is in sudoers)
-        if shutil.which("sudo"):
-            res2 = subprocess.run(
-                ["sudo", "-n", "nmcli"] + args,
-                capture_output=True,
-                text=True,
-                timeout=timeout,
-            )
-            sudo_msg = ((res2.stderr or "") + (res2.stdout or "")).lower()
-            if res2.returncode != 0 and any(
-                s in sudo_msg
-                for s in (
-                    "a password is required",
-                    "password is required",
-                    "terminal is required",
-                    "no tty present",
-                    "sudo: a password",
-                )
-            ):
-                return res
-            return res2
+    if res.returncode != 0 and priv and shutil.which("sudo"):
+        res2 = subprocess.run(
+            ["sudo", "-n", "/usr/bin/nmcli"] + args,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+        sudo_msg = ((res2.stderr or "") + (res2.stdout or "")).lower()
+        # If sudo itself asks for a password, return the original result
+        if res2.returncode != 0 and any(
+            s in sudo_msg
+            for s in ("a password is required", "no tty present", "sudo: a password")
+        ):
+            return res
+        return res2
     return res
 
 
