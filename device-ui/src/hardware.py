@@ -210,6 +210,13 @@ def request_system_reboot() -> bool:
             logger.warning("MEETINGBOX_LOCAL_REBOOT_CMD failed: %s", e)
 
     candidates: list[list[str]] = []
+
+    # Prefer the nsenter helper (mounted in Docker, in sudoers NOPASSWD)
+    _reboot_helper = "/usr/local/bin/meetingbox-host-reboot"
+    if os.path.exists(_reboot_helper) and shutil.which("sudo"):
+        candidates.append(["sudo", "-n", _reboot_helper])
+        candidates.append(["sudo", "-n", "sh", _reboot_helper])
+
     if os.geteuid() == 0:
         rb = shutil.which("reboot") or "/sbin/reboot"
         candidates.append([rb])
@@ -253,6 +260,13 @@ def request_system_poweroff() -> bool:
             logger.warning("MEETINGBOX_LOCAL_POWEROFF_CMD failed: %s", e)
 
     candidates: list[list[str]] = []
+
+    # Prefer the nsenter helper (mounted in Docker, in sudoers NOPASSWD)
+    _poweroff_helper = "/usr/local/bin/meetingbox-host-poweroff"
+    if os.path.exists(_poweroff_helper) and shutil.which("sudo"):
+        candidates.append(["sudo", "-n", _poweroff_helper])
+        candidates.append(["sudo", "-n", "sh", _poweroff_helper])
+
     if os.geteuid() == 0:
         po = shutil.which("poweroff") or "/sbin/poweroff"
         candidates.append([po])
@@ -427,7 +441,13 @@ def set_source_volume_pct(pct: int) -> None:
 
 
 def list_pulse_sinks() -> list[tuple[str, str]]:
-    """Return [(sink_name, description), …]"""
+    """Return [(sink_name, description), …]
+
+    ``pactl list sinks short`` output format (tab-delimited):
+      INDEX  NAME  MODULE  FORMAT/SAMPLERATE  STATE
+    Sink names are e.g. ``alsa_output.pci-0000_00_1f.3.analog-stereo`` — they do
+    NOT start with "sink", so no prefix filter is applied.
+    """
     exe = shutil.which("pactl")
     if not exe:
         return []
@@ -440,7 +460,7 @@ def list_pulse_sinks() -> list[tuple[str, str]]:
     rows: list[tuple[str, str]] = []
     for line in out.splitlines():
         parts = line.split("\t")
-        if len(parts) >= 2 and parts[1].startswith("sink"):
+        if len(parts) >= 2 and parts[1].strip():
             name = parts[1].strip()
             desc = parts[-1].strip() if len(parts) >= 5 else name
             rows.append((name, desc or name))
@@ -448,7 +468,11 @@ def list_pulse_sinks() -> list[tuple[str, str]]:
 
 
 def list_pulse_sources() -> list[tuple[str, str]]:
-    """Return [(source_name, description), …]"""
+    """Return [(source_name, description), …]
+
+    Source names are e.g. ``alsa_input.usb-MeetingBox...`` — they do NOT start
+    with "source".  Monitor sources (virtual loopbacks) are excluded.
+    """
     exe = shutil.which("pactl")
     if not exe:
         return []
@@ -461,7 +485,7 @@ def list_pulse_sources() -> list[tuple[str, str]]:
     rows: list[tuple[str, str]] = []
     for line in out.splitlines():
         parts = line.split("\t")
-        if len(parts) >= 2 and parts[1].startswith("source") and ".monitor" not in parts[1]:
+        if len(parts) >= 2 and parts[1].strip() and ".monitor" not in parts[1]:
             name = parts[1].strip()
             desc = parts[-1].strip() if len(parts) >= 5 else name
             rows.append((name, desc or name))

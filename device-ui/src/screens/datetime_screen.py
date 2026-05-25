@@ -1,5 +1,5 @@
 """
-Date & Time settings — NTP toggle (via local timedatectl) + manual set (via backend API).
+Date & Time settings — NTP toggle (via local timedatectl) + manual set (via nsenter helper).
 """
 
 import logging
@@ -8,10 +8,7 @@ from datetime import datetime
 from kivy.clock import Clock
 from kivy.uix.boxlayout import BoxLayout
 from kivy.uix.label import Label
-from kivy.uix.widget import Widget
 
-from async_helper import run_async
-from components.button import PrimaryButton
 from components.modal_dialog import ModalDialog
 from components.settings_item import SettingsItem
 from components.status_bar import StatusBar
@@ -119,25 +116,29 @@ class DateTimeScreen(BaseScreen):
         if not value:
             return
 
-        async def _send():
-            try:
-                result = await self.backend.set_datetime(iso=value, ntp=False)
-                ok = result.get("ok", False)
-                msg = result.get("message", "")
+        import threading
+        from system_clock_util import try_set_time
 
-                def _done(_dt):
-                    if not ok:
-                        self.add_widget(
-                            ModalDialog(
-                                title="Could not set time",
-                                message=msg[:400] or "timedatectl failed — check host permissions.",
-                                confirm_text="OK",
-                                cancel_text="",
-                            )
+        def _do():
+            ok = try_set_time(value)
+
+            def _done(_dt):
+                if not ok:
+                    self.add_widget(
+                        ModalDialog(
+                            title="Could not set time",
+                            message=(
+                                "timedatectl failed — confirm the meetingbox-timedatectl\n"
+                                "helper is mounted and the container has been rebuilt."
+                            ),
+                            confirm_text="OK",
+                            cancel_text="",
                         )
+                    )
+                else:
+                    # Disable NTP toggle visually since we just set time manually
+                    self.ntp_item.toggle.active = False
 
-                Clock.schedule_once(_done, 0)
-            except Exception as e:
-                logger.warning("set_datetime: %s", e)
+            Clock.schedule_once(_done, 0)
 
-        run_async(_send())
+        threading.Thread(target=_do, daemon=True).start()

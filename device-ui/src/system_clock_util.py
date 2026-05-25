@@ -1,81 +1,89 @@
-"""Best-effort host clock/timezone changes from the kiosk UI container."""
+"""Best-effort host clock/timezone changes from the kiosk UI container.
+
+All three operations run timedatectl via the meetingbox-timedatectl nsenter
+helper script (mounted at /usr/local/bin/meetingbox-timedatectl).  This puts
+the process in the host's namespaces so timedatectl talks to the host's
+systemd-timedated — identical to the pattern used for WiFi (nmcli) and
+Bluetooth (bluetoothctl).
+"""
 
 from __future__ import annotations
 
 import logging
+import os
 import shutil
 import subprocess
 
 logger = logging.getLogger(__name__)
+
+_HELPER = "/usr/local/bin/meetingbox-timedatectl"
+
+
+def _run_timedatectl(*args: str, timeout: float = 20) -> bool:
+    """Run timedatectl <args> via the nsenter helper as root (sudo -n sh helper ...).
+
+    Falls back to running timedatectl directly in the container if the helper
+    is not mounted (e.g. bare-metal install without Docker).
+    """
+    sudo = shutil.which("sudo")
+
+    # Primary: nsenter helper (runs timedatectl in host namespace as root)
+    if sudo and os.path.exists(_HELPER):
+        try:
+            r = subprocess.run(
+                [sudo, "-n", "sh", _HELPER, *args],
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+            )
+            logger.info("timedatectl %s via helper: rc=%s stderr=%s",
+                        " ".join(args), r.returncode, (r.stderr or "").strip()[:120])
+            if r.returncode == 0:
+                return True
+        except Exception as e:
+            logger.debug("timedatectl helper failed: %s", e)
+
+    # Fallback: direct timedatectl (may work on bare-metal or if systemd D-Bus is reachable)
+    exe = shutil.which("timedatectl")
+    if not exe:
+        logger.debug("timedatectl not found on PATH")
+        return False
+
+    # Try with sudo first, then without
+    for cmd in (
+        [sudo, "-n", exe, *args] if sudo else None,
+        [exe, *args],
+    ):
+        if cmd is None:
+            continue
+        try:
+            r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+            if r.returncode == 0:
+                logger.info("timedatectl %s (direct): rc=0", " ".join(args))
+                return True
+        except Exception as e:
+            logger.debug("timedatectl direct %s: %s", " ".join(args), e)
+
+    return False
 
 
 def try_set_timezone(tz: str) -> bool:
     tz = (tz or "").strip()
     if not tz:
         return False
-    exe = shutil.which("timedatectl")
-    if not exe:
-        return False
-    for args in ([exe, "set-timezone", tz],):
-        try:
-            r = subprocess.run(
-                ["sudo", "-n", *args[1:]] if shutil.which("sudo") else args,
-                capture_output=True,
-                text=True,
-                timeout=20,
-                check=False,
-            )
-            if r.returncode == 0:
-                return True
-            r2 = subprocess.run(args, capture_output=True, text=True, timeout=20)
-            return r2.returncode == 0
-        except Exception as e:
-            logger.debug("set timezone %s: %s", tz, e)
-    return False
+    return _run_timedatectl("set-timezone", tz)
 
 
 def try_set_time(iso_fragment: str) -> bool:
-    """*iso_fragment* e.g. ``2026-05-21 14:35:00`` (local)."""
+    """*iso_fragment* e.g. ``2026-05-21 14:35:00`` (local time, 24-hour)."""
     s = (iso_fragment or "").strip()
     if not s:
         return False
-    exe = shutil.which("timedatectl")
-    if not exe:
-        return False
-    try:
-        r = subprocess.run(
-            [exe, "set-time", s],
-            capture_output=True,
-            text=True,
-            timeout=20,
-        )
-        if r.returncode == 0:
-            return True
-        if shutil.which("sudo"):
-            r2 = subprocess.run(
-                ["sudo", "-n", exe, "set-time", s],
-                capture_output=True,
-                text=True,
-                timeout=20,
-            )
-            return r2.returncode == 0
-    except Exception as e:
-        logger.debug("set-time: %s", e)
-    return False
+    # timedatectl set-time requires NTP to be off first
+    _run_timedatectl("set-ntp", "false", timeout=10)
+    return _run_timedatectl("set-time", s)
 
 
 def try_set_ntp(enabled: bool) -> bool:
-    exe = shutil.which("timedatectl")
-    if not exe:
-        return False
     arg = "true" if enabled else "false"
-    try:
-        r = subprocess.run(
-            [exe, "set-ntp", arg],
-            capture_output=True,
-            text=True,
-            timeout=15,
-        )
-        return r.returncode == 0
-    except Exception:
-        return False
+    return _run_timedatectl("set-ntp", arg)

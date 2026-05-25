@@ -136,6 +136,8 @@ services:
       - ./scripts/meetingbox-wifi-nmcli:/usr/local/bin/meetingbox-wifi-nmcli:ro
       # Bluetooth control via nsenter into host namespace — bypasses polkit for power on/off.
       - ./scripts/meetingbox-bluetooth:/usr/local/bin/meetingbox-bluetooth:ro
+      # Date/Time and Timezone: timedatectl via nsenter into host (systemd-timedated on host).
+      - ./scripts/meetingbox-timedatectl:/usr/local/bin/meetingbox-timedatectl:ro
       # nmcli/bluetoothctl in the container talks to host NetworkManager / BlueZ via D-Bus.
       - /run/dbus/system_bus_socket:/run/dbus/system_bus_socket
     devices:
