@@ -5,6 +5,24 @@ Storage breakdown — shows usage by category and offers a Clear Cache button.
 import logging
 import shutil
 
+
+def _read_ram_gb() -> tuple[float, float] | None:
+    """Return (used_gb, total_gb) from /proc/meminfo, or None on failure."""
+    try:
+        total_kb = avail_kb = 0
+        with open("/proc/meminfo", encoding="utf-8") as f:
+            for line in f:
+                if line.startswith("MemTotal:"):
+                    total_kb = int(line.split()[1])
+                elif line.startswith("MemAvailable:"):
+                    avail_kb = int(line.split()[1])
+        if total_kb:
+            used_kb = total_kb - avail_kb
+            return used_kb / (1024 ** 2), total_kb / (1024 ** 2)
+    except Exception:
+        pass
+    return None
+
 from kivy.clock import Clock
 from kivy.uix.boxlayout import BoxLayout
 from kivy.uix.label import Label
@@ -53,11 +71,12 @@ class StorageBreakdownScreen(BaseScreen):
             spacing=self.suv(8),
         )
 
-        self.disk_item = SettingsItem(title="Disk (total)", subtitle="Reading…", mode="info")
+        self.disk_item = SettingsItem(title="Disk", subtitle="Reading…", mode="info")
+        self.ram_item = SettingsItem(title="RAM", subtitle="Reading…", mode="info")
         self.recordings_item = SettingsItem(title="Recordings", subtitle="Loading…", mode="info")
         self.transcripts_item = SettingsItem(title="Transcripts cache", subtitle="Loading…", mode="info")
         self.app_cache_item = SettingsItem(title="App cache", subtitle="Loading…", mode="info")
-        for w in (self.disk_item, self.recordings_item, self.transcripts_item, self.app_cache_item):
+        for w in (self.disk_item, self.ram_item, self.recordings_item, self.transcripts_item, self.app_cache_item):
             inner.add_widget(w)
         try:
             _du = shutil.disk_usage('/')
@@ -68,6 +87,17 @@ class StorageBreakdownScreen(BaseScreen):
             )
         except Exception:
             self.disk_item.subtitle_label.text = "Unavailable"
+        ram = _read_ram_gb()
+        if ram:
+            used_gb, total_gb = ram
+            free_gb = total_gb - used_gb
+            self.ram_item.subtitle_label.text = (
+                f"{_fmt(used_gb)} used · "
+                f"{_fmt(free_gb)} free · "
+                f"{_fmt(total_gb)} total"
+            )
+        else:
+            self.ram_item.subtitle_label.text = "Unavailable"
 
         self.clear_btn = DangerButton(
             text="CLEAR CACHE",
