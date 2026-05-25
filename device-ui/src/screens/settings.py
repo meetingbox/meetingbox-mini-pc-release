@@ -884,12 +884,15 @@ class SettingsScreen(BaseScreen):
     # WiFi radio toggle
     # ------------------------------------------------------------------
     def _on_wifi_radio_toggled(self, active: bool):
-        async def _toggle():
-            try:
-                await self.backend.wifi_radio(active)
-            except Exception:
-                pass
-        run_async(_toggle())
+        import threading
+        import wifi_nmcli_local
+
+        def _do():
+            result = wifi_nmcli_local.set_wifi_radio(active)
+            if not result.get("ok"):
+                logger.warning("WiFi radio toggle failed: %s", result.get("message"))
+
+        threading.Thread(target=_do, daemon=True).start()
 
     # ------------------------------------------------------------------
     # Integration detail helper

@@ -161,10 +161,20 @@ class BluetoothScreen(BaseScreen):
                 self.device_grid.add_widget(row)
 
     def _on_power_toggle(self, active: bool):
-        result = bluetooth_local.set_power(active)
-        self.bt_power_item.subtitle = "On" if active else "Off"
-        if not result.get("ok"):
-            logger.warning("Bluetooth power toggle failed: %s", result.get("message"))
+        self.bt_power_item.subtitle = "Turning " + ("on" if active else "off") + "…"
+
+        def _do():
+            result = bluetooth_local.set_power(active)
+
+            def _apply(_dt):
+                self.bt_power_item.subtitle = "On" if active else "Off"
+                if not result.get("ok"):
+                    logger.warning("Bluetooth power toggle failed: %s", result.get("message"))
+
+            Clock.schedule_once(_apply, 0)
+
+        import threading
+        threading.Thread(target=_do, daemon=True).start()
 
     def _show_pair_dialog(self):
         self.add_widget(

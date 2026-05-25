@@ -31,16 +31,28 @@ def has_bluetoothctl() -> bool:
     return _bt() is not None
 
 
-def _run(args: list[str], timeout: float = 15) -> subprocess.CompletedProcess:
+def _run(args: list[str], timeout: float = 15, allow_sudo: bool = False) -> subprocess.CompletedProcess:
     bt = _bt()
     if not bt:
         return subprocess.CompletedProcess(args, 127, "", "bluetoothctl not found")
-    return subprocess.run(
+    res = subprocess.run(
         [bt, *args],
         capture_output=True,
         text=True,
         timeout=timeout,
     )
+    if res.returncode != 0 and allow_sudo and shutil.which("sudo"):
+        combined = ((res.stderr or "") + (res.stdout or "")).lower()
+        if any(s in combined for s in ("not authorized", "permission denied", "not permitted", "polkit")):
+            res2 = subprocess.run(
+                ["sudo", "-n", bt, *args],
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+            )
+            if res2.returncode == 0:
+                return res2
+    return res
 
 
 def _run_interactive(commands: list[str], timeout: float = 12) -> str:
@@ -83,8 +95,9 @@ def set_power(enabled: bool) -> dict:
     """Power on or off the default Bluetooth controller."""
     arg = "on" if enabled else "off"
     try:
-        r = _run(["power", arg])
-        if r.returncode == 0 or arg in (r.stdout or "").lower():
+        r = _run(["power", arg], allow_sudo=True)
+        out = (r.stdout or "").lower()
+        if r.returncode == 0 or f"power: {arg}" in out or "succeeded" in out:
             return {"ok": True}
         return {"ok": False, "message": (r.stderr or r.stdout or "").strip()[:400]}
     except Exception as e:
