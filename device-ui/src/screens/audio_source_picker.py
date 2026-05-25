@@ -70,25 +70,40 @@ class AudioSourcePickerScreen(BaseScreen):
 
     def on_enter(self):
         self.container.clear_widgets()
+        self.container.add_widget(
+            Label(
+                text="Loading devices…",
+                color=COLORS["gray_500"],
+                size_hint_y=None,
+                height=self.suv(56),
+            )
+        )
 
-        def add_rows(_dt):
+        import threading
+
+        def _fetch():
             srcs = list_pulse_sources()
-            if not srcs:
-                self.container.add_widget(
-                    Label(
-                        text="No capture sources found.\nCheck PulseAudio / USB mic.",
-                        color=COLORS["gray_500"],
-                        size_hint_y=None,
-                        height=self.suv(80),
-                    )
-                )
-                return
-            for name, desc in srcs:
-                row = _Row(f"{desc}\n[{name}]", size_hint_y=None, height=self.suv(56))
-                row.bind(on_press=lambda inst, n=name: self._pick(n))
-                self.container.add_widget(row)
 
-        Clock.schedule_once(add_rows, 0)
+            def _apply(_dt):
+                self.container.clear_widgets()
+                if not srcs:
+                    self.container.add_widget(
+                        Label(
+                            text="No input devices found.\nCheck PulseAudio / USB mic.",
+                            color=COLORS["gray_500"],
+                            size_hint_y=None,
+                            height=self.suv(80),
+                        )
+                    )
+                    return
+                for name, desc in srcs:
+                    row = _Row(f"{desc}\n[{name}]", size_hint_y=None, height=self.suv(56))
+                    row.bind(on_press=lambda inst, n=name: self._pick(n))
+                    self.container.add_widget(row)
+
+            Clock.schedule_once(_apply, 0)
+
+        threading.Thread(target=_fetch, daemon=True).start()
 
     def _pick(self, src_name: str):
         set_default_source(src_name)

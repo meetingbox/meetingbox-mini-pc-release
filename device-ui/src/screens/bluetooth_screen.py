@@ -30,6 +30,7 @@ class BluetoothScreen(BaseScreen):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         self._scanning = False
+        self._paired_macs: set[str] = set()
         self._build_ui()
 
     def _build_ui(self):
@@ -95,6 +96,7 @@ class BluetoothScreen(BaseScreen):
                 paired = []
 
             def _apply(_dt):
+                self._paired_macs = {d["mac"] for d in paired}
                 self._render_devices(paired, scanning=False)
 
             Clock.schedule_once(_apply, 0)
@@ -120,6 +122,12 @@ class BluetoothScreen(BaseScreen):
             def _apply(_dt):
                 self._scanning = False
                 self.scan_btn.disabled = False
+                # Update paired MAC set from fresh scan results that overlap with known paired
+                try:
+                    paired = bluetooth_local.list_paired_devices()
+                    self._paired_macs = {d["mac"] for d in paired}
+                except Exception:
+                    pass
                 self._render_devices(devices, scanning=False)
 
             Clock.schedule_once(_apply, 0)
@@ -194,12 +202,60 @@ class BluetoothScreen(BaseScreen):
         threading.Thread(target=_pair, daemon=True).start()
 
     def _device_options(self, mac: str, name: str):
-        self.add_widget(
-            ModalDialog(
-                title=name,
-                message=f"MAC: {mac}\n\nTap Pair to initiate pairing.",
-                confirm_text="PAIR",
-                cancel_text="CLOSE",
-                on_confirm=lambda: self._execute_pair(mac),
+        is_paired = mac in self._paired_macs
+        if is_paired:
+            self.add_widget(
+                ModalDialog(
+                    title=name,
+                    message=f"MAC: {mac}\n\nThis device is paired. Connect to it now?",
+                    confirm_text="CONNECT",
+                    cancel_text="REMOVE",
+                    on_confirm=lambda: self._execute_connect(mac),
+                    on_cancel=lambda: self._execute_remove(mac),
+                )
             )
-        )
+        else:
+            self.add_widget(
+                ModalDialog(
+                    title=name,
+                    message=f"MAC: {mac}\n\nTap Pair to pair this device.",
+                    confirm_text="PAIR",
+                    cancel_text="CLOSE",
+                    on_confirm=lambda: self._execute_pair(mac),
+                )
+            )
+
+    def _execute_connect(self, mac: str):
+        def _connect():
+            result = bluetooth_local.connect_device(mac)
+            ok = result.get("ok", False)
+            msg = result.get("message", "")
+
+            def _done(_dt):
+                if not ok:
+                    self.add_widget(
+                        ModalDialog(
+                            title="Connection failed",
+                            message=msg[:400] or "Could not connect to device.",
+                            confirm_text="OK",
+                            cancel_text="",
+                        )
+                    )
+
+            Clock.schedule_once(_done, 0)
+
+        import threading
+        threading.Thread(target=_connect, daemon=True).start()
+
+    def _execute_remove(self, mac: str):
+        def _remove():
+            bluetooth_local.remove_device(mac)
+
+            def _done(_dt):
+                self._paired_macs.discard(mac)
+                self._load_paired()
+
+            Clock.schedule_once(_done, 0)
+
+        import threading
+        threading.Thread(target=_remove, daemon=True).start()
