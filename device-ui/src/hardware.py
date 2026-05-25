@@ -211,10 +211,10 @@ def request_system_reboot() -> bool:
 
     candidates: list[list[str]] = []
 
-    # Prefer the nsenter helper (mounted in Docker, in sudoers NOPASSWD)
+    # Prefer the nsenter helper via sh (mounted in Docker, in sudoers NOPASSWD).
+    # Always call via "sh" — the script files are not +x in git so direct sudo exec fails.
     _reboot_helper = "/usr/local/bin/meetingbox-host-reboot"
     if os.path.exists(_reboot_helper) and shutil.which("sudo"):
-        candidates.append(["sudo", "-n", _reboot_helper])
         candidates.append(["sudo", "-n", "sh", _reboot_helper])
 
     if os.geteuid() == 0:
@@ -261,10 +261,10 @@ def request_system_poweroff() -> bool:
 
     candidates: list[list[str]] = []
 
-    # Prefer the nsenter helper (mounted in Docker, in sudoers NOPASSWD)
+    # Prefer the nsenter helper via sh (mounted in Docker, in sudoers NOPASSWD).
+    # Always call via "sh" — the script files are not +x in git so direct sudo exec fails.
     _poweroff_helper = "/usr/local/bin/meetingbox-host-poweroff"
     if os.path.exists(_poweroff_helper) and shutil.which("sudo"):
-        candidates.append(["sudo", "-n", _poweroff_helper])
         candidates.append(["sudo", "-n", "sh", _poweroff_helper])
 
     if os.geteuid() == 0:
