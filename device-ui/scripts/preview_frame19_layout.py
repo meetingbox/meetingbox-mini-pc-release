@@ -11,6 +11,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "src"))
 
 from frame19_layout import (  # noqa: E402
+    BACK_BTN,
     BG_RGB,
     CANVAS_H,
     CANVAS_W,
@@ -22,6 +23,7 @@ from frame19_layout import (  # noqa: E402
     RIGHT_VEC,
     STATUS,
     STATUS_FS_RATIO,
+    STATUS_PILL_RECORDING,
     TIMER,
     TIMER_FS_RATIO,
     font_px,
@@ -33,12 +35,14 @@ OUT = ASSETS / "frame19_layout_preview.png"
 SCREEN_W, SCREEN_H = 1260, 800
 
 _LAYERS: tuple[tuple[str, dict], ...] = (
+    ("btn_back.png", BACK_BTN),
     ("frame19_ellipse17.png", ELLIPSE17),
     ("frame19_ring_glow.png", RING_GLOW),
     ("frame19_ring_dark.png", RING_DARK),
     ("frame19_ring_gradient.png", RING_GRADIENT),
     ("frame19_vector_left.png", LEFT_VEC),
     ("frame19_vector_right.png", RIGHT_VEC),
+    ("rec_status_recording.png", STATUS_PILL_RECORDING),
 )
 
 

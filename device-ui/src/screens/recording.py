@@ -1,6 +1,6 @@
-"""Recording screen — Frame 19 only (`863:635`).
+"""Recording screen — Frame 19 (`863:635`) + top-left status pill on `863:626`.
 
-Scaled 1260×800 canvas; Frame 19 children only (updated Figma layout).
+Scaled 1260×800 canvas; Frame 19 center + header status indicator.
 """
 
 from __future__ import annotations
@@ -10,6 +10,7 @@ import time
 
 from kivy.clock import Clock
 from kivy.graphics import Color, Rectangle
+from kivy.uix.behaviors import ButtonBehavior
 from kivy.uix.anchorlayout import AnchorLayout
 from kivy.uix.floatlayout import FloatLayout
 from kivy.uix.image import Image
@@ -17,6 +18,7 @@ from kivy.uix.label import Label
 
 from config import ASSETS_DIR
 from frame19_layout import (
+    BACK_BTN,
     BG_RGB,
     ELLIPSE17,
     LEFT_VEC,
@@ -26,6 +28,8 @@ from frame19_layout import (
     RIGHT_VEC,
     STATUS,
     STATUS_FS_RATIO,
+    STATUS_PILL_PAUSED,
+    STATUS_PILL_RECORDING,
     TIMER,
     TIMER_FS_RATIO,
     font_px,
@@ -52,10 +56,19 @@ _IMAGES: tuple[tuple[str, dict], ...] = (
     ("frame19_vector_right.png", RIGHT_VEC),
 )
 
+_STATUS_PILLS: dict[bool, tuple[str, dict]] = {
+    False: ("rec_status_recording.png", STATUS_PILL_RECORDING),
+    True: ("rec_status_paused.png", STATUS_PILL_PAUSED),
+}
+
 
 def _png(name: str) -> str:
     p = _FIGMA_DIR / name
     return str(p) if p.is_file() else ""
+
+
+class _ImgBtn(ButtonBehavior, Image):
+    """Tappable PNG button (matches calendar screen pattern)."""
 
 
 class RecordingScreen(BaseScreen):
@@ -68,6 +81,8 @@ class RecordingScreen(BaseScreen):
         self._rec_active_start = None
         self._root = None
         self._canvas = None
+        self._back_btn = None
+        self._status_pill = None
         self.timer_label = None
         self.status_label = None
         self._build_ui()
@@ -87,6 +102,18 @@ class RecordingScreen(BaseScreen):
 
         self._canvas = FloatLayout(size_hint=(None, None))
         anchor.add_widget(self._canvas)
+
+        back_src = _png("btn_back.png")
+        if back_src:
+            self._back_btn = _ImgBtn(
+                source=back_src,
+                fit_mode="contain",
+                allow_stretch=True,
+                keep_ratio=True,
+                **kivy_hints(BACK_BTN),
+            )
+            self._back_btn.bind(on_release=lambda *_: self.go_back())
+            self._canvas.add_widget(self._back_btn)
 
         for filename, box in _IMAGES:
             src = _png(filename)
@@ -123,8 +150,36 @@ class RecordingScreen(BaseScreen):
         self.status_label.bind(size=self.status_label.setter("text_size"))
         self._canvas.add_widget(self.status_label)
 
+        self._status_pill = self._make_status_pill(paused=False)
+        if self._status_pill is not None:
+            self._canvas.add_widget(self._status_pill)
+
         self.add_widget(self._root)
         Clock.schedule_once(lambda _dt: self._on_root_resize(self._root, self._root.size), 0)
+
+    def _make_status_pill(self, *, paused: bool) -> Image | None:
+        filename, box = _STATUS_PILLS[paused]
+        src = _png(filename)
+        if not src:
+            return None
+        return Image(
+            source=src,
+            allow_stretch=True,
+            keep_ratio=True,
+            fit_mode="contain",
+            **kivy_hints(box),
+        )
+
+    def _set_status_pill(self, paused: bool) -> None:
+        if self._canvas is None:
+            return
+        if self._status_pill is not None:
+            self._canvas.remove_widget(self._status_pill)
+            self._status_pill = None
+        pill = self._make_status_pill(paused=paused)
+        if pill is not None:
+            self._canvas.add_widget(pill)
+            self._status_pill = pill
 
     def _on_root_resize(self, _root, size):
         self._bg.size = size
@@ -144,6 +199,7 @@ class RecordingScreen(BaseScreen):
         self._rec_active_start = time.monotonic()
         self.timer_label.text = "00 : 00 : 00"
         self.status_label.text = "Recording in progress"
+        self._set_status_pill(paused=False)
         self.timer_event = Clock.schedule_interval(self._tick_timer, 0.5)
 
     def on_leave(self):
@@ -175,6 +231,7 @@ class RecordingScreen(BaseScreen):
             self._rec_base_elapsed += time.monotonic() - self._rec_active_start
             self._rec_active_start = None
         self.status_label.text = "Recording paused"
+        self._set_status_pill(paused=True)
 
     def on_resumed(self):
         if not self._is_paused:
@@ -182,6 +239,7 @@ class RecordingScreen(BaseScreen):
         self._is_paused = False
         self._rec_active_start = time.monotonic()
         self.status_label.text = "Recording in progress"
+        self._set_status_pill(paused=False)
 
     def on_audio_level(self, level: float):
         del level
