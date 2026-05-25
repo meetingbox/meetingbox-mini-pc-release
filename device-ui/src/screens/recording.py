@@ -16,7 +16,7 @@ import random
 import time
 
 from kivy.clock import Clock
-from kivy.graphics import Color, Rectangle, RoundedRectangle
+from kivy.graphics import Color, Ellipse, Rectangle, RoundedRectangle
 from kivy.uix.anchorlayout import AnchorLayout
 from kivy.uix.behaviors import ButtonBehavior
 from kivy.uix.floatlayout import FloatLayout
@@ -24,23 +24,18 @@ from kivy.uix.image import Image
 from kivy.uix.label import Label
 from kivy.uix.widget import Widget
 
-from async_helper import run_async
 from config import ASSETS_DIR, display_now
 from frame19_layout import (
     BACK_BTN,
     BG_RGB,
     BTN_PAUSE,
     BTN_SETTINGS,
-    COL_BLUE,
+    COL_GLOW_BLUE,
     COL_MUTED,
+    COL_REC_DOT_GREY,
+    COL_REC_DOT_RED,
     COL_WHITE,
     LEFT_VEC,
-    LISTENING_PILL,
-    PARTICIPANTS_FS_RATIO,
-    PARTICIPANTS_LABEL,
-    PEOPLE_ICON,
-    PROVIDER_FS_RATIO,
-    PROVIDER_LABEL,
     REC_DOT,
     REC_LABEL,
     REC_LABEL_FS_RATIO,
@@ -55,9 +50,6 @@ from frame19_layout import (
     STOP_PILL,
     TIMER,
     TIMER_FS_RATIO,
-    TITLE_FS_RATIO,
-    TITLE_LABEL,
-    VIDEO_ICON,
     WAVEBAR,
     font_px,
     kivy_hints,
@@ -71,9 +63,10 @@ _FIGMA = ASSETS_DIR / "recording" / "figma"
 _BG = (BG_RGB[0] / 255, BG_RGB[1] / 255, BG_RGB[2] / 255, 1.0)
 _FONT_BOLD = "42dot-Sans"
 
-# Centre Frame 19 image layers (back → front)
+# Centre Frame 19 image layers (back → front).
+# `frame19_ring_glow.png` is handled separately in ``_build_ui`` so its
+# greyscale halo can be tinted blue at runtime via ``Image.color``.
 _FRAME19_IMAGES: tuple[tuple[str, dict], ...] = (
-    ("frame19_ring_glow.png", RING_GLOW),
     ("frame19_ring_dark.png", RING_DARK),
     ("frame19_ring_gradient.png", RING_GRADIENT),
     ("frame19_vector_left.png", LEFT_VEC),
@@ -215,6 +208,32 @@ class _Wavebar(Widget):
             rect.radius = [radius]
 
 
+class _StatusDot(Widget):
+    """Solid recording-status dot drawn with Kivy primitives.
+
+    The Figma export `icon_rec_dot_red.png` is a solid-black bitmap (the
+    red colour was lost in the export pipeline), so the dot is drawn here
+    with `Color` + `Ellipse` instead. Two colours: red while recording,
+    grey while paused — toggled via :meth:`set_recording`.
+    """
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self._active_color = COL_REC_DOT_RED
+        self._idle_color = COL_REC_DOT_GREY
+        with self.canvas:
+            self._color_inst = Color(*self._active_color)
+            self._ellipse = Ellipse(pos=self.pos, size=self.size)
+        self.bind(pos=self._sync, size=self._sync)
+
+    def _sync(self, *_args):
+        self._ellipse.pos = self.pos
+        self._ellipse.size = self.size
+
+    def set_recording(self, active: bool) -> None:
+        self._color_inst.rgba = self._active_color if active else self._idle_color
+
+
 class RecordingScreen(BaseScreen):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
@@ -223,9 +242,6 @@ class RecordingScreen(BaseScreen):
         self._is_paused = False
         self._rec_base_elapsed = 0.0
         self._rec_active_start = None
-        self._meeting_title = "Recording"
-        self._participant_count = 0
-        self._meeting_provider = ""
         self._build_ui()
 
     # ------------------------------------------------------------------ UI
@@ -244,7 +260,13 @@ class RecordingScreen(BaseScreen):
         self._canvas = FloatLayout(size_hint=(None, None))
         anchor.add_widget(self._canvas)
 
-        # Centre — Frame 19 graphic (back → front)
+        # Centre — Frame 19 graphic (back → front).
+        # The glow halo PNG is greyscale; multiplying its texture by the
+        # blue tint produces the visible blue halo that the Figma design
+        # calls for, without needing a re-export.
+        glow_img = self._add_image("frame19_ring_glow.png", RING_GLOW)
+        if glow_img is not None:
+            glow_img.color = COL_GLOW_BLUE
         for filename, box in _FRAME19_IMAGES:
             self._add_image(filename, box)
 
@@ -264,30 +286,15 @@ class RecordingScreen(BaseScreen):
         # Top-left — back button (composite PNG)
         self._add_img_btn("btn_back.png", BACK_BTN, on_release=lambda *_: self.go_back())
 
-        # Top-left — recording status group (red dot + Recording... + Started at ...)
-        self._add_image("icon_rec_dot_red.png", REC_DOT)
+        # Top-left — recording status group (status dot + Recording... + Started at ...)
+        self.status_dot = _StatusDot(**kivy_hints(REC_DOT))
+        self._canvas.add_widget(self.status_dot)
         self.rec_label = self._add_label(
             "Recording...", REC_LABEL, REC_LABEL_FS_RATIO, COL_WHITE, bold=True, halign="left",
         )
         self.started_label = self._add_label(
             "Started at --:-- --", STARTED_LABEL, STARTED_FS_RATIO, COL_MUTED, halign="left",
         )
-
-        # Top centre — meeting title group
-        self._add_image("icon_people.png", PEOPLE_ICON)
-        self.title_label = self._add_label(
-            "Recording", TITLE_LABEL, TITLE_FS_RATIO, COL_WHITE, bold=True, halign="left",
-        )
-        self.participants_label = self._add_label(
-            "", PARTICIPANTS_LABEL, PARTICIPANTS_FS_RATIO, COL_BLUE, halign="left",
-        )
-        self._add_image("icon_video.png", VIDEO_ICON)
-        self.provider_label = self._add_label(
-            "", PROVIDER_LABEL, PROVIDER_FS_RATIO, COL_MUTED, halign="left",
-        )
-
-        # Top-right — Listening pill (composite PNG)
-        self._add_image("listening_pill.png", LISTENING_PILL)
 
         # Bottom row — pause | stop recording pill | settings
         self._add_img_btn("btn_pause.png", BTN_PAUSE, on_release=self._on_pause)
@@ -364,9 +371,6 @@ class RecordingScreen(BaseScreen):
             self.status_label,
             self.rec_label,
             self.started_label,
-            self.title_label,
-            self.participants_label,
-            self.provider_label,
         ):
             if lbl is not None:
                 lbl.font_size = font_px(lbl._fs_ratio, h)  # noqa: SLF001
@@ -384,17 +388,10 @@ class RecordingScreen(BaseScreen):
         self.timer_label.text = "00 : 00 : 00"
         self.status_label.text = "Recording in progress"
         self.rec_label.text = "Recording..."
+        self.status_dot.set_recording(True)
 
         now = display_now()
         self.started_label.text = f"Started at {now.strftime('%I:%M %p').lstrip('0')}"
-
-        self.title_label.text = "Recording"
-        self.participants_label.text = ""
-        self.provider_label.text = ""
-
-        sid = getattr(self.app, "current_session_id", None)
-        if sid:
-            self._fetch_meeting_metadata(sid)
 
         self.timer_event = Clock.schedule_interval(self._tick_timer, 0.5)
 
@@ -446,6 +443,7 @@ class RecordingScreen(BaseScreen):
             self._rec_active_start = None
         self.rec_label.text = "Paused"
         self.status_label.text = "Recording paused"
+        self.status_dot.set_recording(False)
         # Freeze the wavebar at idle so the user can see we stopped reading
         # the mic while paused.
         self.wavebar.stop_voice()
@@ -457,6 +455,7 @@ class RecordingScreen(BaseScreen):
         self._rec_active_start = time.monotonic()
         self.rec_label.text = "Recording..."
         self.status_label.text = "Recording in progress"
+        self.status_dot.set_recording(True)
         self.wavebar.start_voice()
 
     def on_audio_level(self, level: float):
@@ -472,41 +471,3 @@ class RecordingScreen(BaseScreen):
 
     def on_audio_segment(self, segment_num: int):
         del segment_num
-
-    # -------------------------------------------------------------- metadata
-    def _fetch_meeting_metadata(self, meeting_id: str):
-        async def _run():
-            try:
-                detail = await self.backend.get_meeting_detail(meeting_id)
-            except Exception as exc:  # noqa: BLE001
-                logger.debug("recording: meeting detail fetch failed: %s", exc)
-                return
-            title = (detail.get("title") or "Recording").strip() or "Recording"
-            try:
-                participants = int(
-                    detail.get("participant_count") or detail.get("attendee_count") or 0
-                )
-            except (TypeError, ValueError):
-                participants = 0
-            provider = (
-                (detail.get("source") or "")
-                or (detail.get("calendar_source") or "")
-                or ""
-            ).strip()
-
-            def _apply(_dt):
-                self._meeting_title = title
-                self._participant_count = participants
-                self._meeting_provider = provider
-                self.title_label.text = title
-                if participants:
-                    self.participants_label.text = (
-                        f"{participants} Participants" if participants != 1 else "1 Participant"
-                    )
-                else:
-                    self.participants_label.text = ""
-                self.provider_label.text = provider
-
-            Clock.schedule_once(_apply, 0)
-
-        run_async(_run())

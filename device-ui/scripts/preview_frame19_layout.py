@@ -18,15 +18,9 @@ from frame19_layout import (  # noqa: E402
     BG_RGB,
     BTN_PAUSE,
     BTN_SETTINGS,
-    CANVAS_H,
-    CANVAS_W,
+    COL_GLOW_BLUE,
+    COL_REC_DOT_RED,
     LEFT_VEC,
-    LISTENING_PILL,
-    PARTICIPANTS_FS_RATIO,
-    PARTICIPANTS_LABEL,
-    PEOPLE_ICON,
-    PROVIDER_FS_RATIO,
-    PROVIDER_LABEL,
     REC_DOT,
     REC_LABEL,
     REC_LABEL_FS_RATIO,
@@ -41,9 +35,6 @@ from frame19_layout import (  # noqa: E402
     STOP_PILL,
     TIMER,
     TIMER_FS_RATIO,
-    TITLE_FS_RATIO,
-    TITLE_LABEL,
-    VIDEO_ICON,
     WAVEBAR,
     font_px,
     scaled_canvas,
@@ -53,21 +44,50 @@ ASSETS = ROOT / "assets" / "recording" / "figma"
 OUT = ASSETS / "recording_layout_preview.png"
 SCREEN_W, SCREEN_H = 1260, 800
 
+# Layered PNG composite, back → front. The glow ring is handled separately
+# below so it can be tinted blue at preview-time (matches the runtime
+# ``Image.color = COL_GLOW_BLUE`` we apply in ``screens/recording.py``).
+# ``icon_rec_dot_red.png`` is intentionally omitted — the recording dot is
+# drawn here with ``ImageDraw.ellipse`` (the bundled PNG is solid black).
 _LAYERS: tuple[tuple[str, dict], ...] = (
-    ("frame19_ring_glow.png", RING_GLOW),
     ("frame19_ring_dark.png", RING_DARK),
     ("frame19_ring_gradient.png", RING_GRADIENT),
     ("frame19_vector_left.png", LEFT_VEC),
     ("frame19_vector_right.png", RIGHT_VEC),
     ("btn_back.png", BACK_BTN),
-    ("icon_rec_dot_red.png", REC_DOT),
-    ("icon_people.png", PEOPLE_ICON),
-    ("icon_video.png", VIDEO_ICON),
-    ("listening_pill.png", LISTENING_PILL),
     ("btn_pause.png", BTN_PAUSE),
     ("stop_recording_pill.png", STOP_PILL),
     ("btn_settings.png", BTN_SETTINGS),
 )
+
+
+def _rgba_255(color: tuple[float, float, float, float]) -> tuple[int, int, int, int]:
+    """Convert a Kivy 0-1 RGBA tuple to PIL's 0-255 tuple."""
+    r, g, b, a = color
+    return int(r * 255), int(g * 255), int(b * 255), int(a * 255)
+
+
+def _tinted_glow(path: Path, tint_rgba: tuple[int, int, int, int]) -> Image.Image:
+    """Load the greyscale glow PNG and multiply its RGB by ``tint_rgba``.
+
+    Pillow doesn't expose Kivy's ``Image.color`` (which multiplies the
+    sampled texel by the colour), so we replicate it manually: keep the
+    halo's alpha channel intact while replacing its RGB with the tint
+    scaled by the original brightness. The result is the navy → blue
+    falloff you see at runtime.
+    """
+    src = Image.open(path).convert("RGBA")
+    r_src, g_src, b_src, a_src = src.split()
+    tr, tg, tb, ta = tint_rgba
+    luma = Image.eval(
+        Image.merge("RGB", (r_src, g_src, b_src)).convert("L"),
+        lambda v: v,
+    )
+    r_out = luma.point(lambda v, t=tr: int(v * t / 255))
+    g_out = luma.point(lambda v, t=tg: int(v * t / 255))
+    b_out = luma.point(lambda v, t=tb: int(v * t / 255))
+    a_out = a_src.point(lambda v, t=ta: int(v * t / 255))
+    return Image.merge("RGBA", (r_out, g_out, b_out, a_out))
 
 
 def _rect(box, cw, ch, ox, oy):
@@ -138,6 +158,17 @@ def main() -> None:
     ox = (SCREEN_W - cw) / 2
     oy = (SCREEN_H - ch) / 2
 
+    # Glow halo — pre-tint blue so the preview matches runtime.
+    glow_path = ASSETS / "frame19_ring_glow.png"
+    if glow_path.is_file():
+        glow = _tinted_glow(glow_path, _rgba_255(COL_GLOW_BLUE))
+        x0, y0, x1, y1 = _rect(RING_GLOW, cw, ch, ox, oy)
+        w, h = max(1, x1 - x0), max(1, y1 - y0)
+        glow = glow.resize((w, h), Image.Resampling.LANCZOS)
+        img.paste(glow, (x0, y0), glow)
+    else:
+        print("SKIP frame19_ring_glow.png")
+
     for name, box in _LAYERS:
         path = ASSETS / name
         if not path.is_file():
@@ -155,24 +186,22 @@ def main() -> None:
         ft_status = ImageFont.truetype("arialbd.ttf", font_px(STATUS_FS_RATIO, ch))
         ft_rec = ImageFont.truetype("arialbd.ttf", font_px(REC_LABEL_FS_RATIO, ch))
         ft_started = ImageFont.truetype("arial.ttf", font_px(STARTED_FS_RATIO, ch))
-        ft_title = ImageFont.truetype("arialbd.ttf", font_px(TITLE_FS_RATIO, ch))
-        ft_part = ImageFont.truetype("arial.ttf", font_px(PARTICIPANTS_FS_RATIO, ch))
-        ft_provider = ImageFont.truetype("arial.ttf", font_px(PROVIDER_FS_RATIO, ch))
     except OSError:
-        ft_timer = ft_status = ft_rec = ft_started = ft_title = ft_part = ft_provider = (
-            ImageFont.load_default()
-        )
+        ft_timer = ft_status = ft_rec = ft_started = ImageFont.load_default()
 
     # Voice wavebar (Group 46) — simulated mid-speech amplitude.
     _draw_wavebar(draw, WAVEBAR, cw, ch, ox, oy, level=0.75)
+
+    # Recording status dot — solid red ellipse drawn over the bg (the
+    # PNG export is solid black and unusable, see ``_StatusDot`` in
+    # ``screens/recording.py``).
+    dot_x0, dot_y0, dot_x1, dot_y1 = _rect(REC_DOT, cw, ch, ox, oy)
+    draw.ellipse([dot_x0, dot_y0, dot_x1, dot_y1], fill=_rgba_255(COL_REC_DOT_RED))
 
     _draw_text(draw, TIMER, cw, ch, ox, oy, "00 : 12 : 45", (255, 255, 255), ft_timer, "ma")
     _draw_text(draw, STATUS, cw, ch, ox, oy, "Recording in progress", (182, 186, 242), ft_status, "ma")
     _draw_text(draw, REC_LABEL, cw, ch, ox, oy, "Recording...", (255, 255, 255), ft_rec, "lm")
     _draw_text(draw, STARTED_LABEL, cw, ch, ox, oy, "Started at 11:01 AM", (182, 186, 242), ft_started, "lm")
-    _draw_text(draw, TITLE_LABEL, cw, ch, ox, oy, "Product Sync", (255, 255, 255), ft_title, "lm")
-    _draw_text(draw, PARTICIPANTS_LABEL, cw, ch, ox, oy, "3 Participants", (0, 107, 249), ft_part, "lm")
-    _draw_text(draw, PROVIDER_LABEL, cw, ch, ox, oy, "Google Meet", (182, 186, 242), ft_provider, "lm")
 
     OUT.parent.mkdir(parents=True, exist_ok=True)
     img.save(OUT)

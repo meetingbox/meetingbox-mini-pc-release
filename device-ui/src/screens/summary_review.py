@@ -553,7 +553,7 @@ class SummaryReviewScreen(BaseScreen):
             self._canvas.add_widget(tab)
 
         self.play_pill = _PlayRecordingPill(
-            duration_text="00:00",
+            duration_text="",
             **kivy_hints(PLAY_RECORDING),
         )
         self._scaled_labels.append((self.play_pill._label_main, PLAY_RECORDING_FS_RATIO))
@@ -670,22 +670,29 @@ class SummaryReviewScreen(BaseScreen):
                 halign="left",
             )
         )
-        # 2x2 grid of topic rows inside the Key Topics card.
+        # 2x2 grid of topic rows inside the Key Topics card. Each cell has
+        # a name row on top (with the percentage right-aligned) and a thin
+        # progress bar near the bottom of the cell, with explicit pixel
+        # offsets so the bar never visually merges with the name baseline.
         topic_area_x = OV_KEY_CARD["x"] * CANVAS_W + 28.0
-        topic_area_y = OV_KEY_CARD["y_top"] * CANVAS_H + 56.0
+        topic_area_y = OV_KEY_CARD["y_top"] * CANVAS_H + 58.0
         topic_area_w = OV_KEY_CARD["w"] * CANVAS_W - 56.0
-        topic_area_h = OV_KEY_CARD["h"] * CANVAS_H - 64.0
-        cell_w = (topic_area_w - 24.0) / 2.0
+        topic_area_h = OV_KEY_CARD["h"] * CANVAS_H - 70.0
+        cell_w = (topic_area_w - 28.0) / 2.0
         cell_h = topic_area_h / 2.0
+        # Fixed pixel offsets within each cell, in canvas coordinates.
+        NAME_H = 26.0
+        BAR_OFFSET = NAME_H + 10.0  # 10px gap between name baseline and bar
+        BAR_H = 8.0
         self._ov_key_topic_rows: list[dict] = []
         for i in range(4):
             col = i % 2
             row = i // 2
-            cx = topic_area_x + col * (cell_w + 24.0)
+            cx = topic_area_x + col * (cell_w + 28.0)
             cy = topic_area_y + row * cell_h
-            name_box = canvas_box(cx, cy, cell_w * 0.6, cell_h * 0.6)
-            pct_box = canvas_box(cx + cell_w * 0.6, cy, cell_w * 0.4, cell_h * 0.6)
-            bar_box = canvas_box(cx, cy + cell_h * 0.6, cell_w, max(6.0, cell_h * 0.18))
+            name_box = canvas_box(cx, cy, cell_w * 0.7, NAME_H)
+            pct_box = canvas_box(cx + cell_w * 0.7, cy, cell_w * 0.3, NAME_H)
+            bar_box = canvas_box(cx, cy + BAR_OFFSET, cell_w, BAR_H)
 
             name_lbl = self._make_label("—", name_box, SECTION_BODY_FS_RATIO, COL_MUTED, halign="left")
             pct_lbl = self._make_label("", pct_box, SECTION_HINT_FS_RATIO, COL_HINT, halign="right")
@@ -1256,6 +1263,19 @@ class SummaryReviewScreen(BaseScreen):
         self.meta_date_label.text = self._format_meta_line(data)
         # Footer "Created: …"
         self.footer_left_label.text = "Created: " + self._format_created_line(data)
+        # Play Recording pill — show duration like "12:34" if we have one.
+        if hasattr(self, "play_pill") and self.play_pill is not None:
+            duration_seconds = 0
+            try:
+                duration_seconds = max(0, int(float(data.get("duration") or 0)))
+            except (TypeError, ValueError):
+                duration_seconds = 0
+            if duration_seconds > 0:
+                mm = duration_seconds // 60
+                ss = duration_seconds % 60
+                self.play_pill.set_duration(f"{mm:02d}:{ss:02d}")
+            else:
+                self.play_pill.set_duration("")
 
         # Action items
         raw_actions = data.get("action_items") or data.get("actions") or []

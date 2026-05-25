@@ -279,13 +279,8 @@ def _render(screen_w: int, screen_h: int, tab: str, out_path: Path) -> None:
         font=ft_play,
         anchor="lm",
     )
-    draw.text(
-        (x1 - 14, cy),
-        "00:00",
-        fill=(155, 162, 178),
-        font=_safe_font("arial.ttf", font_px(SECTION_HINT_FS_RATIO, ch)),
-        anchor="rm",
-    )
+    # Duration string omitted in the preview; the runtime pill only shows
+    # a value when the meeting has an actual duration.
 
     # Content area — render the requested tab
     if tab == "overview":
@@ -372,14 +367,17 @@ def _render_overview(img, draw, cw, ch, ox, oy):
     # Key Topics
     _draw_card(draw, OV_KEY_CARD, cw, ch, ox, oy)
     ki_box, kt_box = content_header(OV_KEY_CARD, icon_w=26.0, title_w=200.0)
-    _draw_text(draw, ki_box, cw, ch, ox, oy, "◆", accent, ft_section, "lm")
+    _draw_text(draw, ki_box, cw, ch, ox, oy, "\u25c6", accent, ft_section, "lm")
     _draw_text(draw, kt_box, cw, ch, ox, oy, "Key Topics", white, ft_section, "lm")
     topic_area_x = OV_KEY_CARD["x"] * CANVAS_W + 28.0
-    topic_area_y = OV_KEY_CARD["y_top"] * CANVAS_H + 56.0
+    topic_area_y = OV_KEY_CARD["y_top"] * CANVAS_H + 58.0
     topic_area_w = OV_KEY_CARD["w"] * CANVAS_W - 56.0
-    topic_area_h = OV_KEY_CARD["h"] * CANVAS_H - 64.0
-    cell_w = (topic_area_w - 24.0) / 2.0
+    topic_area_h = OV_KEY_CARD["h"] * CANVAS_H - 70.0
+    cell_w = (topic_area_w - 28.0) / 2.0
     cell_h = topic_area_h / 2.0
+    NAME_H = 26.0
+    BAR_OFFSET = NAME_H + 10.0
+    BAR_H = 8.0
     sample_topics = [
         ("Product Strategy", 35),
         ("Engineering", 28),
@@ -389,11 +387,11 @@ def _render_overview(img, draw, cw, ch, ox, oy):
     for i, (name, val) in enumerate(sample_topics):
         col = i % 2
         row = i // 2
-        x = topic_area_x + col * (cell_w + 24.0)
+        x = topic_area_x + col * (cell_w + 28.0)
         y = topic_area_y + row * cell_h
-        name_box = canvas_box(x, y, cell_w * 0.6, cell_h * 0.6)
-        pct_box = canvas_box(x + cell_w * 0.6, y, cell_w * 0.4, cell_h * 0.6)
-        bar_box = canvas_box(x, y + cell_h * 0.6, cell_w, max(6.0, cell_h * 0.18))
+        name_box = canvas_box(x, y, cell_w * 0.7, NAME_H)
+        pct_box = canvas_box(x + cell_w * 0.7, y, cell_w * 0.3, NAME_H)
+        bar_box = canvas_box(x, y + BAR_OFFSET, cell_w, BAR_H)
         _draw_text(draw, name_box, cw, ch, ox, oy, name, muted, ft_body, "lm")
         _draw_text(draw, pct_box, cw, ch, ox, oy, f"{val}%", hint, ft_hint, "rm")
         _draw_progress(draw, bar_box, cw, ch, ox, oy, val / 100.0)

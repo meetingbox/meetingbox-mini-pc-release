@@ -125,14 +125,16 @@ _C_H = 520.0
 
 # Overview tab — three rows:
 #   Row 1: AI Summary card                 (full width, 140 tall)
-#   Row 2: Key Topics card                 (full width, 130 tall)
-#   Row 3: Action Items + Decisions Made   (side by side, 230 tall)
+#   Row 2: Key Topics card                 (full width, 158 tall — needs
+#                                           enough room to vertically separate
+#                                           topic names from progress bars)
+#   Row 3: Action Items + Decisions Made   (side by side, fills remainder)
 OV_GAP = 12.0
 OV_AI_CARD = canvas_box(_C_X, _C_Y, _C_W, 140.0)
 
-OV_KEY_CARD = canvas_box(_C_X, _C_Y + 140.0 + OV_GAP, _C_W, 130.0)
+OV_KEY_CARD = canvas_box(_C_X, _C_Y + 140.0 + OV_GAP, _C_W, 158.0)
 
-_R3_Y = _C_Y + 140.0 + OV_GAP + 130.0 + OV_GAP
+_R3_Y = _C_Y + 140.0 + OV_GAP + 158.0 + OV_GAP
 _R3_H = _C_H - (_R3_Y - _C_Y)
 _R3_HALF_W = (_C_W - OV_GAP) / 2
 OV_ACTIONS_CARD = canvas_box(_C_X, _R3_Y, _R3_HALF_W, _R3_H)

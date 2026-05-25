@@ -53,19 +53,14 @@ def _f19(lx: float, ly: float, lw: float, lh: float) -> Box:
 BACK_BTN = canvas_box(24.013, 21.188, 76.278, 76.278)
 
 # Recording status group (124.305, 29.664) 189 × 58.90
+# In the new Figma `863:626` the header carries only the back button and the
+# recording status (red/grey dot + "Recording..." + "Started at …"). The
+# previously-rendered meeting-title group (people icon + title + participants
+# + video icon + provider) and the top-right Listening pill have been removed
+# from the design.
 REC_DOT = canvas_box(124.305, 36.726, 19.776, 19.776)
 REC_LABEL = canvas_box(151.144, 29.663, 161.0, 34.0)
 STARTED_LABEL = canvas_box(124.305, 63.564, 189.0, 25.0)
-
-# Meeting title group (468.969, 11.300) 321.76 × 77.69
-PEOPLE_ICON = canvas_box(484.506, 11.300, 48.027, 48.027)
-TITLE_LABEL = canvas_box(535.357, 18.362, 250.0, 34.0)
-PARTICIPANTS_LABEL = canvas_box(468.968, 63.565, 135.0, 25.0)
-VIDEO_ICON = canvas_box(632.825, 63.565, 25.426, 25.426)
-PROVIDER_LABEL = canvas_box(666.727, 63.565, 124.0, 25.0)
-
-# Listening pill (composite)
-LISTENING_PILL = canvas_box(911.099, 21.188, 302.287, 76.278)
 
 # ── Frame 19 (centre graphic, 420×420 at 389,105) ─────────────────────────
 # Ellipse 18 strokes: dark/gradient sit at exact box; glow overflows by
@@ -107,9 +102,6 @@ TIMER_FS_RATIO = 35.0 / CANVAS_H
 STATUS_FS_RATIO = 28.251 / CANVAS_H
 REC_LABEL_FS_RATIO = 28.251 / CANVAS_H
 STARTED_FS_RATIO = 21.188 / CANVAS_H
-TITLE_FS_RATIO = 28.251 / CANVAS_H
-PARTICIPANTS_FS_RATIO = 21.188 / CANVAS_H
-PROVIDER_FS_RATIO = 21.188 / CANVAS_H
 
 BG_RGB = (1, 8, 26)  # #01081A
 
@@ -117,6 +109,19 @@ BG_RGB = (1, 8, 26)  # #01081A
 COL_WHITE = (1.0, 1.0, 1.0, 1.0)
 COL_MUTED = (182 / 255, 186 / 255, 242 / 255, 1.0)   # #B6BAF2
 COL_BLUE = (0.0, 107 / 255, 249 / 255, 1.0)          # #006BF9
+
+# Status-dot fills (recording vs paused). The previously-exported
+# `icon_rec_dot_red.png` is a solid-black PNG (the red was lost in the
+# Figma export pipeline), so the dot is now drawn with Kivy primitives
+# in two states. Colours sampled from the Figma reference plus a neutral
+# grey for the paused state.
+COL_REC_DOT_RED = (255 / 255, 59 / 255, 48 / 255, 1.0)   # #FF3B30
+COL_REC_DOT_GREY = (130 / 255, 134 / 255, 150 / 255, 1.0)  # #828696
+
+# The orb glow ring asset is a greyscale soft halo. We multiply its
+# texture by this colour at runtime to produce the blue halo the Figma
+# design calls for, without needing a re-export.
+COL_GLOW_BLUE = (0.0, 107 / 255, 249 / 255, 1.0)         # #006BF9
 
 
 def scaled_canvas(screen_w: float, screen_h: float) -> tuple[float, float]:
