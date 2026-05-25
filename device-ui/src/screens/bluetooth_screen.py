@@ -36,8 +36,8 @@ class BluetoothScreen(BaseScreen):
         root = BoxLayout(orientation="vertical")
         self.make_dark_bg(root)
         self.status_bar = StatusBar(
-            status_text="Bluetooth",
-            device_name="Bluetooth",
+            status_text="Bluetooth Devices",
+            device_name="Bluetooth Devices",
             back_button=True,
             on_back=self.go_back,
             show_settings=False,
@@ -50,15 +50,6 @@ class BluetoothScreen(BaseScreen):
             padding=[pad, self.suv(8), pad, self.suv(8)],
             spacing=self.suv(8),
         )
-
-        self.bt_power_item = SettingsItem(
-            title="Bluetooth",
-            subtitle="Loading…",
-            mode="toggle",
-            active=False,
-            on_toggle=self._on_power_toggle,
-        )
-        inner.add_widget(self.bt_power_item)
 
         self.status_lbl = Label(
             text="Nearby & paired devices",
@@ -93,11 +84,6 @@ class BluetoothScreen(BaseScreen):
 
     def on_enter(self):
         self._load_paired()
-        # Read power state
-        powered = bluetooth_local.get_power_state()
-        if powered is not None:
-            self.bt_power_item.active = powered
-            self.bt_power_item.subtitle = "On" if powered else "Off"
 
     def _load_paired(self):
         """Show currently paired devices immediately (fast, no scan)."""
@@ -159,22 +145,6 @@ class BluetoothScreen(BaseScreen):
                     on_press=lambda _, m=mac, n=name: self._device_options(m, n),
                 )
                 self.device_grid.add_widget(row)
-
-    def _on_power_toggle(self, active: bool):
-        self.bt_power_item.subtitle = "Turning " + ("on" if active else "off") + "…"
-
-        def _do():
-            result = bluetooth_local.set_power(active)
-
-            def _apply(_dt):
-                self.bt_power_item.subtitle = "On" if active else "Off"
-                if not result.get("ok"):
-                    logger.warning("Bluetooth power toggle failed: %s", result.get("message"))
-
-            Clock.schedule_once(_apply, 0)
-
-        import threading
-        threading.Thread(target=_do, daemon=True).start()
 
     def _show_pair_dialog(self):
         self.add_widget(

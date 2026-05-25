@@ -78,10 +78,37 @@ def _run_interactive(commands: list[str], timeout: float = 12) -> str:
         return ""
 
 
+def _rfkill_run(args: list[str], timeout: float = 8) -> subprocess.CompletedProcess:
+    """Run rfkill, retrying with sudo if permission denied."""
+    exe = shutil.which("rfkill")
+    if not exe:
+        return subprocess.CompletedProcess(args, 127, "", "rfkill not found")
+    res = subprocess.run([exe, *args], capture_output=True, text=True, timeout=timeout)
+    if res.returncode != 0 and shutil.which("sudo"):
+        res2 = subprocess.run(
+            ["sudo", "-n", exe, *args], capture_output=True, text=True, timeout=timeout
+        )
+        if res2.returncode == 0:
+            return res2
+    return res
+
+
 def get_power_state() -> Optional[bool]:
-    """Return True if Bluetooth controller is powered on, None if unknown."""
+    """Return True if Bluetooth is unblocked (on), False if blocked (off), None if unknown."""
     try:
-        out = _run_interactive(["show", "quit"], timeout=6)
+        r = _rfkill_run(["list", "bluetooth"])
+        if r.returncode == 0 and r.stdout:
+            for line in r.stdout.splitlines():
+                s = line.strip().lower()
+                if "soft blocked: yes" in s:
+                    return False
+                if "soft blocked: no" in s:
+                    return True
+    except Exception:
+        pass
+    # Fallback: ask bluetoothctl
+    try:
+        out = _run_interactive(["show", "quit"], timeout=5)
         for line in out.splitlines():
             s = line.strip().lower()
             if s.startswith("powered:"):
@@ -92,14 +119,16 @@ def get_power_state() -> Optional[bool]:
 
 
 def set_power(enabled: bool) -> dict:
-    """Power on or off the default Bluetooth controller."""
-    arg = "on" if enabled else "off"
+    """Enable or disable Bluetooth using rfkill (kernel-level, no D-Bus needed)."""
     try:
-        r = _run(["power", arg], allow_sudo=True)
-        out = (r.stdout or "").lower()
-        if r.returncode == 0 or f"power: {arg}" in out or "succeeded" in out:
-            return {"ok": True}
-        return {"ok": False, "message": (r.stderr or r.stdout or "").strip()[:400]}
+        action = "unblock" if enabled else "block"
+        r = _rfkill_run([action, "bluetooth"])
+        if r.returncode != 0:
+            return {"ok": False, "message": (r.stderr or r.stdout or "rfkill failed").strip()[:400]}
+        # Also tell BlueZ to power on when unblocking (best-effort)
+        if enabled:
+            _run(["power", "on"], allow_sudo=True, timeout=5)
+        return {"ok": True}
     except Exception as e:
         return {"ok": False, "message": str(e)[:400]}
 

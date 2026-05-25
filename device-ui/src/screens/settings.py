@@ -167,9 +167,18 @@ class SettingsScreen(BaseScreen):
         )
         self.container.add_widget(self.wifi_forget_item)
 
-        self.bluetooth_item = SettingsItem(
+        self.bluetooth_radio_item = SettingsItem(
             title='Bluetooth',
-            subtitle='',
+            subtitle='Loading…',
+            mode='toggle',
+            active=False,
+            on_toggle=self._on_bluetooth_radio_toggled,
+        )
+        self.container.add_widget(self.bluetooth_radio_item)
+
+        self.bluetooth_item = SettingsItem(
+            title='Bluetooth devices',
+            subtitle='Scan, pair & manage',
             mode='arrow',
             on_press=lambda _: self.goto('bluetooth_screen', transition='slide_left'),
         )
@@ -628,6 +637,7 @@ class SettingsScreen(BaseScreen):
     # ------------------------------------------------------------------
     def on_enter(self):
         self._load_system_info()
+        self._load_radio_states()
         # Sync privacy and auto_record toggles from app state
         privacy = getattr(self.app, 'privacy_mode', False)
         self.privacy_item.toggle.active = privacy
@@ -654,6 +664,31 @@ class SettingsScreen(BaseScreen):
     # ------------------------------------------------------------------
     # Data
     # ------------------------------------------------------------------
+    def _load_radio_states(self):
+        """Read WiFi and Bluetooth radio state in background and sync the toggles."""
+        import threading
+        import wifi_nmcli_local
+        import bluetooth_local
+        from kivy.clock import Clock
+
+        def _fetch():
+            wifi_on = wifi_nmcli_local.get_wifi_radio_enabled()
+            bt_on = bluetooth_local.get_power_state()
+
+            def _apply(_dt):
+                if wifi_on is not None:
+                    self.wifi_radio_item.active = wifi_on
+                    self.wifi_radio_item.subtitle = "On" if wifi_on else "Off"
+                if bt_on is not None:
+                    self.bluetooth_radio_item.active = bt_on
+                    self.bluetooth_radio_item.subtitle = "On" if bt_on else "Off"
+                else:
+                    self.bluetooth_radio_item.subtitle = ""
+
+            Clock.schedule_once(_apply, 0)
+
+        threading.Thread(target=_fetch, daemon=True).start()
+
     def _load_system_info(self):
         async def _fetch():
             try:
@@ -891,6 +926,25 @@ class SettingsScreen(BaseScreen):
             result = wifi_nmcli_local.set_wifi_radio(active)
             if not result.get("ok"):
                 logger.warning("WiFi radio toggle failed: %s", result.get("message"))
+
+        threading.Thread(target=_do, daemon=True).start()
+
+    def _on_bluetooth_radio_toggled(self, active: bool):
+        import threading
+        import bluetooth_local
+        from kivy.clock import Clock
+
+        self.bluetooth_radio_item.subtitle = "Turning " + ("on" if active else "off") + "…"
+
+        def _do():
+            result = bluetooth_local.set_power(active)
+
+            def _apply(_dt):
+                self.bluetooth_radio_item.subtitle = "On" if active else "Off"
+                if not result.get("ok"):
+                    logger.warning("Bluetooth toggle failed: %s", result.get("message"))
+
+            Clock.schedule_once(_apply, 0)
 
         threading.Thread(target=_do, daemon=True).start()
 
