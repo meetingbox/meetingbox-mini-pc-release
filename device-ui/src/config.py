@@ -376,17 +376,37 @@ OTHER_CONTENT_SCALE = HOME_CONTENT_SCALE * 1.2
 
 # Multiplier driven by Settings → Font size (small / medium / large).
 _FONT_USER_SCALE = 1.0
+_FONT_PRESET_FILE = "/data/config/font_size"
 
 
-def set_ui_font_preset(name: str) -> None:
-    """Called when device loads ``font_size`` from backend settings."""
+def set_ui_font_preset(name: str, persist: bool = False) -> None:
+    """Update the UI font scale multiplier.
+
+    Pass ``persist=True`` when the user explicitly picks a size so the choice
+    survives a container restart (written to _FONT_PRESET_FILE).
+    """
     global _FONT_USER_SCALE
     key = (name or "medium").strip().lower()
     _FONT_USER_SCALE = {"small": 0.92, "medium": 1.0, "large": 1.1}.get(key, 1.0)
+    if persist:
+        try:
+            Path(_FONT_PRESET_FILE).write_text(key)
+        except Exception:
+            pass
 
 
 def ui_font_scale_multiplier() -> float:
     return _FONT_USER_SCALE
+
+
+# Load persisted font preference at module-load time so all screens are built
+# with the correct scale (Kivy computes font sizes once at widget creation).
+try:
+    _saved_preset = Path(_FONT_PRESET_FILE).read_text().strip()
+    if _saved_preset:
+        set_ui_font_preset(_saved_preset)
+except Exception:
+    pass
 
 
 def home_layout_vertical_scale() -> float:

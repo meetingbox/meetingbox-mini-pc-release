@@ -84,28 +84,6 @@ def _run(args: list[str], timeout: float = 15, allow_sudo: bool = False) -> subp
     return res
 
 
-def _run_interactive(commands: list[str], timeout: float = 12) -> str:
-    """
-    Feed a sequence of newline-terminated commands into bluetoothctl's stdin
-    and capture stdout.  Used for scan + discovery which require an open session.
-    """
-    bt = _bt()
-    if not bt:
-        return ""
-    script = "\n".join(commands) + "\n"
-    try:
-        res = subprocess.run(
-            [bt],
-            input=script,
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-        )
-        return res.stdout or ""
-    except Exception as e:
-        logger.debug("bluetoothctl interactive failed: %s", e)
-        return ""
-
 
 _RFKILL_PATHS = ["/usr/bin/rfkill", "/usr/sbin/rfkill", "/sbin/rfkill", "rfkill"]
 
@@ -266,21 +244,34 @@ def set_power(enabled: bool) -> dict:
     return {"ok": False, "message": "bluetoothctl not found"}
 
 
+def _parse_devices(output: str) -> list[dict]:
+    """Parse ``bluetoothctl devices`` output into [{mac, name}, ...]."""
+    rows: list[dict] = []
+    for line in (output or "").splitlines():
+        line = line.strip()
+        if not line.startswith("Device "):
+            continue
+        parts = line.split(None, 2)
+        if len(parts) >= 3:
+            rows.append({"mac": parts[1], "name": parts[2]})
+        elif len(parts) == 2:
+            rows.append({"mac": parts[1], "name": parts[1]})
+    return rows
+
+
 def list_paired_devices() -> list[dict]:
-    """Return [{"mac": ..., "name": ...}] for paired devices."""
+    """Return [{"mac": ..., "name": ...}] for paired devices.
+
+    Uses the nsenter helper so the query reaches the host BlueZ adapter
+    even when polkit would block the container's direct D-Bus call.
+    """
     try:
-        r = _run(["devices", "Paired"], timeout=10)
-        rows: list[dict] = []
-        for line in (r.stdout or "").splitlines():
-            line = line.strip()
-            if not line.startswith("Device "):
-                continue
-            parts = line.split(None, 2)
-            if len(parts) >= 3:
-                rows.append({"mac": parts[1], "name": parts[2]})
-            elif len(parts) == 2:
-                rows.append({"mac": parts[1], "name": parts[1]})
-        return rows
+        r = _run_helper(["devices", "Paired"], timeout=10)
+        if r.returncode == 0:
+            return _parse_devices(r.stdout)
+        # Fallback: direct D-Bus (works when bluetooth group is present)
+        r2 = _run(["devices", "Paired"], timeout=10)
+        return _parse_devices(r2.stdout)
     except Exception as e:
         logger.debug("list_paired_devices: %s", e)
         return []
@@ -289,58 +280,53 @@ def list_paired_devices() -> list[dict]:
 def scan_and_list_nearby(scan_seconds: int = 7) -> list[dict]:
     """
     Start a short scan then return all discovered + paired devices.
-    Devices already in the paired list are included too so the UI can
-    show a combined "known nearby" list.
+
+    The scan runs via the nsenter helper (root in host namespace) so polkit
+    does not block StartDiscovery.  ``bluetoothctl --timeout N scan on``
+    scans for N seconds then exits cleanly (BlueZ 5.50+).
     """
-    # Ensure Bluetooth is powered on before scanning (via nsenter helper)
+    # Ensure Bluetooth is powered on (helper does rfkill unblock + power on)
     set_power(True)
     time.sleep(0.5)
 
-    # Feed scan on/off into bluetoothctl stdin; we rely on the timeout to stop it
-    bt = _bt()
-    if not bt:
-        return []
-    scan_script = "scan on\n"
+    # Scan via nsenter helper — bypasses polkit StartDiscovery restriction
     try:
-        subprocess.run(
-            [bt],
-            input=scan_script,
-            capture_output=True,
-            text=True,
-            timeout=scan_seconds,
+        _run_helper(
+            ["--timeout", str(scan_seconds), "scan", "on"],
+            timeout=scan_seconds + 5,
         )
     except subprocess.TimeoutExpired:
         pass
     except Exception as e:
         logger.debug("scan_and_list_nearby scan phase: %s", e)
 
-    # Now collect all known devices (paired + recently discovered)
+    # List all known devices (paired + recently discovered) via helper
     try:
-        r = _run(["devices"], timeout=8)
-        rows: list[dict] = []
-        for line in (r.stdout or "").splitlines():
-            line = line.strip()
-            if not line.startswith("Device "):
-                continue
-            parts = line.split(None, 2)
-            if len(parts) >= 3:
-                rows.append({"mac": parts[1], "name": parts[2]})
-            elif len(parts) == 2:
-                rows.append({"mac": parts[1], "name": parts[1]})
-        return rows
+        r = _run_helper(["devices"], timeout=8)
+        if r.returncode == 0:
+            return _parse_devices(r.stdout)
+        r2 = _run(["devices"], timeout=8)
+        return _parse_devices(r2.stdout)
     except Exception as e:
         logger.debug("scan_and_list_nearby collect: %s", e)
         return []
 
 
 def pair_device(mac: str) -> dict:
-    """Pair a device by MAC address."""
+    """Pair a device by MAC address.
+
+    Runs via the nsenter helper so polkit does not block the Pair call.
+    """
     mac = (mac or "").strip()
     if not mac:
         return {"ok": False, "message": "MAC address required"}
     try:
-        r = _run(["pair", mac], timeout=40)
+        r = _run_helper(["pair", mac], timeout=40)
         if r.returncode == 0:
+            return {"ok": True, "message": ""}
+        # Fallback: direct call (may work with bluetooth group)
+        r2 = _run(["pair", mac], timeout=40)
+        if r2.returncode == 0:
             return {"ok": True, "message": ""}
         return {"ok": False, "message": (r.stderr or r.stdout or "").strip()[:400]}
     except Exception as e:
@@ -348,13 +334,19 @@ def pair_device(mac: str) -> dict:
 
 
 def connect_device(mac: str) -> dict:
-    """Connect to an already-paired device."""
+    """Connect to an already-paired device.
+
+    Runs via the nsenter helper so polkit does not block the Connect call.
+    """
     mac = (mac or "").strip()
     if not mac:
         return {"ok": False, "message": "MAC address required"}
     try:
-        r = _run(["connect", mac], timeout=20)
+        r = _run_helper(["connect", mac], timeout=20)
         if r.returncode == 0:
+            return {"ok": True}
+        r2 = _run(["connect", mac], timeout=20)
+        if r2.returncode == 0:
             return {"ok": True}
         return {"ok": False, "message": (r.stderr or r.stdout or "").strip()[:400]}
     except Exception as e:
@@ -367,8 +359,11 @@ def remove_device(mac: str) -> dict:
     if not mac:
         return {"ok": False, "message": "MAC address required"}
     try:
-        r = _run(["remove", mac], timeout=15)
+        r = _run_helper(["remove", mac], timeout=15)
         if r.returncode == 0:
+            return {"ok": True}
+        r2 = _run(["remove", mac], timeout=15)
+        if r2.returncode == 0:
             return {"ok": True}
         return {"ok": False, "message": (r.stderr or r.stdout or "").strip()[:400]}
     except Exception as e:

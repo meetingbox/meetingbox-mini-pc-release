@@ -16,6 +16,6 @@ class FontSizePickerScreen(PickerBaseScreen):
     _default = "medium"
 
     def _save_setting(self):
-        set_ui_font_preset(self._selected)
+        set_ui_font_preset(self._selected, persist=True)
         super()._save_setting()
 

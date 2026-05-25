@@ -114,13 +114,13 @@ services:
       - MEETINGBOX_LOCAL_POWEROFF_HELPER=${MEETINGBOX_LOCAL_POWEROFF_HELPER:-}
       # Audio control: these env vars let pactl/wpctl inside the container reach
       # the host PipeWire/PulseAudio daemon via the mounted sockets below.
-      # PULSE_SERVER is intentionally NOT set here — an empty string causes
-      # "Invalid server" in pactl; auto-discovery via PULSE_RUNTIME_PATH is correct.
-      # Set MEETINGBOX_PULSE_SERVER in .env only to force a specific server address.
+      # PULSE_SERVER must NOT appear in this list when unset — even an empty string
+      # causes "pa_context_connect() failed: Invalid server" in pactl.
+      # Auto-discovery via XDG_RUNTIME_DIR / PULSE_RUNTIME_PATH is correct.
+      # To force a specific server, set PULSE_SERVER directly in your .env file.
       - XDG_RUNTIME_DIR=/run/user/1000
       - PULSE_RUNTIME_PATH=/run/user/1000/pulse
       - PIPEWIRE_RUNTIME_DIR=/run/user/1000
-      - PULSE_SERVER=${MEETINGBOX_PULSE_SERVER}
     volumes:
       # Backlight sysfs on the appliance — brightness slider touches the physical panel (rw; needs privileged or matching perms).
       - /sys/class/backlight:/sys/class/backlight
@@ -156,6 +156,7 @@ services:
       - video
       - audio
       - input
+      - bluetooth
     # nsenter into host PID 1 for Settings → Restart/Power off. cap_add alone is NOT enough:
     # Docker returns "reassociate to namespaces failed: Operation not permitted" without this.
     privileged: true
