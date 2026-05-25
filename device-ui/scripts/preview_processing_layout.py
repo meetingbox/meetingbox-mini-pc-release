@@ -41,7 +41,20 @@ from processing_layout import (  # noqa: E402
 
 ASSETS = ROOT / "assets" / "processing" / "figma"
 OUT = ASSETS / "processing_layout_preview.png"
+
+# Default render at the Figma reference resolution. ``--all`` (or any extra
+# argv) additionally renders the layout at every entry in ``_RESOLUTIONS`` so
+# we can verify the screen behaves on tiny kiosk panels and big HDMI monitors.
 SCREEN_W, SCREEN_H = 1260, 800
+
+_RESOLUTIONS: tuple[tuple[int, int, str], ...] = (
+    (1260, 800, "design_1260x800"),
+    (1280, 720, "hd_16x9_1280x720"),
+    (1024, 600, "kiosk_1024x600"),
+    (800, 480, "tiny_800x480"),
+    (1920, 1080, "fhd_1920x1080"),
+    (600, 1024, "portrait_600x1024"),
+)
 
 _LAYERS: tuple[tuple[str, dict], ...] = (
     ("orb_glow.png", ORB_GLOW),
@@ -75,11 +88,12 @@ def _draw_text(draw, box, cw, ch, ox, oy, text, fill, font, anchor="lm"):
         draw.text(((x0 + x1) // 2, y0), text, fill=fill, font=font, anchor="ma")
 
 
-def main() -> None:
-    img = Image.new("RGB", (SCREEN_W, SCREEN_H), BG_RGB)
-    cw, ch = scaled_canvas(SCREEN_W, SCREEN_H)
-    ox = (SCREEN_W - cw) / 2
-    oy = (SCREEN_H - ch) / 2
+def _render(screen_w: int, screen_h: int, out_path: Path) -> None:
+    """Render the processing screen layout at the given screen size."""
+    img = Image.new("RGB", (screen_w, screen_h), BG_RGB)
+    cw, ch = scaled_canvas(screen_w, screen_h)
+    ox = (screen_w - cw) / 2
+    oy = (screen_h - ch) / 2
 
     for name, box in _LAYERS:
         path = ASSETS / name
@@ -107,9 +121,16 @@ def main() -> None:
     _draw_text(draw, HEADLINE_BOTTOM, cw, ch, ox, oy, "Summarizing your meeting...", (255, 255, 255), ft_h, "lm")
     _draw_text(draw, SUBTITLE_BOTTOM, cw, ch, ox, oy, "This may take a few seconds", (182, 186, 242), ft_sub, "lm")
 
-    OUT.parent.mkdir(parents=True, exist_ok=True)
-    img.save(OUT)
-    print(f"Wrote {OUT}")
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    img.save(out_path)
+    print(f"Wrote {out_path} ({screen_w}x{screen_h})")
+
+
+def main() -> None:
+    _render(SCREEN_W, SCREEN_H, OUT)
+    if len(sys.argv) > 1:
+        for sw, sh, tag in _RESOLUTIONS:
+            _render(sw, sh, ASSETS / f"processing_layout_preview_{tag}.png")
 
 
 if __name__ == "__main__":

@@ -119,6 +119,13 @@ COL_BLUE = (0 / 255, 149 / 255, 255 / 255, 1.0)      # #0095FF (ring stroke)
 
 
 def scaled_canvas(screen_w: float, screen_h: float) -> tuple[float, float]:
+    """Aspect-preserving canvas size for the current screen.
+
+    Uses ``min(sw/cw, sh/ch)`` so design proportions (circles, ring radii,
+    composite aspect ratios) survive on any monitor. The remaining screen
+    area is filled by the root background colour so the UI always covers
+    the whole display.
+    """
     if screen_w <= 0 or screen_h <= 0:
         return CANVAS_W, CANVAS_H
     scale = min(screen_w / CANVAS_W, screen_h / CANVAS_H)
@@ -132,5 +139,13 @@ def kivy_hints(box: Box) -> dict:
     }
 
 
+# Minimum/maximum font size guards. The min keeps text readable on tiny
+# panels (e.g. 800×480) and the cap stops the headline from looking
+# cartoonish on 4K displays where the canvas height is huge.
+_FONT_MIN_PX = 10
+_FONT_MAX_PX = 96
+
+
 def font_px(fs_ratio: float, canvas_height: float) -> int:
-    return max(6, round(fs_ratio * canvas_height))
+    raw = round(fs_ratio * canvas_height)
+    return max(_FONT_MIN_PX, min(_FONT_MAX_PX, raw))

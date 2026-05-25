@@ -253,7 +253,16 @@ class ProcessingScreen(BaseScreen):
         *,
         bold: bool = False,
         halign: str = "center",
+        max_lines: int = 1,
+        shorten: bool = True,
     ) -> Label:
+        """Build a Kivy Label sized via Figma ratios.
+
+        Defaults to ``shorten=True`` + ``max_lines=1`` so that long dynamic
+        text (meeting titles, error messages, progress strings) never
+        overflows its bounding box on any screen resolution. Callers can
+        opt into wrapping with ``max_lines > 1, shorten=False``.
+        """
         lbl = Label(
             text=text,
             font_name=_FONT_BOLD,
@@ -261,6 +270,10 @@ class ProcessingScreen(BaseScreen):
             color=color,
             halign=halign,
             valign="middle",
+            markup=False,
+            shorten=shorten,
+            shorten_from="right",
+            max_lines=max_lines,
             **kivy_hints(box),
         )
         lbl.bind(size=lbl.setter("text_size"))
