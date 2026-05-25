@@ -121,62 +121,68 @@ def _rfkill_run(args: list[str], timeout: float = 8) -> subprocess.CompletedProc
 
 
 def get_power_state() -> Optional[bool]:
-    """Return True if Bluetooth is unblocked (on), False if blocked (off), None if unknown."""
+    """Return True if Bluetooth adapter is powered on, False if off, None if unknown."""
+    bt = _bt()
+    if not bt:
+        return None
+    # bluetoothctl show prints "Powered: yes" or "Powered: no"
     try:
-        r = _rfkill_run(["list", "bluetooth"])
-        if r.returncode == 0 and r.stdout:
-            for line in r.stdout.splitlines():
-                s = line.strip().lower()
-                if "soft blocked: yes" in s:
-                    return False
-                if "soft blocked: no" in s:
-                    return True
-    except Exception:
-        pass
-    # Fallback: ask bluetoothctl
-    try:
-        out = _run_interactive(["show", "quit"], timeout=5)
-        for line in out.splitlines():
+        r = subprocess.run([bt, "show"], capture_output=True, text=True, timeout=6)
+        for line in (r.stdout or "").splitlines():
             s = line.strip().lower()
             if s.startswith("powered:"):
                 return "yes" in s
+    except Exception:
+        pass
+    # Fallback: rfkill list
+    try:
+        r2 = _rfkill_run(["list", "bluetooth"])
+        for line in (r2.stdout or "").splitlines():
+            s = line.strip().lower()
+            if "soft blocked: yes" in s:
+                return False
+            if "soft blocked: no" in s:
+                return True
     except Exception:
         pass
     return None
 
 
 def set_power(enabled: bool) -> dict:
-    """Enable or disable Bluetooth (rfkill + bluetoothctl for reliability)."""
-    errors: list[str] = []
-    action = "unblock" if enabled else "block"
+    """Enable or disable Bluetooth via bluetoothctl running as root (sudo).
+    Root bypasses polkit — same pattern as nmcli for WiFi."""
+    bt = _bt()
+    if not bt:
+        return {"ok": False, "message": "bluetoothctl not found"}
+    arg = "on" if enabled else "off"
+    sudo = shutil.which("sudo")
 
-    # Step 1: kernel RF kill switch
+    # Always try as root first — D-Bus socket is mounted, root bypasses polkit
+    if sudo:
+        try:
+            r = subprocess.run(
+                [sudo, "-n", bt, "power", arg],
+                capture_output=True, text=True, timeout=10,
+            )
+            out = (r.stdout or "").lower()
+            sudo_err = (r.stderr or "").lower()
+            # Check sudo itself didn't fail (password required)
+            sudo_needs_pw = any(s in sudo_err for s in ("password is required", "no tty present", "sudo: a password"))
+            if not sudo_needs_pw:
+                logger.info("bluetoothctl power %s (sudo): rc=%s out=%s", arg, r.returncode, out.strip()[:80])
+                return {"ok": True}
+        except Exception as e:
+            logger.debug("bluetoothctl sudo failed: %s", e)
+
+    # Fallback: try without sudo (may work if uiuser is in bluetooth group)
     try:
-        r = _rfkill_run([action, "bluetooth"])
-        if r.returncode != 0:
-            errors.append(f"rfkill {action}: " + (r.stderr or r.stdout or "failed").strip()[:200])
-        else:
-            logger.info("rfkill %s bluetooth: ok", action)
+        r2 = subprocess.run([bt, "power", arg], capture_output=True, text=True, timeout=10)
+        logger.info("bluetoothctl power %s (no sudo): rc=%s", arg, r2.returncode)
+        if r2.returncode == 0:
+            return {"ok": True}
+        return {"ok": False, "message": (r2.stderr or r2.stdout or "Failed").strip()[:400]}
     except Exception as e:
-        errors.append(f"rfkill exception: {e}")
-
-    # Step 2: bluetoothctl power on/off (BlueZ software switch)
-    bt_arg = "on" if enabled else "off"
-    try:
-        r2 = _run(["power", bt_arg], allow_sudo=True, timeout=6)
-        out2 = (r2.stdout or "").lower()
-        if r2.returncode == 0 or f"power: {bt_arg}" in out2 or "succeeded" in out2:
-            logger.info("bluetoothctl power %s: ok", bt_arg)
-        else:
-            errors.append(f"bluetoothctl power {bt_arg}: " + (r2.stderr or r2.stdout or "failed").strip()[:200])
-    except Exception as e:
-        errors.append(f"bluetoothctl exception: {e}")
-
-    # Success if at least one method worked (no errors, or only partial errors)
-    if len(errors) < 2:
-        return {"ok": True}
-    logger.warning("set_power(%s) both methods failed: %s", enabled, errors)
-    return {"ok": False, "message": "; ".join(errors)}
+        return {"ok": False, "message": str(e)[:400]}
 
 
 def list_paired_devices() -> list[dict]:
