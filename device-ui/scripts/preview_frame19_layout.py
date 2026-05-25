@@ -10,6 +10,9 @@ from PIL import Image, ImageDraw, ImageFont
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "src"))
 
+import math  # noqa: E402
+import random  # noqa: E402
+
 from frame19_layout import (  # noqa: E402
     BACK_BTN,
     BG_RGB,
@@ -41,6 +44,7 @@ from frame19_layout import (  # noqa: E402
     TITLE_FS_RATIO,
     TITLE_LABEL,
     VIDEO_ICON,
+    WAVEBAR,
     font_px,
     scaled_canvas,
 )
@@ -82,6 +86,52 @@ def _draw_text(draw, box, cw, ch, ox, oy, text, fill, font, anchor="lm"):
         draw.text(((x0 + x1) // 2, y0), text, fill=fill, font=font, anchor="ma")
 
 
+def _draw_wavebar(
+    draw,
+    box,
+    cw,
+    ch,
+    ox,
+    oy,
+    *,
+    level: float = 0.7,
+    n_bars: int = 21,
+    color: tuple = (0, 107, 249),
+    seed: int = 7,
+) -> None:
+    """Approximate the runtime ``_Wavebar`` widget at a given amplitude.
+
+    Mirrors the bell-shaped envelope + jitter used in
+    ``screens/recording.py`` so the preview looks like a mid-speech frame.
+    """
+    rng = random.Random(seed)
+    jitter = [rng.uniform(0.65, 1.0) for _ in range(n_bars)]
+    x0, y0, x1, y1 = _rect(box, cw, ch, ox, oy)
+    w, h = x1 - x0, y1 - y0
+    if w <= 0 or h <= 0:
+        return
+    bar_w = max(1.0, (w * 0.45) / n_bars)
+    total_bars = bar_w * n_bars
+    gap = (w - total_bars) / max(1, n_bars - 1)
+    max_h = h * 0.96
+    min_h = max(2.0, h * 0.10)
+    cy = y0 + h / 2.0
+    centre = (n_bars - 1) / 2.0
+    radius = max(1, int(bar_w / 2.0))
+    for i in range(n_bars):
+        d = (i - centre) / centre
+        bell = max(0.0, math.cos(d * math.pi / 2.0))
+        amp = level * (0.35 + 0.65 * bell) * jitter[i]
+        bar_h = min_h + (max_h - min_h) * amp
+        bx0 = x0 + i * (bar_w + gap)
+        bx1 = bx0 + bar_w
+        by0 = cy - bar_h / 2.0
+        by1 = cy + bar_h / 2.0
+        draw.rounded_rectangle(
+            [bx0, by0, bx1, by1], radius=radius, fill=color
+        )
+
+
 def main() -> None:
     img = Image.new("RGB", (SCREEN_W, SCREEN_H), BG_RGB)
     cw, ch = scaled_canvas(SCREEN_W, SCREEN_H)
@@ -112,6 +162,9 @@ def main() -> None:
         ft_timer = ft_status = ft_rec = ft_started = ft_title = ft_part = ft_provider = (
             ImageFont.load_default()
         )
+
+    # Voice wavebar (Group 46) — simulated mid-speech amplitude.
+    _draw_wavebar(draw, WAVEBAR, cw, ch, ox, oy, level=0.75)
 
     _draw_text(draw, TIMER, cw, ch, ox, oy, "00 : 12 : 45", (255, 255, 255), ft_timer, "ma")
     _draw_text(draw, STATUS, cw, ch, ox, oy, "Recording in progress", (182, 186, 242), ft_status, "ma")

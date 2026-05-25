@@ -11,15 +11,18 @@ on_resumed, on_audio_level, on_audio_segment.
 from __future__ import annotations
 
 import logging
+import math
+import random
 import time
 
 from kivy.clock import Clock
-from kivy.graphics import Color, Rectangle
+from kivy.graphics import Color, Rectangle, RoundedRectangle
 from kivy.uix.anchorlayout import AnchorLayout
 from kivy.uix.behaviors import ButtonBehavior
 from kivy.uix.floatlayout import FloatLayout
 from kivy.uix.image import Image
 from kivy.uix.label import Label
+from kivy.uix.widget import Widget
 
 from async_helper import run_async
 from config import ASSETS_DIR, display_now
@@ -55,6 +58,7 @@ from frame19_layout import (
     TITLE_FS_RATIO,
     TITLE_LABEL,
     VIDEO_ICON,
+    WAVEBAR,
     font_px,
     kivy_hints,
     scaled_canvas,
@@ -84,6 +88,131 @@ def _png(name: str) -> str:
 
 class _ImgBtn(ButtonBehavior, Image):
     """Tappable PNG button."""
+
+
+class _Wavebar(Widget):
+    """Voice waveform indicator — Figma node ``863:561`` (Group 46).
+
+    Draws ``n_bars`` vertical rounded bars that react to live microphone
+    levels fed in via :meth:`feed_level`. A small idle ripple keeps it
+    "alive" even when the user is silent so they can see the screen is
+    actively listening; speech amplifies the centre bars more than the
+    edges to mimic the bell-shaped voice envelope in the Figma reference.
+
+    Animation runs on Kivy's main thread via ``Clock.schedule_interval``.
+    Call :meth:`start` / :meth:`stop` from on_enter / on_leave (and on
+    pause / resume) so we never burn CPU when the screen is hidden.
+    """
+
+    def __init__(
+        self,
+        *,
+        n_bars: int = 21,
+        color: tuple = (0.0, 107 / 255, 249 / 255, 1.0),  # #006BF9
+        idle_color: tuple = (0.0, 107 / 255, 249 / 255, 0.85),
+        **kwargs,
+    ):
+        super().__init__(**kwargs)
+        self.n_bars = n_bars
+        self._color_active = color
+        self._color_idle = idle_color
+        self._bar_min_ratio = 0.10  # height when totally silent
+        self._bar_max_ratio = 0.96  # height at peak voice
+        self._levels = [0.0] * n_bars
+        self._latest_audio = 0.0
+        self._phase = 0.0
+        self._anim_event: object | None = None
+        self._is_active = False  # set by start_voice / stop_voice
+        self._jitter = [random.uniform(0.65, 1.0) for _ in range(n_bars)]
+
+        with self.canvas:
+            self._color_inst = Color(*self._color_idle)
+            self._bars = [
+                RoundedRectangle(pos=(0, 0), size=(1, 1), radius=[1])
+                for _ in range(n_bars)
+            ]
+
+        self.bind(pos=lambda *_: self._redraw(), size=lambda *_: self._redraw())
+
+    # ----- public API --------------------------------------------------
+    def feed_level(self, level: float) -> None:
+        """Push the latest mic amplitude (expected range ~0-1)."""
+        try:
+            v = float(level)
+        except (TypeError, ValueError):
+            return
+        if v < 0.0:
+            v = 0.0
+        elif v > 1.0:
+            v = 1.0
+        # Light attack so a single loud sample doesn't spike for one frame.
+        self._latest_audio = max(self._latest_audio * 0.55, v)
+
+    def start(self) -> None:
+        if self._anim_event is None:
+            self._anim_event = Clock.schedule_interval(self._tick, 1 / 30.0)
+
+    def stop(self) -> None:
+        if self._anim_event is not None:
+            self._anim_event.cancel()
+            self._anim_event = None
+
+    def start_voice(self) -> None:
+        """Indicate that recording is live (full-amplitude colour)."""
+        self._is_active = True
+        self._color_inst.rgba = self._color_active
+
+    def stop_voice(self) -> None:
+        """Indicate that recording is paused (dimmed colour, no audio decay)."""
+        self._is_active = False
+        self._latest_audio = 0.0
+        self._color_inst.rgba = self._color_idle
+
+    # ----- tick / draw -------------------------------------------------
+    def _tick(self, dt: float) -> None:
+        self._phase += dt * 4.5
+        n = self.n_bars
+        if n <= 1:
+            return
+        centre = (n - 1) / 2.0
+        amp = self._latest_audio if self._is_active else 0.0
+        for i in range(n):
+            d = (i - centre) / centre  # -1..1
+            # Bell-shaped envelope — centre bars are loudest.
+            bell = max(0.0, math.cos(d * math.pi / 2.0))
+            # Gentle idle ripple so the screen never looks dead.
+            idle = 0.04 + 0.06 * math.sin(self._phase + i * 0.55)
+            voice = amp * (0.35 + 0.65 * bell) * self._jitter[i]
+            target = max(idle if self._is_active else 0.02, voice)
+            self._levels[i] += (target - self._levels[i]) * 0.4
+        # Audio decays if no fresh level arrives so the bars settle.
+        self._latest_audio *= 0.93
+        # Reshuffle a couple of jitter weights each frame for organic look.
+        if random.random() < 0.18:
+            idx = random.randrange(n)
+            self._jitter[idx] = random.uniform(0.55, 1.0)
+        self._redraw()
+
+    def _redraw(self) -> None:
+        w, h = self.size
+        if w <= 0 or h <= 0:
+            return
+        n = self.n_bars
+        # Allocate 45% of the total width to bars, 55% to gaps — matches
+        # the airy look in the Figma reference.
+        bar_w = max(1.0, (w * 0.45) / n)
+        total_bars = bar_w * n
+        gap = (w - total_bars) / max(1, n - 1)
+        max_h = h * self._bar_max_ratio
+        min_h = max(2.0, h * self._bar_min_ratio)
+        cy = self.y + h / 2.0
+        radius = bar_w / 2.0
+        for i, rect in enumerate(self._bars):
+            bar_h = min_h + (max_h - min_h) * self._levels[i]
+            x = self.x + i * (bar_w + gap)
+            rect.pos = (x, cy - bar_h / 2.0)
+            rect.size = (bar_w, bar_h)
+            rect.radius = [radius]
 
 
 class RecordingScreen(BaseScreen):
@@ -118,6 +247,11 @@ class RecordingScreen(BaseScreen):
         # Centre — Frame 19 graphic (back → front)
         for filename, box in _FRAME19_IMAGES:
             self._add_image(filename, box)
+
+        # Voice wavebar (Group 46) — sits inside the orb and animates with
+        # mic input fed via on_audio_level().
+        self.wavebar = _Wavebar(**kivy_hints(WAVEBAR))
+        self._canvas.add_widget(self.wavebar)
 
         # Timer + status caption (centred in Frame 19)
         self.timer_label = self._add_label(
@@ -264,10 +398,16 @@ class RecordingScreen(BaseScreen):
 
         self.timer_event = Clock.schedule_interval(self._tick_timer, 0.5)
 
+        # Voice wavebar — start animating and mark it as live so it reacts
+        # at full amplitude to incoming audio_level events from Redis.
+        self.wavebar.start()
+        self.wavebar.start_voice()
+
     def on_leave(self):
         if self.timer_event:
             self.timer_event.cancel()
             self.timer_event = None
+        self.wavebar.stop()
 
     # ---------------------------------------------------------------- timer
     def _elapsed_from_monotonic(self) -> int:
@@ -306,6 +446,9 @@ class RecordingScreen(BaseScreen):
             self._rec_active_start = None
         self.rec_label.text = "Paused"
         self.status_label.text = "Recording paused"
+        # Freeze the wavebar at idle so the user can see we stopped reading
+        # the mic while paused.
+        self.wavebar.stop_voice()
 
     def on_resumed(self):
         if not self._is_paused:
@@ -314,9 +457,18 @@ class RecordingScreen(BaseScreen):
         self._rec_active_start = time.monotonic()
         self.rec_label.text = "Recording..."
         self.status_label.text = "Recording in progress"
+        self.wavebar.start_voice()
 
     def on_audio_level(self, level: float):
-        del level
+        """Feed live mic amplitude (0-1) into the wavebar visualiser.
+
+        Called by ``main.py.on_audio_level`` once Redis delivers an
+        ``audio_level`` event from the audio-capture process. Wiring this
+        up is what makes the user *see* their voice — the audio pipeline
+        itself was already running but the recording UI was discarding the
+        level.
+        """
+        self.wavebar.feed_level(level)
 
     def on_audio_segment(self, segment_num: int):
         del segment_num

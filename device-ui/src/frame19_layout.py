@@ -89,6 +89,10 @@ RING_GRADIENT = _f19(101.973, 44.684, _RING_W, _RING_H)
 LEFT_VEC = _f19(52.0, 67.473, 36.975, 173.319)
 RIGHT_VEC = _f19(331.030, 67.473, 36.975, 173.319)
 
+# Voice wavebar (Group 46) — sits inside the orb, animates with mic input.
+# Figma local coords inside Frame 19: (126.951, 111.039) 168.882 × 85.174
+WAVEBAR = _f19(126.951, 111.039, 168.882, 85.174)
+
 # Timer + status (centred inside Frame 19)
 TIMER = _f19(89.0, 300.0, 243.0, 42.0)
 STATUS = _f19(65.0, 346.0, 290.0, 34.0)
