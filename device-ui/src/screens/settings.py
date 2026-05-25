@@ -374,14 +374,6 @@ class SettingsScreen(BaseScreen):
         )
         self.container.add_widget(self.weather_location_item)
 
-        self.font_size_item = SettingsItem(
-            title='Font size',
-            subtitle='Medium',
-            mode='arrow',
-            on_press=lambda _: self.goto('font_size_picker', transition='slide_left'),
-        )
-        self.container.add_widget(self.font_size_item)
-
         self.screen_always_on_item = SettingsItem(
             title='Screen always-on during recording',
             subtitle='Prevent idle screen while recording',
@@ -790,8 +782,6 @@ class SettingsScreen(BaseScreen):
                         settings.get('update_channel', 'stable') or 'stable').title()
                     self.auto_update_item.toggle.active = bool(settings.get('auto_update_enabled', True))
                     self.screen_always_on_item.toggle.active = bool(settings.get('screen_always_on_recording', True))
-                    fs = settings.get('font_size', 'medium') or 'medium'
-                    self.font_size_item.subtitle_label.text = fs.title()
                     self.auto_summarize_item.toggle.active = bool(settings.get('auto_summarize', True))
                     self.transcript_storage_item.toggle.active = bool(settings.get('transcript_storage_enabled', True))
                     self.consent_reminder_item.toggle.active = bool(settings.get('recording_consent_reminder', True))
