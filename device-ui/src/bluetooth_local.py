@@ -292,25 +292,19 @@ def scan_and_list_nearby(scan_seconds: int = 7) -> list[dict]:
     Devices already in the paired list are included too so the UI can
     show a combined "known nearby" list.
     """
-    # Power on first (best-effort)
+    # Ensure Bluetooth is powered on before scanning (via nsenter helper)
     set_power(True)
-    time.sleep(0.3)
+    time.sleep(0.5)
 
-    # Run: scan on → wait → scan off → devices → quit
-    commands = [
-        "power on",
-        f"scan on",
-    ]
-    # Quick scan: just open the session and let BlueZ accumulate for a bit
-    script = "power on\nscan on\n"
-    # We rely on the interactive timeout to stop the process after scan_seconds
+    # Feed scan on/off into bluetoothctl stdin; we rely on the timeout to stop it
     bt = _bt()
     if not bt:
         return []
+    scan_script = "scan on\n"
     try:
         subprocess.run(
             [bt],
-            input=script,
+            input=scan_script,
             capture_output=True,
             text=True,
             timeout=scan_seconds,
