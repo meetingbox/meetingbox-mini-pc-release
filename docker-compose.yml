@@ -113,16 +113,21 @@ services:
       - MEETINGBOX_LOCAL_REBOOT_HELPER=${MEETINGBOX_LOCAL_REBOOT_HELPER:-}
       - MEETINGBOX_LOCAL_POWEROFF_HELPER=${MEETINGBOX_LOCAL_POWEROFF_HELPER:-}
       # Audio control: these env vars let pactl/wpctl inside the container reach
-      # the host PipeWire/PulseAudio daemon via the mounted /run/user/1000/pulse socket.
+      # the host PipeWire/PulseAudio daemon via the mounted sockets below.
+      # PULSE_SERVER is intentionally NOT set here — an empty string causes
+      # "Invalid server" in pactl; auto-discovery via PULSE_RUNTIME_PATH is correct.
+      # Set MEETINGBOX_PULSE_SERVER in .env only to force a specific server address.
       - XDG_RUNTIME_DIR=/run/user/1000
       - PULSE_RUNTIME_PATH=/run/user/1000/pulse
       - PIPEWIRE_RUNTIME_DIR=/run/user/1000
-      - PULSE_SERVER=${MEETINGBOX_PULSE_SERVER:-}
+      - PULSE_SERVER=${MEETINGBOX_PULSE_SERVER}
     volumes:
       # Backlight sysfs on the appliance — brightness slider touches the physical panel (rw; needs privileged or matching perms).
       - /sys/class/backlight:/sys/class/backlight
-      # PulseAudio runtime dir from the HOST (uid 1000). Override via MEETINGBOX_HOST_PULSE if your kiosk user differs.
+      # PulseAudio compat socket (PipeWire-pulse) — used by pactl for volume control.
       - ${MEETINGBOX_HOST_PULSE:-/run/user/1000/pulse}:/run/user/1000/pulse
+      # PipeWire native socket — used by wpctl for volume control (preferred over pactl).
+      - /run/user/1000/pipewire-0:/run/user/1000/pipewire-0
       - /tmp/.X11-unix:/tmp/.X11-unix:rw
       # X11 cookie: boot script sets MEETINGBOX_X11_COOKIE (not in .env) so it wins over XAUTHORITY_HOST.
       - ${MEETINGBOX_X11_COOKIE:-${XAUTHORITY_HOST:-${HOME}/.Xauthority}}:/home/uiuser/.Xauthority:ro
