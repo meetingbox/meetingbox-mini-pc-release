@@ -1,0 +1,30 @@
+#!/bin/sh
+# Control Bluetooth from inside device-ui container via nsenter into host namespace.
+#
+# Usage (called by bluetooth_local.py via sudo):
+#   meetingbox-bluetooth power on
+#   meetingbox-bluetooth power off
+#
+# Requires: docker-compose ``pid: host``, ``privileged: true``,
+#           rebuilt image with sudoers entry for this path.
+
+SELF=/usr/local/bin/meetingbox-bluetooth
+
+if [ "$(id -u)" -ne 0 ]; then
+  if ! command -v sudo >/dev/null 2>&1; then
+    echo "meetingbox-bluetooth: need root but sudo is missing" >&2
+    exit 1
+  fi
+  sudo -n "$SELF" "$@" || {
+    echo "meetingbox-bluetooth: sudo -n failed (check sudoers NOPASSWD for $SELF)" >&2
+    exit 1
+  }
+  exit 0
+fi
+
+if ! command -v nsenter >/dev/null 2>&1; then
+  echo "meetingbox-bluetooth: nsenter not found" >&2
+  exit 1
+fi
+
+exec nsenter -t 1 -m -u -i -n -p -- bluetoothctl "$@"

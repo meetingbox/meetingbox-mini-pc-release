@@ -134,7 +134,9 @@ services:
       - ./scripts/meetingbox-host-poweroff:/usr/local/bin/meetingbox-host-poweroff:ro
       # WiFi nmcli via nsenter — bypasses polkit "Not authorized to control networking".
       - ./scripts/meetingbox-wifi-nmcli:/usr/local/bin/meetingbox-wifi-nmcli:ro
-      # nmcli in the container talks to the host NetworkManager (WiFi from Home / Settings).
+      # Bluetooth control via nsenter into host namespace — bypasses polkit for power on/off.
+      - ./scripts/meetingbox-bluetooth:/usr/local/bin/meetingbox-bluetooth:ro
+      # nmcli/bluetoothctl in the container talks to host NetworkManager / BlueZ via D-Bus.
       - /run/dbus/system_bus_socket:/run/dbus/system_bus_socket
     devices:
       - /dev/dri:/dev/dri

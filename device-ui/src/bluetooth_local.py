@@ -1,15 +1,21 @@
 """
 On-device Bluetooth control via bluetoothctl.
 
-Mirrors the pattern of wifi_nmcli_local.py — all commands run inside the
-device-ui container which has bluetoothctl installed and /run/dbus/system_bus_socket
-mounted from the host, so the container's bluetoothctl talks to the host's
-BlueZ daemon.
+Power on/off uses the mountd helper script meetingbox-bluetooth which
+runs bluetoothctl via nsenter into the host namespace.  This is the
+same pattern as meetingbox-host-reboot / meetingbox-wifi-nmcli and
+reliably bypasses polkit even when the container D-Bus root check differs
+from the host's polkit rules.
+
+Read-only commands (show, devices, scan) run bluetoothctl directly in
+the container via the mounted /run/dbus/system_bus_socket — these don't
+need polkit authorization.
 """
 
 from __future__ import annotations
 
 import logging
+import os
 import shutil
 import subprocess
 import time
@@ -18,6 +24,14 @@ from typing import Optional
 logger = logging.getLogger(__name__)
 
 _BLUETOOTHCTL = None
+_HELPER = "/usr/local/bin/meetingbox-bluetooth"
+
+# Cache the last explicitly-set power state for a short window so
+# _load_radio_states() re-reads don't race against BlueZ propagation
+# and flip the toggle back immediately after the user changed it.
+_cached_power_state: Optional[bool] = None
+_cached_power_time: float = 0.0
+_CACHE_TTL = 12.0  # seconds
 
 
 def _bt() -> Optional[str]:
@@ -29,6 +43,21 @@ def _bt() -> Optional[str]:
 
 def has_bluetoothctl() -> bool:
     return _bt() is not None
+
+
+def _run_helper(args: list[str], timeout: float = 12) -> subprocess.CompletedProcess:
+    """Run bluetoothctl via the nsenter helper script as root (sudo -n sh helper ...)."""
+    sudo = shutil.which("sudo")
+    if not sudo:
+        return subprocess.CompletedProcess(args, 1, "", "sudo not found")
+    if not os.path.exists(_HELPER):
+        return subprocess.CompletedProcess(args, 1, "", f"helper not found: {_HELPER}")
+    return subprocess.run(
+        [sudo, "-n", "sh", _HELPER, *args],
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+    )
 
 
 def _run(args: list[str], timeout: float = 15, allow_sudo: bool = False) -> subprocess.CompletedProcess:
@@ -121,23 +150,47 @@ def _rfkill_run(args: list[str], timeout: float = 8) -> subprocess.CompletedProc
 
 
 def get_power_state() -> Optional[bool]:
-    """Return True if Bluetooth adapter is powered on, False if off, None if unknown."""
-    bt = _bt()
-    if not bt:
-        return None
-    # bluetoothctl show prints "Powered: yes" or "Powered: no"
+    """Return True if Bluetooth adapter is powered on, False if off, None if unknown.
+
+    Returns the cached value for _CACHE_TTL seconds after set_power() is called
+    to prevent race conditions where _load_radio_states() re-reads an outdated
+    BlueZ state and flips the toggle back.
+
+    Uses the nsenter helper for live reads so the result reflects the host adapter.
+    """
+    # Return cached state if set recently (avoids flip-back on quick re-entry)
+    if _cached_power_state is not None and (time.time() - _cached_power_time) < _CACHE_TTL:
+        logger.debug("get_power_state: using cached %s", _cached_power_state)
+        return _cached_power_state
+
+    # Primary: query via helper (nsenter → host bluetoothctl show)
     try:
-        r = subprocess.run([bt, "show"], capture_output=True, text=True, timeout=6)
+        r = _run_helper(["show"], timeout=8)
         for line in (r.stdout or "").splitlines():
             s = line.strip().lower()
             if s.startswith("powered:"):
-                return "yes" in s
-    except Exception:
-        pass
-    # Fallback: rfkill list
+                state = "yes" in s
+                logger.debug("get_power_state via helper: %s", state)
+                return state
+    except Exception as e:
+        logger.debug("get_power_state helper failed: %s", e)
+
+    # Fallback: direct bluetoothctl show in container (may work via D-Bus socket)
+    bt = _bt()
+    if bt:
+        try:
+            r2 = subprocess.run([bt, "show"], capture_output=True, text=True, timeout=6)
+            for line in (r2.stdout or "").splitlines():
+                s = line.strip().lower()
+                if s.startswith("powered:"):
+                    return "yes" in s
+        except Exception:
+            pass
+
+    # Last resort: rfkill
     try:
-        r2 = _rfkill_run(["list", "bluetooth"])
-        for line in (r2.stdout or "").splitlines():
+        r3 = _rfkill_run(["list", "bluetooth"])
+        for line in (r3.stdout or "").splitlines():
             s = line.strip().lower()
             if "soft blocked: yes" in s:
                 return False
@@ -148,41 +201,69 @@ def get_power_state() -> Optional[bool]:
     return None
 
 
-def set_power(enabled: bool) -> dict:
-    """Enable or disable Bluetooth via bluetoothctl running as root (sudo).
-    Root bypasses polkit — same pattern as nmcli for WiFi."""
-    bt = _bt()
-    if not bt:
-        return {"ok": False, "message": "bluetoothctl not found"}
-    arg = "on" if enabled else "off"
-    sudo = shutil.which("sudo")
+def _mark_power_cache(enabled: bool) -> None:
+    global _cached_power_state, _cached_power_time
+    _cached_power_state = enabled
+    _cached_power_time = time.time()
 
-    # Always try as root first — D-Bus socket is mounted, root bypasses polkit
-    if sudo:
+
+def set_power(enabled: bool) -> dict:
+    """Enable or disable Bluetooth using the nsenter helper script.
+
+    The helper runs bluetoothctl via nsenter into the host namespace so
+    polkit sees a native host process (root) — same pattern as WiFi nmcli.
+    """
+    arg = "on" if enabled else "off"
+
+    # Primary: nsenter helper (runs bluetoothctl in host context as root)
+    try:
+        r = _run_helper(["power", arg], timeout=12)
+        logger.info("set_power %s via helper: rc=%s stdout=%s stderr=%s",
+                    arg, r.returncode, (r.stdout or "").strip()[:120], (r.stderr or "").strip()[:120])
+        if r.returncode == 0:
+            _mark_power_cache(enabled)
+            return {"ok": True}
+        err_msg = (r.stdout or r.stderr or "").strip()[:400]
+        # sudo -n failing means sudoers entry is missing — report clearly
+        if "command not found in sudoers" in err_msg.lower() or "not allowed" in err_msg.lower():
+            return {"ok": False, "message": "Permission denied — rebuild container to apply sudoers update"}
+        # Don't give up yet; fall through to direct sudo
+        logger.warning("set_power helper rc=%s, trying direct sudo: %s", r.returncode, err_msg[:80])
+    except Exception as e:
+        logger.warning("set_power helper exception: %s", e)
+
+    # Fallback: direct sudo -n bluetoothctl power on/off (works if polkit accepts root via D-Bus)
+    bt = _bt()
+    sudo = shutil.which("sudo")
+    if bt and sudo:
         try:
-            r = subprocess.run(
+            r2 = subprocess.run(
                 [sudo, "-n", bt, "power", arg],
                 capture_output=True, text=True, timeout=10,
             )
-            out = (r.stdout or "").lower()
-            sudo_err = (r.stderr or "").lower()
-            # Check sudo itself didn't fail (password required)
+            sudo_err = (r2.stderr or "").lower()
             sudo_needs_pw = any(s in sudo_err for s in ("password is required", "no tty present", "sudo: a password"))
-            if not sudo_needs_pw:
-                logger.info("bluetoothctl power %s (sudo): rc=%s out=%s", arg, r.returncode, out.strip()[:80])
+            logger.info("set_power %s direct sudo: rc=%s needs_pw=%s", arg, r2.returncode, sudo_needs_pw)
+            if not sudo_needs_pw and r2.returncode == 0:
+                _mark_power_cache(enabled)
                 return {"ok": True}
+            if not sudo_needs_pw and r2.returncode != 0:
+                return {"ok": False, "message": (r2.stdout or r2.stderr or "bluetoothctl failed").strip()[:400]}
         except Exception as e:
-            logger.debug("bluetoothctl sudo failed: %s", e)
+            logger.debug("set_power direct sudo exception: %s", e)
 
-    # Fallback: try without sudo (may work if uiuser is in bluetooth group)
-    try:
-        r2 = subprocess.run([bt, "power", arg], capture_output=True, text=True, timeout=10)
-        logger.info("bluetoothctl power %s (no sudo): rc=%s", arg, r2.returncode)
-        if r2.returncode == 0:
-            return {"ok": True}
-        return {"ok": False, "message": (r2.stderr or r2.stdout or "Failed").strip()[:400]}
-    except Exception as e:
-        return {"ok": False, "message": str(e)[:400]}
+    # Last resort: no sudo
+    if bt:
+        try:
+            r3 = subprocess.run([bt, "power", arg], capture_output=True, text=True, timeout=10)
+            if r3.returncode == 0:
+                _mark_power_cache(enabled)
+                return {"ok": True}
+            return {"ok": False, "message": (r3.stderr or r3.stdout or "Failed").strip()[:400]}
+        except Exception as e:
+            return {"ok": False, "message": str(e)[:400]}
+
+    return {"ok": False, "message": "bluetoothctl not found"}
 
 
 def list_paired_devices() -> list[dict]:
