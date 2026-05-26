@@ -2319,24 +2319,26 @@ class MeetingBoxApp(App):
     # ------------------------------------------------------------------
 
     def _panel_touch_down(self, win, touch):
-        """Record touch if it starts in the top 40 px (swipe hotspot)."""
+        """Record touch if it starts in the top 80 px (swipe hotspot)."""
         if getattr(self, "quick_panel", None) and self.quick_panel._visible:
             return  # panel already open — let it handle its own touches
-        if touch.y >= win.height - 40:
+        # 80 px hotspot — generous enough for a physical touchscreen
+        if touch.y >= win.height - 80:
             self._swipe_start = (touch.x, touch.y)
         else:
             self._swipe_start = None
 
     def _panel_touch_move(self, win, touch):
-        """Open the quick panel when a tracked touch has moved >= 60 px down."""
+        """Open the quick panel when a tracked touch has moved >= 40 px down."""
         if not getattr(self, "quick_panel", None):
             return
         if self.quick_panel._visible:
             return
-        if self._swipe_start is None:
+        swipe_start = getattr(self, "_swipe_start", None)
+        if swipe_start is None:
             return
-        _, start_y = self._swipe_start
-        if start_y - touch.y >= 60:
+        _, start_y = swipe_start
+        if start_y - touch.y >= 40:
             self._swipe_start = None
             self.quick_panel.show()
 
