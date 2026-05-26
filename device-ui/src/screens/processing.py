@@ -19,11 +19,10 @@ Public API preserved for ``main.py`` to call:
 from __future__ import annotations
 
 import logging
-import math
 from typing import Optional
 
 from kivy.clock import Clock
-from kivy.graphics import Color, Line, PopMatrix, PushMatrix, Rectangle, Rotate, RoundedRectangle
+from kivy.graphics import Color, Line, Rectangle, RoundedRectangle
 from kivy.uix.anchorlayout import AnchorLayout
 from kivy.uix.behaviors import ButtonBehavior
 from kivy.uix.floatlayout import FloatLayout
@@ -36,23 +35,29 @@ from processing_layout import (
     BACK_BTN,
     BG_RGB,
     CHECK_BADGE,
-    COL_HINT,
     COL_MUTED,
     COL_WHITE,
     DOT_SEPARATOR,
     DURATION_FS_RATIO,
     DURATION_LABEL,
+    GLOW_OUTER,
     HEADLINE_BOTTOM,
     HEADLINE_FS_RATIO,
     HEADLINE_LABEL,
-    LISTENING_PILL,
     NOTIFY_BAR,
-    ORB_GLOW,
-    RING_GLOW,
-    RING_LIGHTEN,
     RING_OUTER,
     RING_SOLID,
     SETTINGS_BTN,
+    STAGE_ACTION_ITEMS_ICON,
+    STAGE_ACTION_ITEMS_LABEL,
+    STAGE_ACTION_ITEMS_STATUS,
+    STAGE_FS_RATIO,
+    STAGE_KEY_POINTS_ICON,
+    STAGE_KEY_POINTS_LABEL,
+    STAGE_KEY_POINTS_STATUS,
+    STAGE_SUMMARY_ICON,
+    STAGE_SUMMARY_LABEL,
+    STAGE_SUMMARY_STATUS,
     STEPS_CARD,
     SUBTITLE_BOTTOM,
     SUBTITLE_FS_RATIO,
@@ -80,23 +85,113 @@ class _ImgBtn(ButtonBehavior, Image):
     """Tappable PNG button."""
 
 
-class _RotatingImage(Image):
-    """Image that spins around its centre using a Rotate canvas instruction."""
+# Stage states for ``_StageRow``.
+_STAGE_PENDING = "pending"
+_STAGE_LOADING = "loading"
+_STAGE_DONE = "done"
+
+
+class _StageCard(Widget):
+    """Translucent glass card behind the three live stage rows."""
+
+    _FILL = (1.0, 1.0, 1.0, 0.05)
+    _BORDER = (1.0, 1.0, 1.0, 0.10)
+    _RADIUS = 28.0
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
-        with self.canvas.before:
-            PushMatrix()
-            self._rot = Rotate(angle=0, origin=self.center)
-        with self.canvas.after:
-            PopMatrix()
-        self.bind(pos=self._sync_origin, size=self._sync_origin)
+        with self.canvas:
+            Color(*self._FILL)
+            self._rect = RoundedRectangle(pos=self.pos, size=self.size, radius=[self._RADIUS])
+            Color(*self._BORDER)
+            self._line = Line(
+                rounded_rectangle=(self.x, self.y, self.width, self.height, self._RADIUS),
+                width=1.2,
+            )
+        self.bind(pos=self._sync, size=self._sync)
 
-    def _sync_origin(self, *_):
-        self._rot.origin = self.center
+    def _sync(self, *_):
+        self._rect.pos = self.pos
+        self._rect.size = self.size
+        self._rect.radius = [self._RADIUS]
+        self._line.rounded_rectangle = (self.x, self.y, self.width, self.height, self._RADIUS)
 
-    def set_angle(self, angle: float):
-        self._rot.angle = angle
+
+class _StageRow:
+    """Three-icon row: left icon + label + status (pending/loading/done).
+
+    Not a Widget — the three pieces are independent ``_canvas`` children
+    so they keep their Figma absolute positions. The class is just the
+    state machine that swaps the status icon source as the backend
+    pipeline progresses.
+    """
+
+    def __init__(
+        self,
+        *,
+        canvas_parent,
+        figma_dir,
+        icon_box: dict,
+        label_box: dict,
+        status_box: dict,
+        title: str,
+        left_icon: str,
+        fs_ratio: float,
+    ):
+        self._figma_dir = figma_dir
+        self._title = title
+
+        def _png(name: str) -> str:
+            p = figma_dir / name
+            return str(p) if p.is_file() else ""
+
+        self.icon = Image(
+            source=_png(left_icon),
+            allow_stretch=True, keep_ratio=True, fit_mode="contain",
+            **kivy_hints(icon_box),
+        )
+        self.label = Label(
+            text=title,
+            font_name=_FONT_BOLD,
+            bold=False,
+            color=COL_WHITE,
+            halign="left",
+            valign="middle",
+            markup=False,
+            shorten=True,
+            shorten_from="right",
+            max_lines=1,
+            **kivy_hints(label_box),
+        )
+        self.label.bind(size=self.label.setter("text_size"))
+        self.label._fs_ratio = fs_ratio  # noqa: SLF001
+        self.status = Image(
+            source=_png("icon_step_pending.png"),
+            allow_stretch=True, keep_ratio=True, fit_mode="contain",
+            **kivy_hints(status_box),
+        )
+        self._png_pending = _png("icon_step_pending.png")
+        self._png_loading = _png("icon_loading.png") or _png("icon_step_pending.png")
+        self._png_done = _png("icon_step_done.png") or _png("icon_check_tick.png")
+        self._state = _STAGE_PENDING
+
+        canvas_parent.add_widget(self.icon)
+        canvas_parent.add_widget(self.label)
+        canvas_parent.add_widget(self.status)
+
+    def set_state(self, state: str) -> None:
+        if state == self._state:
+            return
+        if state == _STAGE_LOADING:
+            self.status.source = self._png_loading
+            self.label.color = COL_WHITE
+        elif state == _STAGE_DONE:
+            self.status.source = self._png_done
+            self.label.color = COL_WHITE
+        else:
+            self.status.source = self._png_pending
+            self.label.color = COL_MUTED
+        self._state = state
 
 
 class _ViewSummaryButton(ButtonBehavior, Widget):
@@ -177,10 +272,17 @@ class ProcessingScreen(BaseScreen):
         self._transcript_ready = False
         self._failed_summary_message = ""
 
-        self._spin_event = None
-        self._pulse_event = None
-        self._spin_angle = 0.0
-        self._pulse_t = 0.0
+        # Three live stage rows — populated in ``_build_ui`` and driven
+        # by ``on_backend_progress`` via ``_apply_stage``. The keys
+        # match the ``stage`` field the backend emits in events.
+        self._stage_rows: dict[str, _StageRow] = {}
+        # Stage order used to mark earlier stages as done when a later
+        # one arrives.
+        self._stage_order: tuple[str, ...] = (
+            "extracting_key_points",
+            "identifying_action_items",
+            "structuring_summary",
+        )
 
         self._build_ui()
 
@@ -200,17 +302,18 @@ class ProcessingScreen(BaseScreen):
         self._canvas = FloatLayout(size_hint=(None, None))
         anchor.add_widget(self._canvas)
 
-        # Centre orb — back-to-front: outer glow, soft ring, lighten ring,
-        # solid bright ring, outer rim highlight (rotating).
-        self.glow_orb = self._add_image("orb_glow.png", ORB_GLOW)
-        self._add_image("ring_glow.png", RING_GLOW)
-        self._add_image("ring_lighten.png", RING_LIGHTEN)
+        # Centre orb — back-to-front: soft halo (single PNG with a real
+        # alpha gradient), the solid bright ring, then the outer rim
+        # highlight (now static — the previous spin animation is gone
+        # because the new Figma 397:261 design isn't rotating).
+        self.glow_orb = self._add_image("glow_orb_outer.png", GLOW_OUTER)
         self._add_image("ring_solid.png", RING_SOLID)
-        self.ring_outer = self._add_rotating_image("ring_outer.png", RING_OUTER)
+        self.ring_outer = self._add_image("ring_outer.png", RING_OUTER)
 
-        # Header — back button | listening pill | settings button
+        # Header — back button + settings button (the right-side
+        # "Listening" pill from the previous Figma version is removed
+        # per the 397:261 update).
         self._add_img_btn("btn_back.png", BACK_BTN, on_release=lambda *_: self._on_back())
-        self.listening_pill = self._add_image("listening_pill.png", LISTENING_PILL)
         self._add_img_btn("btn_settings.png", SETTINGS_BTN, on_release=lambda *_: self._on_settings())
 
         # "Recording complete" status row
@@ -256,9 +359,42 @@ class ProcessingScreen(BaseScreen):
             halign="left",
         )
 
-        # Right-side cards (composite PNGs — tappable so the user can open
-        # the summary/transcript when ready)
-        self._add_image("steps_card.png", STEPS_CARD)
+        # Right-side card — glass background + 3 live stage rows. The
+        # static ``steps_card.png`` composite is gone; instead each row
+        # is independently driven so we can show pending / loading /
+        # done state as the backend pipeline reports progress.
+        stage_card = _StageCard(**kivy_hints(STEPS_CARD))
+        self._canvas.add_widget(stage_card)
+        self._stage_rows = {
+            "extracting_key_points": _StageRow(
+                canvas_parent=self._canvas, figma_dir=_FIGMA,
+                icon_box=STAGE_KEY_POINTS_ICON,
+                label_box=STAGE_KEY_POINTS_LABEL,
+                status_box=STAGE_KEY_POINTS_STATUS,
+                title="Extracting key points",
+                left_icon="icon_edit_note.png",
+                fs_ratio=STAGE_FS_RATIO,
+            ),
+            "identifying_action_items": _StageRow(
+                canvas_parent=self._canvas, figma_dir=_FIGMA,
+                icon_box=STAGE_ACTION_ITEMS_ICON,
+                label_box=STAGE_ACTION_ITEMS_LABEL,
+                status_box=STAGE_ACTION_ITEMS_STATUS,
+                title="Identifying action items",
+                left_icon="icon_tick_circle.png",
+                fs_ratio=STAGE_FS_RATIO,
+            ),
+            "structuring_summary": _StageRow(
+                canvas_parent=self._canvas, figma_dir=_FIGMA,
+                icon_box=STAGE_SUMMARY_ICON,
+                label_box=STAGE_SUMMARY_LABEL,
+                status_box=STAGE_SUMMARY_STATUS,
+                title="Structuring summary",
+                left_icon="icon_soundwave.png",
+                fs_ratio=STAGE_FS_RATIO,
+            ),
+        }
+
         self.notify_pill = self._add_img_btn(
             "notify_bar.png", NOTIFY_BAR, on_release=lambda *_: self._open_summary()
         )
@@ -284,20 +420,6 @@ class ProcessingScreen(BaseScreen):
         if not src:
             return None
         img = Image(
-            source=src,
-            allow_stretch=True,
-            keep_ratio=True,
-            fit_mode="contain",
-            **kivy_hints(box),
-        )
-        self._canvas.add_widget(img)
-        return img
-
-    def _add_rotating_image(self, filename: str, box: dict) -> _RotatingImage | None:
-        src = _png(filename)
-        if not src:
-            return None
-        img = _RotatingImage(
             source=src,
             allow_stretch=True,
             keep_ratio=True,
@@ -372,6 +494,8 @@ class ProcessingScreen(BaseScreen):
         ):
             if lbl is not None:
                 lbl.font_size = font_px(lbl._fs_ratio, h)  # noqa: SLF001
+        for row in getattr(self, "_stage_rows", {}).values():
+            row.label.font_size = font_px(row.label._fs_ratio, h)  # noqa: SLF001
         btn = getattr(self, "view_summary_btn", None)
         if btn is not None:
             btn._label.font_size = font_px(btn._fs_ratio, h)  # noqa: SLF001
@@ -388,6 +512,50 @@ class ProcessingScreen(BaseScreen):
         if pill is not None:
             pill.opacity = 0.0 if ready else 1.0
             pill.disabled = ready
+
+    def _summary_payload_ready(self) -> bool:
+        """Whether ``self._summary_data`` is actually complete enough to
+        render the summary screen — text + at least one of (action items,
+        decisions) + at least one topic. Used to gate the CTA so we only
+        flip the bright button once the data is genuinely there."""
+        data = self._summary_data or {}
+        text = (data.get("summary_text") or data.get("text") or "").strip()
+        if not text:
+            return False
+        topics = data.get("topics") or data.get("key_points") or []
+        actions = data.get("actions") or data.get("action_items") or []
+        decisions = data.get("decisions") or data.get("decisions_made") or []
+        return bool(topics) and bool(actions or decisions)
+
+    def _apply_stage(self, stage: str | None) -> None:
+        """Mark the row matching ``stage`` as loading and all previous
+        rows as done. Unknown / empty stages are ignored."""
+        rows = self._stage_rows
+        if not stage or stage not in rows:
+            return
+        order = self._stage_order
+        try:
+            idx = order.index(stage)
+        except ValueError:
+            return
+        for i, key in enumerate(order):
+            row = rows.get(key)
+            if row is None:
+                continue
+            if i < idx:
+                row.set_state(_STAGE_DONE)
+            elif i == idx:
+                row.set_state(_STAGE_LOADING)
+            else:
+                row.set_state(_STAGE_PENDING)
+
+    def _mark_all_stages_done(self) -> None:
+        for row in self._stage_rows.values():
+            row.set_state(_STAGE_DONE)
+
+    def _reset_stages(self) -> None:
+        for key, row in self._stage_rows.items():
+            row.set_state(_STAGE_LOADING if key == self._stage_order[0] else _STAGE_PENDING)
 
     # ------------------------------------------------------------- lifecycle
     def on_enter(self):
@@ -424,16 +592,19 @@ class ProcessingScreen(BaseScreen):
             self.subtitle_label.text = (
                 "Your meeting highlights, transcript, and action items are ready."
             )
+            self._mark_all_stages_done()
         elif self._failed_summary_message and self._transcript_ready:
             self.on_summary_failed(mid, self._failed_summary_message)
         elif self._transcript_ready:
             self.subtitle_label.text = "Transcription done. Building meeting report..."
+            self._reset_stages()
+        else:
+            self._reset_stages()
 
-        self._set_summary_cta_visible(self._summary_ready)
-        self._start_animations()
+        self._set_summary_cta_visible(self._summary_ready and self._summary_payload_ready())
 
     def on_leave(self):
-        self._stop_animations()
+        pass
 
     # ------------------------------------------------------------------
     # Public API — called from main.py WS dispatchers + summary poller
@@ -464,13 +635,25 @@ class ProcessingScreen(BaseScreen):
         except Exception:  # noqa: BLE001
             logger.debug("set_processing_status: subtitle update failed", exc_info=True)
 
-    def on_backend_progress(self, progress: int, status: str, eta: int):
-        """Drive the subtitle from a 0-100 progress value (visual step list
-        is baked into the Figma composite, so progress is reflected only in
-        the subtitle text)."""
+    def on_backend_progress(self, progress: int, status: str, eta: int, stage: str | None = None):
+        """Drive the subtitle from a 0-100 progress value and advance the
+        live stage rows when the backend reports a recognised stage."""
         del eta
         if status:
             self.set_processing_status(status)
+        if stage:
+            self._apply_stage(stage)
+        else:
+            # Some backend events still report progress without an
+            # explicit stage field — infer best-effort from progress.
+            if progress >= 95:
+                self._mark_all_stages_done()
+            elif progress >= 70:
+                self._apply_stage("structuring_summary")
+            elif progress >= 40:
+                self._apply_stage("identifying_action_items")
+            elif progress >= 10:
+                self._apply_stage("extracting_key_points")
 
     def on_transcription_ready(self, meeting_id: str):
         """Transcript saved server-side — summary is still being built."""
@@ -499,7 +682,12 @@ class ProcessingScreen(BaseScreen):
         self.subtitle_label.text = (
             "Your meeting highlights, transcript, and action items are ready."
         )
-        self._set_summary_cta_visible(True)
+        self._mark_all_stages_done()
+        # Only reveal the bright "View Meeting Summary" CTA once the
+        # payload actually contains enough data to populate the summary
+        # screen — otherwise the user can tap through to an empty page
+        # while the backend is still streaming fields in.
+        self._set_summary_cta_visible(self._summary_payload_ready())
 
     def on_summary_failed(self, meeting_id: str, detail: str):
         """Full report failed — keep transcript path usable."""
@@ -551,33 +739,5 @@ class ProcessingScreen(BaseScreen):
             return "--"
         return f"{m} min"
 
-    # ------------------------------------------------------------------
-    # Animations — outer ring spin + orb pulse
-    # ------------------------------------------------------------------
-
-    def _start_animations(self):
-        self._stop_animations()
-        self._spin_event = Clock.schedule_interval(self._tick_spin, 1.0 / 30.0)
-        self._pulse_event = Clock.schedule_interval(self._tick_pulse, 1.0 / 20.0)
-
-    def _stop_animations(self):
-        if self._spin_event:
-            self._spin_event.cancel()
-            self._spin_event = None
-        if self._pulse_event:
-            self._pulse_event.cancel()
-            self._pulse_event = None
-
-    def _tick_spin(self, dt: float):
-        # Rotate the outer rim at 360°/3s — slow enough to read as a soft scan.
-        self._spin_angle = (self._spin_angle - 360.0 * dt / 3.0) % 360.0
-        if self.ring_outer is not None:
-            self.ring_outer.set_angle(self._spin_angle)
-
-    def _tick_pulse(self, dt: float):
-        # Gentle opacity breathing on the orb glow (±7.5% over ~2 s).
-        if not hasattr(self, "glow_orb") or self.glow_orb is None:
-            return
-        self._pulse_t = (self._pulse_t + dt) % (2.0 * math.pi)
-        amp = 0.5 + 0.5 * math.sin(self._pulse_t * math.pi)
-        self.glow_orb.opacity = 0.85 + 0.15 * amp
+    # (Previous outer-ring spin and orb-pulse animations were removed
+    # because the new Figma 397:261 design has a static orb.)

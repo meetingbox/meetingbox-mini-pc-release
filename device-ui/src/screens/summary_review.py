@@ -28,6 +28,7 @@ Public API preserved for ``main.py`` + ``processing.py``:
 from __future__ import annotations
 
 import logging
+import re
 from datetime import datetime
 from typing import Optional
 
@@ -147,6 +148,58 @@ _TAB_LABELS = {
 def _png(name: str) -> str:
     p = _FIGMA / name
     return str(p) if p.is_file() else ""
+
+
+# Section markers emitted by the backend (``_compose_stored_report_body``)
+# and the Claude prompt. The device only renders the "overview" portion in
+# the AI Summary card, so the trailing ``DETAILED ACCOUNT`` / ``OPEN
+# QUESTIONS`` / ``RISKS / CONCERNS`` sections are stripped before display.
+# Mirrors ``frontend/src/utils/parseSummaryReport.ts``.
+_DETAILED_SPLIT = re.compile(
+    r"(?:^|\r?\n(?:\r?\n)?)\*{0,2}DETAILED ACCOUNT\*{0,2}\s*\r?\n",
+    re.IGNORECASE,
+)
+_OPEN_MARKER = re.compile(
+    r"\r?\n\r?\n(?:---\r?\n)?\*{0,2}OPEN QUESTIONS\*{0,2}\s*\r?\n",
+    re.IGNORECASE,
+)
+_RISKS_MARKER = re.compile(
+    r"\r?\n\r?\n(?:---\r?\n)?\*{0,2}RISKS\s*/\s*CONCERNS\*{0,2}\s*\r?\n",
+    re.IGNORECASE,
+)
+
+
+def _split_on_last_marker(text: str, marker: re.Pattern) -> tuple[str, str]:
+    last = None
+    for m in marker.finditer(text):
+        last = m
+    if last is None:
+        return text, ""
+    return text[: last.start()], text[last.end():]
+
+
+def _strip_summary_markers(full_text: str) -> str:
+    """Return only the narrative overview portion of a composed report.
+
+    The backend stores the AI summary as one long string containing
+    ``DETAILED ACCOUNT`` / ``OPEN QUESTIONS`` / ``RISKS / CONCERNS``
+    markers. The device's AI Summary card shows the overview narrative
+    only — everything after the first detail-account header (or any of
+    the trailing markers) is dropped. Also normalises stray surrounding
+    whitespace and collapses 3+ blank lines so the text reads cleanly.
+    """
+    t = (full_text or "").strip()
+    if not t:
+        return ""
+    before_risks, _ = _split_on_last_marker(t, _RISKS_MARKER)
+    before_open, _ = _split_on_last_marker(before_risks, _OPEN_MARKER)
+    m = _DETAILED_SPLIT.search(before_open)
+    if m is not None:
+        before_open = before_open[: m.start()]
+    out = before_open.strip()
+    # Collapse runs of 3+ blank lines to a single blank line.
+    out = re.sub(r"\n{3,}", "\n\n", out)
+    return out
 
 
 # ─────────────────────────────────────────────────────────────────────────
@@ -303,11 +356,17 @@ class _SidebarTab(ButtonBehavior, Widget):
 
 
 class _PlayRecordingPill(ButtonBehavior, Widget):
-    """Bottom-of-sidebar pill: ▶ Play Recording  + duration string."""
+    """Bottom-of-sidebar pill: ▶ Play Recording  + duration string.
+
+    Acts as a play/pause toggle button. The leading glyph swaps between
+    a play triangle (idle / paused) and two pause bars (playing). The
+    text label also updates to "Pause"/"Play Recording" based on state.
+    """
 
     def __init__(self, *, duration_text: str = "", fs_ratio: float = PLAY_RECORDING_FS_RATIO, **kwargs):
         super().__init__(**kwargs)
         self._fs_ratio = fs_ratio
+        self._is_playing = False
         with self.canvas.before:
             Color(*PLAY_FILL)
             self._rect = RoundedRectangle(
@@ -320,6 +379,11 @@ class _PlayRecordingPill(ButtonBehavior, Widget):
             )
             self._tri_color = Color(*ACCENT_BLUE)
             self._triangle = Triangle(points=[0, 0, 0, 0, 0, 0])
+            self._pause_color = Color(*ACCENT_BLUE)
+            # Two pause bars — drawn but kept zero-size while idle so
+            # only the triangle is visible.
+            self._pause_bar_l = Rectangle(pos=self.pos, size=(0, 0))
+            self._pause_bar_r = Rectangle(pos=self.pos, size=(0, 0))
         self._label_main = Label(
             text="Play Recording",
             color=COL_WHITE,
@@ -357,26 +421,47 @@ class _PlayRecordingPill(ButtonBehavior, Widget):
             self.height,
             PLAY_RADIUS,
         )
-        # Triangle play glyph on the left side
+        # Play triangle / pause bars on the left side. Only one of
+        # them is visible at any time (driven by ``set_playing``).
         tri_h = self.height * 0.4
         tri_w = tri_h * 0.85
         cx = self.x + max(16, self.width * 0.08)
         cy = self.y + self.height / 2
-        self._triangle.points = [
-            cx, cy + tri_h / 2,
-            cx, cy - tri_h / 2,
-            cx + tri_w, cy,
-        ]
-        # Labels
+        if self._is_playing:
+            self._triangle.points = [0, 0, 0, 0, 0, 0]
+            bar_w = tri_w * 0.35
+            gap = tri_w * 0.30
+            self._pause_bar_l.pos = (cx, cy - tri_h / 2)
+            self._pause_bar_l.size = (bar_w, tri_h)
+            self._pause_bar_r.pos = (cx + bar_w + gap, cy - tri_h / 2)
+            self._pause_bar_r.size = (bar_w, tri_h)
+        else:
+            self._triangle.points = [
+                cx, cy + tri_h / 2,
+                cx, cy - tri_h / 2,
+                cx + tri_w, cy,
+            ]
+            self._pause_bar_l.size = (0, 0)
+            self._pause_bar_r.size = (0, 0)
+        # Labels — give the main label more horizontal share so the
+        # full "Play Recording" / "Pause" text fits without ellipsising
+        # on the device. The duration string ("12:34") only needs ~35 %.
         label_x = cx + tri_w + 10
         label_w = self.width - (label_x - self.x) - 8
+        main_share = 0.66
         self._label_main.pos = (label_x, self.y)
-        self._label_main.size = (max(1, label_w * 0.6), self.height)
-        self._label_dur.pos = (label_x + label_w * 0.6, self.y)
-        self._label_dur.size = (max(1, label_w * 0.4) - 4, self.height)
+        self._label_main.size = (max(1, label_w * main_share), self.height)
+        self._label_dur.pos = (label_x + label_w * main_share, self.y)
+        self._label_dur.size = (max(1, label_w * (1.0 - main_share)) - 4, self.height)
 
     def set_duration(self, text: str) -> None:
         self._label_dur.text = text or ""
+
+    def set_playing(self, playing: bool) -> None:
+        self._is_playing = bool(playing)
+        self._label_main.text = "Pause" if self._is_playing else "Play Recording"
+        # Re-layout the glyph to switch triangle ↔ pause bars.
+        self._sync()
 
 
 class _ProgressBar(Widget):
@@ -439,6 +524,76 @@ class _AccentLink(ButtonBehavior, Label):
         self.bind(size=self.setter("text_size"))
 
 
+class _ScrollText(ScrollView):
+    """Wrapping multi-line text label inside a vertical ScrollView.
+
+    Replaces the single ``Label`` previously used for the AI Summary
+    body — that label was hard-capped at ``max_lines=3`` so realistic
+    summaries truncated with an ellipsis on the device. The new
+    behaviour wraps the text to the card width and lets the user scroll
+    within the card when the body exceeds the visible height.
+
+    Public API:
+      * ``text`` property — set/get the body string.
+      * ``color`` property — text colour (passed through to the label).
+      * ``font_size`` property — kept for the resize loop. We treat the
+        ``_fs_ratio`` attribute the same way as other helpers do.
+    """
+
+    def __init__(self, *, fs_ratio: float, color, font_name: str, **kwargs):
+        super().__init__(
+            do_scroll_x=False, do_scroll_y=True,
+            bar_width=2, bar_color=(1, 1, 1, 0.25),
+            bar_inactive_color=(1, 1, 1, 0.10),
+            scroll_type=["bars", "content"],
+            **kwargs,
+        )
+        self._label = Label(
+            text="",
+            font_name=font_name,
+            color=color,
+            halign="left",
+            valign="top",
+            markup=False,
+            size_hint=(1, None),
+        )
+        self._fs_ratio = fs_ratio
+        self._label._fs_ratio = fs_ratio  # noqa: SLF001
+        self.add_widget(self._label)
+        self.bind(size=self._sync_width)
+        self._label.bind(texture_size=self._sync_height)
+
+    def _sync_width(self, *_args):
+        self._label.text_size = (self.width, None)
+
+    def _sync_height(self, *_args):
+        self._label.height = max(self._label.texture_size[1], self.height)
+
+    @property
+    def text(self) -> str:
+        return self._label.text
+
+    @text.setter
+    def text(self, value: str) -> None:
+        self._label.text = value or ""
+
+    @property
+    def color(self):
+        return self._label.color
+
+    @color.setter
+    def color(self, value):
+        self._label.color = value
+
+    @property
+    def font_size(self):
+        return self._label.font_size
+
+    @font_size.setter
+    def font_size(self, value):
+        self._label.font_size = value
+
+
 # ─────────────────────────────────────────────────────────────────────────
 # Screen
 # ─────────────────────────────────────────────────────────────────────────
@@ -457,6 +612,12 @@ class SummaryReviewScreen(BaseScreen):
         self._participant_count = 0
         self._attendees: list[str] = []
         self._action_items: list[dict] = []
+        # Agentic "follow-ups" — actions persisted in the backend
+        # ``actions`` table with stable IDs that can be executed via
+        # ``execute_action``. Fetched alongside the meeting detail and
+        # rendered as Send-email / Add-to-calendar rows in the Action
+        # Items tab.
+        self._agentic_actions: list[dict] = []
         self._decisions: list[str] = []
         self._topics: list[dict] = []
         self._sidebar_tabs: dict[str, _SidebarTab] = {}
@@ -525,7 +686,9 @@ class SummaryReviewScreen(BaseScreen):
             COL_MUTED,
             halign="left",
         )
-        self._add_image("chip_participants.png", META_PARTICIPANTS)
+        self._chip_participants_widget = self._add_image(
+            "chip_participants.png", META_PARTICIPANTS,
+        )
         self._add_image("chip_recorded.png", META_RECORDED)
         self._add_img_btn("btn_export.png", META_EXPORT, on_release=lambda *_: self._on_export())
         self._add_img_btn("btn_share.png", META_SHARE, on_release=lambda *_: self._on_share())
@@ -644,15 +807,15 @@ class SummaryReviewScreen(BaseScreen):
             OV_AI_CARD["w"] * CANVAS_W - 56.0,
             OV_AI_CARD["h"] * CANVAS_H - 72.0,
         )
-        self.ov_summary_text = self._make_label(
-            "—",
-            ai_body_box,
-            SECTION_BODY_FS_RATIO,
-            COL_HINT,
-            halign="left",
-            max_lines=3,
-            shorten=True,
+        # Multi-line wrapping + vertical scroll so realistic AI
+        # summaries don't get ellipsised at the previous 3-line cap.
+        self.ov_summary_text = _ScrollText(
+            fs_ratio=SECTION_BODY_FS_RATIO,
+            color=COL_HINT,
+            font_name=_FONT_BOLD,
+            **kivy_hints(ai_body_box),
         )
+        self._scaled_labels.append((self.ov_summary_text, SECTION_BODY_FS_RATIO))
         widgets.append(self.ov_summary_text)
 
         # ─ Key Topics card ─
@@ -823,10 +986,10 @@ class SummaryReviewScreen(BaseScreen):
             summary_text = (summary.get("summary") or "").strip()
         else:
             summary_text = (summary or "").strip()
+        summary_text = _strip_summary_markers(summary_text)
         self.ov_summary_text.text = summary_text or "Summary will appear here once processing finishes."
 
         topics = self._topics
-        placeholders = ("Product Strategy", "Engineering", "Marketing", "Operations")
         for i, row in enumerate(self._ov_key_topic_rows):
             if i < len(topics):
                 t = topics[i]
@@ -835,11 +998,16 @@ class SummaryReviewScreen(BaseScreen):
                 v = max(0, min(100, int(t.get("value", 0))))
                 row["pct"].text = f"{v}%"
                 row["bar"].set_value(v / 100.0)
+                row["bar"].opacity = 1.0
             else:
-                row["name"].text = placeholders[i]
-                row["name"].color = COL_HINT
-                row["pct"].text = "—"
+                # Hide unused topic slots — the previous placeholders
+                # ("Product Strategy", "Engineering", …) were dummy
+                # values that confused users into thinking the data had
+                # populated when it hadn't.
+                row["name"].text = ""
+                row["pct"].text = ""
                 row["bar"].set_value(0.0)
+                row["bar"].opacity = 0.0
 
         for i, row in enumerate(self._ov_action_rows):
             if i < len(self._action_items):
@@ -983,7 +1151,7 @@ class SummaryReviewScreen(BaseScreen):
             icon_filename="action_items_icon.png",
             title_text="Action Items",
         )
-        if not self._action_items:
+        if not self._action_items and not self._agentic_actions:
             container.add_widget(
                 self._make_row_label("No action items captured for this meeting.", color=COL_HINT)
             )
@@ -1026,7 +1194,106 @@ class SummaryReviewScreen(BaseScreen):
             mid.add_widget(sub)
             row.add_widget(mid)
             container.add_widget(row)
+
+        # ── Follow-ups sub-list ───────────────────────────────────
+        # Agentic actions persisted server-side with stable IDs are
+        # rendered below the LLM-extracted items, with per-row Send /
+        # Schedule buttons that auto-execute via the backend.
+        if self._agentic_actions:
+            container.add_widget(
+                self._make_row_label("Follow-ups", bold=True, color=COL_WHITE)
+            )
+            for action in self._agentic_actions:
+                container.add_widget(self._build_followup_row(action))
         return widgets
+
+    def _build_followup_row(self, action: dict) -> Widget:
+        """One Follow-ups row: title + sub + Send/Schedule pill button."""
+        from kivy.uix.button import Button
+
+        kind = (action.get("kind") or action.get("type") or "").strip().lower()
+        is_email = kind in {"followup_email", "email_draft", "email", "send_email"}
+        is_cal = kind in {
+            "schedule_followup", "calendar_invite", "calendar", "calendar_event", "schedule",
+        }
+        title = (
+            action.get("title")
+            or action.get("description")
+            or action.get("task")
+            or "Follow-up"
+        )
+        executed = bool(action.get("executed_at") or action.get("status") == "executed")
+
+        row = BoxLayout(
+            orientation="horizontal",
+            size_hint_y=None,
+            height=64,
+            padding=(4, 6, 4, 6),
+            spacing=10,
+        )
+        mid = BoxLayout(orientation="vertical", spacing=2)
+        mid.add_widget(self._make_row_label(str(title), bold=True, color=COL_WHITE))
+        sub_parts: list[str] = []
+        if is_email:
+            sub_parts.append("Email follow-up")
+        elif is_cal:
+            sub_parts.append("Calendar event")
+        else:
+            sub_parts.append("Task")
+        if executed:
+            sub_parts.append("Sent" if is_email else "Scheduled" if is_cal else "Done")
+        mid.add_widget(self._make_row_label("  ·  ".join(sub_parts), color=COL_HINT))
+        row.add_widget(mid)
+
+        if not executed and (is_email or is_cal):
+            btn_text = "Send" if is_email else "Add to calendar"
+            btn = Button(
+                text=btn_text,
+                size_hint=(None, None),
+                size=(160 if is_cal else 100, 40),
+                pos_hint={"center_y": 0.5},
+                background_normal="",
+                background_color=ACCENT_BLUE,
+                color=COL_WHITE,
+                font_name=_FONT_BOLD,
+                bold=True,
+            )
+            action_id = str(action.get("id") or "")
+            btn.bind(on_release=lambda _w, aid=action_id, b=btn: self._execute_followup(aid, b))
+            row.add_widget(btn)
+        return row
+
+    def _execute_followup(self, action_id: str, btn) -> None:
+        if not action_id:
+            return
+        try:
+            btn.disabled = True
+            btn.text = "Working…"
+        except Exception:  # noqa: BLE001
+            pass
+
+        async def _run():
+            try:
+                await self.backend.execute_action(action_id)
+                ok = True
+            except Exception:  # noqa: BLE001
+                logger.exception("execute_action failed")
+                ok = False
+
+            def _apply(_dt):
+                try:
+                    if ok:
+                        btn.text = "Done"
+                        btn.background_color = (0.16, 0.66, 0.30, 1)
+                    else:
+                        btn.text = "Retry"
+                        btn.disabled = False
+                except Exception:  # noqa: BLE001
+                    pass
+
+            Clock.schedule_once(_apply, 0)
+
+        run_async(_run())
 
     def _build_decisions_full(self) -> list[Widget]:
         widgets, _scroll, container = self._build_full_card(
@@ -1206,6 +1473,10 @@ class SummaryReviewScreen(BaseScreen):
             shorten=shorten,
             shorten_from="right",
             max_lines=max_lines,
+            # ``font_hinting='light'`` + ``font_kerning=True`` give
+            # noticeably crisper glyph edges on the device's screen.
+            font_hinting="light",
+            font_kerning=True,
             **kivy_hints(box),
         )
         lbl.bind(size=lbl.setter("text_size"))
@@ -1242,7 +1513,17 @@ class SummaryReviewScreen(BaseScreen):
         self._apply_local_data()
 
     def on_leave(self):
-        pass
+        # Stop any in-flight audio playback so it doesn't keep
+        # playing on the home screen / settings / etc.
+        sound = getattr(self, "_audio_sound", None)
+        if sound is not None:
+            try:
+                sound.stop()
+            except Exception:  # noqa: BLE001
+                pass
+            self._audio_sound = None
+        if hasattr(self, "play_pill") and self.play_pill is not None:
+            self.play_pill.set_playing(False)
 
     # ------------------------------------------------------------------
     # Data binding
@@ -1287,6 +1568,10 @@ class SummaryReviewScreen(BaseScreen):
 
         # Topics
         self._topics = list(self._coerce_topics(data.get("topics") or []))
+
+        # Toggle Participants chip + sidebar tab now that we know
+        # whether the merged data actually contains diarization info.
+        self._apply_participants_visibility()
 
         # Refresh the on-screen content. Overview widgets are already built
         # (they're created once in __init__) so we update their labels
@@ -1353,6 +1638,20 @@ class SummaryReviewScreen(BaseScreen):
                 return
             if not isinstance(detail, dict):
                 return
+            # Fetch persisted agentic actions in parallel — these are
+            # the only items that can be auto-executed (each has a
+            # stable id that ``execute_action`` accepts). Failures are
+            # non-fatal; the action items tab simply doesn't show the
+            # follow-up sub-list when this list is empty.
+            try:
+                actions = await self.backend.get_actions(self.meeting_id)
+                if isinstance(actions, list):
+                    self._agentic_actions = [
+                        a for a in actions if isinstance(a, dict) and a.get("id")
+                    ]
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("get_actions failed: %s", exc)
+                self._agentic_actions = []
             self._segments = list(detail.get("segments") or [])
             # The flattened detail merges meeting + summary fields, but the
             # summary block may also live under .summary. Try both shapes.
@@ -1425,7 +1724,15 @@ class SummaryReviewScreen(BaseScreen):
                 yield {"name": t.strip(), "value": 0}
 
     def _resolve_participants(self) -> list[str]:
-        """Best-effort participant list from the merged meeting data."""
+        """Real participants from diarization or attendees only.
+
+        We deliberately do NOT fall back to action-item assignees here:
+        action-item assignees are who is responsible for a task, not
+        who spoke in the meeting. Showing assignees as "participants"
+        was misleading the user. The Participants tab/chip is now only
+        shown when diarization or an attendee list is actually present
+        (see :meth:`_has_diarization`).
+        """
         data = self._summary_data or {}
         attendees = data.get("attendees")
         if isinstance(attendees, list):
@@ -1439,15 +1746,54 @@ class SummaryReviewScreen(BaseScreen):
                     names.append(n)
             if names:
                 return names
-        # Fallback: distinct action-item assignees
+        # Diarization: distinct non-empty speaker labels in segments
         seen: set[str] = set()
         out: list[str] = []
-        for ai in self._action_items:
-            a = (ai.get("assignee") or "").strip()
-            if a and a.lower() not in seen:
-                seen.add(a.lower())
-                out.append(a)
+        for seg in self._segments:
+            spk = (seg.get("speaker_id") or "")
+            if isinstance(spk, str) and spk.strip():
+                key = spk.strip()
+                if key.lower() not in seen:
+                    seen.add(key.lower())
+                    out.append(key)
         return out
+
+    def _has_diarization(self) -> bool:
+        """Whether we have enough data to populate the Participants tab.
+
+        True only if either:
+          * the merged summary data contains an attendee/speaker list, or
+          * any transcript segment carries a non-empty ``speaker_id``.
+        """
+        data = self._summary_data or {}
+        attendees = data.get("attendees")
+        if isinstance(attendees, list) and attendees:
+            return True
+        speakers = data.get("speakers")
+        if isinstance(speakers, list) and speakers:
+            return True
+        for seg in self._segments:
+            spk = seg.get("speaker_id")
+            if isinstance(spk, str) and spk.strip():
+                return True
+        return False
+
+    def _apply_participants_visibility(self) -> None:
+        """Hide the Participants chip + sidebar tab when there's no
+        diarization data, otherwise show them. Called from
+        ``_apply_local_data`` after the merged data lands."""
+        visible = self._has_diarization()
+        chip = getattr(self, "_chip_participants_widget", None)
+        if chip is not None:
+            chip.opacity = 1.0 if visible else 0.0
+        tab = self._sidebar_tabs.get("participants")
+        if tab is not None:
+            tab.opacity = 1.0 if visible else 0.0
+            tab.disabled = not visible
+        # If the user is currently on the Participants tab and we just
+        # hid it, fall back to Overview.
+        if not visible and self._active_tab == "participants":
+            self._show_tab("overview")
 
     # ------------------------------------------------------------------
     # Formatting helpers
@@ -1511,7 +1857,65 @@ class SummaryReviewScreen(BaseScreen):
         logger.info("Share pressed for meeting %s", self.meeting_id)
 
     def _on_play_recording(self):
-        logger.info("Play Recording pressed for meeting %s", self.meeting_id)
+        """Toggle audio playback of the meeting's saved recording.
+
+        Streams the audio file from the backend to a temp file on first
+        press, then loads it with Kivy's ``SoundLoader`` and toggles
+        play/pause on subsequent presses. The pill's glyph + text are
+        kept in sync via ``_PlayRecordingPill.set_playing``.
+        """
+        if not self.meeting_id:
+            logger.info("Play Recording pressed without a meeting id")
+            return
+        sound = getattr(self, "_audio_sound", None)
+        if sound is not None:
+            try:
+                if sound.state == "play":
+                    sound.stop()
+                    self.play_pill.set_playing(False)
+                else:
+                    sound.play()
+                    self.play_pill.set_playing(True)
+            except Exception:  # noqa: BLE001
+                logger.exception("Audio toggle failed")
+            return
+        # First press — fetch the audio file in the background, then
+        # load + play it. Keep the pill in the "playing" state from the
+        # moment the user tapped so the UI feels responsive.
+        self.play_pill.set_playing(True)
+
+        async def _run():
+            import os
+            import tempfile
+
+            from kivy.core.audio import SoundLoader
+
+            tmp_dir = tempfile.gettempdir()
+            tmp_path = os.path.join(tmp_dir, f"meetingbox_{self.meeting_id}.audio")
+            try:
+                downloaded = await self.backend.download_meeting_audio(
+                    self.meeting_id, tmp_path
+                )
+            except Exception:  # noqa: BLE001
+                logger.exception("download_meeting_audio failed")
+                downloaded = None
+
+            def _apply(_dt):
+                if not downloaded:
+                    self.play_pill.set_playing(False)
+                    return
+                snd = SoundLoader.load(downloaded)
+                if snd is None:
+                    self.play_pill.set_playing(False)
+                    return
+                self._audio_sound = snd
+                # When playback finishes naturally, flip back to play.
+                snd.bind(on_stop=lambda *_: self.play_pill.set_playing(False))
+                snd.play()
+
+            Clock.schedule_once(_apply, 0)
+
+        run_async(_run())
 
     def _toggle_action(self, idx: int):
         if 0 <= idx < len(self._action_items):

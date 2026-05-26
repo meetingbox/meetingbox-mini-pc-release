@@ -59,8 +59,12 @@ BACK_BTN = canvas_box(24.013, 21.188, 76.278, 76.278)
 # + video icon + provider) and the top-right Listening pill have been removed
 # from the design.
 REC_DOT = canvas_box(124.305, 36.726, 19.776, 19.776)
-REC_LABEL = canvas_box(151.144, 29.663, 161.0, 34.0)
-STARTED_LABEL = canvas_box(124.305, 63.564, 189.0, 25.0)
+# Widened from Figma reference: 161 → 280 (REC_LABEL) and 189 → 300
+# (STARTED_LABEL) so that "Paused" / "Recording..." at 28 px bold and
+# "Started at 12:00 PM" at 21 px semibold fit cleanly without
+# ellipsizing on either the device or the static preview.
+REC_LABEL = canvas_box(151.144, 29.663, 280.0, 34.0)
+STARTED_LABEL = canvas_box(124.305, 63.564, 300.0, 25.0)
 
 # ── Frame 19 (centre graphic, 420×420 at 389,105) ─────────────────────────
 # Ellipse 18 strokes: dark/gradient sit at exact box; glow overflows by
@@ -96,6 +100,14 @@ STATUS = _f19(65.0, 346.0, 290.0, 34.0)
 BTN_PAUSE = canvas_box(146.906, 661.727, 101.704, 101.704)
 STOP_PILL = canvas_box(285.336, 666.726, 646.951, 101.704)
 BTN_SETTINGS = canvas_box(969.013, 661.726, 101.704, 101.704)
+
+# "Restart mic" recovery affordance — a small inline link near the
+# header status row that the user can tap when the mic silently dies
+# and the in-loop watchdog hasn't picked it up yet. Sized to a small
+# pill above the wavebar so it's always reachable without obscuring
+# the recording controls. (Coordinates are loose canvas placements,
+# not from Figma — Figma 863:626 doesn't include this recovery UI.)
+RESTART_MIC_BTN = canvas_box(1080.0, 21.188, 156.0, 56.0)
 
 # ── Typography (Figma px on 800-tall canvas) ──────────────────────────────
 TIMER_FS_RATIO = 35.0 / CANVAS_H

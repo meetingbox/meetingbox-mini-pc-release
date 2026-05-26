@@ -16,7 +16,7 @@ import random
 import time
 
 from kivy.clock import Clock
-from kivy.graphics import Color, Ellipse, Rectangle, RoundedRectangle
+from kivy.graphics import Color, Ellipse, Line, Rectangle, RoundedRectangle
 from kivy.uix.anchorlayout import AnchorLayout
 from kivy.uix.behaviors import ButtonBehavior
 from kivy.uix.floatlayout import FloatLayout
@@ -39,6 +39,7 @@ from frame19_layout import (
     REC_DOT,
     REC_LABEL,
     REC_LABEL_FS_RATIO,
+    RESTART_MIC_BTN,
     RIGHT_VEC,
     RING_DARK,
     RING_GLOW,
@@ -83,6 +84,58 @@ class _ImgBtn(ButtonBehavior, Image):
     """Tappable PNG button."""
 
 
+class _RestartMicButton(ButtonBehavior, Widget):
+    """Tappable text pill: 'Restart mic' (recovery affordance).
+
+    Drawn with Kivy primitives so we don't depend on a Figma export
+    — the recording screen's current Figma reference (863:626) doesn't
+    include this button (it's a recovery affordance for the case where
+    the in-process audio watchdog hasn't auto-healed yet).
+    """
+
+    _FILL = (1.0, 1.0, 1.0, 0.06)
+    _BORDER = (1.0, 1.0, 1.0, 0.18)
+    _RADIUS = 18.0
+
+    def __init__(self, *, fs_ratio: float, **kwargs):
+        super().__init__(**kwargs)
+        self._fs_ratio = fs_ratio
+        with self.canvas.before:
+            self._fill = Color(*self._FILL)
+            self._rect = RoundedRectangle(pos=self.pos, size=self.size, radius=[self._RADIUS])
+            self._border = Color(*self._BORDER)
+            self._line = Line(
+                rounded_rectangle=(self.x, self.y, self.width, self.height, self._RADIUS),
+                width=1.2,
+            )
+        self._label = Label(
+            text="Restart mic",
+            color=(1, 1, 1, 0.85),
+            font_name=_FONT_BOLD,
+            bold=True,
+            halign="center",
+            valign="middle",
+            size_hint=(1, 1),
+        )
+        self._label.bind(size=self._label.setter("text_size"))
+        self.add_widget(self._label)
+        self.bind(pos=self._sync, size=self._sync)
+
+    def _sync(self, *_):
+        self._rect.pos = self.pos
+        self._rect.size = self.size
+        self._rect.radius = [self._RADIUS]
+        self._line.rounded_rectangle = (self.x, self.y, self.width, self.height, self._RADIUS)
+        self._label.pos = self.pos
+        self._label.size = self.size
+
+    def on_press(self):
+        self._fill.rgba = (1.0, 1.0, 1.0, 0.14)
+
+    def on_release(self):
+        self._fill.rgba = self._FILL
+
+
 class _Wavebar(Widget):
     """Voice waveform indicator — Figma node ``863:561`` (Group 46).
 
@@ -97,6 +150,12 @@ class _Wavebar(Widget):
     pause / resume) so we never burn CPU when the screen is hidden.
     """
 
+    # Bars only "form" once incoming audio crosses this fraction of the
+    # 0-1 normalized level the mic publishes — below it the row collapses
+    # to a hairline. Tuned just above the mic's natural noise floor.
+    _SILENCE_THRESHOLD = 0.04
+    _FLAT_RATIO = 0.012   # bar height when silent (a 1-2 px hairline)
+
     def __init__(
         self,
         *,
@@ -109,11 +168,9 @@ class _Wavebar(Widget):
         self.n_bars = n_bars
         self._color_active = color
         self._color_idle = idle_color
-        self._bar_min_ratio = 0.10  # height when totally silent
         self._bar_max_ratio = 0.96  # height at peak voice
-        self._levels = [0.0] * n_bars
+        self._levels = [self._FLAT_RATIO] * n_bars
         self._latest_audio = 0.0
-        self._phase = 0.0
         self._anim_event: object | None = None
         self._is_active = False  # set by start_voice / stop_voice
         self._jitter = [random.uniform(0.65, 1.0) for _ in range(n_bars)]
@@ -156,32 +213,36 @@ class _Wavebar(Widget):
         self._color_inst.rgba = self._color_active
 
     def stop_voice(self) -> None:
-        """Indicate that recording is paused (dimmed colour, no audio decay)."""
+        """Indicate that recording is paused (dimmed colour, flat baseline)."""
         self._is_active = False
         self._latest_audio = 0.0
         self._color_inst.rgba = self._color_idle
 
     # ----- tick / draw -------------------------------------------------
     def _tick(self, dt: float) -> None:
-        self._phase += dt * 4.5
+        del dt
         n = self.n_bars
         if n <= 1:
             return
         centre = (n - 1) / 2.0
-        amp = self._latest_audio if self._is_active else 0.0
-        for i in range(n):
-            d = (i - centre) / centre  # -1..1
-            # Bell-shaped envelope — centre bars are loudest.
-            bell = max(0.0, math.cos(d * math.pi / 2.0))
-            # Gentle idle ripple so the screen never looks dead.
-            idle = 0.04 + 0.06 * math.sin(self._phase + i * 0.55)
-            voice = amp * (0.35 + 0.65 * bell) * self._jitter[i]
-            target = max(idle if self._is_active else 0.02, voice)
-            self._levels[i] += (target - self._levels[i]) * 0.4
+        voice_present = self._is_active and self._latest_audio > self._SILENCE_THRESHOLD
+        if voice_present:
+            amp = self._latest_audio
+            for i in range(n):
+                d = (i - centre) / centre  # -1..1
+                bell = max(0.0, math.cos(d * math.pi / 2.0))
+                voice = amp * (0.35 + 0.65 * bell) * self._jitter[i]
+                target = max(self._FLAT_RATIO, voice)
+                self._levels[i] += (target - self._levels[i]) * 0.4
+        else:
+            # No (or too-quiet) voice — collapse smoothly to a flat hairline.
+            for i in range(n):
+                self._levels[i] += (self._FLAT_RATIO - self._levels[i]) * 0.4
         # Audio decays if no fresh level arrives so the bars settle.
         self._latest_audio *= 0.93
-        # Reshuffle a couple of jitter weights each frame for organic look.
-        if random.random() < 0.18:
+        # Reshuffle a couple of jitter weights each frame for organic look
+        # (only matters while voice is present, but cheap to keep running).
+        if voice_present and random.random() < 0.18:
             idx = random.randrange(n)
             self._jitter[idx] = random.uniform(0.55, 1.0)
         self._redraw()
@@ -196,16 +257,110 @@ class _Wavebar(Widget):
         bar_w = max(1.0, (w * 0.45) / n)
         total_bars = bar_w * n
         gap = (w - total_bars) / max(1, n - 1)
-        max_h = h * self._bar_max_ratio
-        min_h = max(2.0, h * self._bar_min_ratio)
+        max_h_px = h * self._bar_max_ratio
         cy = self.y + h / 2.0
         radius = bar_w / 2.0
         for i, rect in enumerate(self._bars):
-            bar_h = min_h + (max_h - min_h) * self._levels[i]
+            # ``_levels[i]`` is already a 0-1 ratio of card height that
+            # collapses to ``_FLAT_RATIO`` in silence. Map to px and
+            # enforce a 2 px minimum so the hairline stays visible.
+            bar_h = max(2.0, max_h_px * self._levels[i])
             x = self.x + i * (bar_w + gap)
             rect.pos = (x, cy - bar_h / 2.0)
             rect.size = (bar_w, bar_h)
             rect.radius = [radius]
+
+
+class _TimerDigits(Widget):
+    """Steady ``HH : MM : SS`` display split into fixed-width cells.
+
+    The single-``Label`` approach jitters because proportional digit
+    widths in ``42dot-Sans`` differ a few pixels — ``halign="center"``
+    re-centres the entire string each tick and the row visibly shifts
+    as digits change. Splitting the string into 10 independent labels
+    (8 digit cells + 2 separator cells) anchors every glyph to its own
+    cell, so only the digit content updates while positions stay frozen.
+
+    Public API mimics ``Label``:
+      * ``set_text("HH : MM : SS")`` — accepts the formatted string,
+        keeps only the 8 digits and routes them into their cells.
+      * ``font_size`` property — settable from the screen's resize loop
+        so existing iteration code keeps working unchanged.
+    """
+
+    _DIGIT_W_RATIO = 0.085   # of TIMER box width per digit cell (8 of these)
+    _SEP_W_RATIO = 0.16      # per separator cell (2 of these) — sums to 1.0
+
+    def __init__(self, *, fs_ratio: float, color: tuple, bold: bool = True, **kwargs):
+        super().__init__(**kwargs)
+        self._fs_ratio = fs_ratio
+        self._color = color
+        self._bold = bold
+        self._digit_labels: list[Label] = []
+        self._sep_labels: list[Label] = []
+        for i in range(10):
+            is_sep = i in (2, 5)
+            lbl = Label(
+                text=":" if is_sep else "0",
+                font_name=_FONT_BOLD,
+                bold=bold,
+                color=color,
+                halign="center",
+                valign="middle",
+                markup=False,
+                size_hint=(None, None),
+            )
+            lbl.bind(size=lbl.setter("text_size"))
+            self.add_widget(lbl)
+            (self._sep_labels if is_sep else self._digit_labels).append(lbl)
+        self.bind(pos=self._sync_cells, size=self._sync_cells)
+
+    def _sync_cells(self, *_args):
+        x, y = self.pos
+        w, h = self.size
+        if w <= 0 or h <= 0:
+            return
+        digit_w = w * self._DIGIT_W_RATIO
+        sep_w = w * self._SEP_W_RATIO
+        cells: list[tuple[float, float]] = []
+        cx = x
+        for i in range(10):
+            cw = sep_w if i in (2, 5) else digit_w
+            cells.append((cx, cw))
+            cx += cw
+        leftover = w - (cx - x)
+        if abs(leftover) > 0.5:
+            pad = leftover / 2.0
+            cells = [(c[0] + pad, c[1]) for c in cells]
+        d_idx = 0
+        s_idx = 0
+        for i, (lx, lw) in enumerate(cells):
+            if i in (2, 5):
+                lbl = self._sep_labels[s_idx]
+                s_idx += 1
+            else:
+                lbl = self._digit_labels[d_idx]
+                d_idx += 1
+            lbl.size = (lw, h)
+            lbl.pos = (lx, y)
+
+    def set_text(self, hms: str) -> None:
+        digits = [c for c in (hms or "") if c.isdigit()]
+        if len(digits) < 8:
+            digits = ["0"] * (8 - len(digits)) + digits
+        elif len(digits) > 8:
+            digits = digits[-8:]
+        for i, d in enumerate(digits):
+            self._digit_labels[i].text = d
+
+    @property
+    def font_size(self) -> float:
+        return self._digit_labels[0].font_size if self._digit_labels else 0
+
+    @font_size.setter
+    def font_size(self, value: float) -> None:
+        for lbl in self._digit_labels + self._sep_labels:
+            lbl.font_size = value
 
 
 class _StatusDot(Widget):
@@ -214,24 +369,63 @@ class _StatusDot(Widget):
     The Figma export `icon_rec_dot_red.png` is a solid-black bitmap (the
     red colour was lost in the export pipeline), so the dot is drawn here
     with `Color` + `Ellipse` instead. Two colours: red while recording,
-    grey while paused — toggled via :meth:`set_recording`.
+    grey while paused — toggled via :meth:`set_recording`. When in the
+    recording state the alpha breathes between ~0.45 and 1.0 on a ~1.2 s
+    sine wave to give a smooth blink. The blink ticker is cancelled on
+    :meth:`stop_blink` so we don't burn CPU while the screen is hidden.
     """
+
+    _BLINK_PERIOD_S = 1.2
+    _BLINK_MIN_A = 0.45
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
-        self._active_color = COL_REC_DOT_RED
+        self._active_rgb = COL_REC_DOT_RED[:3]
         self._idle_color = COL_REC_DOT_GREY
+        self._is_recording = True
+        self._blink_event: object | None = None
+        self._blink_phase = 0.0
         with self.canvas:
-            self._color_inst = Color(*self._active_color)
+            self._color_inst = Color(*COL_REC_DOT_RED)
             self._ellipse = Ellipse(pos=self.pos, size=self.size)
         self.bind(pos=self._sync, size=self._sync)
+        self._start_blink()
 
     def _sync(self, *_args):
         self._ellipse.pos = self.pos
         self._ellipse.size = self.size
 
     def set_recording(self, active: bool) -> None:
-        self._color_inst.rgba = self._active_color if active else self._idle_color
+        self._is_recording = bool(active)
+        if self._is_recording:
+            self._color_inst.rgba = (*self._active_rgb, 1.0)
+            self._start_blink()
+        else:
+            self._stop_blink()
+            self._color_inst.rgba = self._idle_color
+
+    def _start_blink(self) -> None:
+        if self._blink_event is None:
+            self._blink_phase = 0.0
+            self._blink_event = Clock.schedule_interval(self._tick_blink, 1 / 30.0)
+
+    def _stop_blink(self) -> None:
+        if self._blink_event is not None:
+            self._blink_event.cancel()
+            self._blink_event = None
+
+    def _tick_blink(self, dt: float) -> None:
+        if not self._is_recording:
+            return
+        self._blink_phase = (self._blink_phase + dt) % self._BLINK_PERIOD_S
+        # eased sine between _BLINK_MIN_A and 1.0
+        s = 0.5 * (1.0 + math.sin(2.0 * math.pi * self._blink_phase / self._BLINK_PERIOD_S))
+        alpha = self._BLINK_MIN_A + (1.0 - self._BLINK_MIN_A) * s
+        self._color_inst.rgba = (*self._active_rgb, alpha)
+
+    def stop_blink(self) -> None:
+        """Cancel the blink ticker (call from screen on_leave)."""
+        self._stop_blink()
 
 
 class RecordingScreen(BaseScreen):
@@ -275,10 +469,14 @@ class RecordingScreen(BaseScreen):
         self.wavebar = _Wavebar(**kivy_hints(WAVEBAR))
         self._canvas.add_widget(self.wavebar)
 
-        # Timer + status caption (centred in Frame 19)
-        self.timer_label = self._add_label(
-            "00 : 00 : 00", TIMER, TIMER_FS_RATIO, COL_WHITE, bold=True,
+        # Timer + status caption (centred in Frame 19).
+        # ``_TimerDigits`` keeps the row from shaking as digit widths
+        # change between ticks (see class docstring for details).
+        self.timer_label = _TimerDigits(
+            fs_ratio=TIMER_FS_RATIO, color=COL_WHITE, bold=True, **kivy_hints(TIMER),
         )
+        self.timer_label._fs_ratio = TIMER_FS_RATIO  # noqa: SLF001 — resize hook
+        self._canvas.add_widget(self.timer_label)
         self.status_label = self._add_label(
             "Recording in progress", STATUS, STATUS_FS_RATIO, COL_MUTED, bold=True,
         )
@@ -304,6 +502,16 @@ class RecordingScreen(BaseScreen):
             BTN_SETTINGS,
             on_release=lambda *_: self.goto("settings", transition="slide_left"),
         )
+
+        # Recovery affordance: small text pill the user can tap when
+        # the mic silently dies and the in-process watchdog hasn't
+        # picked it up yet. Sized to a small box near the header.
+        self.restart_mic_btn = _RestartMicButton(
+            fs_ratio=REC_LABEL_FS_RATIO * 0.55,
+            **kivy_hints(RESTART_MIC_BTN),
+        )
+        self.restart_mic_btn.bind(on_release=lambda *_: self._on_restart_mic())
+        self._canvas.add_widget(self.restart_mic_btn)
 
         self.add_widget(self._root)
         Clock.schedule_once(lambda _dt: self._on_root_resize(self._root, self._root.size), 0)
@@ -385,7 +593,7 @@ class RecordingScreen(BaseScreen):
         self.elapsed_seconds = 0
         self._rec_base_elapsed = 0.0
         self._rec_active_start = time.monotonic()
-        self.timer_label.text = "00 : 00 : 00"
+        self.timer_label.set_text("00 : 00 : 00")
         self.status_label.text = "Recording in progress"
         self.rec_label.text = "Recording..."
         self.status_dot.set_recording(True)
@@ -405,6 +613,7 @@ class RecordingScreen(BaseScreen):
             self.timer_event.cancel()
             self.timer_event = None
         self.wavebar.stop()
+        self.status_dot.stop_blink()
 
     # ---------------------------------------------------------------- timer
     def _elapsed_from_monotonic(self) -> int:
@@ -414,7 +623,7 @@ class RecordingScreen(BaseScreen):
 
     def _tick_timer(self, _dt):
         self.elapsed_seconds = self._elapsed_from_monotonic()
-        self.timer_label.text = self._fmt_time(self.elapsed_seconds)
+        self.timer_label.set_text(self._fmt_time(self.elapsed_seconds))
 
     @staticmethod
     def _fmt_time(secs: int) -> str:
@@ -425,14 +634,59 @@ class RecordingScreen(BaseScreen):
 
     # ------------------------------------------------------------ pause/stop
     def _on_pause(self, _inst):
+        # Already paused? Tapping pause again is treated as "resume"
+        # without showing the modal (the modal was already dismissed by
+        # the user picking Continue/Stop the first time around).
         if self._is_paused:
             self.app.resume_recording()
-        else:
-            self.app.pause_recording()
+            return
+        # Pause audio immediately so the user isn't silently being
+        # recorded while they decide what to do, then offer the choice
+        # between continuing the same session or stopping it for good.
+        self.app.pause_recording()
+        self._open_pause_modal()
+
+    def _open_pause_modal(self) -> None:
+        from components.modal_dialog import ModalDialog
+
+        # ``on_touch_down`` on ModalDialog consumes any taps that don't
+        # land on its buttons, so the user is forced to pick Continue
+        # or Stop — the recording isn't left silently paused.
+        dialog = ModalDialog(
+            title="Recording paused",
+            message="Choose to continue the session or stop recording.",
+            confirm_text="Continue recording",
+            cancel_text="Stop recording",
+            on_confirm=self._resume_from_modal,
+            on_cancel=self._stop_from_modal,
+        )
+        self._root.add_widget(dialog)
+
+    def _resume_from_modal(self) -> None:
+        if self._is_paused:
+            self.app.resume_recording()
+
+    def _stop_from_modal(self) -> None:
+        logger.info(
+            "Stop recording chosen from pause modal (duration: %s)",
+            self._fmt_time(self.elapsed_seconds),
+        )
+        self.app.stop_recording()
 
     def _on_stop(self, _inst):
         logger.info("Stop recording pressed (duration: %s)", self._fmt_time(self.elapsed_seconds))
         self.app.stop_recording()
+
+    def _on_restart_mic(self) -> None:
+        """User tapped the recovery pill — ask the audio capture
+        process to tear down and reopen its PortAudio input stream
+        without dropping the current recording session.
+        """
+        logger.info("Restart mic pressed")
+        try:
+            self.app.restart_mic()
+        except Exception:  # noqa: BLE001
+            logger.exception("restart_mic failed")
 
     def on_paused(self):
         if self._is_paused:
