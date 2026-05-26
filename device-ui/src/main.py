@@ -54,6 +54,7 @@ from kivy.uix.screenmanager import (
 from kivy.clock import Clock
 from kivy.config import Config
 from kivy.uix.floatlayout import FloatLayout
+from kivy.uix.widget import Widget
 
 # All graphics Config.set() calls must happen BEFORE 'from kivy.core.window import Window'
 # because Window is instantiated at import time in Kivy.
@@ -1119,10 +1120,14 @@ class MeetingBoxApp(App):
             logger.exception("QuickPanel failed to load")
             self.quick_panel = None
 
-        # Swipe-down gesture detector (top 40 px hotspot)
-        self._swipe_start: tuple | None = None
-        Window.bind(on_touch_down=self._panel_touch_down)
-        Window.bind(on_touch_move=self._panel_touch_move)
+        # Swipe handle — thin bar at the very top of the screen.
+        # Added LAST so it is drawn and hit-tested before other widgets.
+        # Uses touch.grab() so it is coordinate-system-independent.
+        try:
+            _handle = _SwipeHandle(app=self)
+            self.root_layout.add_widget(_handle)
+        except Exception:
+            logger.exception("SwipeHandle failed to load")
 
         if SHOW_FPS:
             Clock.schedule_interval(self._log_fps, 1.0)
@@ -2314,33 +2319,8 @@ class MeetingBoxApp(App):
         self._persist_local_idle_timeout(value)
         self._reset_idle_timer()
 
-    # ------------------------------------------------------------------
-    # Quick-panel swipe gesture helpers
-    # ------------------------------------------------------------------
-
-    def _panel_touch_down(self, win, touch):
-        """Record touch if it starts in the top 80 px (swipe hotspot)."""
-        if getattr(self, "quick_panel", None) and self.quick_panel._visible:
-            return  # panel already open — let it handle its own touches
-        # 80 px hotspot — generous enough for a physical touchscreen
-        if touch.y >= win.height - 80:
-            self._swipe_start = (touch.x, touch.y)
-        else:
-            self._swipe_start = None
-
-    def _panel_touch_move(self, win, touch):
-        """Open the quick panel when a tracked touch has moved >= 40 px down."""
-        if not getattr(self, "quick_panel", None):
-            return
-        if self.quick_panel._visible:
-            return
-        swipe_start = getattr(self, "_swipe_start", None)
-        if swipe_start is None:
-            return
-        _, start_y = swipe_start
-        if start_y - touch.y >= 40:
-            self._swipe_start = None
-            self.quick_panel.show()
+    # _panel_touch_down / _panel_touch_move removed — gesture is now handled
+    # by the _SwipeHandle widget added to root_layout (see class below).
 
     def _reset_idle_timer(self, *_args):
         """Reset the idle countdown. Called on every touch.
@@ -4225,6 +4205,89 @@ class MeetingBoxApp(App):
 
     def _log_fps(self, _dt):
         logger.debug(f"FPS: {Clock.get_fps():.1f}")
+
+
+# ==================================================================
+# ==================================================================
+# SwipeHandle — dedicated widget that opens the QuickPanel
+# ==================================================================
+
+class _SwipeHandle(Widget):
+    """Invisible (but tappable) bar at the top of the screen.
+
+    A simple tap OR a short downward drag on this widget opens the
+    QuickPanel.  Using a real widget + touch.grab() is far more reliable
+    than Window-level coordinate math, which breaks when touchscreen
+    drivers use inverted or scaled Y axes.
+
+    Visual: a subtle white pill line (iOS-style pull handle) drawn in
+    the center of the bar so users can see where to interact.
+    """
+
+    _HANDLE_H = 22      # widget height in px
+    _DRAG_THRESHOLD = 8  # px of downward drag that triggers the panel
+
+    def __init__(self, app, **kwargs):
+        from kivy.graphics import Color, RoundedRectangle
+        kwargs.setdefault("size_hint", (1, None))
+        kwargs.setdefault("height", self._HANDLE_H)
+        kwargs.setdefault("pos_hint", {"top": 1})
+        super().__init__(**kwargs)
+        self._app = app
+        self._start_y: float | None = None
+
+        # Subtle pill indicator so users know this area is interactive
+        with self.canvas:
+            Color(1, 1, 1, 0.18)
+            self._pill = RoundedRectangle(radius=[3])
+        self.bind(pos=self._draw, size=self._draw)
+        self._draw()
+
+    def _draw(self, *_):
+        pw, ph = 36, 4
+        self._pill.pos = (self.center_x - pw / 2,
+                          self.y + (self.height - ph) / 2)
+        self._pill.size = (pw, ph)
+
+    # ------------------------------------------------------------------
+    # Touch handling
+    # ------------------------------------------------------------------
+
+    def on_touch_down(self, touch):
+        if not self.collide_point(*touch.pos):
+            return False
+        self._start_y = touch.y
+        touch.grab(self)
+        return True     # consume the touch so it doesn't fall through
+
+    def on_touch_move(self, touch):
+        if touch.grab_current is not self:
+            return False
+        if self._start_y is None:
+            return True
+        # Downward drag (in Kivy y=0 is bottom, so "down" = y decreases)
+        moved_down = self._start_y - touch.y
+        # Also handle inverted-Y touchscreens (y increases when moving down)
+        moved_any = abs(self._start_y - touch.y)
+        if moved_any >= self._DRAG_THRESHOLD:
+            self._open_panel()
+        return True
+
+    def on_touch_up(self, touch):
+        if touch.grab_current is not self:
+            return False
+        # Tap (very little movement) also opens the panel
+        if self._start_y is not None:
+            if abs(self._start_y - touch.y) < self._DRAG_THRESHOLD:
+                self._open_panel()
+        touch.ungrab(self)
+        self._start_y = None
+        return True
+
+    def _open_panel(self):
+        qp = getattr(self._app, "quick_panel", None)
+        if qp and not qp._visible:
+            qp.show()
 
 
 # ==================================================================
