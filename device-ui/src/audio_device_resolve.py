@@ -191,7 +191,18 @@ def resolve_audio_pair(sd=None) -> AudioDevicePair:
         pair.playback_name = f"(AUDIO_OUTPUT_DEVICE_NAME) {out_override}"
         logger.info("AudioPair: AUDIO_OUTPUT_DEVICE_NAME override → %s", out_override)
 
-    if not pair.capture and not pair.playback:
-        logger.debug("AudioPair: no USB device found — using system defaults")
+    # Always resolve to an explicit playback device.
+    # ALSA's "default" PCM uses dmix, which fails inside Docker containers
+    # ("unable to open slave"). Fall back to plughw:0,0 (first card, first
+    # device) which bypasses dmix and accesses hardware directly.
+    if not pair.playback:
+        fallback = (os.getenv("AUDIO_OUTPUT_FALLBACK_DEVICE") or "plughw:0,0").strip()
+        pair.playback = fallback
+        pair.playback_name = f"(fallback) {fallback}"
+        logger.info(
+            "AudioPair: no USB playback device found — using fallback %s "
+            "(ALSA default/dmix is broken in Docker; override with AUDIO_OUTPUT_DEVICE_NAME)",
+            fallback,
+        )
 
     return pair

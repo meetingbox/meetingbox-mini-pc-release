@@ -697,6 +697,7 @@ class MeetingBoxApp(App):
 
         # Voice UI / feedback
         self.root_layout = None
+        self._transcript_overlay = None
         self.voice_indicator = None
         self._voice_indicator_override = None
         self._voice_indicator_reset_ev = None
@@ -1088,6 +1089,14 @@ class MeetingBoxApp(App):
         # via their ``if not self.voice_indicator`` guards.
         self._sync_voice_assistant_state()
         self._refresh_voice_indicator()
+
+        # Transcript overlay — floats above everything, starts hidden.
+        try:
+            from components.transcription_overlay import TranscriptionOverlay
+            self._transcript_overlay = TranscriptionOverlay()
+            self.root_layout.add_widget(self._transcript_overlay)
+        except Exception:
+            logger.exception("TranscriptionOverlay failed to load")
 
         if SHOW_FPS:
             Clock.schedule_interval(self._log_fps, 1.0)
@@ -2922,6 +2931,9 @@ class MeetingBoxApp(App):
                     duration=None,
                 )
                 self._sync_voice_assistant_state()
+                # Clear previous session's transcript on new connection
+                if self._transcript_overlay is not None:
+                    self._transcript_overlay.clear_session()
 
             Clock.schedule_once(_ui, 0)
 
@@ -2939,6 +2951,35 @@ class MeetingBoxApp(App):
 
             Clock.schedule_once(_update_home, 0)
 
+        def _on_user_transcript(text: str) -> None:
+            overlay = self._transcript_overlay
+            if overlay is None:
+                return
+            msg_id = overlay.add_user_message(text)
+            if not overlay._dismissed:
+                overlay.show()
+            # Background thread: correct grammar, then update the bubble
+            _backend = BACKEND_URL
+            _token = tok
+
+            def _correct_and_update():
+                from api_client import correct_transcript_sync
+                corrected = correct_transcript_sync(_backend, _token, text)
+                if corrected and corrected != text:
+                    Clock.schedule_once(
+                        lambda _dt: overlay.update_user_message(msg_id, corrected), 0
+                    )
+
+            threading.Thread(target=_correct_and_update, daemon=True).start()
+
+        def _on_ai_transcript(text: str) -> None:
+            overlay = self._transcript_overlay
+            if overlay is None:
+                return
+            overlay.add_ai_message(text)
+            if not overlay._dismissed:
+                overlay.show()
+
         try:
             self._realtime_connected_ok = False
             self._realtime_session_start_monotonic = time.monotonic()
@@ -2954,6 +2995,8 @@ class MeetingBoxApp(App):
                 output_voice=rt_voice or None,
                 on_before_open_mic=_before_realtime_mic,
                 on_state_change=_on_rt_state,
+                on_user_transcript=_on_user_transcript,
+                on_ai_transcript=_on_ai_transcript,
             )
             self._sync_voice_assistant_state()
             self._realtime_voice_session.start()

@@ -266,6 +266,8 @@ class RealtimeVoiceSession:
         output_voice: str | None = None,
         on_before_open_mic=None,
         on_state_change=None,
+        on_user_transcript=None,
+        on_ai_transcript=None,
     ):
         self._client_secret = (client_secret or "").strip()
         self._model = (model or "").strip()
@@ -277,6 +279,8 @@ class RealtimeVoiceSession:
         self._on_device_navigate_cb = on_device_navigate
         self._on_before_open_mic_cb = on_before_open_mic
         self._on_state_change_cb = on_state_change
+        self._on_user_transcript_cb = on_user_transcript
+        self._on_ai_transcript_cb = on_ai_transcript
         self._output_voice = (
             (output_voice or "").strip().lower()
             or _REALTIME_OUTPUT_VOICE_FALLBACK
@@ -417,6 +421,16 @@ class RealtimeVoiceSession:
         if cb:
             Clock.schedule_once(lambda _dt: self._safe_call(cb, state), 0)
 
+    def _emit_user_transcript(self, text: str) -> None:
+        cb = self._on_user_transcript_cb
+        if cb and text:
+            Clock.schedule_once(lambda _dt: self._safe_call(cb, text), 0)
+
+    def _emit_ai_transcript(self, text: str) -> None:
+        cb = self._on_ai_transcript_cb
+        if cb and text:
+            Clock.schedule_once(lambda _dt: self._safe_call(cb, text), 0)
+
     def _emit_device_navigation(self, tool_output_json: str) -> None:
         cb = self._on_device_navigate_cb
         if not cb:
@@ -541,40 +555,28 @@ class RealtimeVoiceSession:
             return
         if not shutil.which("aplay"):
             return
+        # Priority: explicit env override → audio_pair auto-detect (USB or fallback)
         output_device = (os.getenv("AUDIO_OUTPUT_DEVICE") or "").strip()
+        if not output_device:
+            output_device = self._audio_pair.playback or ""
+            if output_device:
+                logger.info(
+                    "Realtime aplay: using auto-detected device %s (%s)",
+                    output_device,
+                    self._audio_pair.playback_name or output_device,
+                )
         cmd = [
             "aplay",
             "-q",
+            "-t", "raw",
+            "-f", "S16_LE",
+            "-r", str(_REALTIME_RATE),
+            "-c", "1",
+            "--buffer-time", _APLAY_BUFFER_TIME_US,
         ]
         if output_device:
-            cmd.extend(["-D", output_device])
-        cmd.extend(
-            [
-                "-t", "raw",
-                "-f", "S16_LE",
-                "-r", str(_REALTIME_RATE),
-                "-c", "1",
-                "--buffer-time", _APLAY_BUFFER_TIME_US,
-            ]
-        )
+            cmd += ["-D", output_device]
         try:
-            cmd = [
-                "aplay",
-                "-q",
-                "-t", "raw",
-                "-f", "S16_LE",
-                "-r", str(_REALTIME_RATE),
-                "-c", "1",
-                "--buffer-time", _APLAY_BUFFER_TIME_US,
-            ]
-            playback_device = self._audio_pair.playback
-            if playback_device:
-                cmd += ["-D", playback_device]
-                logger.info(
-                    "Realtime aplay: using output device %s (%s)",
-                    playback_device,
-                    self._audio_pair.playback_name or playback_device,
-                )
             self._aplay_proc = subprocess.Popen(
                 cmd,
                 stdin=subprocess.PIPE,
@@ -923,7 +925,7 @@ class RealtimeVoiceSession:
                     self._touch()
                     self._emit_state("thinking")
 
-                # ---- User transcript (logged for debugging) -----------
+                # ---- User transcript -----------
                 elif t in (
                     "conversation.item.input_audio_transcription.completed",
                     "input_audio_buffer.transcription.completed",
@@ -932,10 +934,31 @@ class RealtimeVoiceSession:
                     spoken = self._extract_transcript(msg)
                     if spoken:
                         logger.info("User said: %r", spoken)
-                    # End-of-session is now decided by the model via the
-                    # end_session tool (handled in _handle_response_done).
-                    # Server's create_response: true handles every other
-                    # user turn automatically — nothing else for us here.
+                        self._emit_user_transcript(spoken)
+                        # Client-side farewell fallback: if the transcript is
+                        # a clear goodbye phrase, close the session immediately
+                        # without waiting for the model to call end_session.
+                        # This ensures farewell always works even if the model
+                        # is busy with a slow tool call (e.g. mem0 rate-limit).
+                        if _is_farewell(spoken):
+                            logger.info(
+                                "Realtime: client-side farewell detected %r — closing.", spoken
+                            )
+                            self._user_ended = True
+                            self._stop.set()
+                            try:
+                                await ws.close()
+                            except Exception:
+                                pass
+                            break
+
+                # ---- AI audio transcript (text of what assistant said) ----
+                elif t == "response.audio_transcript.done":
+                    self._touch()
+                    ai_text = self._extract_transcript(msg)
+                    if ai_text:
+                        logger.info("AI said: %r", ai_text)
+                        self._emit_ai_transcript(ai_text)
 
                 # ---- Model response lifecycle -------------------------
                 elif t in ("response.created", "response.started"):
@@ -1028,11 +1051,12 @@ class RealtimeVoiceSession:
         session.created) with the client-only end_session tool.
 
         We override:
-          - input.turn_detection.eagerness = "high" (server default is
-            "low" for legacy hardware with no echo cancellation; with
-            external mic + AEC we want snappy end-of-turn detection).
           - input.transcription.model — enables a transcript stream of
-            user speech (also used as a fallback farewell heuristic).
+            user speech (used for farewell detection and the transcript
+            overlay). We do NOT override eagerness — the server deliberately
+            sets "low" for device hardware that lacks echo cancellation;
+            overriding to "high" caused speaker-echo false triggers and
+            mid-sentence self-interruptions.
           - tools — server tools + end_session.
 
         create_response and interrupt_response stay TRUE.
@@ -1047,12 +1071,6 @@ class RealtimeVoiceSession:
                         "input": {
                             "transcription": {
                                 "model": _DEFAULT_INPUT_TRANSCRIPTION_MODEL,
-                            },
-                            "turn_detection": {
-                                "type": "semantic_vad",
-                                "eagerness": "high",
-                                "create_response": True,
-                                "interrupt_response": True,
                             },
                         },
                     },

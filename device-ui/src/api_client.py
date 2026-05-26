@@ -292,6 +292,33 @@ def invoke_realtime_tool_sync(
         return json.dumps({"error": "invoke_failed", "detail": str(e)})
 
 
+def correct_transcript_sync(
+    base_url: str,
+    bearer_token: str,
+    text: str,
+    timeout: float = 10.0,
+) -> str:
+    """POST /api/voice/correct-text (blocking). Returns corrected text or original on failure."""
+    root = _strip_trailing_rest_api_path((base_url or "").strip().rstrip("/"))
+    tok = (bearer_token or "").strip()
+    if not root or not tok or not (text or "").strip():
+        return text
+    url = f"{root}/api/voice/correct-text"
+    try:
+        with httpx.Client(timeout=timeout) as client:
+            resp = client.post(
+                url,
+                json={"text": text.strip()},
+                headers={"Authorization": f"Bearer {tok}"},
+            )
+            resp.raise_for_status()
+            body = resp.json()
+        return body.get("corrected") or text
+    except Exception as exc:
+        logger.debug("correct_transcript_sync failed: %s", exc)
+        return text
+
+
 class BackendClient:
     """
     Client for MeetingBox backend API.
