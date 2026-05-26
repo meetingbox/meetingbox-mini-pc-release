@@ -644,6 +644,8 @@ class MeetingBoxApp(App):
         # event is missed while the processing screen is shown).
         self._summary_poll_meeting_id = None
         self._summary_poll_done = False
+        self._summary_auto_open_meeting_id = None
+        self._summary_auto_open_done = False
 
         # Transcript CTA fallback: enable "View Meeting Summary" when segments
         # exist in the API even if `transcription_complete` never hits the WS.
@@ -1670,6 +1672,8 @@ class MeetingBoxApp(App):
         self._transcription_done_for_session = None
         self._transcript_cta_satisfied_meeting_id = None
         self._transcript_cta_poll_meeting_id = None
+        self._summary_auto_open_meeting_id = None
+        self._summary_auto_open_done = False
         self.recording_state.update(active=True, paused=False, elapsed=0)
         self._reset_recording_elapsed_clock()
         Clock.schedule_once(lambda _: self._suspend_voice_assistant_for_recording(), 0)
@@ -1858,6 +1862,7 @@ class MeetingBoxApp(App):
             return
         if hasattr(processing, 'on_summary_ready'):
             processing.on_summary_ready(meeting_id, summary or {})
+        self._start_summary_auto_open(meeting_id, summary or {})
 
     def _show_processing_summary_failed(self, meeting_id: str, message: str):
         """Summary/report failed — still allow transcript-only review when available."""
@@ -1877,6 +1882,73 @@ class MeetingBoxApp(App):
             return
         if hasattr(processing, 'on_summary_failed'):
             processing.on_summary_failed(meeting_id, message or 'Report unavailable.')
+
+    def _start_summary_auto_open(self, meeting_id: str, fallback_summary: Optional[dict] = None):
+        """Open summary review automatically after the saved summary is fetchable.
+
+        The processing screen can receive a WS ``summary_complete`` event before
+        a later HTTP fetch has hydrated all fields used by the review screen.
+        This path verifies the API has a real summary body, passes that payload
+        into ``summary_review``, and only then navigates. The manual CTA remains
+        visible as a fallback if the user stays on the processing screen.
+        """
+        if not meeting_id:
+            return
+        if self._summary_auto_open_done and self._summary_auto_open_meeting_id == meeting_id:
+            return
+        self._summary_auto_open_meeting_id = meeting_id
+        run_async(self._auto_open_summary_when_ready(meeting_id, fallback_summary or {}))
+
+    async def _auto_open_summary_when_ready(self, meeting_id: str, fallback_summary: dict):
+        for attempt in range(12):  # up to ~12s; summary poll continues beyond this as fallback
+            if self._summary_auto_open_done or self._summary_auto_open_meeting_id != meeting_id:
+                return
+            summary = {}
+            try:
+                detail = await self.backend.get_meeting_detail(meeting_id)
+                summary = (detail or {}).get('summary') or {}
+            except Exception as e:
+                logger.debug(
+                    "Auto-open summary fetch attempt %d failed for %s: %s",
+                    attempt + 1, meeting_id, e,
+                )
+            if not self._summary_payload_has_text(summary):
+                summary = fallback_summary if self._summary_payload_has_text(fallback_summary) else {}
+            if self._summary_payload_has_text(summary):
+                Clock.schedule_once(
+                    lambda _dt, _mid=meeting_id, _s=summary:
+                        self._open_summary_review_when_current(_mid, _s),
+                    0,
+                )
+                return
+            await asyncio.sleep(1.0)
+
+    def _open_summary_review_when_current(self, meeting_id: str, summary: dict):
+        if self._summary_auto_open_done or self._summary_auto_open_meeting_id != meeting_id:
+            return
+        if not self._summary_payload_has_text(summary):
+            return
+        if self.screen_manager.current != 'processing':
+            logger.info(
+                "Summary ready for %s but current screen is %s; leaving manual CTA/cache in place",
+                meeting_id,
+                self.screen_manager.current,
+            )
+            return
+        try:
+            scr = self.screen_manager.get_screen('summary_review')
+        except Exception as e:
+            logger.warning("summary_review screen missing for auto-open: %s", e)
+            return
+        if hasattr(scr, 'set_meeting_data'):
+            try:
+                scr.set_meeting_data(meeting_id, summary or {})
+            except Exception as e:
+                logger.warning("auto-open set_meeting_data failed: %s", e)
+                return
+        self._summary_auto_open_done = True
+        logger.info("Auto-opening summary review for meeting %s", meeting_id)
+        self.goto_screen('summary_review', 'fade')
 
     def _start_summary_poll(self, meeting_id: str):
         """Kick off the HTTP fallback poll that watches for a saved summary.
