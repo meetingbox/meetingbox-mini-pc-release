@@ -202,6 +202,31 @@ def _strip_summary_markers(full_text: str) -> str:
     return out
 
 
+def _summary_card_text(full_text: str) -> str:
+    """Return text for the Overview AI Summary card.
+
+    Mirrors the web parser's section split. Prefer the leading overview
+    narrative when the model provides one, but fall back to the Detailed
+    account body when the report starts directly with ``DETAILED ACCOUNT``.
+    Without this fallback, short reports that only contain a detailed-account
+    section render as the empty "Summary will appear..." placeholder on device.
+    """
+    t = (full_text or "").strip()
+    if not t:
+        return ""
+    before_risks, _ = _split_on_last_marker(t, _RISKS_MARKER)
+    main_part, _ = _split_on_last_marker(before_risks, _OPEN_MARKER)
+    m = _DETAILED_SPLIT.search(main_part)
+    if m is None:
+        out = main_part.strip()
+    else:
+        overview = main_part[: m.start()].strip()
+        detailed = main_part[m.end():].strip()
+        out = overview or detailed
+    out = re.sub(r"\n{3,}", "\n\n", out)
+    return out
+
+
 # ─────────────────────────────────────────────────────────────────────────
 # Reusable widgets
 # ─────────────────────────────────────────────────────────────────────────
@@ -986,7 +1011,7 @@ class SummaryReviewScreen(BaseScreen):
             summary_text = (summary.get("summary") or "").strip()
         else:
             summary_text = (summary or "").strip()
-        summary_text = _strip_summary_markers(summary_text)
+        summary_text = _summary_card_text(summary_text)
         self.ov_summary_text.text = summary_text or "Summary will appear here once processing finishes."
 
         topics = self._topics
