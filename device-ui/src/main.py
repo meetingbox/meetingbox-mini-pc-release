@@ -3058,7 +3058,10 @@ class MeetingBoxApp(App):
             overlay = self._transcript_overlay
             if overlay is None:
                 return
-            # Re-use existing placeholder if we're mid-utterance (defensive)
+            # New utterance starts — reset the current bubble tracker so the
+            # next transcript event creates a fresh bubble (or updates the new
+            # placeholder), never the bubble from the previous utterance.
+            self._current_user_msg_id = None
             if not getattr(self, "_pending_user_msg_id", None):
                 self._pending_user_msg_id = overlay.add_user_message("…")
 
@@ -3067,15 +3070,30 @@ class MeetingBoxApp(App):
             if overlay is None:
                 return
             pending = getattr(self, "_pending_user_msg_id", None)
+            current = getattr(self, "_current_user_msg_id", None)
             if pending:
-                # Replace the "…" placeholder in place
+                # First transcript event for this utterance: replace the "…"
+                # placeholder and remember the bubble id for subsequent deltas.
                 overlay.update_user_message(pending, text)
                 msg_id = pending
+                self._pending_user_msg_id = None
+                self._current_user_msg_id = msg_id
+            elif current:
+                # Subsequent partial delta or the final .completed event:
+                # update the same bubble in place — never create a new one.
+                overlay.update_user_message(current, text)
+                msg_id = current
             else:
+                # No placeholder and no active bubble (e.g. speech_stopped
+                # never fired): create a fresh bubble and track it.
                 msg_id = overlay.add_user_message(text)
-            self._pending_user_msg_id = None
+                self._current_user_msg_id = msg_id
 
-            # Background thread: correct grammar, then update the bubble
+            # Grammar correction — run only on non-trivial text so we don't
+            # fire an API call for every tiny streaming fragment. The corrected
+            # text replaces the bubble once the background call returns.
+            if not text or len(text) < 4:
+                return
             _backend = BACKEND_URL
             _token = tok
 

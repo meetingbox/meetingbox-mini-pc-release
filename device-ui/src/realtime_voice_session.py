@@ -71,10 +71,14 @@ REALTIME_VOICE_IMPLEMENTED = True
 _REALTIME_WS_HOST = "api.openai.com"
 _REALTIME_RATE = 24000
 
-# Mic chunk duration. Smaller chunks let the server VAD see speech edges
-# sooner, which directly reduces the latency between user-stops and
-# response-starts. 5 ms = 240 bytes per chunk at 24 kHz mono PCM16.
-_APPEND_CHUNK_MS = 5
+# Mic chunk duration. Smaller chunks help the server VAD see speech edges
+# sooner, but 5 ms (200 callbacks/s at 48 kHz capture) overwhelms the
+# asyncio executor on this hardware and produces persistent PortAudio
+# `input overflow` warnings — dropped samples in the middle of a word
+# corrupt both STT and the speech-to-speech model's input. 20 ms is the
+# sweet spot: 50 callbacks/s sustains cleanly, while only adding ~15 ms
+# to the user-stop → response-start latency vs 5 ms.
+_APPEND_CHUNK_MS = 20
 
 # How often the mic pump polls the audio queue. Kept tight so the
 # event loop never sleeps long enough to delay a flush.
@@ -102,12 +106,8 @@ _REALTIME_OUTPUT_VOICE_FALLBACK = "marin"
 # (e.g. "alright thanks" -> "Aller"), at the cost of a small extra
 # latency that we hide behind the speech-stopped placeholder.
 _DEFAULT_INPUT_TRANSCRIPTION_MODEL = "gpt-4o-transcribe"
-_INPUT_TRANSCRIPTION_PROMPT = (
-    "Conversational English with a MeetingBox voice assistant. Common "
-    "phrases include: alright thanks, okay bye, thank you, goodbye, "
-    "see you later, that's all, yes please, no thanks, what's on my "
-    "calendar, show me my emails, schedule a meeting, set a reminder."
-)
+# Deliberately neutral — see server/web/routes/voice.py for the rationale.
+_INPUT_TRANSCRIPTION_PROMPT = "Conversational English."
 
 
 # ---------------------------------------------------------------------------
@@ -961,11 +961,21 @@ class RealtimeVoiceSession:
                     self._suppress_audio_until = (
                         time.monotonic() + _BARGE_IN_SUPPRESS_AUDIO_S
                     )
-                    # Drop the queued AEC far-end reference: the audio it
-                    # represents is no longer going to the speaker.
+                    # Trim — do NOT fully clear — the AEC far-end reference.
+                    # aplay still has ~70 ms buffered and the room contributes
+                    # ~50–150 ms of reflections, so the assistant's tail audio
+                    # keeps reaching the mic for a short while after we kill
+                    # playback. Fully clearing the reference leaves AEC with
+                    # nothing to subtract, and the user's barge-in mic frames
+                    # arrive contaminated with the assistant's own voice —
+                    # which then mistranscribes and biases the realtime model.
+                    # Retain ~300 ms of far-end so AEC keeps suppressing the
+                    # tail; older samples are discarded.
                     if self._aec is not None:
+                        retain_bytes = int(_REALTIME_RATE * 0.3) * 2  # 300 ms PCM16
                         with self._aec_buf_lock:
-                            self._aec_far_buf.clear()
+                            if len(self._aec_far_buf) > retain_bytes:
+                                del self._aec_far_buf[: len(self._aec_far_buf) - retain_bytes]
                     self._emit_state("listening")
 
                 elif t == "input_audio_buffer.speech_stopped":
