@@ -1,6 +1,7 @@
 import json
 import logging
 import os
+import sys
 import threading
 import time
 import uuid
@@ -12,7 +13,6 @@ from urllib import request as urlrequest
 
 import numpy as np
 import pyaudio
-import redis
 import webrtcvad
 import yaml
 
@@ -24,18 +24,21 @@ except ImportError:
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(name)s] %(levelname)s: %(message)s")
 logger = logging.getLogger("meetingbox.audio")
 
-REDIS_HOST = os.getenv("REDIS_HOST", "redis")
-REDIS_PORT = int(os.getenv("REDIS_PORT", "6379"))
 DEVICE_AUTH_TOKEN_FILE = os.getenv("DEVICE_AUTH_TOKEN_FILE", "/data/config/device_auth_token").strip()
 # Device identity (multi-device scoping). Set via the ``DEVICE_ID`` env
 # var or resolved at startup from ``/api/device/pairing-status`` using
-# the persisted device auth token. Commands without a ``device_id`` (or
-# whose ``device_id`` matches ours) are accepted; commands targeting a
-# different device are dropped so two paired mini-PCs sharing the same
-# Redis instance don't cross-trigger each other's recordings.
+# the persisted device auth token. Tagged on every emitted event so the
+# device-ui side can drop events meant for a different paired mini-PC
+# that happens to be sharing the same cloud backend.
 PAIRING_STATUS_URL = os.getenv(
     "PAIRING_STATUS_URL", "http://127.0.0.1:8000/api/device/pairing-status"
 ).strip()
+
+# Sentinel prefix used when writing events to stdout. The
+# ``audio_supervisor`` parent process scans stdout line-by-line and
+# routes any line starting with this prefix into the device-ui event
+# dispatcher; everything else is treated as regular log output.
+EVT_PREFIX = "MEETINGBOX_EVT|"
 
 
 def _load_device_auth_token() -> str:
@@ -56,7 +59,8 @@ def _load_device_auth_token() -> str:
 class AudioCaptureService:
   """
   Capture audio from the USB mic array, write it directly to a single WAV
-  file, and publish recording lifecycle events via Redis.
+  file, and emit recording lifecycle events to stdout (parsed by the
+  ``audio_supervisor`` running inside the device-ui process).
   """
 
   def __init__(self, config_path: str = "config.yaml") -> None:
@@ -79,14 +83,6 @@ class AudioCaptureService:
     self._wav_writer: wave.Wave_write | None = None
     self._last_level_emit_at = 0.0
     self.vad = webrtcvad.Vad(self.config["vad"]["aggressiveness"])
-
-    self.redis_client = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, decode_responses=True)
-    # Wrap ``publish`` so every event we publish on the ``events``
-    # channel carries this audio capture's ``device_id``. The
-    # device-ui side filters incoming events by ``device_id`` so two
-    # paired mini-PCs sharing a Redis don't see each other's
-    # recording lifecycle as their own.
-    self._inject_device_id_into_publish()
 
     storage_cfg = self.config.get("storage", {})
     self.temp_dir = Path(os.getenv("TEMP_SEGMENTS_DIR", storage_cfg.get("temp_dir", "/data/audio/temp")))
@@ -584,28 +580,11 @@ class AudioCaptureService:
       logger.exception("Failed to open microphone / WAV for session %s", session_id)
       return False
 
-    self.redis_client.publish(
-      "events",
-      json.dumps(
-        {
-          "type": "recording_started",
-          "session_id": session_id,
-          "timestamp": datetime.now().isoformat(),
-        }
-      ),
-    )
-
-    # let hardware service know (stubbed for now)
-    self.redis_client.publish(
-      "hardware_commands",
-      json.dumps(
-        {
-          "action": "update_display",
-          "state": "recording",
-          "session_id": session_id,
-        }
-      ),
-    )
+    self._emit_event({
+      "type": "recording_started",
+      "session_id": session_id,
+      "timestamp": datetime.now().isoformat(),
+    })
 
     logger.info("Recording started - session %s", session_id)
     return True
@@ -666,19 +645,14 @@ class AudioCaptureService:
   def stop_recording(self, session_id_from_command: str | None = None) -> str | None:
     if not self.is_recording:
       logger.warning("Not recording")
-      # Still publish so downstream can set recording_state back to idle
+      # Still emit so downstream can set recording_state back to idle
       sid = session_id_from_command or self.current_session_id
-      self.redis_client.publish(
-        "events",
-        json.dumps(
-          {
-            "type": "recording_stopped",
-            "session_id": sid,
-            "path": None,
-            "timestamp": datetime.now().isoformat(),
-          }
-        ),
-      )
+      self._emit_event({
+        "type": "recording_stopped",
+        "session_id": sid,
+        "path": None,
+        "timestamp": datetime.now().isoformat(),
+      })
       return None
 
     logger.info("Stopping recording - session %s", self.current_session_id)
@@ -714,30 +688,13 @@ class AudioCaptureService:
       uploaded = self._upload_recording_via_api(final_path, session_id)
 
     if attempted_upload and not uploaded:
-      self.redis_client.publish(
-        "events",
-        json.dumps(
-          {
-            "type": "error",
-            "error_type": "Upload Failed",
-            "message": "Could not upload audio for cloud transcription/summarization.",
-            "session_id": session_id,
-            "timestamp": datetime.now().isoformat(),
-          }
-        ),
-      )
-
-    # update hardware state
-    self.redis_client.publish(
-      "hardware_commands",
-      json.dumps(
-        {
-          "action": "update_display",
-          "state": "processing",
-          "session_id": session_id,
-        }
-      ),
-    )
+      self._emit_event({
+        "type": "error",
+        "error_type": "Upload Failed",
+        "message": "Could not upload audio for cloud transcription/summarization.",
+        "session_id": session_id,
+        "timestamp": datetime.now().isoformat(),
+      })
 
     self.current_session_id = None
     return session_id
@@ -785,16 +742,11 @@ class AudioCaptureService:
             level = min(1.0, rms / 5000.0)
           else:
             level = 0.0
-          self.redis_client.publish(
-            "events",
-            json.dumps(
-              {
-                "type": "mic_test_level",
-                "level": level,
-                "timestamp": datetime.now().isoformat(),
-              }
-            ),
-          )
+          self._emit_event({
+            "type": "mic_test_level",
+            "level": level,
+            "timestamp": datetime.now().isoformat(),
+          })
           self._last_level_emit_at = now
     except Exception:
       logger.exception("Error in mic test loop")
@@ -865,18 +817,6 @@ class AudioCaptureService:
       wf.setsampwidth(self.audio.get_sample_size(self.FORMAT))
       wf.setframerate(self.TARGET_RATE)
       wf.writeframes(audio_bytes)
-
-    self.redis_client.publish(
-      "audio_segments",
-      json.dumps(
-        {
-          "session_id": self.current_session_id,
-          "segment_num": segment_num,
-          "path": str(segment_path),
-          "timestamp": time.time(),
-        }
-      ),
-    )
 
     return segment_path
 
@@ -983,17 +923,12 @@ class AudioCaptureService:
             level = min(1.0, rms / 5000.0)
           else:
             level = 0.0
-          self.redis_client.publish(
-            "events",
-            json.dumps(
-              {
-                "type": "audio_level",
-                "session_id": self.current_session_id,
-                "level": level,
-                "timestamp": datetime.now().isoformat(),
-              }
-            ),
-          )
+          self._emit_event({
+            "type": "audio_level",
+            "session_id": self.current_session_id,
+            "level": level,
+            "timestamp": datetime.now().isoformat(),
+          })
           self._last_level_emit_at = now
 
         if not checked_audio:
@@ -1009,30 +944,6 @@ class AudioCaptureService:
       self.is_recording = False
       self.is_paused = False
 
-  def restart_mic(self) -> bool:
-    """Tear down + reopen the input stream while a recording is active.
-
-    Exposed as the ``restart_mic`` Redis command and (via main.py) as a
-    "Restart microphone" affordance on the recording screen so the user
-    has a path other than rebooting when the mic silently dies.
-    """
-    if not self.is_recording:
-      logger.info("restart_mic ignored — not currently recording")
-      return False
-    ok = self._reopen_capture_stream()
-    self.redis_client.publish(
-      "events",
-      json.dumps(
-        {
-          "type": "mic_restarted",
-          "session_id": self.current_session_id,
-          "ok": bool(ok),
-          "timestamp": datetime.now().isoformat(),
-        }
-      ),
-    )
-    return ok
-
   def pause_recording(self) -> bool:
     if not self.is_recording:
       logger.warning("Pause requested while not recording")
@@ -1040,27 +951,17 @@ class AudioCaptureService:
     if self.is_paused:
       return True
     self.is_paused = True
-    self.redis_client.publish(
-      "events",
-      json.dumps(
-        {
-          "type": "recording_paused",
-          "session_id": self.current_session_id,
-          "timestamp": datetime.now().isoformat(),
-        }
-      ),
-    )
-    self.redis_client.publish(
-      "events",
-      json.dumps(
-        {
-          "type": "audio_level",
-          "session_id": self.current_session_id,
-          "level": 0.0,
-          "timestamp": datetime.now().isoformat(),
-        }
-      ),
-    )
+    self._emit_event({
+      "type": "recording_paused",
+      "session_id": self.current_session_id,
+      "timestamp": datetime.now().isoformat(),
+    })
+    self._emit_event({
+      "type": "audio_level",
+      "session_id": self.current_session_id,
+      "level": 0.0,
+      "timestamp": datetime.now().isoformat(),
+    })
     logger.info("Recording paused - session %s", self.current_session_id)
     return True
 
@@ -1071,16 +972,11 @@ class AudioCaptureService:
     if not self.is_paused:
       return True
     self.is_paused = False
-    self.redis_client.publish(
-      "events",
-      json.dumps(
-        {
-          "type": "recording_resumed",
-          "session_id": self.current_session_id,
-          "timestamp": datetime.now().isoformat(),
-        }
-      ),
-    )
+    self._emit_event({
+      "type": "recording_resumed",
+      "session_id": self.current_session_id,
+      "timestamp": datetime.now().isoformat(),
+    })
     logger.info("Recording resumed - session %s", self.current_session_id)
     return True
 
@@ -1165,12 +1061,6 @@ class AudioCaptureService:
         self._mic_test_thread = thread
     elif action == "stop_mic_test":
       self.stop_mic_test()
-    elif action == "restart_mic":
-      # User-initiated mic recovery — close + reopen the capture stream
-      # without dropping the current recording. Useful when the device
-      # mic silently went unresponsive and the user wants to recover
-      # without rebooting.
-      self.restart_mic()
 
   def _refresh_auth_token(self) -> str:
     """Re-read the token from file/env so pairing after container start works."""
@@ -1178,32 +1068,22 @@ class AudioCaptureService:
     self._upload_auth_token = token
     return token
 
-  def _inject_device_id_into_publish(self) -> None:
-    """Wrap ``redis_client.publish`` so events carry ``device_id``.
+  def _emit_event(self, payload: dict) -> None:
+    """Write a single event to stdout for the device-ui supervisor to dispatch.
 
-    Reads the existing JSON body, drops in this audio capture's
-    ``device_id`` (if known), and forwards to the original publish.
-    Non-JSON / non-event payloads are forwarded as-is. Idempotent —
-    won't double-wrap if called twice.
+    The format is ``MEETINGBOX_EVT|<json>\\n``. ``audio_supervisor.py``
+    scans stdout for this sentinel; non-event log lines pass through to
+    the supervisor's logger as before. Best-effort: any I/O error is
+    swallowed so a temporarily-closed stdout never crashes the capture
+    thread.
     """
-    if getattr(self.redis_client, "_meetingbox_dev_id_wrapped", False):
-      return
-    original_publish = self.redis_client.publish
-
-    def _publish_with_device_id(channel, message, *args, **kwargs):
-      if channel == "events" and isinstance(message, (str, bytes)):
-        try:
-          raw = message.decode("utf-8") if isinstance(message, bytes) else message
-          payload = json.loads(raw)
-          if isinstance(payload, dict) and self.device_id and not payload.get("device_id"):
-            payload["device_id"] = self.device_id
-            message = json.dumps(payload)
-        except (ValueError, UnicodeDecodeError):
-          pass
-      return original_publish(channel, message, *args, **kwargs)
-
-    self.redis_client.publish = _publish_with_device_id  # type: ignore[assignment]
-    self.redis_client._meetingbox_dev_id_wrapped = True  # type: ignore[attr-defined]
+    if self.device_id and isinstance(payload, dict) and "device_id" not in payload:
+      payload["device_id"] = self.device_id
+    try:
+      sys.stdout.write(f"{EVT_PREFIX}{json.dumps(payload)}\n")
+      sys.stdout.flush()
+    except (OSError, ValueError):
+      logger.debug("emit_event failed", exc_info=True)
 
   def _resolve_device_id_via_api(self) -> str | None:
     """One-shot lookup of this mini-PC's device id via the backend.
@@ -1229,31 +1109,14 @@ class AudioCaptureService:
       logger.debug("device_id pairing-status lookup failed", exc_info=True)
       return None
 
-  def run_redis(self) -> None:
-    """Subscribe to Redis ``commands`` (same host or tunnel to server Redis)."""
-    logger.info("Command: Redis channel 'commands' (host %s)", REDIS_HOST)
-    pubsub = self.redis_client.pubsub()
-    pubsub.subscribe("commands")
-
-    for message in pubsub.listen():
-      if message["type"] != "message":
-        continue
-      try:
-        command = json.loads(message["data"])
-      except json.JSONDecodeError:
-        logger.warning("Invalid command payload: %s", message["data"])
-        continue
-      try:
-        self._dispatch_command(command)
-      except Exception:
-        logger.exception("Error handling audio command from Redis")
-
   def run_http_poll(self) -> None:
     """
-    Long-poll cloud API for recording commands (no Redis subscription).
+    Long-poll cloud API for recording commands.
 
     Requires DEVICE_AUTH_TOKEN and a reachable API; uses UPLOAD_AUDIO_API_URL or
-    AUDIO_POLL_BASE_URL to find ``/api/device/audio-command/wait``.
+    AUDIO_POLL_BASE_URL to find ``/api/device/audio-command/wait``. This is now
+    the only command-source path — the appliance-side Redis was removed so the
+    legacy ``run_redis`` subscriber no longer exists.
     """
     # Wait for a token to appear (pairing may happen after container start)
     while not self._upload_auth_token:
@@ -1316,55 +1179,14 @@ class AudioCaptureService:
       except Exception:
         logger.exception("Error handling audio command %s", command)
 
-  def _is_remote_api(self) -> bool:
-    """True when UPLOAD_AUDIO_API_URL points somewhere other than localhost."""
-    url = (self.upload_audio_api_url or "").lower()
-    for local in ("://localhost", "://127.0.0.1", "://host.docker.internal"):
-      if local in url:
-        return False
-    return "://" in url
-
   def run(self) -> None:
     # Re-read token right now (may have been written after __init__)
     self._refresh_auth_token()
-
-    explicit_mode = os.getenv("AUDIO_COMMAND_SOURCE", "").strip().lower()
-    has_token = bool(self._upload_auth_token)
-    remote_api = self._is_remote_api()
-
-    # In a split deployment (mini PC + cloud API), the local Docker Redis
-    # never receives commands published by the remote server.  HTTP
-    # long-poll is the only mode that works.  run_http_poll() will wait
-    # for a token to appear if the device hasn't been paired yet, so we
-    # can safely enter it even before pairing.
-    if has_token:
-      if explicit_mode == "redis":
-        logger.warning(
-          "AUDIO_COMMAND_SOURCE=redis but DEVICE_AUTH_TOKEN is set. "
-          "Overriding to HTTP long-poll — local Redis cannot receive "
-          "commands from the remote API. Remove AUDIO_COMMAND_SOURCE "
-          "from .env to silence this warning.",
-        )
-      else:
-        logger.info("Using HTTP long-poll (DEVICE_AUTH_TOKEN found).")
-      self.run_http_poll()
-    elif explicit_mode in ("http", "api", "longpoll"):
-      self.run_http_poll()
-    elif remote_api and explicit_mode != "redis":
-      # Remote API but no token yet — wait for pairing in HTTP poll loop.
-      logger.info(
-        "No device token yet but UPLOAD_AUDIO_API_URL is remote (%s). "
-        "Waiting for pairing — will start HTTP long-poll once token appears.",
-        self.upload_audio_api_url,
-      )
-      self.run_http_poll()
-    else:
-      logger.info(
-        "Command: Redis channel 'commands' on %s. "
-        "For cloud API + mini PC, pair the device or set DEVICE_AUTH_TOKEN.",
-        REDIS_HOST,
-      )
-      self.run_redis()
+    # HTTP long-poll is the only command-source path now that the
+    # appliance Redis has been removed. ``run_http_poll`` waits for a
+    # token to appear, so we can enter it safely even before pairing.
+    logger.info("Audio capture: HTTP long-poll for commands.")
+    self.run_http_poll()
 
 
 if __name__ == "__main__":

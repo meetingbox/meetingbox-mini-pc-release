@@ -219,9 +219,6 @@ from config import (
     SHOW_MOUSE_CURSOR,
     TRANSITION_DURATION,
     DEFAULT_PRIVACY_MODE,
-    LOCAL_REDIS_HOST,
-    LOCAL_REDIS_PORT,
-    LOCAL_REDIS_ENABLED,
     display_now,
     resolve_device_config_dir,
     setup_complete_marker_paths_for_read,
@@ -681,15 +678,15 @@ class MeetingBoxApp(App):
         self._pairing_poll = None
 
         # Local Redis subscriber (audio_level / mic_test_level from audio process)
-        self._local_redis_thread = None
-        self._local_redis_stop = threading.Event()
-
         # Optional in-process audio capture child (MEETINGBOX_SPAWN_AUDIO=1, the
         # default inside the merged docker image). Replaces the separate audio
         # container / systemd unit. Never enable simultaneously with another
-        # audio_capture instance — they would race for the mic and Redis topics.
+        # audio_capture instance — they would race for the mic.
+        # Events flow back via stdout sentinel lines (``MEETINGBOX_EVT|...``)
+        # parsed by the supervisor and dispatched to the same handlers the
+        # old local Redis listener used.
         from audio_supervisor import maybe_create_from_env as _maybe_audio
-        self._audio_supervisor = _maybe_audio()
+        self._audio_supervisor = _maybe_audio(on_event=self._on_audio_supervisor_event)
 
         # Idle screen timeout (seconds; 0 = never).
         # Replaces the older display-off timer: instead of cutting the
@@ -1090,10 +1087,9 @@ class MeetingBoxApp(App):
         # Start WebSocket listener
         self.start_websocket_listener()
 
-        # Optional: Redis pub/sub for audio levels when appliance runs with local Redis.
-        # Disable with LOCAL_REDIS_ENABLED=0 when using a remote API only (no local Redis).
-        if LOCAL_REDIS_ENABLED:
-            self._start_local_redis_listener()
+        # Audio_level / lifecycle events from the audio_capture child are
+        # delivered via audio_supervisor stdout (see
+        # ``_on_audio_supervisor_event``). Nothing to start here.
         # Voice assistant logic (wake phrase, intents) stays active; the floating
         # "Tony" overlay is intentionally not mounted. ``self.voice_indicator``
         # remains None (set in __init__) so existing _refresh/_set helpers no-op
@@ -1376,7 +1372,6 @@ class MeetingBoxApp(App):
                 self._audio_supervisor.stop()
             except Exception:
                 logger.exception("Audio supervisor stop failed")
-        self._local_redis_stop.set()
         if getattr(self, '_setup_poll', None):
             self._setup_poll.cancel()
         if getattr(self, '_pairing_poll', None):
@@ -1609,80 +1604,45 @@ class MeetingBoxApp(App):
             Clock.schedule_once(lambda _: self.start_websocket_listener(), 0)
 
     # ==================================================================
-    # LOCAL REDIS LISTENER (audio_level / mic_test_level from audio container)
+    # AUDIO SUPERVISOR STDOUT EVENT DISPATCH
     # ==================================================================
+    # Replaces the previous appliance-side Redis ``events`` listener.
+    # ``audio_capture.py`` now writes ``MEETINGBOX_EVT|<json>`` lines to
+    # stdout; ``audio_supervisor`` parses them and calls
+    # ``_on_audio_supervisor_event`` on its reader thread for each one.
 
-    _LOCAL_REDIS_EVENT_TYPES = frozenset({
+    _SUPERVISOR_EVENT_TYPES = frozenset({
         'audio_level', 'mic_test_level',
         'recording_started', 'recording_stopped',
         'recording_paused', 'recording_resumed',
+        'error',
     })
 
-    def _start_local_redis_listener(self):
-        if self._local_redis_thread and self._local_redis_thread.is_alive():
+    def _on_audio_supervisor_event(self, event: dict) -> None:
+        if not isinstance(event, dict):
             return
-        self._local_redis_stop.clear()
-        t = threading.Thread(
-            target=self._local_redis_subscriber_loop, daemon=True,
-            name="local-redis-events",
-        )
-        t.start()
-        self._local_redis_thread = t
-
-    def _local_redis_subscriber_loop(self):
+        etype = event.get('type')
+        if etype not in self._SUPERVISOR_EVENT_TYPES:
+            return
+        data = event.get('data') or event
+        if not self._event_belongs_to_this_device(event, data):
+            logger.debug("Dropping cross-device supervisor event %s", etype)
+            return
+        handler = {
+            'audio_level': self.on_audio_level,
+            'mic_test_level': self.on_mic_test_level,
+            'recording_started': self.on_recording_started,
+            'recording_stopped': self.on_recording_stopped,
+            'recording_paused': self.on_recording_paused,
+            'recording_resumed': self.on_recording_resumed,
+            'error': self.on_error_event,
+        }.get(etype)
+        if handler is None:
+            return
         try:
-            import redis as _redis_mod
-        except ImportError:
-            logger.warning("redis package not installed — local audio levels unavailable")
-            return
-
-        backoff = 1
-        while not self._local_redis_stop.is_set():
-            try:
-                rc = _redis_mod.Redis(
-                    host=LOCAL_REDIS_HOST, port=LOCAL_REDIS_PORT,
-                    decode_responses=True, socket_connect_timeout=5,
-                )
-                rc.ping()
-                logger.info("Local Redis connected (%s:%s) — subscribing to 'events'",
-                            LOCAL_REDIS_HOST, LOCAL_REDIS_PORT)
-                backoff = 1
-                pubsub = rc.pubsub()
-                pubsub.subscribe("events")
-                for msg in pubsub.listen():
-                    if self._local_redis_stop.is_set():
-                        break
-                    if msg["type"] != "message":
-                        continue
-                    try:
-                        event = json.loads(msg["data"])
-                    except (json.JSONDecodeError, TypeError):
-                        continue
-                    etype = event.get("type")
-                    if etype not in self._LOCAL_REDIS_EVENT_TYPES:
-                        continue
-                    data = event.get("data") or event
-                    if not self._event_belongs_to_this_device(event, data):
-                        logger.debug(
-                            "Dropping cross-device local Redis event %s", etype,
-                        )
-                        continue
-                    handler = {
-                        'audio_level': self.on_audio_level,
-                        'mic_test_level': self.on_mic_test_level,
-                        'recording_started': self.on_recording_started,
-                        'recording_stopped': self.on_recording_stopped,
-                        'recording_paused': self.on_recording_paused,
-                        'recording_resumed': self.on_recording_resumed,
-                    }.get(etype)
-                    if handler:
-                        handler(data)
-            except Exception as e:
-                if not self._local_redis_stop.is_set():
-                    logger.warning("Local Redis error (%s:%s): %s — retrying in %ss",
-                                   LOCAL_REDIS_HOST, LOCAL_REDIS_PORT, e, backoff)
-                    self._local_redis_stop.wait(backoff)
-                    backoff = min(backoff * 2, 30)
+            handler(data)
+        except Exception:
+            logger.exception("supervisor event handler failed for %s", etype)
 
     # ==================================================================
     # EVENT HANDLERS
@@ -1946,6 +1906,22 @@ class MeetingBoxApp(App):
         self._summary_poll_done = False
         run_async(self._poll_summary_until_ready(meeting_id))
 
+    @staticmethod
+    def _summary_payload_has_text(summary: dict) -> bool:
+        """True once the API has a saved summary body that the review screen can render."""
+        if not isinstance(summary, dict):
+            return False
+        raw_summary = summary.get('summary')
+        if isinstance(raw_summary, dict):
+            raw_summary = raw_summary.get('summary')
+        text = (
+            raw_summary
+            or summary.get('summary_text')
+            or summary.get('text')
+            or ''
+        )
+        return bool(str(text).strip())
+
     async def _poll_summary_until_ready(self, meeting_id: str):
         """Poll GET /api/meetings/{id} every 5s for up to ~5 minutes. If a
         summary appears, deliver it via _show_processing_summary_ready."""
@@ -1965,7 +1941,7 @@ class MeetingBoxApp(App):
                 )
                 continue
             summary = (detail or {}).get('summary') or {}
-            if summary:
+            if self._summary_payload_has_text(summary):
                 logger.info(
                     "Summary poll found summary for %s after %d attempt(s)",
                     meeting_id, attempt + 1,
@@ -2048,7 +2024,7 @@ class MeetingBoxApp(App):
             segments = (detail or {}).get('segments') or []
             summary_blob = (detail or {}).get('summary') or {}
             has_segments = len(segments) > 0
-            has_summary = isinstance(summary_blob, dict) and bool(summary_blob)
+            has_summary = self._summary_payload_has_text(summary_blob)
             if has_segments or has_summary:
                 logger.info(
                     "Transcript CTA poll: content ready for %s (segments=%d summary=%s)",
@@ -2060,6 +2036,12 @@ class MeetingBoxApp(App):
                     lambda _dt, _mid=meeting_id: self._deliver_transcript_cta_from_poll(_mid),
                     0,
                 )
+                if has_summary:
+                    Clock.schedule_once(
+                        lambda _dt, _mid=meeting_id, _s=summary_blob:
+                            self._show_processing_summary_ready(_mid, _s),
+                        0,
+                    )
                 return
         logger.warning(
             "Transcript CTA poll gave up for meeting %s (no segments within ~6 min)",
@@ -2241,29 +2223,6 @@ class MeetingBoxApp(App):
                 Clock.schedule_once(
                     lambda _: self.show_error_screen('Resume Failed', str(e)), 0)
         run_async(_resume())
-
-    def restart_mic(self):
-        """Publish a ``restart_mic`` command on the Redis ``commands``
-        channel so the audio capture process tears down + reopens its
-        PortAudio input stream without dropping the current recording.
-
-        Called from the recording screen's "Restart mic" recovery
-        affordance when the in-process audio watchdog hasn't picked
-        up a wedged mic yet.
-        """
-        try:
-            redis_client = getattr(self, "redis_client", None) or getattr(self, "redis", None)
-            if redis_client is None:
-                logger.warning("restart_mic: no redis_client available")
-                return
-            payload = json.dumps({
-                "action": "restart_mic",
-                "timestamp": datetime.now().isoformat(),
-            })
-            redis_client.publish("commands", payload)
-            logger.info("restart_mic command published")
-        except Exception:  # noqa: BLE001
-            logger.exception("restart_mic publish failed")
 
     # ==================================================================
     # IDLE SCREEN TIMEOUT
