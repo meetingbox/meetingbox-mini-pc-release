@@ -557,6 +557,37 @@ class BackendClient:
             logger.error(f"Failed to fetch meeting {meeting_id}: {e}")
             raise
 
+    def get_meeting_audio_url(self, meeting_id: str) -> str:
+        """Return the GET URL for a meeting's audio file (no auth header
+        applied — the device's session token is sent automatically by
+        :attr:`client` if the caller uses :meth:`download_meeting_audio`).
+        """
+        return f"{self.base_url}/api/meetings/{meeting_id}/audio"
+
+    async def download_meeting_audio(
+        self, meeting_id: str, dest_path: str
+    ) -> Optional[str]:
+        """Stream the meeting recording to ``dest_path``.
+
+        Returns the absolute path on success or ``None`` if the backend
+        returned 404 / has no audio for this meeting. Other errors raise.
+        """
+        try:
+            async with self.client.stream(
+                "GET", self.get_meeting_audio_url(meeting_id)
+            ) as resp:
+                if resp.status_code == 404:
+                    return None
+                resp.raise_for_status()
+                with open(dest_path, "wb") as fh:
+                    async for chunk in resp.aiter_bytes():
+                        if chunk:
+                            fh.write(chunk)
+            return dest_path
+        except Exception as e:
+            logger.error(f"Failed to download audio for {meeting_id}: {e}")
+            raise
+
     async def delete_meeting(self, meeting_id: str) -> None:
         """DELETE /api/meetings/{meeting_id}"""
         try:

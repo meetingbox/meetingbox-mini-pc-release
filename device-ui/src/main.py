@@ -19,6 +19,7 @@ import traceback
 from datetime import datetime, timedelta
 from pathlib import Path
 from collections import defaultdict
+from typing import Optional
 
 import httpx
 
@@ -608,6 +609,14 @@ class MeetingBoxApp(App):
             self.backend = BackendClient()
             logger.info("Using REAL backend")
 
+        # Multi-device scoping: this device's id, resolved from
+        # /api/device/pairing-status after we know we're paired (see
+        # ``_refresh_device_identity``). When set, WS-relayed events
+        # carrying a ``device_id`` field for a different device are
+        # ignored so two paired mini-PCs sharing a Redis don't see
+        # each other's recording lifecycle.
+        self.device_id: Optional[str] = None
+
         # Application state
         self.current_session_id = None
         self.recording_state = {
@@ -1189,7 +1198,17 @@ class MeetingBoxApp(App):
 
     async def _pairing_watchdog_async(self):
         try:
-            await self.backend.get_pairing_status()
+            status = await self.backend.get_pairing_status()
+            # Cache our device id from the same response so multi-device
+            # event filtering knows our identity without an extra round
+            # trip. Best-effort: bad/empty values just leave it unset.
+            try:
+                did = (status or {}).get("device_id") if isinstance(status, dict) else None
+                if isinstance(did, str) and did and did != self.device_id:
+                    self.device_id = did
+                    logger.info("Resolved device_id=%s", did)
+            except Exception:
+                logger.debug("device_id cache update failed", exc_info=True)
         except httpx.HTTPStatusError as e:
             if e.response is not None and e.response.status_code == 401:
                 detail = None
@@ -1509,12 +1528,37 @@ class MeetingBoxApp(App):
                 self._websocket_listener(), loop)
             self.ws_task = future
 
+    def _event_belongs_to_this_device(self, event: dict, data: dict) -> bool:
+        """Multi-device scoping filter.
+
+        When this device knows its identity AND the incoming event
+        carries an explicit ``device_id`` for a *different* device,
+        drop it. Events without a ``device_id`` (legacy publishers,
+        backend system events) are always accepted so we stay
+        backward compatible.
+        """
+        my_id = self.device_id
+        if not my_id:
+            return True
+        for src in (data, event):
+            try:
+                ev_id = (src or {}).get("device_id") if isinstance(src, dict) else None
+            except Exception:
+                ev_id = None
+            if isinstance(ev_id, str) and ev_id:
+                return ev_id == my_id
+        return True
+
     async def _websocket_listener(self):
         try:
             async for event in self.backend.subscribe_events():
                 etype = event.get('type')
                 data = event.get('data') or event
                 logger.debug(f"WS event: {etype}")
+
+                if not self._event_belongs_to_this_device(event, data):
+                    logger.debug("Dropping cross-device WS event %s", etype)
+                    continue
 
                 dispatch = {
                     'recording_started': self.on_recording_started,
@@ -1603,6 +1647,11 @@ class MeetingBoxApp(App):
                     if etype not in self._LOCAL_REDIS_EVENT_TYPES:
                         continue
                     data = event.get("data") or event
+                    if not self._event_belongs_to_this_device(event, data):
+                        logger.debug(
+                            "Dropping cross-device local Redis event %s", etype,
+                        )
+                        continue
                     handler = {
                         'audio_level': self.on_audio_level,
                         'mic_test_level': self.on_mic_test_level,
@@ -1739,10 +1788,11 @@ class MeetingBoxApp(App):
         progress = data.get('progress', 0)
         status = data.get('status', '')
         eta = data.get('eta', 0)
+        stage = data.get('stage') or ''
         screen = self.screen_manager.get_screen('processing')
         if hasattr(screen, 'on_backend_progress'):
             Clock.schedule_once(
-                lambda _: screen.on_backend_progress(progress, status, eta), 0)
+                lambda _: screen.on_backend_progress(progress, status, eta, stage), 0)
 
     def on_transcription_complete(self, data):
         meeting_id = data.get('meeting_id') or data.get('session_id')
@@ -2176,6 +2226,29 @@ class MeetingBoxApp(App):
                 Clock.schedule_once(
                     lambda _: self.show_error_screen('Resume Failed', str(e)), 0)
         run_async(_resume())
+
+    def restart_mic(self):
+        """Publish a ``restart_mic`` command on the Redis ``commands``
+        channel so the audio capture process tears down + reopens its
+        PortAudio input stream without dropping the current recording.
+
+        Called from the recording screen's "Restart mic" recovery
+        affordance when the in-process audio watchdog hasn't picked
+        up a wedged mic yet.
+        """
+        try:
+            redis_client = getattr(self, "redis_client", None) or getattr(self, "redis", None)
+            if redis_client is None:
+                logger.warning("restart_mic: no redis_client available")
+                return
+            payload = json.dumps({
+                "action": "restart_mic",
+                "timestamp": datetime.now().isoformat(),
+            })
+            redis_client.publish("commands", payload)
+            logger.info("restart_mic command published")
+        except Exception:  # noqa: BLE001
+            logger.exception("restart_mic publish failed")
 
     # ==================================================================
     # IDLE SCREEN TIMEOUT

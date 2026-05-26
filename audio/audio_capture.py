@@ -27,6 +27,15 @@ logger = logging.getLogger("meetingbox.audio")
 REDIS_HOST = os.getenv("REDIS_HOST", "redis")
 REDIS_PORT = int(os.getenv("REDIS_PORT", "6379"))
 DEVICE_AUTH_TOKEN_FILE = os.getenv("DEVICE_AUTH_TOKEN_FILE", "/data/config/device_auth_token").strip()
+# Device identity (multi-device scoping). Set via the ``DEVICE_ID`` env
+# var or resolved at startup from ``/api/device/pairing-status`` using
+# the persisted device auth token. Commands without a ``device_id`` (or
+# whose ``device_id`` matches ours) are accepted; commands targeting a
+# different device are dropped so two paired mini-PCs sharing the same
+# Redis instance don't cross-trigger each other's recordings.
+PAIRING_STATUS_URL = os.getenv(
+    "PAIRING_STATUS_URL", "http://127.0.0.1:8000/api/device/pairing-status"
+).strip()
 
 
 def _load_device_auth_token() -> str:
@@ -72,6 +81,12 @@ class AudioCaptureService:
     self.vad = webrtcvad.Vad(self.config["vad"]["aggressiveness"])
 
     self.redis_client = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, decode_responses=True)
+    # Wrap ``publish`` so every event we publish on the ``events``
+    # channel carries this audio capture's ``device_id``. The
+    # device-ui side filters incoming events by ``device_id`` so two
+    # paired mini-PCs sharing a Redis don't see each other's
+    # recording lifecycle as their own.
+    self._inject_device_id_into_publish()
 
     storage_cfg = self.config.get("storage", {})
     self.temp_dir = Path(os.getenv("TEMP_SEGMENTS_DIR", storage_cfg.get("temp_dir", "/data/audio/temp")))
@@ -100,6 +115,17 @@ class AudioCaptureService:
     # Same token as device-ui: paired device Bearer so uploads/command polling
     # keep working after pairing without copying the token into .env manually.
     self._upload_auth_token = _load_device_auth_token()
+
+    # Resolve this mini-PC's device identity for command filtering. Env
+    # wins; falls back to the backend's ``/api/device/pairing-status``
+    # using the device auth token. Failures keep ``self.device_id`` as
+    # ``None`` and we accept all commands (legacy behaviour) — this is
+    # safe because pre-multi-device installations always shipped a
+    # single audio capture process.
+    self.device_id: str | None = (os.getenv("DEVICE_ID") or "").strip() or None
+    if not self.device_id and self._upload_auth_token:
+      self.device_id = self._resolve_device_id_via_api()
+    logger.info("Audio capture device_id=%s", self.device_id or "<unset>")
 
     self.audio = pyaudio.PyAudio()
     self.stream: pyaudio.Stream | None = None
@@ -854,24 +880,102 @@ class AudioCaptureService:
 
     return segment_path
 
+  def _reopen_capture_stream(self) -> bool:
+    """Tear down + reopen the active PortAudio input stream.
+
+    Used by the recording-loop watchdog when reads start failing or the
+    audio level stays at zero — the symptom the user reported as "the
+    mic phone is not able to hear what i said" requiring a container
+    restart. Returns ``True`` on success.
+    """
+    try:
+      self._stop_close_stream()
+    except Exception:  # noqa: BLE001
+      logger.debug("Reopen: stop_close_stream failed", exc_info=True)
+    try:
+      mic_index = self.find_mic_device()
+      self.stream = self._open_input_stream(mic_index)
+      logger.warning("PortAudio capture stream reopened (mic_index=%s)", mic_index)
+      return True
+    except Exception:
+      logger.exception("Failed to reopen capture stream")
+      self.stream = None
+      return False
+
   def recording_loop(self) -> None:
     """
     Blocking loop that reads from the input stream and writes every chunk
-    into the session WAV file.
+    into the session WAV file. Self-heals on PortAudio read errors and on
+    no-audio-for-too-long watchdog trips so the mic doesn't silently die
+    (the cause of the "restart docker to make mic work again" symptom).
     """
     checked_audio = False
+    last_successful_read_at = time.monotonic()
+    silence_warning_logged_at = 0.0
+    consecutive_read_errors = 0
+    # If no chunk arrives for this many seconds while we're actively
+    # recording (and not paused), force a fresh stream.
+    READ_WATCHDOG_S = 5.0
+    MAX_READ_RETRIES_PER_SECOND = 5
+    last_retry_window_start = time.monotonic()
+    retries_this_window = 0
 
     try:
       while self.is_recording:
-        assert self.stream is not None
-        chunk = self._read_input_chunk()
+        if self.stream is None:
+          # Stream was torn down externally — try to recover before
+          # exiting the loop so the user doesn't end up with
+          # ``is_recording=True`` but no audio coming in.
+          if not self._reopen_capture_stream():
+            time.sleep(0.5)
+            continue
+        try:
+          chunk = self._read_input_chunk()
+          consecutive_read_errors = 0
+          last_successful_read_at = time.monotonic()
+        except Exception:  # noqa: BLE001
+          consecutive_read_errors += 1
+          logger.warning(
+            "PortAudio read failed (consecutive=%d); attempting recovery",
+            consecutive_read_errors,
+            exc_info=True,
+          )
+          now = time.monotonic()
+          if now - last_retry_window_start > 1.0:
+            last_retry_window_start = now
+            retries_this_window = 0
+          retries_this_window += 1
+          if retries_this_window > MAX_READ_RETRIES_PER_SECOND:
+            logger.error("Too many PortAudio read failures — bailing out of recording loop")
+            self.is_recording = False
+            self.is_paused = False
+            break
+          if not self._reopen_capture_stream():
+            time.sleep(0.5)
+          continue
+
         if self.is_paused:
           continue
+
+        # Watchdog: if reads succeed but the stream is wedged (silent
+        # buffer with no actual ALSA traffic), reopen it. Detected by
+        # a long gap with no level > 0 emitted.
+        now = time.monotonic()
+        if now - last_successful_read_at > READ_WATCHDOG_S:
+          if now - silence_warning_logged_at > READ_WATCHDOG_S:
+            logger.warning(
+              "Audio watchdog: no successful read in %.1fs — reopening stream",
+              now - last_successful_read_at,
+            )
+            silence_warning_logged_at = now
+          self._reopen_capture_stream()
+          last_successful_read_at = now
+          continue
+
         audio_bytes = self._prepare_audio_bytes(chunk)
         audio_bytes = self._apply_input_gain(audio_bytes)
 
         # Emit near-real-time audio level for UI waveform (throttled).
-        now = time.monotonic()
         if now - self._last_level_emit_at >= 0.08:
           samples = np.frombuffer(audio_bytes, dtype=np.int16)
           if len(samples) > 0:
@@ -901,7 +1005,33 @@ class AudioCaptureService:
         self._wav_writer.writeframes(audio_bytes)
 
     except Exception:
-      logger.exception("Error in recording loop")
+      logger.exception("Fatal error in recording loop; resetting recording state")
+      self.is_recording = False
+      self.is_paused = False
+
+  def restart_mic(self) -> bool:
+    """Tear down + reopen the input stream while a recording is active.
+
+    Exposed as the ``restart_mic`` Redis command and (via main.py) as a
+    "Restart microphone" affordance on the recording screen so the user
+    has a path other than rebooting when the mic silently dies.
+    """
+    if not self.is_recording:
+      logger.info("restart_mic ignored — not currently recording")
+      return False
+    ok = self._reopen_capture_stream()
+    self.redis_client.publish(
+      "events",
+      json.dumps(
+        {
+          "type": "mic_restarted",
+          "session_id": self.current_session_id,
+          "ok": bool(ok),
+          "timestamp": datetime.now().isoformat(),
+        }
+      ),
+    )
+    return ok
 
   def pause_recording(self) -> bool:
     if not self.is_recording:
@@ -1003,6 +1133,18 @@ class AudioCaptureService:
           "Skipping stale command %s (%.0fs old)", command.get("action"), age,
         )
         return
+    # Multi-device scoping: when this audio-capture knows its device
+    # identity AND the incoming command targets a specific device, drop
+    # commands targeted at a different device. Commands without a
+    # ``device_id`` field are accepted (backward compat with old
+    # publishers).
+    cmd_device_id = (command.get("device_id") or "").strip()
+    if self.device_id and cmd_device_id and cmd_device_id != self.device_id:
+      logger.debug(
+        "Skipping command %s for device_id=%s (ours=%s)",
+        command.get("action"), cmd_device_id, self.device_id,
+      )
+      return
     action = command.get("action")
     if action == "start_recording":
       session_id = command.get("session_id")
@@ -1023,12 +1165,69 @@ class AudioCaptureService:
         self._mic_test_thread = thread
     elif action == "stop_mic_test":
       self.stop_mic_test()
+    elif action == "restart_mic":
+      # User-initiated mic recovery — close + reopen the capture stream
+      # without dropping the current recording. Useful when the device
+      # mic silently went unresponsive and the user wants to recover
+      # without rebooting.
+      self.restart_mic()
 
   def _refresh_auth_token(self) -> str:
     """Re-read the token from file/env so pairing after container start works."""
     token = _load_device_auth_token()
     self._upload_auth_token = token
     return token
+
+  def _inject_device_id_into_publish(self) -> None:
+    """Wrap ``redis_client.publish`` so events carry ``device_id``.
+
+    Reads the existing JSON body, drops in this audio capture's
+    ``device_id`` (if known), and forwards to the original publish.
+    Non-JSON / non-event payloads are forwarded as-is. Idempotent —
+    won't double-wrap if called twice.
+    """
+    if getattr(self.redis_client, "_meetingbox_dev_id_wrapped", False):
+      return
+    original_publish = self.redis_client.publish
+
+    def _publish_with_device_id(channel, message, *args, **kwargs):
+      if channel == "events" and isinstance(message, (str, bytes)):
+        try:
+          raw = message.decode("utf-8") if isinstance(message, bytes) else message
+          payload = json.loads(raw)
+          if isinstance(payload, dict) and self.device_id and not payload.get("device_id"):
+            payload["device_id"] = self.device_id
+            message = json.dumps(payload)
+        except (ValueError, UnicodeDecodeError):
+          pass
+      return original_publish(channel, message, *args, **kwargs)
+
+    self.redis_client.publish = _publish_with_device_id  # type: ignore[assignment]
+    self.redis_client._meetingbox_dev_id_wrapped = True  # type: ignore[attr-defined]
+
+  def _resolve_device_id_via_api(self) -> str | None:
+    """One-shot lookup of this mini-PC's device id via the backend.
+
+    Used for multi-device command scoping. Best-effort: any HTTP /
+    parsing / auth failure returns ``None`` and audio capture falls
+    back to accepting all commands (legacy behaviour).
+    """
+    if not PAIRING_STATUS_URL or not self._upload_auth_token:
+      return None
+    try:
+      req = urlrequest.Request(
+        PAIRING_STATUS_URL,
+        headers={"Authorization": f"Bearer {self._upload_auth_token}"},
+        method="GET",
+      )
+      with urlrequest.urlopen(req, timeout=5.0) as resp:
+        raw = resp.read().decode("utf-8", errors="ignore")
+      data = json.loads(raw) if raw else {}
+      did = (data.get("device_id") or "").strip() if isinstance(data, dict) else ""
+      return did or None
+    except Exception:  # noqa: BLE001
+      logger.debug("device_id pairing-status lookup failed", exc_info=True)
+      return None
 
   def run_redis(self) -> None:
     """Subscribe to Redis ``commands`` (same host or tunnel to server Redis)."""
