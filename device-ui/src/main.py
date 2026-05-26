@@ -303,6 +303,7 @@ from screens.system import SystemScreen
 from screens.calendar import CalendarScreen
 from screens.morning_brief import MorningBriefScreen
 from screens.emails import EmailsScreen
+from components.quick_panel import QuickPanel
 
 # ------------------------------------------------------------------
 # Logging
@@ -1110,6 +1111,20 @@ class MeetingBoxApp(App):
             )
         except Exception:
             logger.exception("TranscriptionOverlay failed to load")
+
+        # Quick pull-down panel — floats above everything, hidden by default.
+        try:
+            self.quick_panel = QuickPanel()
+            self.quick_panel.app = self
+            self.root_layout.add_widget(self.quick_panel)
+        except Exception:
+            logger.exception("QuickPanel failed to load")
+            self.quick_panel = None
+
+        # Swipe-down gesture detector (top 40 px hotspot)
+        self._swipe_start: tuple | None = None
+        Window.bind(on_touch_down=self._panel_touch_down)
+        Window.bind(on_touch_move=self._panel_touch_move)
 
         if SHOW_FPS:
             Clock.schedule_interval(self._log_fps, 1.0)
@@ -2358,6 +2373,32 @@ class MeetingBoxApp(App):
         self._idle_timeout_seconds = n
         self._persist_local_idle_timeout(value)
         self._reset_idle_timer()
+
+    # ------------------------------------------------------------------
+    # Quick-panel swipe gesture helpers
+    # ------------------------------------------------------------------
+
+    def _panel_touch_down(self, win, touch):
+        """Record touch if it starts in the top 40 px (swipe hotspot)."""
+        if getattr(self, "quick_panel", None) and self.quick_panel._visible:
+            return  # panel already open — let it handle its own touches
+        if touch.y >= win.height - 40:
+            self._swipe_start = (touch.x, touch.y)
+        else:
+            self._swipe_start = None
+
+    def _panel_touch_move(self, win, touch):
+        """Open the quick panel when a tracked touch has moved >= 60 px down."""
+        if not getattr(self, "quick_panel", None):
+            return
+        if self.quick_panel._visible:
+            return
+        if self._swipe_start is None:
+            return
+        _, start_y = self._swipe_start
+        if start_y - touch.y >= 60:
+            self._swipe_start = None
+            self.quick_panel.show()
 
     def _reset_idle_timer(self, *_args):
         """Reset the idle countdown. Called on every touch.
