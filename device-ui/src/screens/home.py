@@ -559,10 +559,11 @@ class HomeScreen(BaseScreen):
         self._summary_poll_event: object | None = None
         self._home_cache_subscribed: bool = False
 
-        # Status strip label refs
-        self._sts_battery: Label | None = None
-        self._sts_wifi:    Label | None = None
-        self._sts_bt:      Label | None = None
+        # Status strip widget refs (Icon instances from components/icons.py)
+        self._sts_battery: object | None = None   # battery Icon
+        self._sts_bat_lbl: Label | None  = None   # "87%" label next to battery icon
+        self._sts_wifi:    object | None = None   # wifi Icon
+        self._sts_bt:      object | None = None   # bluetooth Icon
 
         # Voice interaction widgets and state
         self._listening_pill:    object | None = None  # the pill _Card
@@ -641,34 +642,79 @@ class HomeScreen(BaseScreen):
         self._build_status_strip(root)
 
     def _build_status_strip(self, root: FloatLayout) -> None:
-        """Compact status indicators at the absolute top-right of the screen."""
-        from kivy.uix.boxlayout import BoxLayout as _BL
+        """Compact canvas-drawn status indicators at absolute top-right.
 
-        _strip_h = max(18, int(DISPLAY_HEIGHT * 0.027))  # ≈16-18 px on 600px screen
-        _strip_w = int(DISPLAY_WIDTH * 0.22)             # ≈225 px on 1024px screen
-        _fs = max(7, int(_strip_h * 0.7))
+        Three icons drawn via components/icons.py (no font dependency):
+          [battery rect + fill]  [87%]   [wifi arcs]  [bt symbol]
+        """
+        from kivy.uix.boxlayout import BoxLayout as _BL
+        from components.icons import Icon as _Icon
+
+        _strip_h = max(18, int(DISPLAY_HEIGHT * 0.032))
+        _icon_h  = max(10, int(_strip_h * 0.65))
+        _strip_w = int(DISPLAY_WIDTH * 0.22)
+        _fs      = max(7, int(_strip_h * 0.62))
+        _muted   = (0.55, 0.55, 0.60, 0.80)
+        _on_col  = (0.22, 0.53, 0.98, 0.92)
+        _spacing = max(4, int(_strip_w * 0.04))
 
         strip = _BL(
             orientation="horizontal",
             size_hint=(None, None),
             width=_strip_w,
             height=_strip_h,
-            padding=[4, 1, 6, 1],
-            spacing=4,
+            padding=[0, 1, 8, 1],
+            spacing=_spacing,
             pos_hint={"right": 1.0, "top": 1.0},
         )
 
-        muted = (0.55, 0.55, 0.60, 0.8)
-        self._sts_battery = _lbl("🔋", _FONT, _fs, muted,
-                                 size_hint=(None, 1), width=int(_strip_w * 0.45))
-        self._sts_wifi    = _lbl("📶", _FONT, _fs, muted,
-                                 size_hint=(None, 1), width=int(_strip_w * 0.22))
-        self._sts_bt      = _lbl("●", _FONT, _fs, muted,
-                                 size_hint=(None, 1), width=int(_strip_w * 0.12))
-
+        # Battery icon — rectangle with fill level
+        bat_icon_w = max(20, int(_icon_h * 2.0))
+        self._sts_battery = _Icon(
+            "battery",
+            color=_muted,
+            level=1.0,
+            size_hint=(None, None),
+            size=(bat_icon_w, _icon_h),
+            pos_hint={"center_y": 0.5},
+        )
         strip.add_widget(self._sts_battery)
+
+        # Percent label next to battery
+        self._sts_bat_lbl = Label(
+            text="--%",
+            font_size=_fs,
+            color=_muted,
+            halign="left",
+            valign="middle",
+            size_hint=(None, 1),
+            width=max(22, int(_strip_w * 0.22)),
+        )
+        self._sts_bat_lbl.bind(size=self._sts_bat_lbl.setter("text_size"))
+        strip.add_widget(self._sts_bat_lbl)
+
+        # WiFi icon
+        wifi_icon_w = max(14, int(_icon_h * 1.1))
+        self._sts_wifi = _Icon(
+            "wifi",
+            color=_muted,
+            size_hint=(None, None),
+            size=(wifi_icon_w, _icon_h),
+            pos_hint={"center_y": 0.5},
+        )
         strip.add_widget(self._sts_wifi)
+
+        # Bluetooth icon
+        bt_icon_w = max(10, int(_icon_h * 0.75))
+        self._sts_bt = _Icon(
+            "bluetooth",
+            color=_muted,
+            size_hint=(None, None),
+            size=(bt_icon_w, _icon_h),
+            pos_hint={"center_y": 0.5},
+        )
         strip.add_widget(self._sts_bt)
+
         root.add_widget(strip)
         self._status_strip_event: object | None = None
 
@@ -1904,20 +1950,34 @@ class HomeScreen(BaseScreen):
             return
 
         def _apply(_dt):
-            if not hasattr(self, "_sts_battery"):
+            if self._sts_battery is None:
                 return
-            pct = batt.get("percent")
-            charging = batt.get("charging")
-            if pct is not None:
-                icon = "⚡" if charging else "🔋"
-                self._sts_battery.text = f"{icon}{pct}%"
-            else:
-                self._sts_battery.text = "🔌"
 
-            on_col  = (0.22, 0.53, 0.98, 0.9)   # blue
-            off_col = (0.44, 0.44, 0.46, 0.7)   # gray
-            self._sts_wifi.color = on_col if wifi_on else off_col
-            self._sts_bt.color   = on_col if bt_on   else off_col
+            pct      = batt.get("percent")
+            charging = batt.get("charging")
+            on_col   = (0.22, 0.53, 0.98, 0.92)   # blue — active
+            off_col  = (0.44, 0.44, 0.46, 0.65)   # gray — inactive
+
+            if pct is not None:
+                level = pct / 100.0
+                bat_col = (
+                    (0.22, 0.80, 0.35, 0.88) if level > 0.50 else
+                    (0.95, 0.65, 0.10, 0.88) if level > 0.20 else
+                    (0.95, 0.25, 0.20, 0.88)
+                )
+                self._sts_battery.set_color(bat_col)
+                self._sts_battery.set_level(level)
+                chg_sfx = "+" if charging else ""
+                self._sts_bat_lbl.text = f"{pct}%{chg_sfx}"
+                self._sts_bat_lbl.color = bat_col
+            else:
+                self._sts_battery.set_level(1.0)
+                self._sts_battery.set_color(off_col)
+                self._sts_bat_lbl.text = "AC"
+                self._sts_bat_lbl.color = off_col
+
+            self._sts_wifi.set_color(on_col if wifi_on else off_col)
+            self._sts_bt.set_color(on_col if bt_on else off_col)
 
         Clock.schedule_once(_apply, 0)
 
