@@ -39,7 +39,6 @@ from frame19_layout import (
     REC_DOT,
     REC_LABEL,
     REC_LABEL_FS_RATIO,
-    RESTART_MIC_BTN,
     RIGHT_VEC,
     RING_DARK,
     RING_GLOW,
@@ -84,56 +83,6 @@ class _ImgBtn(ButtonBehavior, Image):
     """Tappable PNG button."""
 
 
-class _RestartMicButton(ButtonBehavior, Widget):
-    """Tappable text pill: 'Restart mic' (recovery affordance).
-
-    Drawn with Kivy primitives so we don't depend on a Figma export
-    — the recording screen's current Figma reference (863:626) doesn't
-    include this button (it's a recovery affordance for the case where
-    the in-process audio watchdog hasn't auto-healed yet).
-    """
-
-    _FILL = (1.0, 1.0, 1.0, 0.06)
-    _BORDER = (1.0, 1.0, 1.0, 0.18)
-    _RADIUS = 18.0
-
-    def __init__(self, *, fs_ratio: float, **kwargs):
-        super().__init__(**kwargs)
-        self._fs_ratio = fs_ratio
-        with self.canvas.before:
-            self._fill = Color(*self._FILL)
-            self._rect = RoundedRectangle(pos=self.pos, size=self.size, radius=[self._RADIUS])
-            self._border = Color(*self._BORDER)
-            self._line = Line(
-                rounded_rectangle=(self.x, self.y, self.width, self.height, self._RADIUS),
-                width=1.2,
-            )
-        self._label = Label(
-            text="Restart mic",
-            color=(1, 1, 1, 0.85),
-            font_name=_FONT_BOLD,
-            bold=True,
-            halign="center",
-            valign="middle",
-            size_hint=(1, 1),
-        )
-        self._label.bind(size=self._label.setter("text_size"))
-        self.add_widget(self._label)
-        self.bind(pos=self._sync, size=self._sync)
-
-    def _sync(self, *_):
-        self._rect.pos = self.pos
-        self._rect.size = self.size
-        self._rect.radius = [self._RADIUS]
-        self._line.rounded_rectangle = (self.x, self.y, self.width, self.height, self._RADIUS)
-        self._label.pos = self.pos
-        self._label.size = self.size
-
-    def on_press(self):
-        self._fill.rgba = (1.0, 1.0, 1.0, 0.14)
-
-    def on_release(self):
-        self._fill.rgba = self._FILL
 
 
 class _Wavebar(Widget):
@@ -503,16 +452,6 @@ class RecordingScreen(BaseScreen):
             on_release=lambda *_: self.goto("settings", transition="slide_left"),
         )
 
-        # Recovery affordance: small text pill the user can tap when
-        # the mic silently dies and the in-process watchdog hasn't
-        # picked it up yet. Sized to a small box near the header.
-        self.restart_mic_btn = _RestartMicButton(
-            fs_ratio=REC_LABEL_FS_RATIO * 0.55,
-            **kivy_hints(RESTART_MIC_BTN),
-        )
-        self.restart_mic_btn.bind(on_release=lambda *_: self._on_restart_mic())
-        self._canvas.add_widget(self.restart_mic_btn)
-
         self.add_widget(self._root)
         Clock.schedule_once(lambda _dt: self._on_root_resize(self._root, self._root.size), 0)
 
@@ -676,17 +615,6 @@ class RecordingScreen(BaseScreen):
     def _on_stop(self, _inst):
         logger.info("Stop recording pressed (duration: %s)", self._fmt_time(self.elapsed_seconds))
         self.app.stop_recording()
-
-    def _on_restart_mic(self) -> None:
-        """User tapped the recovery pill — ask the audio capture
-        process to tear down and reopen its PortAudio input stream
-        without dropping the current recording session.
-        """
-        logger.info("Restart mic pressed")
-        try:
-            self.app.restart_mic()
-        except Exception:  # noqa: BLE001
-            logger.exception("restart_mic failed")
 
     def on_paused(self):
         if self._is_paused:

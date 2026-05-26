@@ -1,4 +1,4 @@
-# MeetingBox appliance — device-ui (includes audio capture) + Redis.
+# MeetingBox appliance — device-ui (includes audio capture).
 # Use this folder as its own git repo on the mini PC, or as part of the monorepo.
 #
 # Copy .env.example → .env and set BACKEND_URL / UPLOAD_AUDIO_API_URL for your cloud API.
@@ -8,23 +8,13 @@
 # Profiles (set COMPOSE_PROFILES in .env — see .env.example):
 #   mini-pc, screen  — Kivy container (needs X11); also runs audio_capture.py as a child.
 #
-# Redis runs as its own container (default on with profile ``mini-pc``).
+# The appliance no longer runs Redis: audio_capture.py emits events to
+# stdout (parsed by audio_supervisor) and commands arrive from the cloud
+# via the device HTTP long-poll endpoint.
 
 name: meetingbox-appliance
 
 services:
-  redis:
-    image: redis:7-alpine
-    container_name: meetingbox-appliance-redis
-    restart: unless-stopped
-    profiles: ["mini-pc"]
-    ports:
-      - "127.0.0.1:6379:6379"
-    volumes:
-      - appliance-redis-data:/data
-    networks:
-      - appliance-net
-
   device-ui:
     build:
       context: ./device-ui
@@ -38,8 +28,7 @@ services:
     restart: unless-stopped
     profiles: ["mini-pc", "screen"]
     # Host network: ``ip`` / ``hostname -I`` / route source match the real LAN (enp1s0, DHCP
-    # renewals) — no wrong 172.18.x container address on the home-screen footer. ``redis``
-    # is not resolvable here; use 127.0.0.1 (Redis publishes 127.0.0.1:6379 on the host).
+    # renewals) — no wrong 172.18.x container address on the home-screen footer.
     network_mode: host
     # Share host PID namespace so ``nsenter -t 1`` in meetingbox-host-reboot targets
     # the real systemd (PID 1 on the mini-PC). Without this, -t 1 is the container's
@@ -72,9 +61,6 @@ services:
       # the bridge (172.18.x); set this on the host or use data/config/lan_ip — see .env.example.
       - MEETINGBOX_LAN_IP=${MEETINGBOX_LAN_IP:-}
       - MEETINGBOX_LAN_IP_FILE=${MEETINGBOX_LAN_IP_FILE:-/data/config/lan_ip}
-      # With ``network_mode: host``, Redis is reached on the host loopback (see redis service ports).
-      - LOCAL_REDIS_HOST=${LOCAL_REDIS_HOST:-127.0.0.1}
-      - LOCAL_REDIS_PORT=${LOCAL_REDIS_PORT:-6379}
       - MOCK_BACKEND=${MOCK_BACKEND:-0}
       - AUDIO_INPUT_DEVICE_INDEX=${AUDIO_INPUT_DEVICE_INDEX:-}
       - AUDIO_INPUT_DEVICE_NAME=${AUDIO_INPUT_DEVICE_NAME:-}
@@ -94,9 +80,6 @@ services:
       # device-ui spawns mini-pc/audio/audio_capture.py via audio_supervisor.py.
       # Set MEETINGBOX_SPAWN_AUDIO=0 if you reintroduce a separate audio process.
       - MEETINGBOX_SPAWN_AUDIO=${MEETINGBOX_SPAWN_AUDIO:-1}
-      - REDIS_HOST=${REDIS_HOST:-127.0.0.1}
-      - REDIS_PORT=${REDIS_PORT:-6379}
-      - AUDIO_COMMAND_SOURCE=${AUDIO_COMMAND_SOURCE:-}
       - AUDIO_POLL_BASE_URL=${AUDIO_POLL_BASE_URL:-}
       - RECORDINGS_DIR=${RECORDINGS_DIR:-/data/audio/recordings}
       - TEMP_SEGMENTS_DIR=${TEMP_SEGMENTS_DIR:-/data/audio/temp}
@@ -169,10 +152,3 @@ services:
     cap_add:
       - SYS_ADMIN
       - SYS_PTRACE
-
-volumes:
-  appliance-redis-data:
-
-networks:
-  appliance-net:
-    driver: bridge
