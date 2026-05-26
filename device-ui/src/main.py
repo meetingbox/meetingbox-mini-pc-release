@@ -1862,13 +1862,15 @@ class MeetingBoxApp(App):
 
     def _show_processing_summary_ready(self, meeting_id: str, summary: dict):
         """Keep user on processing screen and enable CTA once summary is ready."""
-        try:
-            self._processing_summary_cache[meeting_id] = {'ok': True, 'summary': summary or {}}
-        except Exception:
-            pass
+        ready_for_review = self._summary_payload_ready_for_review(summary or {})
+        if ready_for_review:
+            try:
+                self._processing_summary_cache[meeting_id] = {'ok': True, 'summary': summary or {}}
+            except Exception:
+                pass
         # Any path reaching here is the authoritative "summary ready" signal —
         # silence the fallback poll so we don't duplicate work.
-        if self._summary_poll_meeting_id == meeting_id:
+        if ready_for_review and self._summary_poll_meeting_id == meeting_id:
             self._summary_poll_done = True
         try:
             processing = self.screen_manager.get_screen('processing')
@@ -1915,7 +1917,8 @@ class MeetingBoxApp(App):
         run_async(self._auto_open_summary_when_ready(meeting_id, fallback_summary or {}))
 
     async def _auto_open_summary_when_ready(self, meeting_id: str, fallback_summary: dict):
-        for attempt in range(12):  # up to ~12s; summary poll continues beyond this as fallback
+        del fallback_summary
+        for attempt in range(120):  # up to ~4 minutes; summary poll continues as another fallback
             if self._summary_auto_open_done or self._summary_auto_open_meeting_id != meeting_id:
                 return
             summary = {}
@@ -1927,21 +1930,19 @@ class MeetingBoxApp(App):
                     "Auto-open summary fetch attempt %d failed for %s: %s",
                     attempt + 1, meeting_id, e,
                 )
-            if not self._summary_payload_has_text(summary):
-                summary = fallback_summary if self._summary_payload_has_text(fallback_summary) else {}
-            if self._summary_payload_has_text(summary):
+            if self._summary_payload_ready_for_review(summary):
                 Clock.schedule_once(
                     lambda _dt, _mid=meeting_id, _s=summary:
                         self._open_summary_review_when_current(_mid, _s),
                     0,
                 )
                 return
-            await asyncio.sleep(1.0)
+            await asyncio.sleep(2.0)
 
     def _open_summary_review_when_current(self, meeting_id: str, summary: dict):
         if self._summary_auto_open_done or self._summary_auto_open_meeting_id != meeting_id:
             return
-        if not self._summary_payload_has_text(summary):
+        if not self._summary_payload_ready_for_review(summary):
             return
         if self.screen_manager.current != 'processing':
             logger.info(
@@ -1994,6 +1995,24 @@ class MeetingBoxApp(App):
         )
         return bool(str(text).strip())
 
+    @classmethod
+    def _summary_payload_ready_for_review(cls, summary: dict) -> bool:
+        """True only when the saved summary has the core generated review data.
+
+        The review screen should not auto-open while only transcription exists,
+        or while the API has a partial/placeholder summary shell. Summary text
+        and key topics must be populated; actions/decisions may be empty, but
+        their fields must exist so we know that part of generation completed.
+        """
+        if not isinstance(summary, dict) or not cls._summary_payload_has_text(summary):
+            return False
+        topics = summary.get('topics') or summary.get('key_points') or []
+        if not isinstance(topics, list) or len(topics) == 0:
+            return False
+        has_actions_field = any(k in summary for k in ('action_items', 'actions'))
+        has_decisions_field = any(k in summary for k in ('decisions', 'decisions_made'))
+        return has_actions_field and has_decisions_field
+
     async def _poll_summary_until_ready(self, meeting_id: str):
         """Poll GET /api/meetings/{id} every 5s for up to ~5 minutes. If a
         summary appears, deliver it via _show_processing_summary_ready."""
@@ -2013,7 +2032,7 @@ class MeetingBoxApp(App):
                 )
                 continue
             summary = (detail or {}).get('summary') or {}
-            if self._summary_payload_has_text(summary):
+            if self._summary_payload_ready_for_review(summary):
                 logger.info(
                     "Summary poll found summary for %s after %d attempt(s)",
                     meeting_id, attempt + 1,
@@ -2096,7 +2115,7 @@ class MeetingBoxApp(App):
             segments = (detail or {}).get('segments') or []
             summary_blob = (detail or {}).get('summary') or {}
             has_segments = len(segments) > 0
-            has_summary = self._summary_payload_has_text(summary_blob)
+            has_summary = self._summary_payload_ready_for_review(summary_blob)
             if has_segments or has_summary:
                 logger.info(
                     "Transcript CTA poll: content ready for %s (segments=%d summary=%s)",
