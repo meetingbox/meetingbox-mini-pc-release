@@ -219,9 +219,6 @@ from config import (
     SHOW_MOUSE_CURSOR,
     TRANSITION_DURATION,
     DEFAULT_PRIVACY_MODE,
-    LOCAL_REDIS_HOST,
-    LOCAL_REDIS_PORT,
-    LOCAL_REDIS_ENABLED,
     display_now,
     resolve_device_config_dir,
     setup_complete_marker_paths_for_read,
@@ -306,6 +303,7 @@ from screens.system import SystemScreen
 from screens.calendar import CalendarScreen
 from screens.morning_brief import MorningBriefScreen
 from screens.emails import EmailsScreen
+from components.quick_panel import QuickPanel
 
 # ------------------------------------------------------------------
 # Logging
@@ -647,6 +645,8 @@ class MeetingBoxApp(App):
         # event is missed while the processing screen is shown).
         self._summary_poll_meeting_id = None
         self._summary_poll_done = False
+        self._summary_auto_open_meeting_id = None
+        self._summary_auto_open_done = False
 
         # Transcript CTA fallback: enable "View Meeting Summary" when segments
         # exist in the API even if `transcription_complete` never hits the WS.
@@ -680,15 +680,15 @@ class MeetingBoxApp(App):
         self._pairing_poll = None
 
         # Local Redis subscriber (audio_level / mic_test_level from audio process)
-        self._local_redis_thread = None
-        self._local_redis_stop = threading.Event()
-
         # Optional in-process audio capture child (MEETINGBOX_SPAWN_AUDIO=1, the
         # default inside the merged docker image). Replaces the separate audio
         # container / systemd unit. Never enable simultaneously with another
-        # audio_capture instance — they would race for the mic and Redis topics.
+        # audio_capture instance — they would race for the mic.
+        # Events flow back via stdout sentinel lines (``MEETINGBOX_EVT|...``)
+        # parsed by the supervisor and dispatched to the same handlers the
+        # old local Redis listener used.
         from audio_supervisor import maybe_create_from_env as _maybe_audio
-        self._audio_supervisor = _maybe_audio()
+        self._audio_supervisor = _maybe_audio(on_event=self._on_audio_supervisor_event)
 
         # Idle screen timeout (seconds; 0 = never).
         # Replaces the older display-off timer: instead of cutting the
@@ -1089,10 +1089,9 @@ class MeetingBoxApp(App):
         # Start WebSocket listener
         self.start_websocket_listener()
 
-        # Optional: Redis pub/sub for audio levels when appliance runs with local Redis.
-        # Disable with LOCAL_REDIS_ENABLED=0 when using a remote API only (no local Redis).
-        if LOCAL_REDIS_ENABLED:
-            self._start_local_redis_listener()
+        # Audio_level / lifecycle events from the audio_capture child are
+        # delivered via audio_supervisor stdout (see
+        # ``_on_audio_supervisor_event``). Nothing to start here.
         # Voice assistant logic (wake phrase, intents) stays active; the floating
         # "Tony" overlay is intentionally not mounted. ``self.voice_indicator``
         # remains None (set in __init__) so existing _refresh/_set helpers no-op
@@ -1112,6 +1111,20 @@ class MeetingBoxApp(App):
             )
         except Exception:
             logger.exception("TranscriptionOverlay failed to load")
+
+        # Quick pull-down panel — floats above everything, hidden by default.
+        try:
+            self.quick_panel = QuickPanel()
+            self.quick_panel.app = self
+            self.root_layout.add_widget(self.quick_panel)
+        except Exception:
+            logger.exception("QuickPanel failed to load")
+            self.quick_panel = None
+
+        # Swipe-down gesture detector (top 40 px hotspot)
+        self._swipe_start: tuple | None = None
+        Window.bind(on_touch_down=self._panel_touch_down)
+        Window.bind(on_touch_move=self._panel_touch_move)
 
         if SHOW_FPS:
             Clock.schedule_interval(self._log_fps, 1.0)
@@ -1361,7 +1374,6 @@ class MeetingBoxApp(App):
                 self._audio_supervisor.stop()
             except Exception:
                 logger.exception("Audio supervisor stop failed")
-        self._local_redis_stop.set()
         if getattr(self, '_setup_poll', None):
             self._setup_poll.cancel()
         if getattr(self, '_pairing_poll', None):
@@ -1594,80 +1606,45 @@ class MeetingBoxApp(App):
             Clock.schedule_once(lambda _: self.start_websocket_listener(), 0)
 
     # ==================================================================
-    # LOCAL REDIS LISTENER (audio_level / mic_test_level from audio container)
+    # AUDIO SUPERVISOR STDOUT EVENT DISPATCH
     # ==================================================================
+    # Replaces the previous appliance-side Redis ``events`` listener.
+    # ``audio_capture.py`` now writes ``MEETINGBOX_EVT|<json>`` lines to
+    # stdout; ``audio_supervisor`` parses them and calls
+    # ``_on_audio_supervisor_event`` on its reader thread for each one.
 
-    _LOCAL_REDIS_EVENT_TYPES = frozenset({
+    _SUPERVISOR_EVENT_TYPES = frozenset({
         'audio_level', 'mic_test_level',
         'recording_started', 'recording_stopped',
         'recording_paused', 'recording_resumed',
+        'error',
     })
 
-    def _start_local_redis_listener(self):
-        if self._local_redis_thread and self._local_redis_thread.is_alive():
+    def _on_audio_supervisor_event(self, event: dict) -> None:
+        if not isinstance(event, dict):
             return
-        self._local_redis_stop.clear()
-        t = threading.Thread(
-            target=self._local_redis_subscriber_loop, daemon=True,
-            name="local-redis-events",
-        )
-        t.start()
-        self._local_redis_thread = t
-
-    def _local_redis_subscriber_loop(self):
+        etype = event.get('type')
+        if etype not in self._SUPERVISOR_EVENT_TYPES:
+            return
+        data = event.get('data') or event
+        if not self._event_belongs_to_this_device(event, data):
+            logger.debug("Dropping cross-device supervisor event %s", etype)
+            return
+        handler = {
+            'audio_level': self.on_audio_level,
+            'mic_test_level': self.on_mic_test_level,
+            'recording_started': self.on_recording_started,
+            'recording_stopped': self.on_recording_stopped,
+            'recording_paused': self.on_recording_paused,
+            'recording_resumed': self.on_recording_resumed,
+            'error': self.on_error_event,
+        }.get(etype)
+        if handler is None:
+            return
         try:
-            import redis as _redis_mod
-        except ImportError:
-            logger.warning("redis package not installed — local audio levels unavailable")
-            return
-
-        backoff = 1
-        while not self._local_redis_stop.is_set():
-            try:
-                rc = _redis_mod.Redis(
-                    host=LOCAL_REDIS_HOST, port=LOCAL_REDIS_PORT,
-                    decode_responses=True, socket_connect_timeout=5,
-                )
-                rc.ping()
-                logger.info("Local Redis connected (%s:%s) — subscribing to 'events'",
-                            LOCAL_REDIS_HOST, LOCAL_REDIS_PORT)
-                backoff = 1
-                pubsub = rc.pubsub()
-                pubsub.subscribe("events")
-                for msg in pubsub.listen():
-                    if self._local_redis_stop.is_set():
-                        break
-                    if msg["type"] != "message":
-                        continue
-                    try:
-                        event = json.loads(msg["data"])
-                    except (json.JSONDecodeError, TypeError):
-                        continue
-                    etype = event.get("type")
-                    if etype not in self._LOCAL_REDIS_EVENT_TYPES:
-                        continue
-                    data = event.get("data") or event
-                    if not self._event_belongs_to_this_device(event, data):
-                        logger.debug(
-                            "Dropping cross-device local Redis event %s", etype,
-                        )
-                        continue
-                    handler = {
-                        'audio_level': self.on_audio_level,
-                        'mic_test_level': self.on_mic_test_level,
-                        'recording_started': self.on_recording_started,
-                        'recording_stopped': self.on_recording_stopped,
-                        'recording_paused': self.on_recording_paused,
-                        'recording_resumed': self.on_recording_resumed,
-                    }.get(etype)
-                    if handler:
-                        handler(data)
-            except Exception as e:
-                if not self._local_redis_stop.is_set():
-                    logger.warning("Local Redis error (%s:%s): %s — retrying in %ss",
-                                   LOCAL_REDIS_HOST, LOCAL_REDIS_PORT, e, backoff)
-                    self._local_redis_stop.wait(backoff)
-                    backoff = min(backoff * 2, 30)
+            handler(data)
+        except Exception:
+            logger.exception("supervisor event handler failed for %s", etype)
 
     # ==================================================================
     # EVENT HANDLERS
@@ -1710,6 +1687,8 @@ class MeetingBoxApp(App):
         self._transcription_done_for_session = None
         self._transcript_cta_satisfied_meeting_id = None
         self._transcript_cta_poll_meeting_id = None
+        self._summary_auto_open_meeting_id = None
+        self._summary_auto_open_done = False
         self.recording_state.update(active=True, paused=False, elapsed=0)
         self._reset_recording_elapsed_clock()
         Clock.schedule_once(lambda _: self._suspend_voice_assistant_for_recording(), 0)
@@ -1883,13 +1862,15 @@ class MeetingBoxApp(App):
 
     def _show_processing_summary_ready(self, meeting_id: str, summary: dict):
         """Keep user on processing screen and enable CTA once summary is ready."""
-        try:
-            self._processing_summary_cache[meeting_id] = {'ok': True, 'summary': summary or {}}
-        except Exception:
-            pass
+        ready_for_review = self._summary_payload_ready_for_review(summary or {})
+        if ready_for_review:
+            try:
+                self._processing_summary_cache[meeting_id] = {'ok': True, 'summary': summary or {}}
+            except Exception:
+                pass
         # Any path reaching here is the authoritative "summary ready" signal —
         # silence the fallback poll so we don't duplicate work.
-        if self._summary_poll_meeting_id == meeting_id:
+        if ready_for_review and self._summary_poll_meeting_id == meeting_id:
             self._summary_poll_done = True
         try:
             processing = self.screen_manager.get_screen('processing')
@@ -1898,6 +1879,7 @@ class MeetingBoxApp(App):
             return
         if hasattr(processing, 'on_summary_ready'):
             processing.on_summary_ready(meeting_id, summary or {})
+        self._start_summary_auto_open(meeting_id, summary or {})
 
     def _show_processing_summary_failed(self, meeting_id: str, message: str):
         """Summary/report failed — still allow transcript-only review when available."""
@@ -1918,6 +1900,72 @@ class MeetingBoxApp(App):
         if hasattr(processing, 'on_summary_failed'):
             processing.on_summary_failed(meeting_id, message or 'Report unavailable.')
 
+    def _start_summary_auto_open(self, meeting_id: str, fallback_summary: Optional[dict] = None):
+        """Open summary review automatically after the saved summary is fetchable.
+
+        The processing screen can receive a WS ``summary_complete`` event before
+        a later HTTP fetch has hydrated all fields used by the review screen.
+        This path verifies the API has a real summary body, passes that payload
+        into ``summary_review``, and only then navigates. The manual CTA remains
+        visible as a fallback if the user stays on the processing screen.
+        """
+        if not meeting_id:
+            return
+        if self._summary_auto_open_done and self._summary_auto_open_meeting_id == meeting_id:
+            return
+        self._summary_auto_open_meeting_id = meeting_id
+        run_async(self._auto_open_summary_when_ready(meeting_id, fallback_summary or {}))
+
+    async def _auto_open_summary_when_ready(self, meeting_id: str, fallback_summary: dict):
+        del fallback_summary
+        for attempt in range(120):  # up to ~4 minutes; summary poll continues as another fallback
+            if self._summary_auto_open_done or self._summary_auto_open_meeting_id != meeting_id:
+                return
+            summary = {}
+            try:
+                detail = await self.backend.get_meeting_detail(meeting_id)
+                summary = (detail or {}).get('summary') or {}
+            except Exception as e:
+                logger.debug(
+                    "Auto-open summary fetch attempt %d failed for %s: %s",
+                    attempt + 1, meeting_id, e,
+                )
+            if self._summary_payload_ready_for_review(summary):
+                Clock.schedule_once(
+                    lambda _dt, _mid=meeting_id, _s=summary:
+                        self._open_summary_review_when_current(_mid, _s),
+                    0,
+                )
+                return
+            await asyncio.sleep(2.0)
+
+    def _open_summary_review_when_current(self, meeting_id: str, summary: dict):
+        if self._summary_auto_open_done or self._summary_auto_open_meeting_id != meeting_id:
+            return
+        if not self._summary_payload_ready_for_review(summary):
+            return
+        if self.screen_manager.current != 'processing':
+            logger.info(
+                "Summary ready for %s but current screen is %s; leaving manual CTA/cache in place",
+                meeting_id,
+                self.screen_manager.current,
+            )
+            return
+        try:
+            scr = self.screen_manager.get_screen('summary_review')
+        except Exception as e:
+            logger.warning("summary_review screen missing for auto-open: %s", e)
+            return
+        if hasattr(scr, 'set_meeting_data'):
+            try:
+                scr.set_meeting_data(meeting_id, summary or {})
+            except Exception as e:
+                logger.warning("auto-open set_meeting_data failed: %s", e)
+                return
+        self._summary_auto_open_done = True
+        logger.info("Auto-opening summary review for meeting %s", meeting_id)
+        self.goto_screen('summary_review', 'fade')
+
     def _start_summary_poll(self, meeting_id: str):
         """Kick off the HTTP fallback poll that watches for a saved summary.
 
@@ -1930,6 +1978,40 @@ class MeetingBoxApp(App):
         self._summary_poll_meeting_id = meeting_id
         self._summary_poll_done = False
         run_async(self._poll_summary_until_ready(meeting_id))
+
+    @staticmethod
+    def _summary_payload_has_text(summary: dict) -> bool:
+        """True once the API has a saved summary body that the review screen can render."""
+        if not isinstance(summary, dict):
+            return False
+        raw_summary = summary.get('summary')
+        if isinstance(raw_summary, dict):
+            raw_summary = raw_summary.get('summary')
+        text = (
+            raw_summary
+            or summary.get('summary_text')
+            or summary.get('text')
+            or ''
+        )
+        return bool(str(text).strip())
+
+    @classmethod
+    def _summary_payload_ready_for_review(cls, summary: dict) -> bool:
+        """True only when the saved summary has the core generated review data.
+
+        The review screen should not auto-open while only transcription exists,
+        or while the API has a partial/placeholder summary shell. Summary text
+        and key topics must be populated; actions/decisions may be empty, but
+        their fields must exist so we know that part of generation completed.
+        """
+        if not isinstance(summary, dict) or not cls._summary_payload_has_text(summary):
+            return False
+        topics = summary.get('topics') or summary.get('key_points') or []
+        if not isinstance(topics, list) or len(topics) == 0:
+            return False
+        has_actions_field = any(k in summary for k in ('action_items', 'actions'))
+        has_decisions_field = any(k in summary for k in ('decisions', 'decisions_made'))
+        return has_actions_field and has_decisions_field
 
     async def _poll_summary_until_ready(self, meeting_id: str):
         """Poll GET /api/meetings/{id} every 5s for up to ~5 minutes. If a
@@ -1950,7 +2032,7 @@ class MeetingBoxApp(App):
                 )
                 continue
             summary = (detail or {}).get('summary') or {}
-            if summary:
+            if self._summary_payload_ready_for_review(summary):
                 logger.info(
                     "Summary poll found summary for %s after %d attempt(s)",
                     meeting_id, attempt + 1,
@@ -2033,7 +2115,7 @@ class MeetingBoxApp(App):
             segments = (detail or {}).get('segments') or []
             summary_blob = (detail or {}).get('summary') or {}
             has_segments = len(segments) > 0
-            has_summary = isinstance(summary_blob, dict) and bool(summary_blob)
+            has_summary = self._summary_payload_ready_for_review(summary_blob)
             if has_segments or has_summary:
                 logger.info(
                     "Transcript CTA poll: content ready for %s (segments=%d summary=%s)",
@@ -2045,6 +2127,12 @@ class MeetingBoxApp(App):
                     lambda _dt, _mid=meeting_id: self._deliver_transcript_cta_from_poll(_mid),
                     0,
                 )
+                if has_summary:
+                    Clock.schedule_once(
+                        lambda _dt, _mid=meeting_id, _s=summary_blob:
+                            self._show_processing_summary_ready(_mid, _s),
+                        0,
+                    )
                 return
         logger.warning(
             "Transcript CTA poll gave up for meeting %s (no segments within ~6 min)",
@@ -2227,29 +2315,6 @@ class MeetingBoxApp(App):
                     lambda _: self.show_error_screen('Resume Failed', str(e)), 0)
         run_async(_resume())
 
-    def restart_mic(self):
-        """Publish a ``restart_mic`` command on the Redis ``commands``
-        channel so the audio capture process tears down + reopens its
-        PortAudio input stream without dropping the current recording.
-
-        Called from the recording screen's "Restart mic" recovery
-        affordance when the in-process audio watchdog hasn't picked
-        up a wedged mic yet.
-        """
-        try:
-            redis_client = getattr(self, "redis_client", None) or getattr(self, "redis", None)
-            if redis_client is None:
-                logger.warning("restart_mic: no redis_client available")
-                return
-            payload = json.dumps({
-                "action": "restart_mic",
-                "timestamp": datetime.now().isoformat(),
-            })
-            redis_client.publish("commands", payload)
-            logger.info("restart_mic command published")
-        except Exception:  # noqa: BLE001
-            logger.exception("restart_mic publish failed")
-
     # ==================================================================
     # IDLE SCREEN TIMEOUT
     # ==================================================================
@@ -2327,6 +2392,32 @@ class MeetingBoxApp(App):
         self._idle_timeout_seconds = n
         self._persist_local_idle_timeout(value)
         self._reset_idle_timer()
+
+    # ------------------------------------------------------------------
+    # Quick-panel swipe gesture helpers
+    # ------------------------------------------------------------------
+
+    def _panel_touch_down(self, win, touch):
+        """Record touch if it starts in the top 40 px (swipe hotspot)."""
+        if getattr(self, "quick_panel", None) and self.quick_panel._visible:
+            return  # panel already open — let it handle its own touches
+        if touch.y >= win.height - 40:
+            self._swipe_start = (touch.x, touch.y)
+        else:
+            self._swipe_start = None
+
+    def _panel_touch_move(self, win, touch):
+        """Open the quick panel when a tracked touch has moved >= 60 px down."""
+        if not getattr(self, "quick_panel", None):
+            return
+        if self.quick_panel._visible:
+            return
+        if self._swipe_start is None:
+            return
+        _, start_y = self._swipe_start
+        if start_y - touch.y >= 60:
+            self._swipe_start = None
+            self.quick_panel.show()
 
     def _reset_idle_timer(self, *_args):
         """Reset the idle countdown. Called on every touch.

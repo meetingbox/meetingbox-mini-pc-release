@@ -515,17 +515,28 @@ class ProcessingScreen(BaseScreen):
 
     def _summary_payload_ready(self) -> bool:
         """Whether ``self._summary_data`` is actually complete enough to
-        render the summary screen — text + at least one of (action items,
-        decisions) + at least one topic. Used to gate the CTA so we only
-        flip the bright button once the data is genuinely there."""
+        render the summary screen. The CTA should appear only after the
+        backend has saved the summary body and the generated review sections.
+
+        The summary body lives under the ``summary`` key in both the WS
+        ``summary_complete`` payload and the ``GET /api/meetings/{id}``
+        response (matching ``server/web/routes/meetings.py`` ``MeetingSummary``).
+        We also defensively unwrap a nested ``{"summary": {...}}`` shape and
+        keep the legacy ``summary_text`` / ``text`` lookups for back-compat.
+        """
         data = self._summary_data or {}
-        text = (data.get("summary_text") or data.get("text") or "").strip()
+        raw_summary = data.get("summary")
+        if isinstance(raw_summary, dict):
+            raw_summary = raw_summary.get("summary")
+        text = (raw_summary or data.get("summary_text") or data.get("text") or "").strip()
         if not text:
             return False
         topics = data.get("topics") or data.get("key_points") or []
-        actions = data.get("actions") or data.get("action_items") or []
-        decisions = data.get("decisions") or data.get("decisions_made") or []
-        return bool(topics) and bool(actions or decisions)
+        if not isinstance(topics, list) or len(topics) == 0:
+            return False
+        has_actions_field = any(k in data for k in ("action_items", "actions"))
+        has_decisions_field = any(k in data for k in ("decisions", "decisions_made"))
+        return has_actions_field and has_decisions_field
 
     def _apply_stage(self, stage: str | None) -> None:
         """Mark the row matching ``stage`` as loading and all previous

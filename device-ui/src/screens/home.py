@@ -559,6 +559,11 @@ class HomeScreen(BaseScreen):
         self._summary_poll_event: object | None = None
         self._home_cache_subscribed: bool = False
 
+        # Status strip label refs
+        self._sts_battery: Label | None = None
+        self._sts_wifi:    Label | None = None
+        self._sts_bt:      Label | None = None
+
         # Voice interaction widgets and state
         self._listening_pill:    object | None = None  # the pill _Card
         self._soundwave_wf:      _FigmaWaveform | None = None
@@ -630,6 +635,42 @@ class HomeScreen(BaseScreen):
             ))
             sg_btn.bind(on_release=lambda *_: self.goto("settings"))
             root.add_widget(sg_btn)
+
+        # Status strip (battery / WiFi / BT) — anchored to absolute top-right,
+        # above all other Figma elements.  Updates every 30 s.
+        self._build_status_strip(root)
+
+    def _build_status_strip(self, root: FloatLayout) -> None:
+        """Compact status indicators at the absolute top-right of the screen."""
+        from kivy.uix.boxlayout import BoxLayout as _BL
+
+        _strip_h = max(18, int(DISPLAY_HEIGHT * 0.027))  # ≈16-18 px on 600px screen
+        _strip_w = int(DISPLAY_WIDTH * 0.22)             # ≈225 px on 1024px screen
+        _fs = max(7, int(_strip_h * 0.7))
+
+        strip = _BL(
+            orientation="horizontal",
+            size_hint=(None, None),
+            width=_strip_w,
+            height=_strip_h,
+            padding=[4, 1, 6, 1],
+            spacing=4,
+            pos_hint={"right": 1.0, "top": 1.0},
+        )
+
+        muted = (0.55, 0.55, 0.60, 0.8)
+        self._sts_battery = _lbl("🔋", _FONT, _fs, muted,
+                                 size_hint=(None, 1), width=int(_strip_w * 0.45))
+        self._sts_wifi    = _lbl("📶", _FONT, _fs, muted,
+                                 size_hint=(None, 1), width=int(_strip_w * 0.22))
+        self._sts_bt      = _lbl("●", _FONT, _fs, muted,
+                                 size_hint=(None, 1), width=int(_strip_w * 0.12))
+
+        strip.add_widget(self._sts_battery)
+        strip.add_widget(self._sts_wifi)
+        strip.add_widget(self._sts_bt)
+        root.add_widget(strip)
+        self._status_strip_event: object | None = None
 
     def _build_listening_pill(self, root: FloatLayout) -> None:
         """Voice-state pill  (805.16, 21.19)  302.29 × 76.28.
@@ -1493,6 +1534,14 @@ class HomeScreen(BaseScreen):
             self._summary_poll_event.cancel()
             self._summary_poll_event = None
 
+        # Status strip — initial load + 30-second refresh
+        if getattr(self, "_status_strip_event", None):
+            self._status_strip_event.cancel()
+        Clock.schedule_once(lambda _dt: self._refresh_status_strip(), 1.5)
+        self._status_strip_event = Clock.schedule_interval(
+            lambda _dt: self._refresh_status_strip(), 30.0
+        )
+
     def on_leave(self):
         # Clean up listening state immediately when leaving home
         self._listening_active = False
@@ -1521,6 +1570,9 @@ class HomeScreen(BaseScreen):
         if self._summary_poll_event:
             self._summary_poll_event.cancel()
             self._summary_poll_event = None
+        if getattr(self, "_status_strip_event", None):
+            self._status_strip_event.cancel()
+            self._status_strip_event = None
         if self._home_cache_subscribed:
             self.app.ui_cache_unsubscribe("home_summary_bundle", self._on_cached_home_summary)
             self._home_cache_subscribed = False
@@ -1829,6 +1881,45 @@ class HomeScreen(BaseScreen):
         """Receive microphone amplitude (0-1); stored for the soundwave tick."""
         if self._listening_active:
             self._current_amplitude = amp
+
+    # -----------------------------------------------------------------------
+    # Status strip (battery / WiFi / BT icons at absolute top-right)
+    # -----------------------------------------------------------------------
+
+    def _refresh_status_strip(self):
+        """Fetch hardware status in a background thread and update the strip labels."""
+        import threading as _t
+        _t.Thread(target=self._fetch_status_strip, daemon=True).start()
+
+    def _fetch_status_strip(self):
+        try:
+            import hardware as _hw
+            import wifi_nmcli_local as _wifi
+            import bluetooth_local as _bt
+
+            batt    = _hw.get_battery_info()
+            wifi_on = _wifi.get_wifi_radio_enabled()
+            bt_on   = _bt.get_power_state()
+        except Exception:
+            return
+
+        def _apply(_dt):
+            if not hasattr(self, "_sts_battery"):
+                return
+            pct = batt.get("percent")
+            charging = batt.get("charging")
+            if pct is not None:
+                icon = "⚡" if charging else "🔋"
+                self._sts_battery.text = f"{icon}{pct}%"
+            else:
+                self._sts_battery.text = "🔌"
+
+            on_col  = (0.22, 0.53, 0.98, 0.9)   # blue
+            off_col = (0.44, 0.44, 0.46, 0.7)   # gray
+            self._sts_wifi.color = on_col if wifi_on else off_col
+            self._sts_bt.color   = on_col if bt_on   else off_col
+
+        Clock.schedule_once(_apply, 0)
 
     # -----------------------------------------------------------------------
     # Clock labels

@@ -101,14 +101,6 @@ BTN_PAUSE = canvas_box(146.906, 661.727, 101.704, 101.704)
 STOP_PILL = canvas_box(285.336, 666.726, 646.951, 101.704)
 BTN_SETTINGS = canvas_box(969.013, 661.726, 101.704, 101.704)
 
-# "Restart mic" recovery affordance — a small inline link near the
-# header status row that the user can tap when the mic silently dies
-# and the in-loop watchdog hasn't picked it up yet. Sized to a small
-# pill above the wavebar so it's always reachable without obscuring
-# the recording controls. (Coordinates are loose canvas placements,
-# not from Figma — Figma 863:626 doesn't include this recovery UI.)
-RESTART_MIC_BTN = canvas_box(1080.0, 21.188, 156.0, 56.0)
-
 # ── Typography (Figma px on 800-tall canvas) ──────────────────────────────
 TIMER_FS_RATIO = 35.0 / CANVAS_H
 STATUS_FS_RATIO = 28.251 / CANVAS_H
