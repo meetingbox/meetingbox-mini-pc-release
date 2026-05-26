@@ -1926,21 +1926,13 @@ class MeetingBoxApp(App):
 
     @classmethod
     def _summary_payload_ready_for_review(cls, summary: dict) -> bool:
-        """True only when the saved summary has the core generated review data.
+        """Match web readiness: summary review is available once summary text exists.
 
-        The review screen should not auto-open while only transcription exists,
-        or while the API has a partial/placeholder summary shell. Summary text
-        and key topics must be populated; actions/decisions may be empty, but
-        their fields must exist so we know that part of generation completed.
+        Topics, decisions, and action items can legitimately be empty for a
+        meeting, and the web frontend still renders the completed report in
+        that case. The device CTA should follow the same rule.
         """
-        if not isinstance(summary, dict) or not cls._summary_payload_has_text(summary):
-            return False
-        topics = summary.get('topics') or summary.get('key_points') or []
-        if not isinstance(topics, list) or len(topics) == 0:
-            return False
-        has_actions_field = any(k in summary for k in ('action_items', 'actions'))
-        has_decisions_field = any(k in summary for k in ('decisions', 'decisions_made'))
-        return has_actions_field and has_decisions_field
+        return cls._summary_payload_has_text(summary)
 
     async def _poll_summary_until_ready(self, meeting_id: str):
         """Poll GET /api/meetings/{id} every 5s for up to ~5 minutes. If a
