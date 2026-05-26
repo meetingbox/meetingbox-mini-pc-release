@@ -515,9 +515,9 @@ class ProcessingScreen(BaseScreen):
 
     def _summary_payload_ready(self) -> bool:
         """Whether ``self._summary_data`` is actually complete enough to
-        render the summary screen — text + at least one of (action items,
-        decisions) + at least one topic. Used to gate the CTA so we only
-        flip the bright button once the data is genuinely there.
+        render the summary screen. The CTA should appear as soon as the
+        backend has saved the summary body; secondary sections like topics,
+        action items, or decisions can legitimately be empty for a meeting.
 
         The summary body lives under the ``summary`` key in both the WS
         ``summary_complete`` payload and the ``GET /api/meetings/{id}``
@@ -530,12 +530,7 @@ class ProcessingScreen(BaseScreen):
         if isinstance(raw_summary, dict):
             raw_summary = raw_summary.get("summary")
         text = (raw_summary or data.get("summary_text") or data.get("text") or "").strip()
-        if not text:
-            return False
-        topics = data.get("topics") or data.get("key_points") or []
-        actions = data.get("actions") or data.get("action_items") or []
-        decisions = data.get("decisions") or data.get("decisions_made") or []
-        return bool(topics) and bool(actions or decisions)
+        return bool(text)
 
     def _apply_stage(self, stage: str | None) -> None:
         """Mark the row matching ``stage`` as loading and all previous

@@ -1891,6 +1891,22 @@ class MeetingBoxApp(App):
         self._summary_poll_done = False
         run_async(self._poll_summary_until_ready(meeting_id))
 
+    @staticmethod
+    def _summary_payload_has_text(summary: dict) -> bool:
+        """True once the API has a saved summary body that the review screen can render."""
+        if not isinstance(summary, dict):
+            return False
+        raw_summary = summary.get('summary')
+        if isinstance(raw_summary, dict):
+            raw_summary = raw_summary.get('summary')
+        text = (
+            raw_summary
+            or summary.get('summary_text')
+            or summary.get('text')
+            or ''
+        )
+        return bool(str(text).strip())
+
     async def _poll_summary_until_ready(self, meeting_id: str):
         """Poll GET /api/meetings/{id} every 5s for up to ~5 minutes. If a
         summary appears, deliver it via _show_processing_summary_ready."""
@@ -1910,7 +1926,7 @@ class MeetingBoxApp(App):
                 )
                 continue
             summary = (detail or {}).get('summary') or {}
-            if summary:
+            if self._summary_payload_has_text(summary):
                 logger.info(
                     "Summary poll found summary for %s after %d attempt(s)",
                     meeting_id, attempt + 1,
@@ -1993,7 +2009,7 @@ class MeetingBoxApp(App):
             segments = (detail or {}).get('segments') or []
             summary_blob = (detail or {}).get('summary') or {}
             has_segments = len(segments) > 0
-            has_summary = isinstance(summary_blob, dict) and bool(summary_blob)
+            has_summary = self._summary_payload_has_text(summary_blob)
             if has_segments or has_summary:
                 logger.info(
                     "Transcript CTA poll: content ready for %s (segments=%d summary=%s)",
@@ -2005,6 +2021,12 @@ class MeetingBoxApp(App):
                     lambda _dt, _mid=meeting_id: self._deliver_transcript_cta_from_poll(_mid),
                     0,
                 )
+                if has_summary:
+                    Clock.schedule_once(
+                        lambda _dt, _mid=meeting_id, _s=summary_blob:
+                            self._show_processing_summary_ready(_mid, _s),
+                        0,
+                    )
                 return
         logger.warning(
             "Transcript CTA poll gave up for meeting %s (no segments within ~6 min)",
