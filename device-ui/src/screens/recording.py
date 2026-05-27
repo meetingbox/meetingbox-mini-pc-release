@@ -226,19 +226,19 @@ class _TimerDigits(Widget):
     The single-``Label`` approach jitters because proportional digit
     widths in ``42dot-Sans`` differ a few pixels — ``halign="center"``
     re-centres the entire string each tick and the row visibly shifts
-    as digits change. Splitting the string into 10 independent labels
-    (8 digit cells + 2 separator cells) anchors every glyph to its own
+    as digits change. Splitting the string into 8 independent labels
+    (6 digit cells + 2 separator cells) anchors every glyph to its own
     cell, so only the digit content updates while positions stay frozen.
 
     Public API mimics ``Label``:
       * ``set_text("HH : MM : SS")`` — accepts the formatted string,
-        keeps only the 8 digits and routes them into their cells.
+        keeps only the 6 digits and routes them into their cells.
       * ``font_size`` property — settable from the screen's resize loop
         so existing iteration code keeps working unchanged.
     """
 
-    _DIGIT_W_RATIO = 0.085   # of TIMER box width per digit cell (8 of these)
-    _SEP_W_RATIO = 0.16      # per separator cell (2 of these) — sums to 1.0
+    _DIGIT_W_RATIO = 0.105   # of TIMER box width per digit cell (6 of these)
+    _SEP_W_RATIO = 0.185     # per separator cell (2 of these) — sums to 1.0
 
     def __init__(self, *, fs_ratio: float, color: tuple, bold: bool = True, **kwargs):
         super().__init__(**kwargs)
@@ -247,7 +247,7 @@ class _TimerDigits(Widget):
         self._bold = bold
         self._digit_labels: list[Label] = []
         self._sep_labels: list[Label] = []
-        for i in range(10):
+        for i in range(8):
             is_sep = i in (2, 5)
             lbl = Label(
                 text=":" if is_sep else "0",
@@ -273,7 +273,7 @@ class _TimerDigits(Widget):
         sep_w = w * self._SEP_W_RATIO
         cells: list[tuple[float, float]] = []
         cx = x
-        for i in range(10):
+        for i in range(8):
             cw = sep_w if i in (2, 5) else digit_w
             cells.append((cx, cw))
             cx += cw
@@ -295,10 +295,10 @@ class _TimerDigits(Widget):
 
     def set_text(self, hms: str) -> None:
         digits = [c for c in (hms or "") if c.isdigit()]
-        if len(digits) < 8:
-            digits = ["0"] * (8 - len(digits)) + digits
-        elif len(digits) > 8:
-            digits = digits[-8:]
+        if len(digits) < 6:
+            digits = ["0"] * (6 - len(digits)) + digits
+        elif len(digits) > 6:
+            digits = digits[-6:]
         for i, d in enumerate(digits):
             self._digit_labels[i].text = d
 

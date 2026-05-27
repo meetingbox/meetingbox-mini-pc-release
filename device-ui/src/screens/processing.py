@@ -266,7 +266,7 @@ class ProcessingScreen(BaseScreen):
         super().__init__(**kwargs)
         self._meeting_id: Optional[str] = None
         self._meeting_title = "Meeting"
-        self._meeting_duration_min = 0
+        self._meeting_duration_seconds = 0
         self._summary_data: Optional[dict] = None
         self._summary_ready = False
         self._transcript_ready = False
@@ -559,8 +559,8 @@ class ProcessingScreen(BaseScreen):
             row.set_state(_STAGE_DONE)
 
     def _reset_stages(self) -> None:
-        for key, row in self._stage_rows.items():
-            row.set_state(_STAGE_LOADING if key == self._stage_order[0] else _STAGE_PENDING)
+        for row in self._stage_rows.values():
+            row.set_state(_STAGE_PENDING)
 
     # ------------------------------------------------------------- lifecycle
     def on_enter(self):
@@ -589,7 +589,7 @@ class ProcessingScreen(BaseScreen):
         # Reset visuals to the initial Figma state.
         self.headline_label.text = "Summarizing your meeting..."
         self.subtitle_label.text = "This may take a few seconds"
-        self.duration_label.text = self._format_duration(self._meeting_duration_min)
+        self.duration_label.text = self._format_duration(self._meeting_duration_seconds)
         self.meeting_title_label.text = self._meeting_title or "Meeting"
 
         if self._summary_ready:
@@ -618,9 +618,9 @@ class ProcessingScreen(BaseScreen):
     def on_processing_started(self, data):
         title = (data or {}).get("title") or self._meeting_title or "Meeting"
         title = str(title).strip() or "Meeting"
-        duration = int(((data or {}).get("duration") or 0) / 60)
+        duration = int((data or {}).get("duration") or 0)
         self._meeting_title = title
-        self._meeting_duration_min = duration
+        self._meeting_duration_seconds = duration
         self.meeting_title_label.text = title
         self.duration_label.text = self._format_duration(duration)
 
@@ -738,11 +738,16 @@ class ProcessingScreen(BaseScreen):
         self.goto("summary_review", transition="fade")
 
     @staticmethod
-    def _format_duration(min_value: int) -> str:
-        m = max(0, int(min_value or 0))
-        if m <= 0:
+    def _format_duration(seconds_value: int) -> str:
+        total = max(0, int(seconds_value or 0))
+        if total <= 0:
             return "--"
-        return f"{m} min"
+        h = total // 3600
+        m = (total % 3600) // 60
+        s = total % 60
+        if h > 0:
+            return f"{h}:{m:02d}:{s:02d}"
+        return f"{m:02d}:{s:02d}"
 
     # (Previous outer-ring spin and orb-pulse animations were removed
     # because the new Figma 397:261 design has a static orb.)

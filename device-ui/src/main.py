@@ -1702,6 +1702,21 @@ class MeetingBoxApp(App):
         Clock.schedule_once(lambda _dt, mid=sid: self._start_transcript_cta_poll(mid), 0)
         Clock.schedule_once(lambda _dt, mid=sid: self._start_summary_poll(mid), 0)
 
+    def _prime_processing_screen(self, sid: str | None, duration_seconds: int | None = None):
+        """Seed processing header metadata before backend progress events arrive."""
+        if not sid:
+            return
+        try:
+            screen = self.screen_manager.get_screen('processing')
+        except Exception as e:
+            logger.debug("Processing screen unavailable for metadata prime: %s", e)
+            return
+        if hasattr(screen, 'on_processing_started'):
+            screen.on_processing_started({
+                'title': f'Meeting {sid}',
+                'duration': max(0, int(duration_seconds or 0)),
+            })
+
     def on_recording_stopped(self, data):
         self.recording_state['active'] = False
         try:
@@ -1709,6 +1724,8 @@ class MeetingBoxApp(App):
         except Exception:
             pass
         sid = data.get('session_id') or self.current_session_id
+        duration_seconds = data.get('duration') or self._current_recording_elapsed_seconds()
+        self._prime_processing_screen(sid, duration_seconds)
         self._kick_post_stop_meeting_polls(sid)
         self._voice_start_in_flight = False
         self._clear_recording_elapsed_clock()
@@ -2194,6 +2211,7 @@ class MeetingBoxApp(App):
         async def _stop():
             try:
                 sid = self.current_session_id
+                duration_seconds = self._current_recording_elapsed_seconds()
                 await self.backend.stop_recording(sid)
                 self.recording_state['active'] = False
                 self._voice_start_in_flight = False
@@ -2201,6 +2219,11 @@ class MeetingBoxApp(App):
                 Clock.schedule_once(lambda _: self._resume_voice_assistant_after_recording(), 0)
                 logger.info("Recording stopped successfully")
                 # Device-initiated stop never goes through on_recording_stopped (Redis/WS).
+                Clock.schedule_once(
+                    lambda _dt, _sid=sid, _dur=duration_seconds:
+                        self._prime_processing_screen(_sid, _dur),
+                    0,
+                )
                 self._kick_post_stop_meeting_polls(sid)
                 Clock.schedule_once(
                     lambda _: self.goto_screen('processing', 'fade'), 0)
