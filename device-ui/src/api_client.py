@@ -948,6 +948,19 @@ class BackendClient:
             logger.debug("get_commitments failed: %s", e)
             return {"commitments": [], "count": 0}
 
+    async def patch_commitment(self, commitment_id: str, status: str) -> Dict:
+        """PATCH /api/commitments/{id} — update task status (completed | cancelled | active | snoozed)."""
+        try:
+            resp = await self.client.patch(
+                f"{self.base_url}/api/commitments/{commitment_id}",
+                json={"status": status},
+            )
+            resp.raise_for_status()
+            return resp.json()
+        except Exception as e:
+            logger.debug("patch_commitment failed: %s", e)
+            return {}
+
     async def create_realtime_voice_session(self) -> Dict:
         """POST /api/voice/realtime/session — OpenAI Realtime client secret (Bearer token)."""
         resp = await self.client.post(f"{self.base_url}/api/voice/realtime/session")

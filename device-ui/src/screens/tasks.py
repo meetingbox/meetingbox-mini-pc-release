@@ -37,6 +37,7 @@ Figma font sizes (cross-referenced from morning_brief.py, same design file)
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from datetime import datetime
@@ -99,6 +100,16 @@ _ROW_B   = _CARD_B
 # Border & divider
 _BDR     = (63/255,  66/255,  83/255, 1.0)  # #3F4253  (morning_brief _BDR)
 _DIV_COL = (2/255,   23/255,  77/255, 0.7)
+
+# Accept / Reject button colours
+_GREEN   = ( 25/255, 211/255, 133/255, 1.0)  # #19D385  accept tick
+_RED     = (255/255,  77/255,  77/255, 1.0)  # #FF4D4D  reject cross
+_GREEN_T = ( 14/255, 170/255, 105/255, 1.0)  # darker green gradient top
+_GREEN_B = ( 25/255, 211/255, 133/255, 1.0)  # lighter green gradient bottom
+_RED_T   = (210/255,  45/255,  45/255, 1.0)  # darker red gradient top
+_RED_B   = (255/255,  77/255,  77/255, 1.0)  # lighter red gradient bottom
+_GREEN_BDR = ( 40/255, 200/255, 140/255, 1.0)
+_RED_BDR   = (240/255,  90/255,  90/255, 1.0)
 
 # Section-header tint
 _SEC_BG  = (4/255,   15/255,  44/255, 0.90)  # #040F2C 90%
@@ -672,104 +683,178 @@ class TasksScreen(BaseScreen):
         self._list_box.add_widget(hdr)
         self._list_box.add_widget(Widget(size_hint=(1, None), height=_ff(5)))
 
-    # Task row height: _ff(80) for title + optional detail line
+    # Task row — BoxLayout inside for clean, non-overlapping layout
     def _add_task_row(self, row: dict, bucket: str) -> None:
-        col      = _BUCKET_COLOR[bucket]
-        title    = (row.get("title")  or "Untitled task").strip()
-        detail   = (row.get("detail") or "").strip()
-        due_text = _fmt_due(row, bucket)          # live calculation
-        src_kind = _source_kind(row)
+        task_id    = str(row.get("id") or "")
+        col        = _BUCKET_COLOR[bucket]
+        title      = (row.get("title")  or "Untitled task").strip()
+        detail     = (row.get("detail") or "").strip()
+        due_text   = _fmt_due(row, bucket)
+        src_kind   = _source_kind(row)
         is_snoozed = (row.get("status") or "").lower() == "snoozed"
-        tags     = _parse_tags(row.get("tags"))
-        updated  = _relative_updated(row)
+        is_unplan  = (bucket == "unplanned")
+        tags       = _parse_tags(row.get("tags"))
+        updated    = _relative_updated(row)
 
-        # Row height: taller when detail or tags are present
         has_extra = bool(detail or tags)
-        ROW_H = _ff(88) if has_extra else _ff(72)
+        # Unplanned rows are a touch taller to fit the buttons
+        ROW_H = _ff(88) if (has_extra or is_unplan) else _ff(72)
 
         card = _Card(ct=_ROW_T, cb=_ROW_B, bdr=_BDR,
-                     r=_ff(14.13),
-                     size_hint=(1, None), height=ROW_H)
+                     r=_ff(14), size_hint=(1, None), height=ROW_H)
 
-        # Status dot — _ff(11.3) diameter (morning_brief _add_dot size)
-        D = _ff(11.3)
+        # ── Inner horizontal BoxLayout fills the card ───────────────────────
+        PAD = _ff(14)
+        inner = BoxLayout(
+            orientation="horizontal",
+            size_hint=(1, 1),
+            padding=[PAD, _ff(8), PAD, _ff(8)],
+            spacing=_ff(10),
+        )
+        card.add_widget(inner)
+
+        # ── Status dot ─────────────────────────────────────────────────────
+        D = _ff(11)
         dot_col = _YELLOW if is_snoozed else col
         dot = _Dot(color=dot_col,
                    size_hint=(None, None), size=(D, D),
-                   pos_hint={"x": _ff(18) / 1200,
-                             "y": 0.5 - D / (2 * ROW_H)})
-        card.add_widget(dot)
+                   pos_hint={"center_y": 0.5})
+        inner.add_widget(dot)
 
-        # Title column — starts just after dot
-        title_x = _ff(42) / 1200
-        title_w = 0.58
-
+        # ── Title + optional sub-line ───────────────────────────────────────
         if has_extra:
-            # Title at top half, detail at bottom half
-            card.add_widget(_lbl(
+            title_box = BoxLayout(orientation="vertical", size_hint=(1, 1),
+                                  spacing=_ff(3))
+            title_box.add_widget(_lbl(
                 title, _FSB, _ff(21.19), _WHITE,
-                ha="left", va="bottom",
-                size_hint=(title_w, 0.50),
-                pos_hint={"x": title_x, "y": 0.44}))
+                ha="left", va="bottom", size_hint=(1, 0.55)))
 
             sub_parts = []
             if detail:
                 sub_parts.append(detail[:70] + ("…" if len(detail) > 70 else ""))
             if tags:
                 sub_parts.append("  ".join(f"#{t}" for t in tags[:3]))
-            sub_txt = "  ·  ".join(sub_parts) if sub_parts else ""
-            if sub_txt:
-                card.add_widget(_lbl(
-                    sub_txt, _FMD, _ff(14.13), _DIM,
-                    ha="left", va="top",
-                    size_hint=(title_w, 0.40),
-                    pos_hint={"x": title_x, "y": 0.06}))
+            sub_txt = "  ·  ".join(sub_parts)
+            title_box.add_widget(_lbl(
+                sub_txt, _FMD, _ff(14.13), _DIM,
+                ha="left", va="top", size_hint=(1, 0.45)))
+            inner.add_widget(title_box)
         else:
-            card.add_widget(_lbl(
+            inner.add_widget(_lbl(
                 title, _FSB, _ff(21.19), _WHITE,
-                ha="left", va="middle",
-                size_hint=(title_w, 1.0),
-                pos_hint={"x": title_x, "y": 0.0}))
+                ha="left", va="middle", size_hint=(1, 1)))
 
-        # Snoozed badge (replaces source icon when snoozed)
-        if is_snoozed:
-            card.add_widget(_lbl(
-                "SNOOZED", _FSB, _ff(12.0), _YELLOW,
-                ha="center", va="middle",
-                size_hint=(0.11, 0.40),
-                pos_hint={"x": 0.69, "y": 0.30}))
+        # ── Right section ───────────────────────────────────────────────────
+        if is_unplan and not is_snoozed:
+            # Accept (✓) and Reject (✕) buttons — side by side
+            BTN = _ff(44)
+            btn_row = BoxLayout(
+                orientation="horizontal",
+                size_hint=(None, 1),
+                width=BTN * 2 + _ff(10),
+                spacing=_ff(10),
+            )
+
+            acc = _TapCard(ct=_GREEN_T, cb=_GREEN_B, bdr=_GREEN_BDR, r=_ff(10),
+                           size_hint=(None, None), size=(BTN, BTN),
+                           pos_hint={"center_y": 0.5})
+            acc.add_widget(_lbl("✓", _FSB, _ff(22), _WHITE,
+                                ha="center", va="middle", size_hint=(1, 1)))
+            acc.bind(on_release=lambda *_, tid=task_id: self._on_task_accept(tid))
+            btn_row.add_widget(acc)
+
+            rej = _TapCard(ct=_RED_T, cb=_RED_B, bdr=_RED_BDR, r=_ff(10),
+                           size_hint=(None, None), size=(BTN, BTN),
+                           pos_hint={"center_y": 0.5})
+            rej.add_widget(_lbl("✕", _FSB, _ff(22), _WHITE,
+                                ha="center", va="middle", size_hint=(1, 1)))
+            rej.bind(on_release=lambda *_, tid=task_id: self._on_task_reject(tid))
+            btn_row.add_widget(rej)
+
+            inner.add_widget(btn_row)
+
         else:
-            # Source icon  _ff(22.6) wide
-            src_img = _brief_asset(_SRC_ICONS.get(src_kind, "icon_tick.png"))
-            if src_img:
-                card.add_widget(Image(source=src_img, fit_mode="contain",
-                                      size_hint=(None, 0.38), width=_ff(22.6),
-                                      pos_hint={"x": 0.70, "y": 0.31}))
-            # Source label  _ff(14.13) Medium dim
-            card.add_widget(_lbl(
-                _SRC_LABELS.get(src_kind, "Assistant"),
-                _FMD, _ff(14.13), _DIM,
-                ha="left", va="middle",
-                size_hint=(0.11, 1.0),
-                pos_hint={"x": 0.745, "y": 0.0}))
+            # Source area (icon + label, or SNOOZED badge)
+            SRC_W = _ff(110)
+            src_box = BoxLayout(
+                orientation="horizontal",
+                size_hint=(None, 1),
+                width=SRC_W,
+                spacing=_ff(5),
+            )
+            if is_snoozed:
+                src_box.add_widget(_lbl(
+                    "SNOOZED", _FSB, _ff(12), _YELLOW,
+                    ha="center", va="middle", size_hint=(1, 1)))
+            else:
+                src_img_path = _brief_asset(_SRC_ICONS.get(src_kind, "icon_tick.png"))
+                if src_img_path:
+                    src_box.add_widget(Image(
+                        source=src_img_path, fit_mode="contain",
+                        size_hint=(None, 1), width=_ff(22)))
+                src_box.add_widget(_lbl(
+                    _SRC_LABELS.get(src_kind, "Assistant"),
+                    _FMD, _ff(14.13), _DIM,
+                    ha="left", va="middle", size_hint=(1, 1)))
+            inner.add_widget(src_box)
 
-        # Due date label  _ff(16.95) Medium bucket-colour
-        card.add_widget(_lbl(
-            due_text, _FMD, _ff(16.95), col,
-            ha="right", va="middle",
-            size_hint=(0.155, 0.55),
-            pos_hint={"x": 0.837, "y": 0.225}))
-
-        # Updated-at  micro label below due date  _ff(14.13)
-        if updated:
-            card.add_widget(_lbl(
-                updated, _FMD, _ff(11.3), _DIM,
-                ha="right", va="middle",
-                size_hint=(0.155, 0.35),
-                pos_hint={"x": 0.837, "y": 0.0}))
+            # Due date + updated label stacked vertically
+            due_box = BoxLayout(
+                orientation="vertical",
+                size_hint=(None, 1),
+                width=_ff(95),
+                spacing=0,
+            )
+            due_box.add_widget(_lbl(
+                due_text, _FMD, _ff(16.95), col,
+                ha="right", va="middle" if not updated else "bottom",
+                size_hint=(1, 0.58 if updated else 1)))
+            if updated:
+                due_box.add_widget(_lbl(
+                    updated, _FMD, _ff(11.3), _DIM,
+                    ha="right", va="top",
+                    size_hint=(1, 0.42)))
+            inner.add_widget(due_box)
 
         self._list_box.add_widget(card)
         self._list_box.add_widget(Widget(size_hint=(1, None), height=_ff(7)))
+
+    # ── Accept / Reject actions ────────────────────────────────────────────────
+
+    def _on_task_accept(self, task_id: str) -> None:
+        """Mark an unplanned task as completed (green-tick tap)."""
+        self._patch_task(task_id, "completed")
+
+    def _on_task_reject(self, task_id: str) -> None:
+        """Cancel an unplanned task (red-cross tap)."""
+        self._patch_task(task_id, "cancelled")
+
+    def _patch_task(self, task_id: str, new_status: str) -> None:
+        """PATCH the task status optimistically (remove from list immediately, sync in background)."""
+        if not task_id:
+            return
+
+        # Optimistic update — remove the row from every bucket immediately
+        for bucket in self._rows:
+            self._rows[bucket] = [
+                r for r in self._rows[bucket]
+                if str(r.get("id") or "") != task_id
+            ]
+        self._update_counts()
+        self._rebuild_task_list()
+
+        # Background API call
+        async def _call():
+            try:
+                await self.backend.patch_commitment(task_id, new_status)
+            except Exception as exc:
+                logger.warning("patch_commitment failed: %s", exc)
+            # Refresh full list after a short delay to stay in sync
+            await asyncio.sleep(0.5)
+            # Re-fetch on main thread via Clock
+            Clock.schedule_once(self._load_tasks, 0)
+
+        run_async(_call())
 
     # ── Count badges ──────────────────────────────────────────────────────────
 
