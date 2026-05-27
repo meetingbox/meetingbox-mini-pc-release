@@ -203,8 +203,22 @@ class _Dot(Widget):
 
 # ── Date/time helpers ──────────────────────────────────────────────────────────
 
+def _now_naive() -> datetime:
+    """Current display-timezone time as a *naive* datetime (no tzinfo).
+
+    display_now() returns an aware datetime; stripping tzinfo here gives a
+    naive value that can be safely compared against other naive values from
+    _parse_dt() without raising TypeError.
+    """
+    return display_now().replace(tzinfo=None)
+
+
 def _parse_dt(raw: str | None) -> datetime | None:
-    """Parse ISO-8601 string → naive local datetime, or None on failure."""
+    """Parse ISO-8601 string → naive local datetime, or None on failure.
+
+    Always returns a naive datetime so callers can compare with _now_naive()
+    without triggering 'can't compare offset-naive and offset-aware' errors.
+    """
     if not raw:
         return None
     try:
@@ -227,14 +241,17 @@ def _fmt_time_12h(d: datetime) -> str:
 
 
 def _fmt_due(row: dict, bucket: str) -> str:
-    """Return a live human-readable due label, recalculated from display_now()."""
+    """Return a live human-readable due label, recalculated from _now_naive().
+
+    Both d and now are naive datetimes so comparison never raises TypeError.
+    """
     if bucket == "unplanned":
         return "No date"
     raw = (row.get("due_at") or row.get("remind_at") or "").strip()
     d = _parse_dt(raw)
     if d is None:
         return "—"
-    now = display_now()
+    now = _now_naive()          # ← naive, safe to compare with d (also naive)
     if bucket == "due_today":
         delta_min = int((d - now).total_seconds() / 60)
         if -2 <= delta_min <= 2:
@@ -250,24 +267,30 @@ def _fmt_due(row: dict, bucket: str) -> str:
             return f"{mins_ago // 60}h ago"
         return _fmt_time_12h(d)
     # upcoming
-    MONTHS = ("Jan","Feb","Mar","Apr","May","Jun",
-              "Jul","Aug","Sep","Oct","Nov","Dec")
+    MONTHS = ("Jan", "Feb", "Mar", "Apr", "May", "Jun",
+              "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
     days = (d.date() - now.date()).days
     if days == 0:
         return _fmt_time_12h(d)
     if days == 1:
         return "Tomorrow"
     if days < 7:
-        return d.strftime("%A")          # "Monday", "Tuesday" …
+        return d.strftime("%A")   # "Monday", "Tuesday" …
     return f"{MONTHS[d.month - 1]} {d.day}"
 
 
 def _relative_updated(row: dict) -> str:
-    """Return a compact 'Updated X ago' string from updated_at."""
+    """Return a compact 'X ago' string from updated_at / created_at.
+
+    Both values are naive after _parse_dt, and _now_naive() is also naive,
+    so the subtraction is always safe.
+    """
     d = _parse_dt(row.get("updated_at") or row.get("created_at"))
     if d is None:
         return ""
-    delta = int((display_now() - d).total_seconds())
+    delta = int((_now_naive() - d).total_seconds())  # ← both naive, safe
+    if delta < 0:
+        return ""
     if delta < 60:
         return "just now"
     if delta < 3600:
@@ -294,7 +317,11 @@ def _parse_tags(raw: str | None) -> list[str]:
 
 def _categorize(row: dict) -> str | None:
     """Return bucket string or None (skip completed/cancelled).
-    Snoozed tasks remain visible — they appear in their time bucket."""
+
+    Snoozed tasks remain visible — they appear in their time bucket.
+    Uses _now_naive() so that both sides of the comparison are naive
+    datetimes and no TypeError is raised.
+    """
     status = (row.get("status") or "").lower()
     if status in ("completed", "cancelled", "canceled"):
         return None
@@ -305,7 +332,8 @@ def _categorize(row: dict) -> str | None:
     d = _parse_dt(raw)
     if d is None:
         return "unplanned"
-    today_end = display_now().replace(hour=23, minute=59, second=59, microsecond=0)
+    # Both d and today_end are naive — comparison is safe
+    today_end = _now_naive().replace(hour=23, minute=59, second=59, microsecond=0)
     return "due_today" if d <= today_end else "upcoming"
 
 
@@ -562,10 +590,18 @@ class TasksScreen(BaseScreen):
 
     # ── Task list renderer ─────────────────────────────────────────────────────
 
-    def _rebuild_task_list(self) -> None:
+    def _rebuild_task_list(self, error_msg: str = "") -> None:
         if self._list_box is None:
             return
         self._list_box.clear_widgets()
+
+        if error_msg:
+            self._list_box.add_widget(_lbl(
+                f"Could not load tasks\n{error_msg[:80]}",
+                _FMD, _ff(18.0), _ORANGE,
+                ha="center", va="middle",
+                size_hint=(1, None), height=_ff(120)))
+            return
 
         buckets = (["due_today", "upcoming", "unplanned"]
                    if self._active_tab == "all"
@@ -583,9 +619,8 @@ class TasksScreen(BaseScreen):
             self._list_box.add_widget(Widget(size_hint=(1, None), height=_ff(10)))
 
         if not has_any:
-            label_text = "Loading tasks…" if self._loading else "No tasks to show"
             self._list_box.add_widget(_lbl(
-                label_text, _FMD, _ff(21.19), _MUTED,
+                "No tasks to show", _FMD, _ff(21.19), _MUTED,
                 ha="center", va="middle",
                 size_hint=(1, None), height=_ff(120)))
 
@@ -762,7 +797,7 @@ class TasksScreen(BaseScreen):
     def _update_last_fetched_label(self) -> None:
         if self._last_updated_lbl is None or self._last_fetch_dt is None:
             return
-        delta = int((display_now() - self._last_fetch_dt).total_seconds())
+        delta = int((_now_naive() - self._last_fetch_dt).total_seconds())
         if delta < 15:
             self._last_updated_lbl.text = "Updated just now"
         elif delta < 60:
@@ -775,33 +810,36 @@ class TasksScreen(BaseScreen):
     # ── Data loading ───────────────────────────────────────────────────────────
 
     def _load_tasks(self, *_) -> None:
-        """Fetch live data from GET /api/commitments (active + snoozed) and rebuild."""
+        """Fetch live data from GET /api/commitments (active + snoozed) and rebuild.
+
+        The outer try/except guarantees Clock.schedule_once(_apply) is ALWAYS
+        called — even if an unexpected exception escapes the inner handler —
+        so the screen never stays frozen at "Loading tasks…".
+        """
         async def _go():
-            try:
-                # status="" → server default: status IN ('active', 'snoozed')
-                result = await self.backend.get_commitments(status="", limit=100)
-            except Exception as exc:
-                logger.warning("tasks: get_commitments failed: %s", exc)
-                result = {"commitments": [], "count": 0}
-
-            rows: list[dict] = result.get("commitments") or []
-
-            # Bucket rows; preserve server sort order within each bucket
             bucketed: dict[str, list] = {
                 "due_today": [], "upcoming": [], "unplanned": []
             }
-            for r in rows:
-                b = _categorize(r)
-                if b is not None:
-                    bucketed[b].append(r)
+            error_msg: str = ""
+            try:
+                # status="" → server default: status IN ('active', 'snoozed')
+                result = await self.backend.get_commitments(status="", limit=100)
+                rows: list[dict] = result.get("commitments") or []
+                for r in rows:
+                    b = _categorize(r)
+                    if b is not None:
+                        bucketed[b].append(r)
+            except Exception as exc:
+                logger.error("tasks: load failed: %s", exc, exc_info=True)
+                error_msg = str(exc)
 
             def _apply(_dt):
                 self._loading = False
                 self._rows = bucketed
-                self._last_fetch_dt = display_now()
+                self._last_fetch_dt = _now_naive()
                 self._update_counts()
                 self._update_last_fetched_label()
-                self._rebuild_task_list()
+                self._rebuild_task_list(error_msg=error_msg)
 
             Clock.schedule_once(_apply, 0)
 
