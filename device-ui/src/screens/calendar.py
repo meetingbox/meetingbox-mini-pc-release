@@ -1049,20 +1049,7 @@ class CalendarScreen(BaseScreen):
                 size_hint=(28 / DW, 34 / DH),
                 pos_hint={"x": 108.0 / DW, "y": (DH - 34) / 2 / DH}))
 
-        db.bind(on_release=lambda *_, _m=m: self._open_detail(_m))
         card.add_widget(db)
-
-    # ── Detail navigation ─────────────────────────────────────────────────────
-
-    def _open_detail(self, m: dict) -> None:
-        """Navigate to the calendar meeting detail screen for meeting *m*."""
-        try:
-            detail = self.manager.get_screen("cal_meeting_detail")
-            detail.set_meeting(m)
-            self.manager.transition.direction = "left"
-            self.manager.current = "cal_meeting_detail"
-        except Exception as exc:
-            logger.warning("Could not open meeting detail: %s", exc)
 
     # ── Add-event button ───────────────────────────────────────────────────────
     # Frame '27':  440.72, 716.16  378.57×60.74  r=16.95
@@ -1118,11 +1105,14 @@ class CalendarScreen(BaseScreen):
 
     def on_enter(self) -> None:
         today = display_now().date()
-        if self._target_date is not None:
-            target = self._target_date
-            self._target_date = None  # consume; one-shot
-        else:
-            target = today
+        # NOTE: do NOT consume self._target_date here. goto_screen() in main.py
+        # manually fires on_enter() once, and Kivy fires it again automatically
+        # after the transition completes — so on_enter runs twice per entry.
+        # If we cleared _target_date on the first call, the second call would
+        # fall back to "today" and overwrite _sel_date / heading / meeting list,
+        # which is exactly the "shows today even when I asked for tomorrow" bug.
+        # _target_date is cleared in on_leave() instead.
+        target = self._target_date if self._target_date is not None else today
         self._view_week_mon = target - timedelta(days=target.weekday())
         self._col_dates = [self._view_week_mon + timedelta(days=i) for i in range(7)]
         self._sel_date = target
@@ -1136,7 +1126,10 @@ class CalendarScreen(BaseScreen):
             lbl.text = str(self._col_dates[i].day)
 
         for col_date, hl in zip(self._col_dates, self._highlights):
-            hl.set_mode("today" if col_date == today else "none")
+            if col_date == target:
+                hl.set_mode("today" if col_date == today else "sel")
+            else:
+                hl.set_mode("none")
 
         if self._heading_lbl:
             self._heading_lbl.text = "Today" if target == today else target.strftime("%A")
@@ -1162,6 +1155,10 @@ class CalendarScreen(BaseScreen):
         # No per-screen polling; centralized app sync loop updates this cache.
 
     def on_leave(self) -> None:
+        # Clear target_date so the next entry without an explicit set_target_date()
+        # call defaults to today.  (We do NOT clear it in on_enter because Kivy
+        # fires on_enter twice per navigation — see comment in on_enter.)
+        self._target_date = None
         if self._view_week_mon is not None:
             self.app.ui_cache_unsubscribe(
                 f"calendar_week:{self._view_week_mon.isoformat()}",
