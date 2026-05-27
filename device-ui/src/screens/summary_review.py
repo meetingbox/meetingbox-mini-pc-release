@@ -673,6 +673,7 @@ class SummaryReviewScreen(BaseScreen):
         # Items tab.
         self._agentic_actions: list[dict] = []
         self._rendered_agentic_action_ids: set[str] = set()
+        self._selected_agentic_action_ids: set[str] = set()
         self._decisions: list[str] = []
         self._topics: list[dict] = []
         self._sidebar_tabs: dict[str, _SidebarTab] = {}
@@ -1109,10 +1110,20 @@ class SummaryReviewScreen(BaseScreen):
         return widgets
 
     def _build_action_items_full(self) -> list[Widget]:
-        widgets, _scroll, container = self._build_full_card(
+        widgets, scroll, container = self._build_full_card(
             icon_filename="action_items_icon.png",
             title_text="Action Items",
         )
+        # Leave room for the bulk action buttons at the bottom-right of
+        # the Action Items card.
+        scroll_box = canvas_box(
+            FULL_TAB_CARD["x"] * CANVAS_W + 20.0,
+            FULL_TAB_CARD["y_top"] * CANVAS_H + 72.0,
+            FULL_TAB_CARD["w"] * CANVAS_W - 40.0,
+            FULL_TAB_CARD["h"] * CANVAS_H - 154.0,
+        )
+        scroll.size_hint = (scroll_box["w"], scroll_box["h"])
+        scroll.pos_hint = {"x": scroll_box["x"], "y": 1.0 - scroll_box["y_top"] - scroll_box["h"]}
         if not self._action_items and not self._agentic_actions:
             container.add_widget(
                 self._make_row_label("No action items captured for this meeting.", color=COL_HINT)
@@ -1120,6 +1131,7 @@ class SummaryReviewScreen(BaseScreen):
             return widgets
         rendered_action_ids: set[str] = set()
         for i, item in enumerate(self._action_items):
+            linked_action = self._match_agentic_action_for_item(item, rendered_action_ids)
             row = BoxLayout(
                 orientation="horizontal",
                 size_hint_y=None,
@@ -1127,9 +1139,11 @@ class SummaryReviewScreen(BaseScreen):
                 padding=(4, 6, 4, 6),
                 spacing=10,
             )
+            action_id = str((linked_action or {}).get("id") or "")
+            selected = bool(action_id and action_id in self._selected_agentic_action_ids)
             check = _ImgBtn(
                 source=_png(
-                    "action_check_done.png" if item.get("completed") else "action_check_pending.png"
+                    "action_check_done.png" if selected or (not action_id and item.get("completed")) else "action_check_pending.png"
                 ),
                 allow_stretch=True,
                 keep_ratio=True,
@@ -1138,7 +1152,10 @@ class SummaryReviewScreen(BaseScreen):
                 size=(32, 32),
                 pos_hint={"center_y": 0.5},
             )
-            check.bind(on_release=lambda _w, idx=i: self._toggle_action(idx))
+            if action_id:
+                check.bind(on_release=lambda _w, aid=action_id: self._toggle_action_selection(aid))
+            else:
+                check.bind(on_release=lambda _w, idx=i: self._toggle_action(idx))
             row.add_widget(check)
 
             mid = BoxLayout(orientation="vertical", spacing=2)
@@ -1156,9 +1173,7 @@ class SummaryReviewScreen(BaseScreen):
             mid.add_widget(task)
             mid.add_widget(sub)
             row.add_widget(mid)
-            linked_action = self._match_agentic_action_for_item(item, rendered_action_ids)
             if linked_action is not None:
-                action_id = str(linked_action.get("id") or "")
                 rendered_action_ids.add(action_id)
                 btn = self._make_execute_button(linked_action)
                 if btn is not None:
@@ -1181,6 +1196,9 @@ class SummaryReviewScreen(BaseScreen):
             for action in remaining:
                 container.add_widget(self._build_followup_row(action))
         self._rendered_agentic_action_ids = rendered_action_ids
+        bulk = self._make_bulk_action_buttons()
+        if bulk is not None:
+            widgets.append(bulk)
         return widgets
 
     @staticmethod
@@ -1285,6 +1303,130 @@ class SummaryReviewScreen(BaseScreen):
             return buttons
         return _button("Add to calendar", 160, create_draft=False, success_text="Added")
 
+    def _make_bulk_action_buttons(self) -> Optional[Widget]:
+        from kivy.uix.button import Button
+
+        if not self._pending_executable_actions():
+            return None
+        box = BoxLayout(
+            orientation="horizontal",
+            spacing=10,
+            **kivy_hints(canvas_box(
+                FULL_TAB_CARD["x"] * CANVAS_W + FULL_TAB_CARD["w"] * CANVAS_W - 398.0,
+                FULL_TAB_CARD["y_top"] * CANVAS_H + FULL_TAB_CARD["h"] * CANVAS_H - 66.0,
+                360.0,
+                44.0,
+            )),
+        )
+
+        def _button(text: str, *, selected_only: bool) -> Button:
+            btn = Button(
+                text=text,
+                background_normal="",
+                background_color=ACCENT_BLUE,
+                color=COL_WHITE,
+                font_name=_FONT_BOLD,
+                bold=True,
+            )
+            btn.bind(
+                on_release=lambda _w, b=btn: self._execute_bulk_actions(
+                    selected_only=selected_only,
+                    source_button=b,
+                )
+            )
+            return btn
+
+        box.add_widget(_button("Execute selected", selected_only=True))
+        box.add_widget(_button("Execute all", selected_only=False))
+        return box
+
+    def _pending_executable_actions(self) -> list[dict]:
+        actions: list[dict] = []
+        seen: set[str] = set()
+        for action in self._agentic_actions:
+            aid = str(action.get("id") or "")
+            if not aid or aid in seen:
+                continue
+            if self._action_connector(action) not in {"gmail", "calendar"}:
+                continue
+            if action.get("executed_at") or action.get("status") == "executed":
+                continue
+            seen.add(aid)
+            actions.append(action)
+        return actions
+
+    def _sync_default_action_selection(self) -> None:
+        pending_ids = {str(a.get("id") or "") for a in self._pending_executable_actions()}
+        pending_ids.discard("")
+        self._selected_agentic_action_ids.intersection_update(pending_ids)
+        for aid in pending_ids:
+            if aid not in self._selected_agentic_action_ids:
+                self._selected_agentic_action_ids.add(aid)
+
+    def _toggle_action_selection(self, action_id: str) -> None:
+        if not action_id:
+            return
+        if action_id in self._selected_agentic_action_ids:
+            self._selected_agentic_action_ids.remove(action_id)
+        else:
+            self._selected_agentic_action_ids.add(action_id)
+        if self._active_tab == "action_items":
+            self._refresh_after_data_change()
+
+    def _mark_action_executed(self, action_id: str) -> None:
+        self._selected_agentic_action_ids.discard(action_id)
+        for action in self._agentic_actions:
+            if str(action.get("id") or "") == action_id:
+                action["status"] = "executed"
+                action["executed_at"] = action.get("executed_at") or "now"
+                break
+
+    def _execute_bulk_actions(self, *, selected_only: bool, source_button) -> None:
+        pending = self._pending_executable_actions()
+        if selected_only:
+            pending = [
+                action for action in pending
+                if str(action.get("id") or "") in self._selected_agentic_action_ids
+            ]
+        if not pending:
+            try:
+                source_button.text = "None selected"
+            except Exception:  # noqa: BLE001
+                pass
+            return
+        try:
+            source_button.disabled = True
+            source_button.text = "Working..."
+        except Exception:  # noqa: BLE001
+            pass
+
+        async def _run():
+            ok_count = 0
+            for action in pending:
+                action_id = str(action.get("id") or "")
+                if not action_id:
+                    continue
+                create_draft = self._action_connector(action) == "gmail"
+                try:
+                    await self.backend.execute_action(action_id, create_draft=create_draft)
+                    ok_count += 1
+                    self._mark_action_executed(action_id)
+                except Exception:  # noqa: BLE001
+                    logger.exception("bulk execute_action failed for %s", action_id)
+
+            def _apply(_dt):
+                try:
+                    source_button.text = f"Done {ok_count}/{len(pending)}"
+                    source_button.background_color = (0.16, 0.66, 0.30, 1)
+                    source_button.disabled = False
+                except Exception:  # noqa: BLE001
+                    pass
+                self._refresh_after_data_change()
+
+            Clock.schedule_once(_apply, 0)
+
+        run_async(_run())
+
     def _build_followup_row(self, action: dict) -> Widget:
         """One Follow-ups row: title + sub + draft/calendar pill button."""
 
@@ -1306,6 +1448,20 @@ class SummaryReviewScreen(BaseScreen):
             padding=(4, 6, 4, 6),
             spacing=10,
         )
+        action_id = str(action.get("id") or "")
+        if action_id and not executed and (is_email or is_cal):
+            selected = action_id in self._selected_agentic_action_ids
+            check = _ImgBtn(
+                source=_png("action_check_done.png" if selected else "action_check_pending.png"),
+                allow_stretch=True,
+                keep_ratio=True,
+                fit_mode="contain",
+                size_hint=(None, None),
+                size=(30, 30),
+                pos_hint={"center_y": 0.5},
+            )
+            check.bind(on_release=lambda _w, aid=action_id: self._toggle_action_selection(aid))
+            row.add_widget(check)
         mid = BoxLayout(orientation="vertical", spacing=2)
         mid.add_widget(self._make_row_label(str(title), bold=True, color=COL_WHITE))
         sub_parts: list[str] = []
@@ -1353,6 +1509,7 @@ class SummaryReviewScreen(BaseScreen):
             def _apply(_dt):
                 try:
                     if ok:
+                        self._mark_action_executed(action_id)
                         btn.text = success_text
                         btn.background_color = (0.16, 0.66, 0.30, 1)
                     else:
@@ -1360,6 +1517,8 @@ class SummaryReviewScreen(BaseScreen):
                         btn.disabled = False
                 except Exception:  # noqa: BLE001
                     pass
+                if ok and self._active_tab == "action_items":
+                    self._refresh_after_data_change()
 
             Clock.schedule_once(_apply, 0)
 
@@ -1701,6 +1860,7 @@ class SummaryReviewScreen(BaseScreen):
                     self._agentic_actions = [
                         a for a in actions if isinstance(a, dict) and a.get("id")
                     ]
+                    self._sync_default_action_selection()
             except Exception as exc:  # noqa: BLE001
                 logger.debug("get_actions failed: %s", exc)
                 self._agentic_actions = []
@@ -1731,6 +1891,7 @@ class SummaryReviewScreen(BaseScreen):
                         self._agentic_actions = [
                             a for a in generated if isinstance(a, dict) and a.get("id")
                         ]
+                        self._sync_default_action_selection()
                 except Exception as exc:  # noqa: BLE001
                     logger.debug("generate_actions fallback failed: %s", exc)
 
