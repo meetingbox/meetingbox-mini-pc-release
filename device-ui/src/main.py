@@ -304,6 +304,7 @@ from screens.system import SystemScreen
 from screens.calendar import CalendarScreen
 from screens.morning_brief import MorningBriefScreen
 from screens.emails import EmailsScreen
+from screens.tasks import TasksScreen
 from components.quick_panel import QuickPanel
 
 # ------------------------------------------------------------------
@@ -1081,6 +1082,7 @@ class MeetingBoxApp(App):
         self.screen_manager.add_widget(CalendarScreen(name='calendar'))
         self.screen_manager.add_widget(MorningBriefScreen(name='morning_brief'))
         self.screen_manager.add_widget(EmailsScreen(name='emails'))
+        self.screen_manager.add_widget(TasksScreen(name='tasks'))
 
         # BOOT: always start with splash
         self.screen_manager.current = 'splash'
@@ -4099,8 +4101,8 @@ class MeetingBoxApp(App):
             return
 
         if intent.name == "show_tasks":
-            self.goto_screen("meetings", "slide_left")
-            self._voice_reply("Opening meetings and action items.", duration=3.0)
+            self.goto_screen("tasks", "slide_left")
+            self._voice_reply("Opening your tasks.", duration=3.0)
             return
 
         if intent.name == "show_meetings":
