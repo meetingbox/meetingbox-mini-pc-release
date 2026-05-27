@@ -299,6 +299,7 @@ from screens.connectivity_check import ConnectivityCheckScreen
 # Retained screens (still useful)
 from screens.meetings import MeetingsScreen
 from screens.meeting_detail import MeetingDetailScreen
+from screens.cal_meeting_detail import CalendarMeetingDetailScreen
 from screens.wifi import WiFiScreen
 from screens.system import SystemScreen
 from screens.calendar import CalendarScreen
@@ -1077,6 +1078,7 @@ class MeetingBoxApp(App):
 
         self.screen_manager.add_widget(MeetingsScreen(name='meetings'))
         self.screen_manager.add_widget(MeetingDetailScreen(name='meeting_detail'))
+        self.screen_manager.add_widget(CalendarMeetingDetailScreen(name='cal_meeting_detail'))
         self.screen_manager.add_widget(WiFiScreen(name='wifi'))
         self.screen_manager.add_widget(SystemScreen(name='system'))
         self.screen_manager.add_widget(CalendarScreen(name='calendar'))

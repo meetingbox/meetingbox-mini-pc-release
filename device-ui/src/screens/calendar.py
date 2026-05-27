@@ -1049,7 +1049,20 @@ class CalendarScreen(BaseScreen):
                 size_hint=(28 / DW, 34 / DH),
                 pos_hint={"x": 108.0 / DW, "y": (DH - 34) / 2 / DH}))
 
+        db.bind(on_release=lambda *_, _m=m: self._open_detail(_m))
         card.add_widget(db)
+
+    # ── Detail navigation ─────────────────────────────────────────────────────
+
+    def _open_detail(self, m: dict) -> None:
+        """Navigate to the calendar meeting detail screen for meeting *m*."""
+        try:
+            detail = self.manager.get_screen("cal_meeting_detail")
+            detail.set_meeting(m)
+            self.manager.transition.direction = "left"
+            self.manager.current = "cal_meeting_detail"
+        except Exception as exc:
+            logger.warning("Could not open meeting detail: %s", exc)
 
     # ── Add-event button ───────────────────────────────────────────────────────
     # Frame '27':  440.72, 716.16  378.57×60.74  r=16.95
