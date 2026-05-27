@@ -2744,7 +2744,7 @@ class MeetingBoxApp(App):
             except Exception:
                 pass
 
-    def _realtime_voice_navigate(self, screen: str) -> None:
+    def _realtime_voice_navigate(self, screen: str, target_date=None) -> None:
         """Open a main UI screen when the cloud Realtime model calls navigate_device_ui."""
         s = (screen or "").strip()
         routes = {
@@ -2760,6 +2760,12 @@ class MeetingBoxApp(App):
         if not pair:
             return
         name, tr = pair
+        if target_date and name == "calendar":
+            try:
+                cal = self.screen_manager.get_screen("calendar")
+                cal.set_target_date(target_date)
+            except Exception:
+                logger.exception("Failed to set calendar target_date")
         try:
             self.goto_screen(name, tr)
         except Exception:

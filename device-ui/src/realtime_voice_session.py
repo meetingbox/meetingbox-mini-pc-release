@@ -491,7 +491,15 @@ class RealtimeVoiceSession:
         screen = data.get("device_navigate")
         if not isinstance(screen, str) or not screen.strip():
             return
-        Clock.schedule_once(lambda _dt: self._safe_call(cb, screen.strip()), 0)
+        target_date = None
+        target_date_str = data.get("target_date")
+        if target_date_str:
+            try:
+                from datetime import date as _date
+                target_date = _date.fromisoformat(str(target_date_str).strip())
+            except (ValueError, TypeError):
+                pass
+        Clock.schedule_once(lambda _dt: self._safe_call(cb, screen.strip(), target_date), 0)
 
     @staticmethod
     def _safe_call(cb, *args) -> None:

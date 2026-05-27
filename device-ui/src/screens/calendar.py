@@ -385,6 +385,7 @@ class CalendarScreen(BaseScreen):
 
         # Week navigation state
         self._view_week_mon: date | None = None   # Monday of the week currently shown
+        self._target_date: date | None = None     # Set by main.py before on_enter to deep-link to a date
 
         # Dynamic day-view state
         self._week_data: dict = {}          # ISO date str -> {"meetings": [...]}
@@ -1098,12 +1099,20 @@ class CalendarScreen(BaseScreen):
 
     # ── Lifecycle ──────────────────────────────────────────────────────────────
 
+    def set_target_date(self, d: date) -> None:
+        """Called by main.py before on_enter to jump to a specific date instead of today."""
+        self._target_date = d
+
     def on_enter(self) -> None:
         today = display_now().date()
-        # Always reset to the current week when entering the screen
-        self._view_week_mon = today - timedelta(days=today.weekday())
+        if self._target_date is not None:
+            target = self._target_date
+            self._target_date = None  # consume; one-shot
+        else:
+            target = today
+        self._view_week_mon = target - timedelta(days=target.weekday())
         self._col_dates = [self._view_week_mon + timedelta(days=i) for i in range(7)]
-        self._sel_date = today
+        self._sel_date = target
         cache_key = f"calendar_week:{self._view_week_mon.isoformat()}"
         cached_week = self.app.ui_cache_get(cache_key)
         if isinstance(cached_week, dict) and cached_week:
@@ -1117,9 +1126,9 @@ class CalendarScreen(BaseScreen):
             hl.set_mode("today" if col_date == today else "none")
 
         if self._heading_lbl:
-            self._heading_lbl.text = "Today"
+            self._heading_lbl.text = "Today" if target == today else target.strftime("%A")
         if self._datestr_lbl:
-            self._datestr_lbl.text = _fmt_date(today)
+            self._datestr_lbl.text = _fmt_date(target)
 
         # Only show "Loading calendar..." when there is no cached data to display.
         # If _week_data is already populated (e.g. returning from idle), keep the
