@@ -99,6 +99,27 @@ _SESSION_IDLE_CLOSE_S = 40.0
 
 _REALTIME_OUTPUT_VOICE_FALLBACK = "marin"
 
+# When True, the device sends a small response.create right after the
+# session is configured so the model greets the user (e.g. "Hey, how can I
+# help you?"). This gives a consistent verbal "I'm listening" cue after the
+# wake word triggers, instead of silence until the user speaks again.
+# The greeting is interruptible (interrupt_response stays true), so if the
+# user is already mid-sentence after the wake word it gets pre-empted
+# naturally without dead air.
+_REALTIME_WAKE_GREETING_ENABLED = os.environ.get(
+    "REALTIME_WAKE_GREETING_ENABLED", "1"
+).strip().lower() not in ("", "0", "false", "no", "off")
+
+_REALTIME_WAKE_GREETING_INSTRUCTIONS = (
+    "Open with exactly one short greeting sentence to confirm you are "
+    "listening, max six words. Vary it naturally between phrasings like "
+    "'Hey, how can I help you?', 'Yes, I'm listening', 'Hi, what do you "
+    "need?', 'Go ahead.', 'I'm here.'. Then immediately stop and wait for "
+    "the user's request. Do NOT introduce yourself, list capabilities, "
+    "mention tools, or read out today's date / weather / schedule unless "
+    "the user explicitly asks."
+)
+
 # STT model for the user-speech transcript stream (used by the UI
 # overlay, farewell detection, and grammar correction). The full
 # gpt-4o-transcribe is significantly more accurate than the mini
@@ -374,6 +395,10 @@ class RealtimeVoiceSession:
         # Tools we received from the server in session.created. Cached so
         # we can re-send them in session.update with end_session appended.
         self._server_tools: list[dict] = []
+
+        # Set once the wake-word greeting response.create has been emitted
+        # for this session, so we never send it twice.
+        self._wake_greeting_sent: bool = False
 
         # State exposed to the UI / idle watchdog
         self._state = "idle"            # idle | listening | thinking | speaking
@@ -958,6 +983,28 @@ class RealtimeVoiceSession:
 
                 elif t == "session.updated":
                     self._log_session_summary(msg, label="session.updated")
+                    # Fire the wake-word greeting once per session, right
+                    # after our session.update is acknowledged so the model
+                    # has its full tool list + voice config. Interruptible,
+                    # so a user already mid-sentence pre-empts it cleanly.
+                    if (
+                        _REALTIME_WAKE_GREETING_ENABLED
+                        and not self._wake_greeting_sent
+                    ):
+                        self._wake_greeting_sent = True
+                        try:
+                            await ws.send(json.dumps({
+                                "type": "response.create",
+                                "response": {
+                                    "instructions": _REALTIME_WAKE_GREETING_INSTRUCTIONS,
+                                },
+                            }))
+                            logger.info("Realtime: wake-word greeting sent")
+                        except Exception:
+                            logger.warning(
+                                "Realtime: wake-word greeting send failed",
+                                exc_info=True,
+                            )
 
                 # ---- User speech --------------------------------------
                 elif t == "input_audio_buffer.speech_started":
