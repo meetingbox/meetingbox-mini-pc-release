@@ -1157,6 +1157,14 @@ class SummaryReviewScreen(BaseScreen):
             else:
                 check.bind(on_release=lambda _w, idx=i: self._toggle_action(idx))
             row.add_widget(check)
+            row.add_widget(
+                _Dot(
+                    color=COL_ACCENT,
+                    size_hint=(None, None),
+                    size=(10, 10),
+                    pos_hint={"center_y": 0.5},
+                )
+            )
 
             mid = BoxLayout(orientation="vertical", spacing=2)
             task = self._make_row_label(item.get("task", ""), bold=True, color=COL_WHITE)
@@ -1462,6 +1470,14 @@ class SummaryReviewScreen(BaseScreen):
             )
             check.bind(on_release=lambda _w, aid=action_id: self._toggle_action_selection(aid))
             row.add_widget(check)
+        row.add_widget(
+            _Dot(
+                color=COL_ACCENT,
+                size_hint=(None, None),
+                size=(10, 10),
+                pos_hint={"center_y": 0.5},
+            )
+        )
         mid = BoxLayout(orientation="vertical", spacing=2)
         mid.add_widget(self._make_row_label(str(title), bold=True, color=COL_WHITE))
         sub_parts: list[str] = []
