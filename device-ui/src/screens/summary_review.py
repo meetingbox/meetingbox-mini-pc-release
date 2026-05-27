@@ -866,7 +866,14 @@ class SummaryReviewScreen(BaseScreen):
         self._scaled_labels.append((lbl, ratio))
         return lbl
 
-    def _overview_card(self, title: str, *, glyph: str = "◆", min_height: float = 96.0) -> _OverviewCard:
+    def _overview_card(
+        self,
+        title: str,
+        *,
+        glyph: str = "◆",
+        min_height: float = 96.0,
+        tab_id: Optional[str] = None,
+    ) -> _OverviewCard:
         card = _OverviewCard(min_height=min_height)
         header = BoxLayout(orientation="horizontal", size_hint_y=None, height=34, spacing=10)
         icon = Label(
@@ -890,6 +897,16 @@ class SummaryReviewScreen(BaseScreen):
                 bold=True,
             )
         )
+        if tab_id:
+            link = _AccentLink(
+                text="View all",
+                size_hint=(None, 1),
+                width=110,
+                halign="right",
+            )
+            self._scaled_labels.append((link, SECTION_HINT_FS_RATIO))
+            link.bind(on_release=lambda *_args, tid=tab_id: self._show_tab(tid))
+            header.add_widget(link)
         card.add_widget(header)
         return card
 
@@ -933,7 +950,12 @@ class SummaryReviewScreen(BaseScreen):
         container.add_widget(ai_card)
 
         if self._topics:
-            key_card = self._overview_card("Key Topics", glyph="◆", min_height=112.0)
+            key_card = self._overview_card(
+                "Key Topics",
+                glyph="◆",
+                min_height=112.0,
+                tab_id="key_points",
+            )
             for t in self._topics:
                 row = BoxLayout(orientation="vertical", size_hint_y=None, height=52, spacing=6)
                 top = BoxLayout(orientation="horizontal", size_hint_y=None, height=26)
@@ -963,7 +985,12 @@ class SummaryReviewScreen(BaseScreen):
             container.add_widget(key_card)
 
         if self._action_items:
-            actions_card = self._overview_card("Action Items", glyph="✓", min_height=112.0)
+            actions_card = self._overview_card(
+                "Action Items",
+                glyph="✓",
+                min_height=112.0,
+                tab_id="action_items",
+            )
             for item in self._action_items:
                 task = (item.get("task") or "").strip()
                 if not task:
@@ -985,7 +1012,12 @@ class SummaryReviewScreen(BaseScreen):
             container.add_widget(actions_card)
 
         if self._decisions:
-            decisions_card = self._overview_card("Decisions Made", glyph="⌁", min_height=112.0)
+            decisions_card = self._overview_card(
+                "Decisions Made",
+                glyph="⌁",
+                min_height=112.0,
+                tab_id="decisions",
+            )
             for decision in self._decisions:
                 decisions_card.add_widget(
                     self._overview_label("• " + decision, color=COL_MUTED)
