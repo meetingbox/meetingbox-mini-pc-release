@@ -70,14 +70,9 @@ from summary_layout import (
     META_EXPORT,
     META_FILE_ICON,
     META_PARTICIPANTS,
-    META_RECORDED,
     META_SHARE,
     META_TITLE,
     META_TITLE_FS_RATIO,
-    OV_ACTIONS_CARD,
-    OV_AI_CARD,
-    OV_DECISIONS_CARD,
-    OV_KEY_CARD,
     PAGE_TITLE,
     PAGE_TITLE_FS_RATIO,
     PLAY_BORDER,
@@ -619,6 +614,40 @@ class _ScrollText(ScrollView):
         self._label.font_size = value
 
 
+class _OverviewCard(BoxLayout):
+    """Auto-height card used by the scrollable Overview dashboard."""
+
+    def __init__(self, *, min_height: float = 96.0, **kwargs):
+        super().__init__(
+            orientation="vertical",
+            size_hint_y=None,
+            padding=(24, 18, 24, 18),
+            spacing=10,
+            **kwargs,
+        )
+        self._min_height = min_height
+        with self.canvas.before:
+            Color(*CARD_FILL)
+            self._rect = RoundedRectangle(pos=self.pos, size=self.size, radius=[CARD_RADIUS])
+            Color(*CARD_BORDER)
+            self._line = Line(
+                rounded_rectangle=(self.x, self.y, self.width, self.height, CARD_RADIUS),
+                width=1.2,
+            )
+        self.bind(pos=self._sync_canvas, size=self._sync_canvas)
+        self.bind(minimum_height=self._sync_height)
+        self._sync_height()
+
+    def _sync_canvas(self, *_):
+        self._rect.pos = self.pos
+        self._rect.size = self.size
+        self._rect.radius = [CARD_RADIUS]
+        self._line.rounded_rectangle = (self.x, self.y, self.width, self.height, CARD_RADIUS)
+
+    def _sync_height(self, *_):
+        self.height = max(self._min_height, self.minimum_height)
+
+
 # ─────────────────────────────────────────────────────────────────────────
 # Screen
 # ─────────────────────────────────────────────────────────────────────────
@@ -714,7 +743,6 @@ class SummaryReviewScreen(BaseScreen):
         self._chip_participants_widget = self._add_image(
             "chip_participants.png", META_PARTICIPANTS,
         )
-        self._add_image("chip_recorded.png", META_RECORDED)
         self._add_img_btn("btn_export.png", META_EXPORT, on_release=lambda *_: self._on_export())
         self._add_img_btn("btn_share.png", META_SHARE, on_release=lambda *_: self._on_share())
 
@@ -806,260 +834,168 @@ class SummaryReviewScreen(BaseScreen):
     # ------------------------------------------------------------------
     # Overview tab
     # ------------------------------------------------------------------
-    def _build_overview(self) -> list[Widget]:
-        widgets: list[Widget] = []
-
-        # ─ AI Summary card ─
-        ai_card = _GradientCard(**kivy_hints(OV_AI_CARD))
-        widgets.append(ai_card)
-        ai_icon_box, ai_title_box = content_header(OV_AI_CARD, icon_w=30.0, title_w=200.0)
-        ai_icon = self._make_image("ai_summary_icon.png", ai_icon_box)
-        if ai_icon is not None:
-            widgets.append(ai_icon)
-        widgets.append(
-            self._make_label(
-                "AI Summary",
-                ai_title_box,
-                SECTION_TITLE_FS_RATIO,
-                COL_WHITE,
-                bold=True,
-                halign="left",
-            )
-        )
-        ai_body_box = canvas_box(
-            OV_AI_CARD["x"] * CANVAS_W + 28.0,
-            OV_AI_CARD["y_top"] * CANVAS_H + 62.0,
-            OV_AI_CARD["w"] * CANVAS_W - 56.0,
-            OV_AI_CARD["h"] * CANVAS_H - 72.0,
-        )
-        # Multi-line wrapping + vertical scroll so realistic AI
-        # summaries don't get ellipsised at the previous 3-line cap.
-        self.ov_summary_text = _ScrollText(
-            fs_ratio=SECTION_BODY_FS_RATIO,
-            color=COL_HINT,
+    def _overview_label(
+        self,
+        text: str,
+        *,
+        ratio: float = SECTION_BODY_FS_RATIO,
+        color: tuple = COL_MUTED,
+        bold: bool = False,
+        halign: str = "left",
+    ) -> Label:
+        lbl = Label(
+            text=text or "",
+            color=color,
             font_name=_FONT_BOLD,
-            **kivy_hints(ai_body_box),
+            bold=bold,
+            halign=halign,
+            valign="top",
+            markup=False,
+            shorten=False,
+            size_hint_y=None,
+            size_hint_x=1,
+            font_hinting="light",
+            font_kerning=True,
         )
-        self._scaled_labels.append((self.ov_summary_text, SECTION_BODY_FS_RATIO))
-        widgets.append(self.ov_summary_text)
+        lbl.bind(
+            width=lambda w, *_: setattr(w, "text_size", (max(1, w.width), None)),
+            texture_size=lambda w, ts: setattr(w, "height", max(24, ts[1] + 4)),
+        )
+        self._scaled_labels.append((lbl, ratio))
+        return lbl
 
-        # ─ Key Topics card ─
-        key_card = _GradientCard(**kivy_hints(OV_KEY_CARD))
-        widgets.append(key_card)
-        ki_box, kt_box = content_header(OV_KEY_CARD, icon_w=26.0, title_w=200.0)
-        widgets.append(self._make_label("◆", ki_box, SECTION_TITLE_FS_RATIO, COL_ACCENT, bold=True))
-        widgets.append(
-            self._make_label(
-                "Key Topics",
-                kt_box,
-                SECTION_TITLE_FS_RATIO,
-                COL_WHITE,
+    def _overview_card(self, title: str, *, glyph: str = "◆", min_height: float = 96.0) -> _OverviewCard:
+        card = _OverviewCard(min_height=min_height)
+        header = BoxLayout(orientation="horizontal", size_hint_y=None, height=34, spacing=10)
+        icon = Label(
+            text=glyph,
+            color=COL_ACCENT,
+            font_name=_FONT_BOLD,
+            bold=True,
+            halign="center",
+            valign="middle",
+            size_hint=(None, 1),
+            width=28,
+        )
+        icon.bind(size=icon.setter("text_size"))
+        self._scaled_labels.append((icon, SECTION_TITLE_FS_RATIO))
+        header.add_widget(icon)
+        header.add_widget(
+            self._overview_label(
+                title,
+                ratio=SECTION_TITLE_FS_RATIO,
+                color=COL_WHITE,
                 bold=True,
-                halign="left",
             )
         )
-        # 2x2 grid of topic rows inside the Key Topics card. Each cell has
-        # a name row on top (with the percentage right-aligned) and a thin
-        # progress bar near the bottom of the cell, with explicit pixel
-        # offsets so the bar never visually merges with the name baseline.
-        topic_area_x = OV_KEY_CARD["x"] * CANVAS_W + 28.0
-        topic_area_y = OV_KEY_CARD["y_top"] * CANVAS_H + 58.0
-        topic_area_w = OV_KEY_CARD["w"] * CANVAS_W - 56.0
-        topic_area_h = OV_KEY_CARD["h"] * CANVAS_H - 70.0
-        cell_w = (topic_area_w - 28.0) / 2.0
-        cell_h = topic_area_h / 2.0
-        # Fixed pixel offsets within each cell, in canvas coordinates.
-        NAME_H = 26.0
-        BAR_OFFSET = NAME_H + 10.0  # 10px gap between name baseline and bar
-        BAR_H = 8.0
-        self._ov_key_topic_rows: list[dict] = []
-        for i in range(4):
-            col = i % 2
-            row = i // 2
-            cx = topic_area_x + col * (cell_w + 28.0)
-            cy = topic_area_y + row * cell_h
-            name_box = canvas_box(cx, cy, cell_w * 0.7, NAME_H)
-            pct_box = canvas_box(cx + cell_w * 0.7, cy, cell_w * 0.3, NAME_H)
-            bar_box = canvas_box(cx, cy + BAR_OFFSET, cell_w, BAR_H)
+        card.add_widget(header)
+        return card
 
-            name_lbl = self._make_label("—", name_box, SECTION_BODY_FS_RATIO, COL_MUTED, halign="left")
-            pct_lbl = self._make_label("", pct_box, SECTION_HINT_FS_RATIO, COL_HINT, halign="right")
-            bar = _ProgressBar(value=0.0, **kivy_hints(bar_box))
-
-            widgets.extend([name_lbl, pct_lbl, bar])
-            self._ov_key_topic_rows.append({"name": name_lbl, "pct": pct_lbl, "bar": bar})
-
-        # ─ Action Items (compact, half-width) ─
-        actions_card = _GradientCard(**kivy_hints(OV_ACTIONS_CARD))
-        widgets.append(actions_card)
-        ai2_box, at_box = content_header(OV_ACTIONS_CARD, icon_w=26.0, title_w=240.0)
-        ai2_icon = self._make_image("action_items_icon.png", ai2_box)
-        if ai2_icon is not None:
-            widgets.append(ai2_icon)
-        widgets.append(
-            self._make_label(
-                "Action Items",
-                at_box,
-                SECTION_TITLE_FS_RATIO,
-                COL_WHITE,
-                bold=True,
-                halign="left",
-            )
-        )
-        # "View all →" link in the top right of the card
-        view_all_actions = canvas_box(
-            OV_ACTIONS_CARD["x"] * CANVAS_W + OV_ACTIONS_CARD["w"] * CANVAS_W - 130.0,
-            OV_ACTIONS_CARD["y_top"] * CANVAS_H + 20.0,
-            110.0,
-            28.0,
-        )
-        link_a = _AccentLink(text="View all →", **kivy_hints(view_all_actions))
-        self._scaled_labels.append((link_a, SECTION_HINT_FS_RATIO))
-        link_a.bind(on_release=lambda *_: self._show_tab("action_items"))
-        widgets.append(link_a)
-
-        # Up to 3 compact rows: bullet + task on top + assignee/date underneath
-        a_area_x = OV_ACTIONS_CARD["x"] * CANVAS_W + 28.0
-        a_area_y = OV_ACTIONS_CARD["y_top"] * CANVAS_H + 60.0
-        a_area_w = OV_ACTIONS_CARD["w"] * CANVAS_W - 56.0
-        a_area_h = OV_ACTIONS_CARD["h"] * CANVAS_H - 70.0
-        row_h_a = a_area_h / 3.0
-        self._ov_action_rows: list[dict] = []
-        for i in range(3):
-            ry = a_area_y + i * row_h_a
-            dot = _Dot(color=COL_ACCENT, **kivy_hints(canvas_box(a_area_x, ry + row_h_a * 0.28, 8.0, 8.0)))
-            task = self._make_label(
-                "",
-                canvas_box(a_area_x + 18.0, ry, a_area_w - 18.0, row_h_a * 0.55),
-                SECTION_BODY_FS_RATIO,
-                COL_WHITE,
-                halign="left",
-            )
-            meta = self._make_label(
-                "",
-                canvas_box(a_area_x + 18.0, ry + row_h_a * 0.5, a_area_w - 18.0, row_h_a * 0.45),
-                SECTION_HINT_FS_RATIO,
-                COL_HINT,
-                halign="left",
-            )
-            widgets.extend([dot, task, meta])
-            self._ov_action_rows.append({"dot": dot, "task": task, "meta": meta})
-
-        # ─ Decisions Made (compact, half-width) ─
-        decisions_card = _GradientCard(**kivy_hints(OV_DECISIONS_CARD))
-        widgets.append(decisions_card)
-        di_box, dt_box = content_header(OV_DECISIONS_CARD, icon_w=26.0, title_w=240.0)
-        di_icon = self._make_image("decisions_icon.png", di_box)
-        if di_icon is not None:
-            widgets.append(di_icon)
-        widgets.append(
-            self._make_label(
-                "Decisions Made",
-                dt_box,
-                SECTION_TITLE_FS_RATIO,
-                COL_WHITE,
-                bold=True,
-                halign="left",
-            )
-        )
-        view_all_decisions = canvas_box(
-            OV_DECISIONS_CARD["x"] * CANVAS_W + OV_DECISIONS_CARD["w"] * CANVAS_W - 130.0,
-            OV_DECISIONS_CARD["y_top"] * CANVAS_H + 20.0,
-            110.0,
-            28.0,
-        )
-        link_d = _AccentLink(text="View all →", **kivy_hints(view_all_decisions))
-        self._scaled_labels.append((link_d, SECTION_HINT_FS_RATIO))
-        link_d.bind(on_release=lambda *_: self._show_tab("decisions"))
-        widgets.append(link_d)
-
-        d_area_x = OV_DECISIONS_CARD["x"] * CANVAS_W + 28.0
-        d_area_y = OV_DECISIONS_CARD["y_top"] * CANVAS_H + 60.0
-        d_area_w = OV_DECISIONS_CARD["w"] * CANVAS_W - 56.0
-        d_area_h = OV_DECISIONS_CARD["h"] * CANVAS_H - 70.0
-        row_h_d = d_area_h / 3.0
-        self._ov_decision_rows: list[dict] = []
-        for i in range(3):
-            ry = d_area_y + i * row_h_d
-            tick = self._make_image(
-                "decision_tick.png",
-                canvas_box(d_area_x, ry + row_h_d * 0.25, 18.0, 18.0),
-            )
-            text = self._make_label(
-                "",
-                canvas_box(d_area_x + 28.0, ry, d_area_w - 28.0, row_h_d * 0.85),
-                SECTION_BODY_FS_RATIO,
-                COL_MUTED,
-                halign="left",
-                max_lines=2,
-                shorten=True,
-            )
-            if tick is not None:
-                widgets.append(tick)
-            widgets.append(text)
-            self._ov_decision_rows.append({"tick": tick, "text": text})
-
-        self._render_overview_data()
-        return widgets
-
-    def _render_overview_data(self) -> None:
-        if not getattr(self, "ov_summary_text", None):
-            return
+    def _overview_summary_text(self) -> str:
         data = self._summary_data or {}
         summary = data.get("summary")
         if isinstance(summary, dict):
             summary_text = (summary.get("summary") or "").strip()
         else:
             summary_text = (summary or "").strip()
-        summary_text = _summary_card_text(summary_text)
-        self.ov_summary_text.text = summary_text or "Summary will appear here once processing finishes."
+        return _summary_card_text(summary_text)
 
-        topics = self._topics
-        for i, row in enumerate(self._ov_key_topic_rows):
-            if i < len(topics):
-                t = topics[i]
-                row["name"].text = (t.get("name") or "—").strip()
-                row["name"].color = COL_WHITE
-                v = max(0, min(100, int(t.get("value", 0))))
-                row["pct"].text = f"{v}%"
-                row["bar"].set_value(v / 100.0)
-                row["bar"].opacity = 1.0
-            else:
-                # Hide unused topic slots — the previous placeholders
-                # ("Product Strategy", "Engineering", …) were dummy
-                # values that confused users into thinking the data had
-                # populated when it hadn't.
-                row["name"].text = ""
-                row["pct"].text = ""
-                row["bar"].set_value(0.0)
-                row["bar"].opacity = 0.0
+    def _build_overview(self) -> list[Widget]:
+        widgets: list[Widget] = []
+        scroll = ScrollView(
+            do_scroll_x=False,
+            do_scroll_y=True,
+            scroll_type=["bars", "content"],
+            bar_width=6,
+            **kivy_hints(CONTENT_AREA),
+        )
+        container = BoxLayout(
+            orientation="vertical",
+            size_hint=(None, None),
+            spacing=12,
+            padding=(0, 0, 8, 0),
+        )
+        container.bind(minimum_height=container.setter("height"))
+        scroll.bind(width=lambda sv, width: setattr(container, "width", max(1, width - 8)))
+        scroll.add_widget(container)
+        widgets.append(scroll)
 
-        for i, row in enumerate(self._ov_action_rows):
-            if i < len(self._action_items):
-                item = self._action_items[i]
-                row["dot"].opacity = 1.0
-                row["task"].opacity = 1.0
-                row["meta"].opacity = 1.0
-                row["task"].text = item.get("task", "")
-                assignee = item.get("assignee") or ""
-                due = self._format_short_date(item.get("due_date") or "")
-                meta = "  ·  ".join([s for s in (assignee, due) if s])
-                row["meta"].text = meta
-            else:
-                row["dot"].opacity = 0.0
-                row["task"].opacity = 0.0
-                row["meta"].opacity = 0.0
+        summary_text = self._overview_summary_text()
+        ai_card = self._overview_card("AI Summary", glyph="✧", min_height=116.0)
+        ai_card.add_widget(
+            self._overview_label(
+                summary_text or "Summary will appear here once processing finishes.",
+                color=COL_HINT,
+            )
+        )
+        container.add_widget(ai_card)
 
-        for i, row in enumerate(self._ov_decision_rows):
-            if i < len(self._decisions):
-                if row["tick"] is not None:
-                    row["tick"].opacity = 1.0
-                row["text"].opacity = 1.0
-                row["text"].text = self._decisions[i]
-            else:
-                if row["tick"] is not None:
-                    row["tick"].opacity = 0.0
-                row["text"].opacity = 0.0
+        if self._topics:
+            key_card = self._overview_card("Key Topics", glyph="◆", min_height=112.0)
+            for t in self._topics:
+                row = BoxLayout(orientation="vertical", size_hint_y=None, height=52, spacing=6)
+                top = BoxLayout(orientation="horizontal", size_hint_y=None, height=26)
+                top.add_widget(
+                    self._overview_label(
+                        (t.get("name") or "—").strip(),
+                        color=COL_WHITE,
+                        bold=True,
+                    )
+                )
+                pct = self._overview_label(
+                    f"{max(0, min(100, int(t.get('value', 0))))}%",
+                    ratio=SECTION_HINT_FS_RATIO,
+                    color=COL_HINT,
+                    halign="right",
+                )
+                pct.size_hint_x = None
+                pct.width = 76
+                top.add_widget(pct)
+                row.add_widget(top)
+                bar_wrap = BoxLayout(size_hint_y=None, height=8)
+                bar_wrap.add_widget(
+                    _ProgressBar(value=max(0, min(100, int(t.get("value", 0)))) / 100.0)
+                )
+                row.add_widget(bar_wrap)
+                key_card.add_widget(row)
+            container.add_widget(key_card)
+
+        if self._action_items:
+            actions_card = self._overview_card("Action Items", glyph="✓", min_height=112.0)
+            for item in self._action_items:
+                task = (item.get("task") or "").strip()
+                if not task:
+                    continue
+                actions_card.add_widget(
+                    self._overview_label("• " + task, color=COL_WHITE, bold=True)
+                )
+                meta = "  ·  ".join(
+                    s for s in (
+                        item.get("assignee") or "",
+                        self._format_short_date(item.get("due_date") or ""),
+                    )
+                    if s
+                )
+                if meta:
+                    actions_card.add_widget(
+                        self._overview_label(meta, ratio=SECTION_HINT_FS_RATIO, color=COL_HINT)
+                    )
+            container.add_widget(actions_card)
+
+        if self._decisions:
+            decisions_card = self._overview_card("Decisions Made", glyph="⌁", min_height=112.0)
+            for decision in self._decisions:
+                decisions_card.add_widget(
+                    self._overview_label("• " + decision, color=COL_MUTED)
+                )
+            container.add_widget(decisions_card)
+        return widgets
+
+    def _render_overview_data(self) -> None:
+        # Overview is now rebuilt as a dynamic scrollable panel whenever
+        # meeting data changes, so there are no fixed card labels to update
+        # in place.
+        return
 
     # ------------------------------------------------------------------
     # Full-card tabs (Key Points / Action Items / Decisions / Participants / Transcript)
@@ -1598,54 +1534,36 @@ class SummaryReviewScreen(BaseScreen):
         # whether the merged data actually contains diarization info.
         self._apply_participants_visibility()
 
-        # Refresh the on-screen content. Overview widgets are already built
-        # (they're created once in __init__) so we update their labels
-        # in-place via _render_overview_data — no destroy/rebuild.
+        # Refresh the on-screen content. Overview is rebuilt too because it
+        # now hides empty sections and sizes cards dynamically.
         self._refresh_after_data_change()
 
     def _refresh_after_data_change(self) -> None:
         """Apply the latest ``_summary_data`` to existing widgets.
 
-        - Overview tab: refresh its labels / rows in place via
-          ``_render_overview_data`` (no widget destruction).
-        - Other tabs: their list contents depend on the new data, so we
-          invalidate their cached widget trees. The widgets get rebuilt
-          lazily the next time the user clicks that sidebar tab. If a
-          non-Overview tab is currently active, we rebuild it now.
+        All tab contents depend on the latest fetched meeting detail, so
+        cached widget trees are invalidated and the active tab is rebuilt.
         """
-        # Always update Overview labels — they were built in __init__ and
-        # the widget refs (self.ov_summary_text, self._ov_action_rows, …)
-        # remain valid even when Overview isn't the active tab.
-        try:
-            self._render_overview_data()
-        except Exception:  # noqa: BLE001
-            logger.exception("Overview data refresh failed")
-
         active = self._active_tab
-        # Invalidate every non-Overview tab so the next visit rebuilds with
+        # Invalidate every tab so the next visit rebuilds with
         # fresh data. Detach them from the canvas first if they happen to
         # be attached (shouldn't normally happen, but guards against the
         # rare case of multiple refreshes interleaving).
         for tid in _TAB_IDS:
-            if tid == "overview":
-                continue
             for w in self._tab_widgets.get(tid, ()):
                 if w is not None and w.parent is self._canvas:
                     self._canvas.remove_widget(w)
             self._tab_widgets[tid] = []
 
-        if active != "overview":
-            # Rebuild the currently-shown non-Overview tab right now so the
-            # user sees fresh data without having to click the tab again.
-            try:
-                widgets = [w for w in self._build_tab(active) if w is not None]
-            except Exception:  # noqa: BLE001
-                logger.exception("Tab %s rebuild failed", active)
-                widgets = []
-            self._tab_widgets[active] = widgets
-            for w in widgets:
-                if w.parent is None:
-                    self._canvas.add_widget(w)
+        try:
+            widgets = [w for w in self._build_tab(active) if w is not None]
+        except Exception:  # noqa: BLE001
+            logger.exception("Tab %s rebuild failed", active)
+            widgets = []
+        self._tab_widgets[active] = widgets
+        for w in widgets:
+            if w.parent is None:
+                self._canvas.add_widget(w)
 
         Clock.schedule_once(
             lambda _dt: self._on_root_resize(self._root, self._root.size), 0
@@ -1815,6 +1733,14 @@ class SummaryReviewScreen(BaseScreen):
         if tab is not None:
             tab.opacity = 1.0 if visible else 0.0
             tab.disabled = not visible
+        transcript_tab = self._sidebar_tabs.get("transcript")
+        if transcript_tab is not None:
+            compact_box = TAB_TRANSCRIPT if visible else TAB_PARTICIPANTS
+            transcript_tab.size_hint = (compact_box["w"], compact_box["h"])
+            transcript_tab.pos_hint = {
+                "x": compact_box["x"],
+                "y": 1.0 - compact_box["y_top"] - compact_box["h"],
+            }
         # If the user is currently on the Participants tab and we just
         # hid it, fall back to Overview.
         if not visible and self._active_tab == "participants":
