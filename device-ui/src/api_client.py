@@ -644,6 +644,32 @@ class BackendClient:
             logger.error(f"Failed to generate actions for meeting {meeting_id}: {e}")
             raise
 
+    async def create_manual_action(self, meeting_id: str, body: Dict) -> Dict:
+        """POST /api/meetings/{meeting_id}/actions/manual"""
+        try:
+            resp = await self.client.post(
+                f"{self.base_url}/api/meetings/{meeting_id}/actions/manual",
+                json=body,
+                timeout=120.0,
+            )
+            resp.raise_for_status()
+            return resp.json()
+        except httpx.HTTPStatusError as e:
+            detail = ""
+            try:
+                data = e.response.json()
+                if isinstance(data, dict) and data.get("detail") is not None:
+                    d = data["detail"]
+                    detail = d if isinstance(d, str) else json.dumps(d)
+            except Exception:
+                detail = (e.response.text or "")[:500]
+            msg = (detail or e.response.reason_phrase or str(e)).strip()
+            logger.error("Failed to create manual action for meeting %s: HTTP %s %s", meeting_id, e.response.status_code, msg)
+            raise RuntimeError(msg) from e
+        except Exception as e:
+            logger.error(f"Failed to create manual action for meeting {meeting_id}: {e}")
+            raise
+
     async def execute_action(
             self,
             action_id: str,

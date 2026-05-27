@@ -1218,6 +1218,10 @@ class SummaryReviewScreen(BaseScreen):
                 btn = self._make_execute_button(linked_action)
                 if btn is not None:
                     row.add_widget(btn)
+            elif self._item_connector(item) == "calendar":
+                btn = self._make_summary_calendar_button(item)
+                if btn is not None:
+                    row.add_widget(btn)
             container.add_widget(row)
 
         # ── Follow-ups sub-list ───────────────────────────────────
@@ -1287,6 +1291,90 @@ class SummaryReviewScreen(BaseScreen):
             if task and (task in title or title in task):
                 return action
         return candidates[0]
+
+    def _make_summary_calendar_button(self, item: dict):
+        from kivy.uix.button import Button
+
+        btn = Button(
+            text="Add to calendar",
+            size_hint=(None, None),
+            size=(160, 40),
+            pos_hint={"center_y": 0.5},
+            background_normal="",
+            background_color=ACCENT_BLUE,
+            color=COL_WHITE,
+            font_name=_FONT_BOLD,
+            bold=True,
+        )
+        btn.bind(on_release=lambda _w, b=btn, it=dict(item): self._execute_summary_calendar_item(it, b))
+        return btn
+
+    def _execute_summary_calendar_item(self, item: dict, btn) -> None:
+        if not self.meeting_id:
+            return
+        try:
+            btn.disabled = True
+            btn.text = "Working..."
+        except Exception:  # noqa: BLE001
+            pass
+
+        async def _run():
+            ok = False
+            error_text = ""
+            action: Optional[dict] = None
+            try:
+                generated = await self.backend.generate_actions(self.meeting_id)
+                if isinstance(generated, list):
+                    self._agentic_actions = [
+                        a for a in generated if isinstance(a, dict) and a.get("id")
+                    ]
+                    self._sync_default_action_selection()
+                    action = self._match_agentic_action_for_item(item, set())
+                if action is None:
+                    due_date = (item.get("due_date") or "").strip()
+                    if not due_date:
+                        raise RuntimeError("Calendar action needs a due date.")
+                    action = await self.backend.create_manual_action(
+                        self.meeting_id,
+                        {
+                            "connector": "calendar",
+                            "title": item.get("task") or "Follow-up",
+                            "description": item.get("task") or "",
+                            "event_title": item.get("task") or "Follow-up",
+                            "suggested_date": due_date,
+                            "suggested_time": "10:00",
+                            "duration_minutes": 30,
+                            "attendees": [],
+                        },
+                    )
+                    if isinstance(action, dict) and action.get("id"):
+                        self._agentic_actions.append(action)
+                action_id = str((action or {}).get("id") or "")
+                if not action_id:
+                    raise RuntimeError("Calendar action could not be prepared.")
+                await self.backend.execute_action(action_id)
+                self._mark_action_executed(action_id)
+                ok = True
+            except Exception as exc:  # noqa: BLE001
+                logger.exception("summary calendar action failed")
+                error_text = str(exc) or "Retry"
+
+            def _apply(_dt):
+                try:
+                    if ok:
+                        btn.text = "Added"
+                        btn.background_color = (0.16, 0.66, 0.30, 1)
+                    else:
+                        btn.text = "Need date" if "due date" in error_text.lower() else "Retry"
+                        btn.disabled = False
+                except Exception:  # noqa: BLE001
+                    pass
+                if ok and self._active_tab == "action_items":
+                    self._refresh_after_data_change()
+
+            Clock.schedule_once(_apply, 0)
+
+        run_async(_run())
 
     def _make_execute_button(self, action: dict):
         from kivy.uix.button import Button
