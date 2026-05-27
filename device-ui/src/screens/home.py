@@ -1448,6 +1448,14 @@ class HomeScreen(BaseScreen):
                 fit_mode="contain",
             ))
 
+        def _tasks_touch(w, t):
+            lx, ly = w.to_widget(t.x, t.y)
+            if w.collide_point(lx, ly):
+                self.goto("tasks", transition="slide_left")
+                return True
+            return False
+        card.bind(on_touch_up=_tasks_touch)
+
         root.add_widget(card)
         self.tasks_card = _CardData(val_lbl, txt_lbl)
 
