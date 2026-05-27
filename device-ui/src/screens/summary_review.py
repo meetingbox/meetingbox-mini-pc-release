@@ -672,6 +672,7 @@ class SummaryReviewScreen(BaseScreen):
         # rendered as Send-email / Add-to-calendar rows in the Action
         # Items tab.
         self._agentic_actions: list[dict] = []
+        self._rendered_agentic_action_ids: set[str] = set()
         self._decisions: list[str] = []
         self._topics: list[dict] = []
         self._sidebar_tabs: dict[str, _SidebarTab] = {}
@@ -1117,6 +1118,7 @@ class SummaryReviewScreen(BaseScreen):
                 self._make_row_label("No action items captured for this meeting.", color=COL_HINT)
             )
             return widgets
+        rendered_action_ids: set[str] = set()
         for i, item in enumerate(self._action_items):
             row = BoxLayout(
                 orientation="horizontal",
@@ -1154,29 +1156,141 @@ class SummaryReviewScreen(BaseScreen):
             mid.add_widget(task)
             mid.add_widget(sub)
             row.add_widget(mid)
+            linked_action = self._match_agentic_action_for_item(item, rendered_action_ids)
+            if linked_action is not None:
+                action_id = str(linked_action.get("id") or "")
+                rendered_action_ids.add(action_id)
+                btn = self._make_execute_button(linked_action)
+                if btn is not None:
+                    row.add_widget(btn)
             container.add_widget(row)
 
         # ── Follow-ups sub-list ───────────────────────────────────
         # Agentic actions persisted server-side with stable IDs are
-        # rendered below the LLM-extracted items, with per-row Send /
-        # Schedule buttons that auto-execute via the backend.
+        # rendered below the LLM-extracted items, with per-row draft /
+        # calendar buttons that execute via the backend.
         if self._agentic_actions:
-            container.add_widget(
-                self._make_row_label("Follow-ups", bold=True, color=COL_WHITE)
-            )
-            for action in self._agentic_actions:
+            remaining = [
+                action for action in self._agentic_actions
+                if str(action.get("id") or "") not in rendered_action_ids
+            ]
+            if remaining:
+                container.add_widget(
+                    self._make_row_label("Follow-ups", bold=True, color=COL_WHITE)
+                )
+            for action in remaining:
                 container.add_widget(self._build_followup_row(action))
+        self._rendered_agentic_action_ids = rendered_action_ids
         return widgets
 
-    def _build_followup_row(self, action: dict) -> Widget:
-        """One Follow-ups row: title + sub + Send/Schedule pill button."""
+    @staticmethod
+    def _action_connector(action: dict) -> str:
+        connector = (action.get("connector_target") or "").strip().lower()
+        kind = (action.get("kind") or action.get("type") or "").strip().lower()
+        if connector in {"gmail", "calendar"}:
+            return connector
+        if kind in {"followup_email", "email_draft", "email", "send_email"}:
+            return "gmail"
+        if kind in {
+            "schedule_followup", "calendar_invite", "calendar", "calendar_event", "schedule",
+        }:
+            return "calendar"
+        return ""
+
+    @staticmethod
+    def _item_connector(item: dict) -> str:
+        typ = (item.get("type") or "").strip().lower()
+        task = (item.get("task") or "").strip().lower()
+        haystack = f"{typ} {task}"
+        if typ in {"email_draft", "followup_email", "email", "send_email"}:
+            return "gmail"
+        if typ in {"calendar_invite", "schedule_followup", "calendar", "calendar_event", "schedule"}:
+            return "calendar"
+        if "calendar" in haystack or "schedule" in haystack or "meeting invite" in haystack:
+            return "calendar"
+        if "email" in haystack or "mail" in haystack:
+            return "gmail"
+        return ""
+
+    def _match_agentic_action_for_item(self, item: dict, used_ids: set[str]) -> Optional[dict]:
+        target = self._item_connector(item)
+        if not target:
+            return None
+        task = (item.get("task") or "").strip().lower()
+        candidates = [
+            action for action in self._agentic_actions
+            if str(action.get("id") or "") not in used_ids
+            and self._action_connector(action) == target
+        ]
+        if not candidates:
+            return None
+        for action in candidates:
+            title = str(action.get("title") or action.get("description") or "").strip().lower()
+            if task and (task in title or title in task):
+                return action
+        return candidates[0]
+
+    def _make_execute_button(self, action: dict):
         from kivy.uix.button import Button
 
-        kind = (action.get("kind") or action.get("type") or "").strip().lower()
-        is_email = kind in {"followup_email", "email_draft", "email", "send_email"}
-        is_cal = kind in {
-            "schedule_followup", "calendar_invite", "calendar", "calendar_event", "schedule",
-        }
+        connector = self._action_connector(action)
+        if connector not in {"gmail", "calendar"}:
+            return None
+        executed = bool(action.get("executed_at") or action.get("status") == "executed")
+        is_email = connector == "gmail"
+        if executed:
+            return Button(
+                text="Done" if is_email else "Added",
+                disabled=True,
+                size_hint=(None, None),
+                size=(130 if is_email else 160, 40),
+                pos_hint={"center_y": 0.5},
+                background_normal="",
+                background_color=(0.16, 0.66, 0.30, 1),
+                color=COL_WHITE,
+                font_name=_FONT_BOLD,
+                bold=True,
+            )
+        action_id = str(action.get("id") or "")
+
+        def _button(text: str, width: int, *, create_draft: bool, success_text: str) -> Button:
+            btn = Button(
+                text=text,
+                size_hint=(None, None),
+                size=(width, 40),
+                pos_hint={"center_y": 0.5},
+                background_normal="",
+                background_color=ACCENT_BLUE,
+                color=COL_WHITE,
+                font_name=_FONT_BOLD,
+                bold=True,
+            )
+            btn.bind(
+                on_release=lambda _w, aid=action_id, b=btn: self._execute_followup(
+                    aid, b, create_draft=create_draft, success_text=success_text,
+                )
+            )
+            return btn
+
+        if is_email:
+            buttons = BoxLayout(
+                orientation="horizontal",
+                size_hint=(None, None),
+                size=(230, 40),
+                spacing=8,
+                pos_hint={"center_y": 0.5},
+            )
+            buttons.add_widget(_button("Send", 96, create_draft=False, success_text="Sent"))
+            buttons.add_widget(_button("Draft", 118, create_draft=True, success_text="Draft saved"))
+            return buttons
+        return _button("Add to calendar", 160, create_draft=False, success_text="Added")
+
+    def _build_followup_row(self, action: dict) -> Widget:
+        """One Follow-ups row: title + sub + draft/calendar pill button."""
+
+        connector = self._action_connector(action)
+        is_email = connector == "gmail"
+        is_cal = connector == "calendar"
         title = (
             action.get("title")
             or action.get("description")
@@ -1202,29 +1316,24 @@ class SummaryReviewScreen(BaseScreen):
         else:
             sub_parts.append("Task")
         if executed:
-            sub_parts.append("Sent" if is_email else "Scheduled" if is_cal else "Done")
+            sub_parts.append("Draft saved" if is_email else "Scheduled" if is_cal else "Done")
         mid.add_widget(self._make_row_label("  ·  ".join(sub_parts), color=COL_HINT))
         row.add_widget(mid)
 
         if not executed and (is_email or is_cal):
-            btn_text = "Send" if is_email else "Add to calendar"
-            btn = Button(
-                text=btn_text,
-                size_hint=(None, None),
-                size=(160 if is_cal else 100, 40),
-                pos_hint={"center_y": 0.5},
-                background_normal="",
-                background_color=ACCENT_BLUE,
-                color=COL_WHITE,
-                font_name=_FONT_BOLD,
-                bold=True,
-            )
-            action_id = str(action.get("id") or "")
-            btn.bind(on_release=lambda _w, aid=action_id, b=btn: self._execute_followup(aid, b))
-            row.add_widget(btn)
+            btn = self._make_execute_button(action)
+            if btn is not None:
+                row.add_widget(btn)
         return row
 
-    def _execute_followup(self, action_id: str, btn) -> None:
+    def _execute_followup(
+        self,
+        action_id: str,
+        btn,
+        *,
+        create_draft: bool = False,
+        success_text: str = "Done",
+    ) -> None:
         if not action_id:
             return
         try:
@@ -1235,7 +1344,7 @@ class SummaryReviewScreen(BaseScreen):
 
         async def _run():
             try:
-                await self.backend.execute_action(action_id)
+                await self.backend.execute_action(action_id, create_draft=create_draft)
                 ok = True
             except Exception:  # noqa: BLE001
                 logger.exception("execute_action failed")
@@ -1244,7 +1353,7 @@ class SummaryReviewScreen(BaseScreen):
             def _apply(_dt):
                 try:
                     if ok:
-                        btn.text = "Done"
+                        btn.text = success_text
                         btn.background_color = (0.16, 0.66, 0.30, 1)
                     else:
                         btn.text = "Retry"
@@ -1615,6 +1724,15 @@ class SummaryReviewScreen(BaseScreen):
                 if detail.get(k) is not None and merged.get(k) in (None, ""):
                     merged[k] = detail[k]
             self._summary_data = merged
+            if not self._agentic_actions and self._summary_has_executable_actions(merged):
+                try:
+                    generated = await self.backend.generate_actions(self.meeting_id)
+                    if isinstance(generated, list):
+                        self._agentic_actions = [
+                            a for a in generated if isinstance(a, dict) and a.get("id")
+                        ]
+                except Exception as exc:  # noqa: BLE001
+                    logger.debug("generate_actions fallback failed: %s", exc)
 
             def _apply(_dt):
                 self._apply_local_data()
@@ -1650,6 +1768,13 @@ class SummaryReviewScreen(BaseScreen):
                         "type": "",
                         "completed": False,
                     }
+
+    @classmethod
+    def _summary_has_executable_actions(cls, data: dict) -> bool:
+        for item in cls._coerce_action_items(data.get("action_items") or data.get("actions") or []):
+            if cls._item_connector(item) in {"gmail", "calendar"}:
+                return True
+        return False
 
     @staticmethod
     def _coerce_topics(raw):
