@@ -683,7 +683,17 @@ class TasksScreen(BaseScreen):
         self._list_box.add_widget(hdr)
         self._list_box.add_widget(Widget(size_hint=(1, None), height=_ff(5)))
 
-    # Task row — BoxLayout inside for clean, non-overlapping layout
+    # ── Task row — pure FloatLayout with explicit non-overlapping pos_hint ────
+    #
+    # Column zones (fractions of card width, ~1186 px on 1260×800 display):
+    #   Dot     : x≈0.012  w≈0.009   (11 px)
+    #   Title   : x=0.030  w=0.530   (ends 0.560)   — all buckets
+    #   Source  : x=0.580  w=0.125   (ends 0.705)   — due_today / upcoming
+    #   Due     : x=0.715  w=0.160   (ends 0.875)   — due_today / upcoming
+    #   Accept  : x=0.905  w≈0.037   (44 px)        — unplanned only
+    #   Reject  : x=0.950  w≈0.037   (44 px)        — unplanned only
+    #   (unplanned title is wider: w=0.850, ends 0.880)
+    #
     def _add_task_row(self, row: dict, bucket: str) -> None:
         task_id    = str(row.get("id") or "")
         col        = _BUCKET_COLOR[bucket]
@@ -695,126 +705,109 @@ class TasksScreen(BaseScreen):
         is_unplan  = (bucket == "unplanned")
         tags       = _parse_tags(row.get("tags"))
         updated    = _relative_updated(row)
+        has_extra  = bool(detail or tags)
 
-        has_extra = bool(detail or tags)
-        # Unplanned rows are a touch taller to fit the buttons
         ROW_H = _ff(88) if (has_extra or is_unplan) else _ff(72)
 
-        card = _Card(ct=_ROW_T, cb=_ROW_B, bdr=_BDR,
-                     r=_ff(14), size_hint=(1, None), height=ROW_H)
-
-        # ── Inner horizontal BoxLayout fills the card ───────────────────────
-        PAD = _ff(14)
-        inner = BoxLayout(
-            orientation="horizontal",
-            size_hint=(1, 1),
-            padding=[PAD, _ff(8), PAD, _ff(8)],
-            spacing=_ff(10),
-        )
-        card.add_widget(inner)
+        card = _Card(ct=_ROW_T, cb=_ROW_B, bdr=_BDR, r=_ff(14),
+                     size_hint=(1, None), height=ROW_H)
 
         # ── Status dot ─────────────────────────────────────────────────────
         D = _ff(11)
         dot_col = _YELLOW if is_snoozed else col
-        dot = _Dot(color=dot_col,
-                   size_hint=(None, None), size=(D, D),
-                   pos_hint={"center_y": 0.5})
-        inner.add_widget(dot)
+        card.add_widget(_Dot(
+            color=dot_col,
+            size_hint=(None, None), size=(D, D),
+            pos_hint={"x": 0.014, "center_y": 0.5}))
 
-        # ── Title + optional sub-line ───────────────────────────────────────
+        # ── Title (+ sub-line) ─────────────────────────────────────────────
+        # Wider title for unplanned rows (right side holds buttons, not source/due)
+        TW = 0.850 if is_unplan else 0.530
+
         if has_extra:
-            title_box = BoxLayout(orientation="vertical", size_hint=(1, 1),
-                                  spacing=_ff(3))
-            title_box.add_widget(_lbl(
-                title, _FSB, _ff(21.19), _WHITE,
-                ha="left", va="bottom", size_hint=(1, 0.55)))
-
             sub_parts = []
             if detail:
                 sub_parts.append(detail[:70] + ("…" if len(detail) > 70 else ""))
             if tags:
                 sub_parts.append("  ".join(f"#{t}" for t in tags[:3]))
             sub_txt = "  ·  ".join(sub_parts)
-            title_box.add_widget(_lbl(
-                sub_txt, _FMD, _ff(14.13), _DIM,
-                ha="left", va="top", size_hint=(1, 0.45)))
-            inner.add_widget(title_box)
-        else:
-            inner.add_widget(_lbl(
-                title, _FSB, _ff(21.19), _WHITE,
-                ha="left", va="middle", size_hint=(1, 1)))
 
-        # ── Right section ───────────────────────────────────────────────────
+            card.add_widget(_lbl(
+                title, _FSB, _ff(21.19), _WHITE,
+                ha="left", va="bottom",
+                size_hint=(TW, 0.50), pos_hint={"x": 0.030, "y": 0.44}))
+            card.add_widget(_lbl(
+                sub_txt, _FMD, _ff(14.13), _DIM,
+                ha="left", va="top",
+                size_hint=(TW, 0.38), pos_hint={"x": 0.030, "y": 0.06}))
+        else:
+            card.add_widget(_lbl(
+                title, _FSB, _ff(21.19), _WHITE,
+                ha="left", va="middle",
+                size_hint=(TW, 1.0), pos_hint={"x": 0.030, "y": 0.0}))
+
+        # ── Right section ──────────────────────────────────────────────────
         if is_unplan and not is_snoozed:
-            # Accept (✓) and Reject (✕) buttons — side by side
+            # ─ Accept (✓) green button ──────────────────────────────────
             BTN = _ff(44)
-            btn_row = BoxLayout(
-                orientation="horizontal",
-                size_hint=(None, 1),
-                width=BTN * 2 + _ff(10),
-                spacing=_ff(10),
-            )
+            BTN_Y = max(0.0, 0.5 - BTN / (2 * ROW_H))
 
             acc = _TapCard(ct=_GREEN_T, cb=_GREEN_B, bdr=_GREEN_BDR, r=_ff(10),
                            size_hint=(None, None), size=(BTN, BTN),
-                           pos_hint={"center_y": 0.5})
+                           pos_hint={"x": 0.900, "y": BTN_Y})
+            # pos_hint={"x":0,"y":0} required for FloatLayout children
             acc.add_widget(_lbl("✓", _FSB, _ff(22), _WHITE,
-                                ha="center", va="middle", size_hint=(1, 1)))
+                                ha="center", va="middle",
+                                size_hint=(1, 1), pos_hint={"x": 0, "y": 0}))
             acc.bind(on_release=lambda *_, tid=task_id: self._on_task_accept(tid))
-            btn_row.add_widget(acc)
+            card.add_widget(acc)
 
+            # ─ Reject (✕) red button ────────────────────────────────────
             rej = _TapCard(ct=_RED_T, cb=_RED_B, bdr=_RED_BDR, r=_ff(10),
                            size_hint=(None, None), size=(BTN, BTN),
-                           pos_hint={"center_y": 0.5})
+                           pos_hint={"x": 0.950, "y": BTN_Y})
             rej.add_widget(_lbl("✕", _FSB, _ff(22), _WHITE,
-                                ha="center", va="middle", size_hint=(1, 1)))
+                                ha="center", va="middle",
+                                size_hint=(1, 1), pos_hint={"x": 0, "y": 0}))
             rej.bind(on_release=lambda *_, tid=task_id: self._on_task_reject(tid))
-            btn_row.add_widget(rej)
-
-            inner.add_widget(btn_row)
+            card.add_widget(rej)
 
         else:
-            # Source area (icon + label, or SNOOZED badge)
-            SRC_W = _ff(110)
-            src_box = BoxLayout(
-                orientation="horizontal",
-                size_hint=(None, 1),
-                width=SRC_W,
-                spacing=_ff(5),
-            )
+            # ─ Source indicator ──────────────────────────────────────────
+            # Icon at x=0.580, label at x=0.605 — end ≤ 0.705, no overlap with due
             if is_snoozed:
-                src_box.add_widget(_lbl(
+                card.add_widget(_lbl(
                     "SNOOZED", _FSB, _ff(12), _YELLOW,
-                    ha="center", va="middle", size_hint=(1, 1)))
+                    ha="center", va="middle",
+                    size_hint=(0.115, 0.40), pos_hint={"x": 0.585, "y": 0.30}))
             else:
                 src_img_path = _brief_asset(_SRC_ICONS.get(src_kind, "icon_tick.png"))
                 if src_img_path:
-                    src_box.add_widget(Image(
+                    card.add_widget(Image(
                         source=src_img_path, fit_mode="contain",
-                        size_hint=(None, 1), width=_ff(22)))
-                src_box.add_widget(_lbl(
+                        size_hint=(None, 0.40), width=_ff(22),
+                        pos_hint={"x": 0.582, "y": 0.30}))
+                card.add_widget(_lbl(
                     _SRC_LABELS.get(src_kind, "Assistant"),
                     _FMD, _ff(14.13), _DIM,
-                    ha="left", va="middle", size_hint=(1, 1)))
-            inner.add_widget(src_box)
+                    ha="left", va="middle",
+                    size_hint=(0.095, 1.0), pos_hint={"x": 0.608, "y": 0.0}))
 
-            # Due date + updated label stacked vertically
-            due_box = BoxLayout(
-                orientation="vertical",
-                size_hint=(None, 1),
-                width=_ff(95),
-                spacing=0,
-            )
-            due_box.add_widget(_lbl(
-                due_text, _FMD, _ff(16.95), col,
-                ha="right", va="middle" if not updated else "bottom",
-                size_hint=(1, 0.58 if updated else 1)))
+            # ─ Due date + updated — x starts at 0.720, well clear of source ──
             if updated:
-                due_box.add_widget(_lbl(
+                card.add_widget(_lbl(
+                    due_text, _FMD, _ff(16.95), col,
+                    ha="right", va="bottom",
+                    size_hint=(0.155, 0.55), pos_hint={"x": 0.720, "y": 0.30}))
+                card.add_widget(_lbl(
                     updated, _FMD, _ff(11.3), _DIM,
                     ha="right", va="top",
-                    size_hint=(1, 0.42)))
-            inner.add_widget(due_box)
+                    size_hint=(0.155, 0.32), pos_hint={"x": 0.720, "y": 0.04}))
+            else:
+                card.add_widget(_lbl(
+                    due_text, _FMD, _ff(16.95), col,
+                    ha="right", va="middle",
+                    size_hint=(0.155, 0.70), pos_hint={"x": 0.720, "y": 0.15}))
 
         self._list_box.add_widget(card)
         self._list_box.add_widget(Widget(size_hint=(1, None), height=_ff(7)))
