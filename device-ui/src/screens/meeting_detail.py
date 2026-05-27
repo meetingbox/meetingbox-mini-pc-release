@@ -2,12 +2,13 @@
 
 from datetime import datetime
 from kivy.clock import Clock
+from kivy.graphics import Color, RoundedRectangle
 from kivy.uix.boxlayout import BoxLayout
 from kivy.uix.label import Label
 from kivy.uix.scrollview import ScrollView
+from kivy.uix.widget import Widget
 from async_helper import run_async
 
-from components.action_item import ActionItemWidget
 from components.button import DangerButton, SecondaryButton
 from components.status_bar import StatusBar
 from config import COLORS, FONT_SIZES, SPACING, to_display_local
@@ -41,19 +42,25 @@ class MeetingDetailScreen(BaseScreen):
         scroll = ScrollView(do_scroll_x=False)
         self.content = BoxLayout(
             orientation='vertical',
-            spacing=sv(12),
+            spacing=sv(10),
             size_hint_y=None,
-            padding=[sv(SPACING['screen_padding']), sv(14)],
+            padding=[sv(SPACING['screen_padding']), sv(10), sv(SPACING['screen_padding']), sv(14)],
         )
         self.content.bind(minimum_height=self.content.setter('height'))
 
-        hero = BoxLayout(orientation='vertical', size_hint_y=None, height=sv(116), padding=[sv(18), sv(14)], spacing=sv(4))
-        self.attach_card_bg(hero, radius=sv(26), color=(0.10, 0.15, 0.24, 0.88))
+        hero = BoxLayout(
+            orientation='vertical',
+            size_hint_y=None,
+            height=sv(108),
+            padding=[sv(20), sv(14), sv(20), sv(12)],
+            spacing=sv(4),
+        )
+        self.attach_card_bg(hero, radius=sv(22), color=(0.02, 0.08, 0.22, 0.92))
         self.title_label = Label(
             text='Loading…',
             font_size=sf(FONT_SIZES['large']),
             size_hint_y=None,
-            height=sv(42),
+            height=sv(46),
             color=COLORS['white'],
             bold=True,
             halign='left',
@@ -76,14 +83,24 @@ class MeetingDetailScreen(BaseScreen):
         hero.add_widget(self.meta_label)
         self.content.add_widget(hero)
 
-        self.summary_container = self._section_card('Executive report')
+        self.summary_container = self._section_card()
         self.content.add_widget(self.summary_container)
-        self.actions_container = self._section_card('Actions')
+        self.questions_container = self._section_card()
+        self.content.add_widget(self.questions_container)
+        self.risks_container = self._section_card()
+        self.content.add_widget(self.risks_container)
+        self.actions_container = self._section_card()
         self.content.add_widget(self.actions_container)
-        self.decisions_container = self._section_card('Decisions')
+        self.decisions_container = self._section_card()
         self.content.add_widget(self.decisions_container)
 
-        buttons = BoxLayout(orientation='horizontal', size_hint_y=None, height=sv(54), spacing=sv(10))
+        buttons = BoxLayout(
+            orientation='horizontal',
+            size_hint_y=None,
+            height=sv(56),
+            spacing=sv(10),
+            padding=[0, sv(2), 0, sv(2)],
+        )
         back_btn = SecondaryButton(text='Back', font_size=sf(FONT_SIZES['small']))
         back_btn.bind(on_release=lambda *_: self.go_back())
         buttons.add_widget(back_btn)
@@ -97,25 +114,42 @@ class MeetingDetailScreen(BaseScreen):
         root.add_widget(self.build_footer())
         self.add_widget(root)
 
-    def _section_card(self, title):
-        card = BoxLayout(orientation='vertical', size_hint_y=None, padding=[self.suv(16), self.suv(14)], spacing=self.suv(8))
-        card._section_title = title
-        self.attach_card_bg(card, radius=self.suv(24), color=(0.08, 0.11, 0.18, 0.76))
+    def _section_card(self):
+        card = BoxLayout(
+            orientation='vertical',
+            size_hint_y=None,
+            padding=[self.suv(18), self.suv(14), self.suv(18), self.suv(14)],
+            spacing=self.suv(8),
+        )
+        self.attach_card_bg(card, radius=self.suv(20), color=(0.02, 0.06, 0.16, 0.86))
         return card
 
     def _heading(self, text):
+        row = BoxLayout(orientation='horizontal', size_hint_y=None, height=self.suv(30), spacing=self.suv(8))
+        dot = Label(
+            text='◆',
+            font_size=self.suf(FONT_SIZES['small']),
+            size_hint=(None, 1),
+            width=self.suv(22),
+            color=COLORS['blue'],
+            halign='center',
+            valign='middle',
+        )
+        dot.bind(size=dot.setter('text_size'))
+        row.add_widget(dot)
         h = Label(
             text=text,
-            font_size=self.suf(FONT_SIZES['medium']),
+            font_size=self.suf(FONT_SIZES['body']),
             size_hint_y=None,
-            height=self.suv(28),
+            height=self.suv(30),
             color=COLORS['white'],
             bold=True,
             halign='left',
             valign='middle',
         )
         h.bind(size=h.setter('text_size'))
-        return h
+        row.add_widget(h)
+        return row
 
     def _body_text(self, text, color=None, fs=None):
         lbl = Label(
@@ -125,11 +159,49 @@ class MeetingDetailScreen(BaseScreen):
             color=color or COLORS['gray_300'],
             halign='left',
             valign='top',
-            line_height=1.18,
+            line_height=1.22,
         )
-        lbl.bind(width=lambda w, val: setattr(w, 'text_size', (val, None)))
-        lbl.bind(texture_size=lambda w, ts: setattr(w, 'height', ts[1] + self.suv(8)))
+        lbl.bind(width=lambda w, val: setattr(w, 'text_size', (max(1, val - self.suv(4)), None)))
+        lbl.bind(texture_size=lambda w, ts: setattr(w, 'height', max(self.suv(26), ts[1] + self.suv(8))))
         return lbl
+
+    def _list_row(self, text, meta=''):
+        row = BoxLayout(
+            orientation='horizontal',
+            size_hint_y=None,
+            spacing=self.suv(10),
+            padding=[self.suv(4), self.suv(5), self.suv(4), self.suv(5)],
+        )
+        row.bind(minimum_height=row.setter('height'))
+        row.add_widget(self._bullet())
+        body = BoxLayout(orientation='vertical', size_hint_y=None, spacing=self.suv(2))
+        body.bind(minimum_height=body.setter('height'))
+        body.add_widget(self._body_text(str(text), COLORS['white'], self.suf(FONT_SIZES['small'])))
+        if meta:
+            body.add_widget(self._body_text(str(meta), COLORS['gray_400'], self.suf(FONT_SIZES['tiny'])))
+        row.add_widget(body)
+        return row
+
+    def _bullet(self):
+        w = Widget(size_hint=(None, None), size=(self.suv(10), self.suv(10)))
+        with w.canvas:
+            Color(*COLORS['blue'])
+            dot = RoundedRectangle(pos=w.pos, size=w.size, radius=[self.suv(8)])
+        def _sync(widget, *_):
+            size = min(widget.width, widget.height)
+            dot.pos = (widget.x, widget.y + max(0, (widget.height - size) / 2))
+            dot.size = (size, size)
+            dot.radius = [size / 2]
+        w.bind(pos=_sync, size=_sync)
+        return w
+
+    def _set_card_visible(self, card, visible):
+        card.opacity = 1 if visible else 0
+        card.disabled = not visible
+        card.height = card.height if visible else 0
+
+    def _finalize_card(self, card, *, min_height=86):
+        card.height = max(self.suv(min_height), sum(getattr(w, 'height', 0) for w in card.children) + self.suv(36))
 
     def set_meeting_id(self, meeting_id: str):
         self.meeting_id = meeting_id
@@ -159,16 +231,46 @@ class MeetingDetailScreen(BaseScreen):
         self.meta_label.text = f"{local_start.strftime('%b %d, %I:%M %p')} · {dur} min · Meeting memory"
 
         summary = self.meeting.get('summary', {}) or {}
+        if not isinstance(summary, dict):
+            summary = {'summary': str(summary or '')}
         self._populate_summary(summary)
+        self._populate_list_section(
+            self.questions_container,
+            'Open Questions',
+            summary.get('open_questions', []) or [],
+            empty_hidden=True,
+        )
+        self._populate_list_section(
+            self.risks_container,
+            'Risks / Concerns',
+            summary.get('risks_or_concerns', []) or [],
+            empty_hidden=True,
+        )
         self._populate_actions(summary.get('action_items', []) or [])
         self._populate_decisions(summary.get('decisions', []) or [])
 
     def _populate_summary(self, summary):
         c = self.summary_container
         c.clear_widgets()
-        c.add_widget(self._heading('Executive report'))
-        c.add_widget(self._body_text(summary.get('summary') or 'No report generated yet.'))
-        c.height = sum(getattr(w, 'height', 0) for w in c.children) + self.suv(42)
+        c.add_widget(self._heading('AI Summary'))
+        c.add_widget(self._body_text(summary.get('summary') or 'No report generated yet.', COLORS['gray_300'], self.suf(FONT_SIZES['small'])))
+        self._finalize_card(c, min_height=112)
+
+    def _populate_list_section(self, container, title, items, *, empty_hidden=False):
+        c = container
+        c.clear_widgets()
+        normalized = [str(x).strip() for x in (items or []) if str(x).strip()]
+        if not normalized and empty_hidden:
+            self._set_card_visible(c, False)
+            return
+        self._set_card_visible(c, True)
+        c.add_widget(self._heading(f'{title} ({len(normalized)})'))
+        if not normalized:
+            c.add_widget(self._body_text(f'No {title.lower()} captured yet.', COLORS['gray_500'], self.suf(FONT_SIZES['small'])))
+        else:
+            for item in normalized:
+                c.add_widget(self._list_row(item))
+        self._finalize_card(c)
 
     def _populate_actions(self, items):
         c = self.actions_container
@@ -178,18 +280,22 @@ class MeetingDetailScreen(BaseScreen):
             c.add_widget(self._body_text('No action items found.', COLORS['gray_500'], self.suf(FONT_SIZES['small'])))
         else:
             for item in items:
-                c.add_widget(ActionItemWidget(action_item=item))
-        c.height = max(self.suv(86), sum(getattr(w, 'height', 0) for w in c.children) + self.suv(42))
+                meta_parts = []
+                if isinstance(item, dict):
+                    task = item.get('task') or item.get('description') or str(item)
+                    if item.get('assignee'):
+                        meta_parts.append(str(item['assignee']))
+                    if item.get('due_date'):
+                        meta_parts.append(str(item['due_date']))
+                    if item.get('type'):
+                        meta_parts.append(str(item['type']).replace('_', ' ').title())
+                else:
+                    task = str(item)
+                c.add_widget(self._list_row(task, '  ·  '.join(meta_parts)))
+        self._finalize_card(c)
 
     def _populate_decisions(self, decisions):
-        c = self.decisions_container
-        c.clear_widgets()
-        c.add_widget(self._heading(f'Decisions ({len(decisions)})'))
-        if not decisions:
-            c.add_widget(self._body_text('No decisions captured yet.', COLORS['gray_500'], self.suf(FONT_SIZES['small'])))
-        else:
-            c.add_widget(self._body_text('\n'.join(f'• {d}' for d in decisions), COLORS['gray_300'], self.suf(FONT_SIZES['small'])))
-        c.height = max(self.suv(86), sum(getattr(w, 'height', 0) for w in c.children) + self.suv(42))
+        self._populate_list_section(self.decisions_container, 'Decisions', decisions or [], empty_hidden=False)
 
     def _on_delete(self, _inst):
         async def _delete():
