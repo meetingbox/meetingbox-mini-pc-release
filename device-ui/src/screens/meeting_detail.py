@@ -39,10 +39,16 @@ class MeetingDetailScreen(BaseScreen):
         )
         root.add_widget(self.status_bar)
 
-        scroll = ScrollView(do_scroll_x=False)
+        scroll = ScrollView(
+            do_scroll_x=False,
+            do_scroll_y=True,
+            scroll_type=['bars', 'content'],
+            bar_width=sv(5),
+        )
+        self.scroll = scroll
         self.content = BoxLayout(
             orientation='vertical',
-            spacing=sv(10),
+            spacing=sv(14),
             size_hint_y=None,
             padding=[sv(SPACING['screen_padding']), sv(10), sv(SPACING['screen_padding']), sv(14)],
         )
@@ -97,20 +103,22 @@ class MeetingDetailScreen(BaseScreen):
         buttons = BoxLayout(
             orientation='horizontal',
             size_hint_y=None,
-            height=sv(56),
+            height=sv(68),
             spacing=sv(10),
-            padding=[0, sv(2), 0, sv(2)],
+            padding=[sv(SPACING['screen_padding']), sv(6), sv(SPACING['screen_padding']), sv(8)],
         )
+        self.attach_card_bg(buttons, radius=sv(18), color=(0.01, 0.04, 0.12, 0.90))
         back_btn = SecondaryButton(text='Back', font_size=sf(FONT_SIZES['small']))
         back_btn.bind(on_release=lambda *_: self.go_back())
         buttons.add_widget(back_btn)
         delete_btn = DangerButton(text='Delete Meeting', font_size=sf(FONT_SIZES['small']))
         delete_btn.bind(on_press=self._on_delete)
         buttons.add_widget(delete_btn)
-        self.content.add_widget(buttons)
+        self.button_bar = buttons
 
         scroll.add_widget(self.content)
         root.add_widget(scroll)
+        root.add_widget(buttons)
         root.add_widget(self.build_footer())
         self.add_widget(root)
 
@@ -122,7 +130,15 @@ class MeetingDetailScreen(BaseScreen):
             spacing=self.suv(8),
         )
         self.attach_card_bg(card, radius=self.suv(20), color=(0.02, 0.06, 0.16, 0.86))
+        card._min_height = self.suv(86)
+        card.bind(minimum_height=self._sync_card_height)
         return card
+
+    def _sync_card_height(self, card, _value=None):
+        if getattr(card, '_hidden', False):
+            card.height = 0
+            return
+        card.height = max(getattr(card, '_min_height', self.suv(86)), card.minimum_height)
 
     def _heading(self, text):
         row = BoxLayout(orientation='horizontal', size_hint_y=None, height=self.suv(30), spacing=self.suv(8))
@@ -162,7 +178,7 @@ class MeetingDetailScreen(BaseScreen):
             line_height=1.22,
         )
         lbl.bind(width=lambda w, val: setattr(w, 'text_size', (max(1, val - self.suv(4)), None)))
-        lbl.bind(texture_size=lambda w, ts: setattr(w, 'height', max(self.suv(26), ts[1] + self.suv(8))))
+        lbl.bind(texture_size=lambda w, ts: setattr(w, 'height', max(self.suv(26), ts[1] + self.suv(10))))
         return lbl
 
     def _list_row(self, text, meta=''):
@@ -172,10 +188,10 @@ class MeetingDetailScreen(BaseScreen):
             spacing=self.suv(10),
             padding=[self.suv(4), self.suv(5), self.suv(4), self.suv(5)],
         )
-        row.bind(minimum_height=row.setter('height'))
+        row.bind(minimum_height=lambda w, h: setattr(w, 'height', max(self.suv(38), h)))
         row.add_widget(self._bullet())
         body = BoxLayout(orientation='vertical', size_hint_y=None, spacing=self.suv(2))
-        body.bind(minimum_height=body.setter('height'))
+        body.bind(minimum_height=lambda w, h: setattr(w, 'height', max(self.suv(30), h)))
         body.add_widget(self._body_text(str(text), COLORS['white'], self.suf(FONT_SIZES['small'])))
         if meta:
             body.add_widget(self._body_text(str(meta), COLORS['gray_400'], self.suf(FONT_SIZES['tiny'])))
@@ -196,12 +212,16 @@ class MeetingDetailScreen(BaseScreen):
         return w
 
     def _set_card_visible(self, card, visible):
+        card._hidden = not visible
         card.opacity = 1 if visible else 0
         card.disabled = not visible
-        card.height = card.height if visible else 0
+        self._sync_card_height(card)
 
     def _finalize_card(self, card, *, min_height=86):
-        card.height = max(self.suv(min_height), sum(getattr(w, 'height', 0) for w in card.children) + self.suv(36))
+        card._hidden = False
+        card._min_height = self.suv(min_height)
+        self._sync_card_height(card)
+        Clock.schedule_once(lambda _dt, c=card: self._sync_card_height(c), 0)
 
     def set_meeting_id(self, meeting_id: str):
         self.meeting_id = meeting_id

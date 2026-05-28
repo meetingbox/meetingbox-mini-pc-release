@@ -41,6 +41,37 @@ PAIRING_STATUS_URL = os.getenv(
 EVT_PREFIX = "MEETINGBOX_EVT|"
 
 
+# region agent log
+def _agent_debug_log(hypothesis_id: str, location: str, message: str, data: dict | None = None) -> None:
+  try:
+    payload = {
+      "sessionId": "9926dc",
+      "runId": "initial",
+      "hypothesisId": hypothesis_id,
+      "location": location,
+      "message": message,
+      "data": data or {},
+      "timestamp": int(time.time() * 1000),
+    }
+    paths = [Path("debug-9926dc.log")]
+    try:
+      paths.append(Path(__file__).resolve().parents[2] / "debug-9926dc.log")
+    except Exception:
+      pass
+    line = json.dumps(payload, default=str) + "\n"
+    seen = set()
+    for path in paths:
+      key = str(path)
+      if key in seen:
+        continue
+      seen.add(key)
+      with open(path, "a", encoding="utf-8") as f:
+        f.write(line)
+  except Exception:
+    pass
+# endregion
+
+
 def _load_device_auth_token() -> str:
   """Prefer the persisted paired-device token file, then fall back to env."""
   token_file = DEVICE_AUTH_TOKEN_FILE
@@ -219,6 +250,59 @@ class AudioCaptureService:
     except Exception:
       count = -1
     logger.info("PortAudio re-initialized (device_count=%s)", count)
+
+  def _debug_input_devices_snapshot(self) -> list[dict]:
+    if self._using_sounddevice():
+      try:
+        return [
+          {
+            "index": i,
+            "name": d.get("name"),
+            "maxInputChannels": d.get("max_input_channels"),
+            "defaultSampleRate": d.get("default_samplerate"),
+          }
+          for i, d in enumerate(sd.query_devices())
+          if int(d.get("max_input_channels") or 0) > 0
+        ]
+      except Exception as exc:
+        return [{"error": str(exc)}]
+    try:
+      return [
+        {
+          "index": i,
+          "name": self.audio.get_device_info_by_index(i).get("name"),
+          "maxInputChannels": self.audio.get_device_info_by_index(i).get("maxInputChannels"),
+          "defaultSampleRate": self.audio.get_device_info_by_index(i).get("defaultSampleRate"),
+        }
+        for i in range(self.audio.get_device_count())
+        if self.audio.get_device_info_by_index(i).get("maxInputChannels", 0) > 0
+      ]
+    except Exception as exc:
+      return [{"error": str(exc)}]
+
+  def _debug_device_info(self, mic_index) -> dict:
+    if mic_index is None:
+      return {"index": None, "name": "system default"}
+    if isinstance(mic_index, str):
+      return {"index": mic_index, "name": mic_index}
+    try:
+      if self._using_sounddevice():
+        d = sd.query_devices(mic_index)
+        return {
+          "index": mic_index,
+          "name": d.get("name"),
+          "maxInputChannels": d.get("max_input_channels"),
+          "defaultSampleRate": d.get("default_samplerate"),
+        }
+      d = self.audio.get_device_info_by_index(int(mic_index))
+      return {
+        "index": mic_index,
+        "name": d.get("name"),
+        "maxInputChannels": d.get("maxInputChannels"),
+        "defaultSampleRate": d.get("defaultSampleRate"),
+      }
+    except Exception as exc:
+      return {"index": mic_index, "error": str(exc)}
 
   def find_mic_device(self) -> int | None:
     """
@@ -555,12 +639,34 @@ class AudioCaptureService:
     self.current_session_id = session_id
     self.is_recording = True
     self.is_paused = False
+    # region agent log
+    _agent_debug_log("H1,H2,H4", "mini-pc/audio/audio_capture.py:start_recording", "start_recording entry", {
+      "session_id": session_id,
+      "backend": self.capture_backend,
+      "device_id_set": bool(self.device_id),
+      "input_index_env_set": bool(os.getenv("AUDIO_INPUT_DEVICE_INDEX", "").strip()),
+      "input_name_env_set": bool(os.getenv("AUDIO_INPUT_DEVICE_NAME", "").strip()),
+      "was_mic_test": self.is_mic_test,
+    })
+    # endregion
 
     session_temp = self.temp_dir / session_id
     session_temp.mkdir(parents=True, exist_ok=True)
 
     try:
       mic_index = self.find_mic_device()
+      # region agent log
+      _agent_debug_log("H2", "mini-pc/audio/audio_capture.py:start_recording", "mic device selected before stream open", {
+        "session_id": session_id,
+        "mic_index": mic_index,
+        "selected_device": self._debug_device_info(mic_index),
+        "input_devices": self._debug_input_devices_snapshot(),
+        "rate": self.RATE,
+        "chunk": self.CHUNK,
+        "capture_channels": self.CAPTURE_CHANNELS,
+        "target_channels": self.TARGET_CHANNELS,
+      })
+      # endregion
       self.stream = self._open_input_stream(mic_index)
 
       output_path = self.recordings_dir / f"{session_id}.wav"
@@ -571,12 +677,27 @@ class AudioCaptureService:
       wav_writer.setframerate(self.TARGET_RATE)
       self._output_path = output_path
       self._wav_writer = wav_writer
+      # region agent log
+      _agent_debug_log("H4", "mini-pc/audio/audio_capture.py:start_recording", "stream and wav opened", {
+        "session_id": session_id,
+        "stream_open": self.stream is not None,
+        "wav_path": str(output_path),
+        "rate": self.RATE,
+        "capture_channels": self.CAPTURE_CHANNELS,
+      })
+      # endregion
     except Exception:
       self.is_recording = False
       self.current_session_id = None
       self.stream = None
       self._output_path = None
       self._wav_writer = None
+      # region agent log
+      _agent_debug_log("H2,H4", "mini-pc/audio/audio_capture.py:start_recording", "failed to open mic or wav", {
+        "session_id": session_id,
+        "input_devices": self._debug_input_devices_snapshot(),
+      })
+      # endregion
       logger.exception("Failed to open microphone / WAV for session %s", session_id)
       return False
 
@@ -853,6 +974,10 @@ class AudioCaptureService:
     last_successful_read_at = time.monotonic()
     silence_warning_logged_at = 0.0
     consecutive_read_errors = 0
+    debug_first_audio_logged = False
+    debug_started_at = time.monotonic()
+    debug_max_peak = 0
+    debug_level_events = 0
     # If no chunk arrives for this many seconds while we're actively
     # recording (and not paused), force a fresh stream.
     READ_WATCHDOG_S = 5.0
@@ -875,6 +1000,13 @@ class AudioCaptureService:
           last_successful_read_at = time.monotonic()
         except Exception:  # noqa: BLE001
           consecutive_read_errors += 1
+          # region agent log
+          _agent_debug_log("H4", "mini-pc/audio/audio_capture.py:recording_loop", "input read failed", {
+            "session_id": self.current_session_id,
+            "consecutive_read_errors": consecutive_read_errors,
+            "stream_is_none": self.stream is None,
+          })
+          # endregion
           logger.warning(
             "PortAudio read failed (consecutive=%d); attempting recovery",
             consecutive_read_errors,
@@ -921,8 +1053,38 @@ class AudioCaptureService:
           if len(samples) > 0:
             rms = float(np.sqrt(np.mean(np.square(samples.astype(np.float64)))))
             level = min(1.0, rms / 5000.0)
+            peak = int(np.max(np.abs(samples)))
           else:
             level = 0.0
+            rms = 0.0
+            peak = 0
+          debug_max_peak = max(debug_max_peak, peak)
+          debug_level_events += 1
+          if not debug_first_audio_logged:
+            # region agent log
+            _agent_debug_log("H3,H5", "mini-pc/audio/audio_capture.py:recording_loop", "first captured audio level", {
+              "session_id": self.current_session_id,
+              "rms": rms,
+              "peak": peak,
+              "level": level,
+              "sample_count": int(len(samples)),
+              "rate": self.RATE,
+              "capture_channels": self.CAPTURE_CHANNELS,
+            })
+            # endregion
+            debug_first_audio_logged = True
+          elif now - debug_started_at >= 4.0 and debug_max_peak < 200:
+            # region agent log
+            _agent_debug_log("H3", "mini-pc/audio/audio_capture.py:recording_loop", "captured audio stayed silent for first seconds", {
+              "session_id": self.current_session_id,
+              "seconds": round(now - debug_started_at, 2),
+              "max_peak": debug_max_peak,
+              "level_events": debug_level_events,
+              "current_level": level,
+              "current_rms": rms,
+            })
+            # endregion
+            debug_started_at = now + 999999
           self._emit_event({
             "type": "audio_level",
             "session_id": self.current_session_id,
@@ -1042,6 +1204,16 @@ class AudioCaptureService:
       )
       return
     action = command.get("action")
+    # region agent log
+    _agent_debug_log("H1", "mini-pc/audio/audio_capture.py:_dispatch_command", "audio command accepted", {
+      "action": action,
+      "session_id": command.get("session_id"),
+      "cmd_device_id_set": bool(cmd_device_id),
+      "service_device_id_set": bool(self.device_id),
+      "is_recording": self.is_recording,
+      "is_paused": self.is_paused,
+    })
+    # endregion
     if action == "start_recording":
       session_id = command.get("session_id")
       if self.start_recording(session_id):
