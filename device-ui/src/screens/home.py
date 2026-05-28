@@ -573,9 +573,16 @@ class HomeScreen(BaseScreen):
         self._current_amplitude: float = 0.0
         self._soundwave_tick_ev: object | None = None
 
-        # Say-bar transcription labels
-        self._say_bar_speaker: Label | None = None
-        self._say_bar_label:   Label | None = None
+        # Say-bar state machine
+        self._say_bar_active:    bool = False
+        self._say_bar_card:      FloatLayout | None = None  # the bar _Card
+        self._say_bar_prompts:   list = []                  # idle prompt widgets
+        self._orb_idle_ph:       dict = {}                  # orb pos_hint in idle
+        self._orb_active_ph:     dict = {}                  # orb pos_hint when active
+        self._orb_tap:           object | None = None       # tap target widget
+        self._say_bar_dot:       Label | None = None        # ● speaker dot
+        self._say_bar_label:     Label | None = None        # subtitle text
+        self._say_bar_reset_ev:  object | None = None       # pending idle-reset timer
 
         self._build_ui()
 
@@ -1466,28 +1473,79 @@ class HomeScreen(BaseScreen):
     # -----------------------------------------------------------------------
     # Say / transcription bar  (38.14, 672.38)  1183.72 × 100.29
     #
-    # Shows live transcription (user + AI) with the mic orb on the right.
-    # The static "Try saying" prompt has been removed; the left area is
-    # used for scrolling transcript text instead.
+    # Idle state  : "Try saying" prompt visible, orb centred.
+    # Active state: prompt fades out, orb slides to right + pulses,
+    #               transcription subtitle fades in.
     # -----------------------------------------------------------------------
 
     def _build_say_bar(self, root: FloatLayout) -> None:
         BW, BH = 1183.72, 100.29
-        bar = _Card(radius=_ff(29.66),
-                    size_hint=(_sw(BW), _sh(BH)),
-                    pos_hint={"x": _x(38.14), "y": _y(672.38, BH)})
+        bar = _Card(
+            radius=_ff(29.66),
+            size_hint=(_sw(BW), _sh(BH)),
+            pos_hint={"x": _x(38.14), "y": _y(672.38, BH)},
+        )
+        self._say_bar_card = bar
 
-        # Mic orb — right-aligned, vertically centred
+        # -----------------------------------------------------------------
+        # IDLE prompt widgets (visible by default, fade out on activation)
+        # -----------------------------------------------------------------
+        idle_widgets: list = []
+
+        sp_src = _fp("icon_sparkle.png") or _fp("icon_sparkle_layer.png")
+        if sp_src:
+            sparkle = Image(
+                source=sp_src,
+                size_hint=(33.67 / BW, 33.66 / BH),
+                pos_hint={"x": 22.6 / BW, "y": (BH - 32.49 - 33.66) / BH},
+                fit_mode="contain",
+            )
+            bar.add_widget(sparkle)
+            idle_widgets.append(sparkle)
+
+        plus_lbl = _lbl(
+            "+", _FONT, _ff(22.6), (0.106, 0.463, 0.980, 1.0), bold=True,
+            size_hint=(20 / BW, 27 / BH),
+            pos_hint={"x": 46.49 / BW, "y": (BH - 50.73 - 27) / BH},
+        )
+        bar.add_widget(plus_lbl)
+        idle_widgets.append(plus_lbl)
+
+        try_lbl = _lbl(
+            "Try saying", _FONT_SB, _ff(26.84), _BLUE,
+            size_hint=(160 / BW, 32 / BH),
+            pos_hint={"x": 80.51 / BW, "y": (BH - 15.54 - 32) / BH},
+        )
+        bar.add_widget(try_lbl)
+        idle_widgets.append(try_lbl)
+
+        prompt_lbl = _lbl(
+            '"Schedule a meeting tomorrow at 4 PM"',
+            _FONT_SB, _ff(22.6 * 1.2), _MUTED,
+            size_hint=(500 / BW, 33 / BH),
+            pos_hint={"x": 80.51 / BW, "y": (BH - 56.50 - 33) / BH},
+        )
+        bar.add_widget(prompt_lbl)
+        idle_widgets.append(prompt_lbl)
+
+        # -----------------------------------------------------------------
+        # Mic orb — starts at IDLE (center) position
+        # Active position: right-aligned, 14 px from right edge
+        # -----------------------------------------------------------------
         _ORB_W, _ORB_H = 91.82, 91.82
-        _ORB_X = BW - _ORB_W - 14.0          # 14 px from right edge
-        _ORB_Y = (BH - _ORB_H) / 2.0         # vertically centred
+        _ORB_IDLE_X = 591.86 / BW
+        _ORB_Y      = (BH - 4.24 - _ORB_H) / BH
+        _ORB_ACTIVE_X = (BW - _ORB_W - 14.0) / BW
+
+        self._orb_idle_ph   = {"x": _ORB_IDLE_X,   "y": _ORB_Y}
+        self._orb_active_ph = {"x": _ORB_ACTIVE_X,  "y": _ORB_Y}
 
         orb_src = _fp("icon_voice_orb.png") or _fp("icon_voice_orb_bar.png")
         if orb_src:
             voice_orb = _ScalableImage(
                 source=orb_src,
                 size_hint=(_ORB_W / BW, _ORB_H / BH),
-                pos_hint={"x": _ORB_X / BW, "y": _ORB_Y / BH},
+                pos_hint=dict(self._orb_idle_ph),
             )
             bar.add_widget(voice_orb)
             self._voice_orb = voice_orb
@@ -1495,30 +1553,50 @@ class HomeScreen(BaseScreen):
         orb_tap = _TappableCard(
             draw_bg=False,
             size_hint=(_ORB_W / BW, _ORB_H / BH),
-            pos_hint={"x": _ORB_X / BW, "y": _ORB_Y / BH},
+            pos_hint=dict(self._orb_idle_ph),
         )
         orb_tap.bind(on_release=self._on_mic_orb_tapped)
         bar.add_widget(orb_tap)
+        self._orb_tap = orb_tap
 
-        # Speaker label ("You" / "AI") — small, left edge, vertically centred
-        _L_PAD  = 24.0
-        _SPK_W  = 46.0
-        _SPK_GAP = 8.0
-        self._say_bar_speaker = _lbl(
-            "", _FONT_SB, _ff(14), _MUTED,
-            halign="left", valign="middle",
-            size_hint=(_SPK_W / BW, 0.55),
+        # Keyboard badge (idle, fades with the prompts)
+        kb_src = _fp("icon_keyboard.png")
+        if kb_src:
+            kb = Image(
+                source=kb_src,
+                size_hint=(76.28 / BW, 67.8 / BH),
+                pos_hint={"x": 1084.84 / BW, "y": (BH - 16.95 - 67.8) / BH},
+                fit_mode="contain",
+            )
+            bar.add_widget(kb)
+            idle_widgets.append(kb)
+
+        self._say_bar_prompts = idle_widgets
+
+        # -----------------------------------------------------------------
+        # ACTIVE transcription widgets (hidden by default)
+        # -----------------------------------------------------------------
+        _L_PAD   = 24.0
+        _DOT_W   = 22.0
+        _DOT_GAP = 10.0
+        _TX_X    = _L_PAD + _DOT_W + _DOT_GAP
+        _TX_W    = (BW - _ORB_W - 14.0) - _TX_X - 16.0
+
+        # Colored ● dot — white for user, blue for AI
+        self._say_bar_dot = _lbl(
+            "●", _FONT, _ff(16), _WHITE,
+            halign="center", valign="middle",
+            size_hint=(_DOT_W / BW, 0.4),
             pos_hint={"x": _L_PAD / BW, "center_y": 0.5},
+            opacity=0.0,
         )
-        bar.add_widget(self._say_bar_speaker)
+        bar.add_widget(self._say_bar_dot)
 
-        # Transcription text — left-aligned, vertically centred, truncated on right
-        _TX_X = _L_PAD + _SPK_W + _SPK_GAP
-        _TX_W = _ORB_X - _TX_X - 12.0        # 12 px gap before orb
+        # Subtitle line (single line, 30 sp, shorten on overflow)
         self._say_bar_label = Label(
             text="",
             font_name=_FONT,
-            font_size=_ff(20),
+            font_size=_ff(30),
             color=_WHITE,
             halign="left",
             valign="middle",
@@ -1526,6 +1604,7 @@ class HomeScreen(BaseScreen):
             shorten_from="right",
             size_hint=(_TX_W / BW, 0.75),
             pos_hint={"x": _TX_X / BW, "center_y": 0.5},
+            opacity=0.0,
         )
         self._say_bar_label.bind(
             size=lambda w, _s: setattr(w, "text_size", (w.width, w.height))
@@ -1539,22 +1618,153 @@ class HomeScreen(BaseScreen):
     # -----------------------------------------------------------------------
 
     def update_say_bar_transcription(self, speaker: str, text: str) -> None:
-        """Display the latest transcript line in the bottom say bar.
-
-        ``speaker`` should be "You" (user) or "AI" (assistant).
-        """
-        if self._say_bar_speaker is not None:
-            self._say_bar_speaker.text = speaker
-            self._say_bar_speaker.color = _MUTED if speaker == "You" else _BLUE
+        """Show current transcript line.  speaker='You'|'AI'."""
+        if self._say_bar_dot is not None:
+            self._say_bar_dot.color = _WHITE if speaker == "You" else _BLUE
         if self._say_bar_label is not None:
             self._say_bar_label.text = text
 
     def clear_say_bar_transcription(self) -> None:
-        """Clear the say-bar transcription text after a session ends."""
-        if self._say_bar_speaker is not None:
-            self._say_bar_speaker.text = ""
+        """Clear transcription text (called at session start/end)."""
         if self._say_bar_label is not None:
             self._say_bar_label.text = ""
+        if self._say_bar_dot is not None:
+            self._say_bar_dot.color = _WHITE
+
+    # -----------------------------------------------------------------------
+    # Say-bar state machine  (idle ↔ active)
+    # -----------------------------------------------------------------------
+
+    def _orb_target_x(self, hint_x: float) -> float:
+        """Convert bar-fraction hint_x to absolute window x for orb animation."""
+        bar = self._say_bar_card
+        return (bar.x + hint_x * bar.width) if bar is not None else 0.0
+
+    def activate_say_bar(self) -> None:
+        """Transition say bar idle → active (one-shot; idempotent).
+
+        Fades out the "Try saying" prompts, slides the orb to the right
+        side, and fades in the transcription area.  The caller is
+        responsible for starting / managing the orb pulse animation.
+        """
+        if self._say_bar_reset_ev is not None:
+            self._say_bar_reset_ev.cancel()
+            self._say_bar_reset_ev = None
+
+        if self._say_bar_active:
+            return
+        self._say_bar_active = True
+
+        # Fade out idle prompts
+        for w in self._say_bar_prompts:
+            Animation.cancel_all(w, 'opacity')
+            Animation(opacity=0.0, duration=0.25, t='in_quad').start(w)
+
+        # Slide orb to the right (clear pos_hint so `x` can be animated)
+        target_x = self._orb_target_x(self._orb_active_ph['x'])
+        orb = self._voice_orb
+        if orb is not None:
+            Animation.cancel_all(orb, 'x')
+            orb.pos_hint = {}
+            Animation(x=target_x, duration=0.45, t='out_cubic').start(orb)
+
+        orb_tap = self._orb_tap
+        if orb_tap is not None:
+            Animation.cancel_all(orb_tap, 'x')
+            orb_tap.pos_hint = {}
+            Animation(x=target_x, duration=0.45, t='out_cubic').start(orb_tap)
+
+        # Fade in transcription dot + label
+        for w in (self._say_bar_dot, self._say_bar_label):
+            if w is not None:
+                Animation.cancel_all(w, 'opacity')
+                Animation(opacity=1.0, duration=0.35, t='out_quad').start(w)
+
+    def deactivate_say_bar(self) -> None:
+        """Schedule an idle reset 0.5 s after the session ends."""
+        if self._say_bar_reset_ev is not None:
+            self._say_bar_reset_ev.cancel()
+        self._say_bar_reset_ev = Clock.schedule_once(
+            lambda _dt: self._do_deactivate_say_bar(), 0.5
+        )
+
+    def _do_deactivate_say_bar(self) -> None:
+        """Animate say bar back to idle state."""
+        self._say_bar_reset_ev = None
+        self._say_bar_active = False
+
+        if self._say_bar_label is not None:
+            self._say_bar_label.text = ""
+
+        # Fade out transcription area
+        for w in (self._say_bar_dot, self._say_bar_label):
+            if w is not None:
+                Animation.cancel_all(w, 'opacity')
+                Animation(opacity=0.0, duration=0.25, t='in_quad').start(w)
+
+        # Slide orb back to idle position, then restore pos_hint
+        idle_x = self._orb_target_x(self._orb_idle_ph['x'])
+        orb = self._voice_orb
+        if orb is not None:
+            Animation.cancel_all(orb, 'x', 'orb_scale')
+
+            def _restore_orb_ph(*_):
+                orb.pos_hint = dict(self._orb_idle_ph)
+
+            slide = Animation(x=idle_x, duration=0.40, t='in_out_cubic')
+            slide.bind(on_complete=_restore_orb_ph)
+            slide.start(orb)
+            Animation(orb_scale=1.0, duration=0.40, t='out_sine').start(orb)
+
+        orb_tap = self._orb_tap
+        if orb_tap is not None:
+            Animation.cancel_all(orb_tap, 'x')
+
+            def _restore_tap_ph(*_):
+                orb_tap.pos_hint = dict(self._orb_idle_ph)
+
+            slide_tap = Animation(x=idle_x, duration=0.40, t='in_out_cubic')
+            slide_tap.bind(on_complete=_restore_tap_ph)
+            slide_tap.start(orb_tap)
+
+        # Fade idle prompts back in
+        for w in self._say_bar_prompts:
+            Animation.cancel_all(w, 'opacity')
+            Animation(opacity=1.0, duration=0.30, t='out_quad').start(w)
+
+    def _reset_say_bar_instant(self) -> None:
+        """Instantly reset say bar to idle — called on screen enter, no animation."""
+        if self._say_bar_reset_ev is not None:
+            self._say_bar_reset_ev.cancel()
+            self._say_bar_reset_ev = None
+        self._say_bar_active = False
+
+        for w in self._say_bar_prompts:
+            Animation.cancel_all(w, 'opacity')
+            w.opacity = 1.0
+
+        for w in (self._say_bar_dot, self._say_bar_label):
+            if w is not None:
+                Animation.cancel_all(w, 'opacity')
+                w.opacity = 0.0
+
+        if self._say_bar_label is not None:
+            self._say_bar_label.text = ""
+
+        orb = self._voice_orb
+        if orb is not None:
+            Animation.cancel_all(orb, 'x', 'orb_scale')
+            orb.orb_scale = 1.0
+            orb.pos_hint = dict(self._orb_idle_ph)
+
+        orb_tap = self._orb_tap
+        if orb_tap is not None:
+            Animation.cancel_all(orb_tap, 'x')
+            orb_tap.pos_hint = dict(self._orb_idle_ph)
+
+        bar = self._say_bar_card
+        if bar is not None:
+            bar.do_layout()
 
     # -----------------------------------------------------------------------
     # Lifecycle
@@ -1570,11 +1780,10 @@ class HomeScreen(BaseScreen):
         if self._listening_pill is not None:
             Animation.cancel_all(self._listening_pill, 'opacity')
             self._listening_pill.opacity = 0.0
-        if self._voice_orb is not None:
-            Animation.cancel_all(self._voice_orb, 'orb_scale')
-            self._voice_orb.orb_scale = 1.0
         if self._soundwave_wf is not None:
             self._soundwave_wf.update_bars(time.monotonic(), 0.0)
+        # Reset say bar and orb to idle position instantly
+        self._reset_say_bar_instant()
 
         self._update_clock_labels()
         snap = get_weather_client().snapshot
@@ -1836,26 +2045,26 @@ class HomeScreen(BaseScreen):
     def show_listening_state(self) -> None:
         """Called when the wake word is detected while on the home screen.
 
-        1. Scales the bottom mic orb up to 1.4x then pulses 1.3↔1.4x.
-        2. Fades the Listening pill in.
-        3. Starts the soundwave amplitude tick.
+        1. Activates say bar (slides orb right, fades prompt out/transcription in).
+        2. Simultaneously pulses the mic orb 1.3↔1.4x.
+        3. Fades the Listening pill in.
+        4. Starts the soundwave amplitude tick.
         """
         self._listening_active = True
         self._current_amplitude = 0.0
 
-        # -- Voice orb animation ------------------------------------------
+        # -- Say bar: slide orb to right + fade prompts (one-shot) ---------
+        self.activate_say_bar()
+
+        # -- Voice orb pulse (starts simultaneously with the slide) --------
         if self._voice_orb is not None:
             Animation.cancel_all(self._voice_orb, 'orb_scale')
-            def _start_pulse(*_):
-                pulse = (
-                    Animation(orb_scale=1.3, duration=0.6, t='in_out_sine') +
-                    Animation(orb_scale=1.4, duration=0.6, t='in_out_sine')
-                )
-                pulse.repeat = True
-                pulse.start(self._voice_orb)
-            anim_in = Animation(orb_scale=1.4, duration=0.15, t='out_quad')
-            anim_in.bind(on_complete=_start_pulse)
-            anim_in.start(self._voice_orb)
+            pulse = (
+                Animation(orb_scale=1.3, duration=0.6, t='in_out_sine') +
+                Animation(orb_scale=1.4, duration=0.6, t='in_out_sine')
+            )
+            pulse.repeat = True
+            pulse.start(self._voice_orb)
 
         # -- Listening pill fade in ----------------------------------------
         if self._listening_pill is not None:
@@ -1882,8 +2091,9 @@ class HomeScreen(BaseScreen):
         - idle      : full hide (orb back to 1.0x, pill out, soundwave off)
         """
         if state == "listening":
-            # User can speak — show the listening pill
+            # User can speak — show the listening pill and activate say bar
             self._listening_active = True
+            self.activate_say_bar()
             if self._listening_pill is not None:
                 Animation.cancel_all(self._listening_pill, 'opacity')
                 Animation(opacity=1.0, duration=0.22, t='out_cubic').start(
@@ -1925,7 +2135,8 @@ class HomeScreen(BaseScreen):
             self.hide_listening_state()
 
     def hide_listening_state(self) -> None:
-        """End of voice interaction: scale orb back, fade out pill, stop soundwave."""
+        """End of voice interaction: scale orb back, fade out pill, stop soundwave,
+        and animate say bar back to idle."""
         self._listening_active = False
         self._current_amplitude = 0.0
 
@@ -1936,19 +2147,15 @@ class HomeScreen(BaseScreen):
         if self._soundwave_wf is not None:
             self._soundwave_wf.update_bars(time.monotonic(), 0.0)
 
-        # -- Voice orb: scale back to 1.0x --------------------------------
-        if self._voice_orb is not None:
-            Animation.cancel_all(self._voice_orb, 'orb_scale')
-            Animation(orb_scale=1.0, duration=0.4, t='out_sine').start(
-                self._voice_orb
-            )
-
         # -- Listening pill fade out ---------------------------------------
         if self._listening_pill is not None:
             Animation.cancel_all(self._listening_pill, 'opacity')
             Animation(opacity=0.0, duration=0.28, t='in_cubic').start(
                 self._listening_pill
             )
+
+        # -- Say bar: animate back to idle (handles orb scale too) --------
+        self.deactivate_say_bar()
 
     def _soundwave_tick(self, _dt) -> None:
         """30-fps tick: drive the _FigmaWaveform bar animation."""
