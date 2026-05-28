@@ -23,37 +23,6 @@ from typing import Optional
 
 import httpx
 
-
-# region agent log
-def _agent_debug_log(hypothesis_id: str, location: str, message: str, data: dict | None = None) -> None:
-    try:
-        payload = {
-            "sessionId": "9926dc",
-            "runId": "initial",
-            "hypothesisId": hypothesis_id,
-            "location": location,
-            "message": message,
-            "data": data or {},
-            "timestamp": int(time.time() * 1000),
-        }
-        paths = [Path("debug-9926dc.log")]
-        try:
-            paths.append(Path(__file__).resolve().parents[3] / "debug-9926dc.log")
-        except Exception:
-            pass
-        line = json.dumps(payload, default=str) + "\n"
-        seen = set()
-        for path in paths:
-            key = str(path)
-            if key in seen:
-                continue
-            seen.add(key)
-            with open(path, "a", encoding="utf-8") as f:
-                f.write(line)
-    except Exception:
-        pass
-# endregion
-
 # Ensure the directory containing this file (src) is on sys.path so that
 # imports of screens, components, config, api_client, etc. work regardless
 # of how the app is run (e.g. python src/main.py vs python -m src.main).
@@ -330,7 +299,6 @@ from screens.connectivity_check import ConnectivityCheckScreen
 # Retained screens (still useful)
 from screens.meetings import MeetingsScreen
 from screens.meeting_detail import MeetingDetailScreen
-from screens.cal_meeting_detail import CalendarMeetingDetailScreen
 from screens.wifi import WiFiScreen
 from screens.system import SystemScreen
 from screens.calendar import CalendarScreen
@@ -1109,7 +1077,6 @@ class MeetingBoxApp(App):
 
         self.screen_manager.add_widget(MeetingsScreen(name='meetings'))
         self.screen_manager.add_widget(MeetingDetailScreen(name='meeting_detail'))
-        self.screen_manager.add_widget(CalendarMeetingDetailScreen(name='cal_meeting_detail'))
         self.screen_manager.add_widget(WiFiScreen(name='wifi'))
         self.screen_manager.add_widget(SystemScreen(name='system'))
         self.screen_manager.add_widget(CalendarScreen(name='calendar'))
@@ -1798,24 +1765,8 @@ class MeetingBoxApp(App):
         level_data = data if 'level' in data else data.get('data', {})
         session_id = level_data.get('session_id')
         if self.current_session_id and session_id and session_id != self.current_session_id:
-            # region agent log
-            _agent_debug_log("H5", "mini-pc/device-ui/src/main.py:on_audio_level", "audio level event dropped for session mismatch", {
-                "event_session_id": session_id,
-                "current_session_id": self.current_session_id,
-                "level": level_data.get('level'),
-            })
-            # endregion
             return
         level = float(level_data.get('level', 0.0) or 0.0)
-        if level > 0.02:
-            # region agent log
-            _agent_debug_log("H5", "mini-pc/device-ui/src/main.py:on_audio_level", "audio level routed to recording screen", {
-                "event_session_id": session_id,
-                "current_session_id": self.current_session_id,
-                "level": level,
-                "screen": getattr(self.screen_manager, "current", None),
-            })
-            # endregion
         screen = self.screen_manager.get_screen('recording')
         if hasattr(screen, 'on_audio_level'):
             Clock.schedule_once(lambda _: screen.on_audio_level(level), 0)

@@ -1049,20 +1049,7 @@ class CalendarScreen(BaseScreen):
                 size_hint=(28 / DW, 34 / DH),
                 pos_hint={"x": 108.0 / DW, "y": (DH - 34) / 2 / DH}))
 
-        db.bind(on_release=lambda *_, _m=m: self._open_detail(_m))
         card.add_widget(db)
-
-    # ── Detail navigation ─────────────────────────────────────────────────────
-
-    def _open_detail(self, m: dict) -> None:
-        """Navigate to the calendar meeting detail screen for meeting *m*."""
-        try:
-            detail = self.manager.get_screen("cal_meeting_detail")
-            detail.set_meeting(m)
-            self.manager.transition.direction = "left"
-            self.manager.current = "cal_meeting_detail"
-        except Exception as exc:
-            logger.warning("Could not open meeting detail: %s", exc)
 
     # ── Add-event button ───────────────────────────────────────────────────────
     # Frame '27':  440.72, 716.16  378.57×60.74  r=16.95
@@ -1120,9 +1107,9 @@ class CalendarScreen(BaseScreen):
         today = display_now().date()
         # NOTE: do NOT consume self._target_date here. goto_screen() in main.py
         # manually fires on_enter() once, and Kivy fires it again automatically
-        # after the transition completes - so on_enter runs twice per entry.
+        # after the transition completes — so on_enter runs twice per entry.
         # If we cleared _target_date on the first call, the second call would
-        # fall back to today and overwrite _sel_date / heading / meeting list,
+        # fall back to "today" and overwrite _sel_date / heading / meeting list,
         # which is exactly the "shows today even when I asked for tomorrow" bug.
         # _target_date is cleared in on_leave() instead.
         target = self._target_date if self._target_date is not None else today
@@ -1170,7 +1157,7 @@ class CalendarScreen(BaseScreen):
     def on_leave(self) -> None:
         # Clear target_date so the next entry without an explicit set_target_date()
         # call defaults to today.  (We do NOT clear it in on_enter because Kivy
-        # fires on_enter twice per navigation - see comment in on_enter.)
+        # fires on_enter twice per navigation — see comment in on_enter.)
         self._target_date = None
         if self._view_week_mon is not None:
             self.app.ui_cache_unsubscribe(
