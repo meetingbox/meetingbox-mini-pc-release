@@ -573,6 +573,10 @@ class HomeScreen(BaseScreen):
         self._current_amplitude: float = 0.0
         self._soundwave_tick_ev: object | None = None
 
+        # Say-bar transcription labels
+        self._say_bar_speaker: Label | None = None
+        self._say_bar_label:   Label | None = None
+
         self._build_ui()
 
     # -----------------------------------------------------------------------
@@ -1460,7 +1464,11 @@ class HomeScreen(BaseScreen):
         self.tasks_card = _CardData(val_lbl, txt_lbl)
 
     # -----------------------------------------------------------------------
-    # Try saying bar  (38.14, 672.38)  1183.72 × 100.29
+    # Say / transcription bar  (38.14, 672.38)  1183.72 × 100.29
+    #
+    # Shows live transcription (user + AI) with the mic orb on the right.
+    # The static "Try saying" prompt has been removed; the left area is
+    # used for scrolling transcript text instead.
     # -----------------------------------------------------------------------
 
     def _build_say_bar(self, root: FloatLayout) -> None:
@@ -1469,70 +1477,84 @@ class HomeScreen(BaseScreen):
                     size_hint=(_sw(BW), _sh(BH)),
                     pos_hint={"x": _x(38.14), "y": _y(672.38, BH)})
 
-        # Sparkle vector  (22.6, 32.49) abs in bar  33.67 × 33.66
-        sp_src = _fp("icon_sparkle.png") or _fp("icon_sparkle_layer.png")
-        if sp_src:
-            bar.add_widget(Image(
-                source=sp_src,
-                size_hint=(33.67 / BW, 33.66 / BH),
-                pos_hint={"x": 22.6 / BW, "y": (BH - 32.49 - 33.66) / BH},
-                fit_mode="contain",
-            ))
+        # Mic orb — right-aligned, vertically centred
+        _ORB_W, _ORB_H = 91.82, 91.82
+        _ORB_X = BW - _ORB_W - 14.0          # 14 px from right edge
+        _ORB_Y = (BH - _ORB_H) / 2.0         # vertically centred
 
-        # "+" at (46.49, 50.73) abs in bar  14 × 27  Bold 22.6px  #1B76FA
-        bar.add_widget(_lbl(
-            "+", _FONT, _ff(22.6), (0.106, 0.463, 0.980, 1.0), bold=True,
-            size_hint=(20 / BW, 27 / BH),
-            pos_hint={"x": 46.49 / BW, "y": (BH - 50.73 - 27) / BH},
-        ))
-
-        # "Try saying"  (80.51, 15.54) abs in bar  127 × 32  SemiBold 26.84px  #006BF9
-        bar.add_widget(_lbl(
-            "Try saying", _FONT_SB, _ff(26.84), _BLUE,
-            size_hint=(160 / BW, 32 / BH),
-            pos_hint={"x": 80.51 / BW, "y": (BH - 15.54 - 32) / BH},
-        ))
-
-        # Prompt  (80.51, 56.50) abs in bar  416 × 27  SemiBold 22.6px  #B6BAF2
-        bar.add_widget(_lbl(
-            '"Schedule a meeting tomorrow at 4 PM"',
-            _FONT_SB, _ff(22.6 * 1.2), _MUTED,
-            size_hint=(500 / BW, 33 / BH),
-            pos_hint={"x": 80.51 / BW, "y": (BH - 56.50 - 33) / BH},
-        ))
-
-        # Voice orb  (591.86, 4.24) abs in bar  91.82 × 91.82
-        # Uses _ScalableImage so wake-word scale animation doesn't shift layout.
         orb_src = _fp("icon_voice_orb.png") or _fp("icon_voice_orb_bar.png")
         if orb_src:
             voice_orb = _ScalableImage(
                 source=orb_src,
-                size_hint=(91.82 / BW, 91.82 / BH),
-                pos_hint={"x": 591.86 / BW, "y": (BH - 4.24 - 91.82) / BH},
+                size_hint=(_ORB_W / BW, _ORB_H / BH),
+                pos_hint={"x": _ORB_X / BW, "y": _ORB_Y / BH},
             )
             bar.add_widget(voice_orb)
             self._voice_orb = voice_orb
 
-        # Transparent tap target on top of voice orb — same pos/size as orb
         orb_tap = _TappableCard(
             draw_bg=False,
-            size_hint=(91.82 / BW, 91.82 / BH),
-            pos_hint={"x": 591.86 / BW, "y": (BH - 4.24 - 91.82) / BH},
+            size_hint=(_ORB_W / BW, _ORB_H / BH),
+            pos_hint={"x": _ORB_X / BW, "y": _ORB_Y / BH},
         )
         orb_tap.bind(on_release=self._on_mic_orb_tapped)
         bar.add_widget(orb_tap)
 
-        # Keyboard badge  (1084.84, 16.95) abs in bar  76.28 × 67.8
-        kb_src = _fp("icon_keyboard.png")
-        if kb_src:
-            bar.add_widget(Image(
-                source=kb_src,
-                size_hint=(76.28 / BW, 67.8 / BH),
-                pos_hint={"x": 1084.84 / BW, "y": (BH - 16.95 - 67.8) / BH},
-                fit_mode="contain",
-            ))
+        # Speaker label ("You" / "AI") — small, left edge, vertically centred
+        _L_PAD  = 24.0
+        _SPK_W  = 46.0
+        _SPK_GAP = 8.0
+        self._say_bar_speaker = _lbl(
+            "", _FONT_SB, _ff(14), _MUTED,
+            halign="left", valign="middle",
+            size_hint=(_SPK_W / BW, 0.55),
+            pos_hint={"x": _L_PAD / BW, "center_y": 0.5},
+        )
+        bar.add_widget(self._say_bar_speaker)
+
+        # Transcription text — left-aligned, vertically centred, truncated on right
+        _TX_X = _L_PAD + _SPK_W + _SPK_GAP
+        _TX_W = _ORB_X - _TX_X - 12.0        # 12 px gap before orb
+        self._say_bar_label = Label(
+            text="",
+            font_name=_FONT,
+            font_size=_ff(20),
+            color=_WHITE,
+            halign="left",
+            valign="middle",
+            shorten=True,
+            shorten_from="right",
+            size_hint=(_TX_W / BW, 0.75),
+            pos_hint={"x": _TX_X / BW, "center_y": 0.5},
+        )
+        self._say_bar_label.bind(
+            size=lambda w, _s: setattr(w, "text_size", (w.width, w.height))
+        )
+        bar.add_widget(self._say_bar_label)
 
         root.add_widget(bar)
+
+    # -----------------------------------------------------------------------
+    # Say-bar transcription helpers
+    # -----------------------------------------------------------------------
+
+    def update_say_bar_transcription(self, speaker: str, text: str) -> None:
+        """Display the latest transcript line in the bottom say bar.
+
+        ``speaker`` should be "You" (user) or "AI" (assistant).
+        """
+        if self._say_bar_speaker is not None:
+            self._say_bar_speaker.text = speaker
+            self._say_bar_speaker.color = _MUTED if speaker == "You" else _BLUE
+        if self._say_bar_label is not None:
+            self._say_bar_label.text = text
+
+    def clear_say_bar_transcription(self) -> None:
+        """Clear the say-bar transcription text after a session ends."""
+        if self._say_bar_speaker is not None:
+            self._say_bar_speaker.text = ""
+        if self._say_bar_label is not None:
+            self._say_bar_label.text = ""
 
     # -----------------------------------------------------------------------
     # Lifecycle

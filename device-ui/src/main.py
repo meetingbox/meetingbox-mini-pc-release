@@ -2797,11 +2797,11 @@ class MeetingBoxApp(App):
             logger.exception("Realtime navigate to %s failed", name)
 
     def _sync_transcript_overlay_mode(self, screen_name: str | None = None) -> None:
-        """Toggle the overlay between full-screen and compact bottom-strip.
+        """Sync the transcript overlay mode for the current screen.
 
-        Full mode is used only on the home screen so the user gets the whole
-        WhatsApp-style conversation history. On every other screen we shrink
-        to a small bar at the bottom so the screen content stays readable.
+        On the home screen the say-bar handles transcription display, so the
+        overlay is suppressed and hidden. On all other screens the overlay
+        shows as a compact bottom strip.
         """
         overlay = self._transcript_overlay
         if overlay is None:
@@ -2809,7 +2809,24 @@ class MeetingBoxApp(App):
         name = screen_name or (
             self.screen_manager.current if self.screen_manager else None
         )
-        overlay.set_compact(name != 'home')
+        # Always compact — the full-screen overlay mode is no longer used.
+        overlay.set_compact(True)
+        if name == 'home':
+            # Home screen uses the say bar for transcription — keep overlay hidden.
+            overlay.suppress_auto_show = True
+            overlay.hide()
+        else:
+            overlay.suppress_auto_show = False
+
+    def _clear_home_say_bar(self) -> None:
+        """Clear the say-bar transcription on the home screen (if visible)."""
+        if self.screen_manager is None:
+            return
+        try:
+            home = self.screen_manager.get_screen('home')
+            home.clear_say_bar_transcription()
+        except Exception:
+            pass
 
     def _end_realtime_voice_session(self) -> None:
         self._realtime_mic_acquired = False
@@ -2817,6 +2834,7 @@ class MeetingBoxApp(App):
         self._set_voice_runtime_state("idle")
         if self._transcript_overlay is not None:
             self._transcript_overlay.hide()
+        Clock.schedule_once(lambda _dt: self._clear_home_say_bar(), 0)
         sess = self._realtime_voice_session
         started = getattr(self, "_realtime_session_start_monotonic", None)
         connected = getattr(self, "_realtime_connected_ok", False)
@@ -3057,7 +3075,13 @@ class MeetingBoxApp(App):
                 if self._transcript_overlay is not None:
                     self._transcript_overlay.clear_session()
                     self._sync_transcript_overlay_mode()
-                    self._transcript_overlay.show()
+                    # On home screen the say bar handles transcription; on
+                    # other screens show the compact overlay strip.
+                    if not (self.screen_manager
+                            and self.screen_manager.current == 'home'):
+                        self._transcript_overlay.show()
+                # Reset home say bar for the new session
+                self._clear_home_say_bar()
 
             Clock.schedule_once(_ui, 0)
 
@@ -3089,6 +3113,15 @@ class MeetingBoxApp(App):
             self._current_user_msg_id = None
             if not getattr(self, "_pending_user_msg_id", None):
                 self._pending_user_msg_id = overlay.add_user_message("…")
+            # Update home say bar with a placeholder immediately
+            def _say_bar_placeholder(_dt):
+                if (self.screen_manager is not None
+                        and self.screen_manager.current == 'home'):
+                    try:
+                        self.screen_manager.get_screen('home').update_say_bar_transcription("You", "…")
+                    except Exception:
+                        pass
+            Clock.schedule_once(_say_bar_placeholder, 0)
 
         def _on_user_transcript(text: str) -> None:
             overlay = self._transcript_overlay
@@ -3114,6 +3147,16 @@ class MeetingBoxApp(App):
                 msg_id = overlay.add_user_message(text)
                 self._current_user_msg_id = msg_id
 
+            # Also update home say bar with user transcript
+            def _say_bar_user(_dt, _t=text):
+                if (self.screen_manager is not None
+                        and self.screen_manager.current == 'home'):
+                    try:
+                        self.screen_manager.get_screen('home').update_say_bar_transcription("You", _t)
+                    except Exception:
+                        pass
+            Clock.schedule_once(_say_bar_user, 0)
+
             # Grammar correction — run only on non-trivial text so we don't
             # fire an API call for every tiny streaming fragment. The corrected
             # text replaces the bubble once the background call returns.
@@ -3129,6 +3172,14 @@ class MeetingBoxApp(App):
                     Clock.schedule_once(
                         lambda _dt: overlay.update_user_message(msg_id, corrected), 0
                     )
+                    def _say_bar_corrected(_dt, _c=corrected):
+                        if (self.screen_manager is not None
+                                and self.screen_manager.current == 'home'):
+                            try:
+                                self.screen_manager.get_screen('home').update_say_bar_transcription("You", _c)
+                            except Exception:
+                                pass
+                    Clock.schedule_once(_say_bar_corrected, 0)
 
             threading.Thread(target=_correct_and_update, daemon=True).start()
 
@@ -3150,6 +3201,15 @@ class MeetingBoxApp(App):
             if overlay is None:
                 return
             overlay.stream_ai_message(item_id, accumulated)
+            # Also update home say bar with streaming AI text
+            def _say_bar_ai(_dt, _t=accumulated):
+                if (self.screen_manager is not None
+                        and self.screen_manager.current == 'home'):
+                    try:
+                        self.screen_manager.get_screen('home').update_say_bar_transcription("AI", _t)
+                    except Exception:
+                        pass
+            Clock.schedule_once(_say_bar_ai, 0)
 
         try:
             self._realtime_connected_ok = False
