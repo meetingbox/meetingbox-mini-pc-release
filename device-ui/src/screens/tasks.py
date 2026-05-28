@@ -40,7 +40,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from datetime import datetime
+from datetime import date, datetime, timedelta
 
 from kivy.clock import Clock
 from kivy.graphics import Color, Ellipse, Line, Rectangle, RoundedRectangle
@@ -50,7 +50,9 @@ from kivy.uix.boxlayout import BoxLayout
 from kivy.uix.floatlayout import FloatLayout
 from kivy.uix.image import Image
 from kivy.uix.label import Label
+from kivy.uix.modalview import ModalView
 from kivy.uix.scrollview import ScrollView
+from kivy.uix.textinput import TextInput
 from kivy.uix.widget import Widget
 
 from async_helper import run_async
@@ -324,6 +326,358 @@ def _parse_tags(raw: str | None) -> list[str]:
     return []
 
 
+# ── Date-picker helpers (used by add-task modal + assign-date modal) ───────────
+
+def _quick_date_options() -> list[tuple[str, date]]:
+    """Return (label, date) pairs for the quick-pick date picker."""
+    today = display_now().date()
+    opts: list[tuple[str, date]] = [
+        ("Today", today),
+        ("Tomorrow", today + timedelta(days=1)),
+    ]
+    # Add the next 5 weekdays (skip past days within this week)
+    for i in range(2, 8):
+        d = today + timedelta(days=i)
+        label = d.strftime("%a %d %b")
+        opts.append((label, d))
+    return opts
+
+
+def _valid_iso_date(s: str) -> str | None:
+    """Validate YYYY-MM-DD; returns the canonical form on success or None."""
+    s = (s or "").strip()
+    if not s:
+        return None
+    try:
+        d = datetime.strptime(s, "%Y-%m-%d").date()
+        return d.isoformat()
+    except ValueError:
+        return None
+
+
+class _ModalCard(FloatLayout):
+    """Solid rounded background card used inside modals."""
+
+    def __init__(self, ct: tuple, cb: tuple, bdr: tuple, r: float = 14, **kw):
+        super().__init__(**kw)
+        self._r = r
+        with self.canvas.before:
+            Color(1, 1, 1, 1)
+            self._bg = RoundedRectangle(
+                pos=self.pos, size=self.size, radius=[r],
+                texture=_grad(ct, cb),
+            )
+        with self.canvas.after:
+            Color(*bdr[:3], 0.9)
+            self._ln = Line(
+                rounded_rectangle=(self.x, self.y, self.width, self.height, r),
+                width=1.0,
+            )
+        self.bind(pos=self._sync, size=self._sync)
+
+    def _sync(self, *_):
+        r = self._r
+        self._bg.pos = self.pos
+        self._bg.size = self.size
+        self._bg.radius = [r]
+        self._ln.rounded_rectangle = (self.x, self.y, self.width, self.height, r)
+
+
+class _TapPill(ButtonBehavior, _ModalCard):
+    """Tappable pill — gradient card with text."""
+
+
+class _DatePickerModal(ModalView):
+    """Modal with quick-pick date buttons + a custom YYYY-MM-DD input.
+
+    on_pick(picked_iso: str | None)  — None = clear (no date)
+    """
+
+    def __init__(self, on_pick, *, allow_clear: bool = False, **kw):
+        super().__init__(
+            size_hint=(0.6, 0.7),
+            background_color=(0, 0, 0, 0.6),
+            **kw,
+        )
+        self._on_pick = on_pick
+
+        root = _ModalCard(ct=_CARD_T, cb=_CARD_B, bdr=_BDR, r=_ff(20))
+        self.add_widget(root)
+
+        root.add_widget(_lbl(
+            "Pick a date", _FSB, _ff(24), _WHITE,
+            ha="center", va="middle",
+            size_hint=(0.9, None), height=_ff(50),
+            pos_hint={"x": 0.05, "top": 0.97},
+        ))
+
+        sv = ScrollView(
+            size_hint=(0.9, 0.62),
+            pos_hint={"x": 0.05, "y": 0.22},
+            do_scroll_x=False, do_scroll_y=True,
+            bar_width=_ff(4),
+        )
+        opts_box = BoxLayout(
+            orientation="vertical",
+            size_hint_y=None, spacing=_ff(8),
+            padding=[0, _ff(4), 0, _ff(4)],
+        )
+        opts_box.bind(minimum_height=opts_box.setter("height"))
+        for label, dt in _quick_date_options():
+            pill = _TapPill(ct=_ROW_T, cb=_ROW_B, bdr=_BDR, r=_ff(10))
+            pill.size_hint_y = None
+            pill.height = _ff(56)
+            pill.add_widget(_lbl(
+                label, _FMD, _ff(18), _WHITE,
+                ha="center", va="middle",
+                size_hint=(1, 1),
+            ))
+            iso = dt.isoformat()
+            pill.bind(on_release=lambda *_a, _iso=iso: self._pick_and_close(_iso))
+            opts_box.add_widget(pill)
+
+        # Custom date input
+        custom_row = BoxLayout(
+            orientation="horizontal",
+            size_hint_y=None, height=_ff(56), spacing=_ff(8),
+        )
+        self._custom_input = TextInput(
+            multiline=False,
+            hint_text="YYYY-MM-DD",
+            font_size=_ff(16),
+            size_hint=(0.65, 1),
+            background_color=(0.04, 0.07, 0.18, 1),
+            foreground_color=(1, 1, 1, 1),
+            cursor_color=(1, 1, 1, 1),
+        )
+        custom_row.add_widget(self._custom_input)
+        ok_btn = _TapPill(ct=_GREEN_T, cb=_GREEN_B, bdr=_GREEN_BDR, r=_ff(10))
+        ok_btn.size_hint = (0.35, 1)
+        ok_btn.add_widget(_lbl(
+            "Set custom", _FSB, _ff(15), _WHITE,
+            ha="center", va="middle",
+            size_hint=(1, 1),
+        ))
+        ok_btn.bind(on_release=lambda *_: self._submit_custom())
+        custom_row.add_widget(ok_btn)
+        opts_box.add_widget(custom_row)
+
+        sv.add_widget(opts_box)
+        root.add_widget(sv)
+
+        # Footer: optional Clear + Cancel
+        footer = BoxLayout(
+            orientation="horizontal",
+            size_hint=(0.9, 0.13),
+            pos_hint={"x": 0.05, "y": 0.05},
+            spacing=_ff(10),
+        )
+        if allow_clear:
+            clr = _TapPill(ct=_CARD_T, cb=_CARD_B, bdr=_BDR, r=_ff(10))
+            clr.size_hint = (0.5, 1)
+            clr.add_widget(_lbl(
+                "No date", _FMD, _ff(16), _MUTED,
+                ha="center", va="middle", size_hint=(1, 1),
+            ))
+            clr.bind(on_release=lambda *_: self._pick_and_close(None))
+            footer.add_widget(clr)
+        cancel = _TapPill(ct=_CARD_T, cb=_CARD_B, bdr=_BDR, r=_ff(10))
+        cancel.size_hint = (1, 1) if not allow_clear else (0.5, 1)
+        cancel.add_widget(_lbl(
+            "Cancel", _FMD, _ff(16), _WHITE,
+            ha="center", va="middle", size_hint=(1, 1),
+        ))
+        cancel.bind(on_release=lambda *_: self.dismiss())
+        footer.add_widget(cancel)
+        root.add_widget(footer)
+
+    def _submit_custom(self) -> None:
+        raw = (self._custom_input.text or "").strip()
+        iso = _valid_iso_date(raw)
+        if iso is None:
+            self._custom_input.text = ""
+            self._custom_input.hint_text = "Use YYYY-MM-DD"
+            return
+        self._pick_and_close(iso)
+
+    def _pick_and_close(self, iso: str | None) -> None:
+        try:
+            self._on_pick(iso)
+        except Exception:
+            logger.exception("date pick callback failed")
+        self.dismiss()
+
+
+class _AddTaskModal(ModalView):
+    """Modal for manually creating a task: title + (optional) due date + (optional) detail.
+
+    on_save(title: str, due_date_iso: str | None, detail: str | None)
+    """
+
+    def __init__(self, on_save, **kw):
+        super().__init__(
+            size_hint=(0.7, 0.78),
+            background_color=(0, 0, 0, 0.6),
+            **kw,
+        )
+        self._on_save = on_save
+        self._due_iso: str | None = None
+
+        root = _ModalCard(ct=_CARD_T, cb=_CARD_B, bdr=_BDR, r=_ff(20))
+        self.add_widget(root)
+
+        root.add_widget(_lbl(
+            "New task", _FSB, _ff(26), _WHITE,
+            ha="left", va="middle",
+            size_hint=(0.9, None), height=_ff(48),
+            pos_hint={"x": 0.05, "top": 0.97},
+        ))
+
+        # Title input
+        root.add_widget(_lbl(
+            "Title", _FMD, _ff(14), _DIM,
+            ha="left", va="bottom",
+            size_hint=(0.9, None), height=_ff(20),
+            pos_hint={"x": 0.05, "top": 0.84},
+        ))
+        self._title_input = TextInput(
+            multiline=False,
+            hint_text="e.g. Call John about the proposal",
+            font_size=_ff(18),
+            size_hint=(0.9, None), height=_ff(56),
+            pos_hint={"x": 0.05, "top": 0.80},
+            background_color=(0.04, 0.07, 0.18, 1),
+            foreground_color=(1, 1, 1, 1),
+            cursor_color=(1, 1, 1, 1),
+            padding=[_ff(12), _ff(12), _ff(12), _ff(12)],
+        )
+        root.add_widget(self._title_input)
+
+        # Due-date row
+        root.add_widget(_lbl(
+            "Due date (optional)", _FMD, _ff(14), _DIM,
+            ha="left", va="bottom",
+            size_hint=(0.9, None), height=_ff(20),
+            pos_hint={"x": 0.05, "top": 0.66},
+        ))
+        date_row = BoxLayout(
+            orientation="horizontal",
+            size_hint=(0.9, None), height=_ff(50),
+            pos_hint={"x": 0.05, "top": 0.62},
+            spacing=_ff(10),
+        )
+        self._date_pill = _TapPill(ct=_ROW_T, cb=_ROW_B, bdr=_BDR, r=_ff(10))
+        self._date_pill.size_hint = (0.7, 1)
+        self._date_label = _lbl(
+            "No date — Unplanned", _FMD, _ff(16), _MUTED,
+            ha="center", va="middle", size_hint=(1, 1),
+        )
+        self._date_pill.add_widget(self._date_label)
+        self._date_pill.bind(on_release=lambda *_: self._open_date_picker())
+        date_row.add_widget(self._date_pill)
+
+        clear_pill = _TapPill(ct=_CARD_T, cb=_CARD_B, bdr=_BDR, r=_ff(10))
+        clear_pill.size_hint = (0.3, 1)
+        clear_pill.add_widget(_lbl(
+            "Clear", _FMD, _ff(15), _DIM,
+            ha="center", va="middle", size_hint=(1, 1),
+        ))
+        clear_pill.bind(on_release=lambda *_: self._set_due(None))
+        date_row.add_widget(clear_pill)
+        root.add_widget(date_row)
+
+        # Detail input
+        root.add_widget(_lbl(
+            "Description (optional)", _FMD, _ff(14), _DIM,
+            ha="left", va="bottom",
+            size_hint=(0.9, None), height=_ff(20),
+            pos_hint={"x": 0.05, "top": 0.48},
+        ))
+        self._detail_input = TextInput(
+            multiline=True,
+            hint_text="A short note for context (optional).",
+            font_size=_ff(15),
+            size_hint=(0.9, 0.22),
+            pos_hint={"x": 0.05, "top": 0.44},
+            background_color=(0.04, 0.07, 0.18, 1),
+            foreground_color=(1, 1, 1, 1),
+            cursor_color=(1, 1, 1, 1),
+            padding=[_ff(12), _ff(12), _ff(12), _ff(12)],
+        )
+        root.add_widget(self._detail_input)
+
+        # Error label
+        self._error_lbl = _lbl(
+            "", _FMD, _ff(13), _ORANGE,
+            ha="left", va="middle",
+            size_hint=(0.9, None), height=_ff(24),
+            pos_hint={"x": 0.05, "y": 0.14},
+        )
+        root.add_widget(self._error_lbl)
+
+        # Footer buttons
+        footer = BoxLayout(
+            orientation="horizontal",
+            size_hint=(0.9, 0.10),
+            pos_hint={"x": 0.05, "y": 0.03},
+            spacing=_ff(10),
+        )
+        cancel = _TapPill(ct=_CARD_T, cb=_CARD_B, bdr=_BDR, r=_ff(10))
+        cancel.add_widget(_lbl(
+            "Cancel", _FMD, _ff(16), _WHITE,
+            ha="center", va="middle", size_hint=(1, 1),
+        ))
+        cancel.bind(on_release=lambda *_: self.dismiss())
+        footer.add_widget(cancel)
+
+        save = _TapPill(ct=_GREEN_T, cb=_GREEN_B, bdr=_GREEN_BDR, r=_ff(10))
+        save.add_widget(_lbl(
+            "Save task", _FSB, _ff(16), _WHITE,
+            ha="center", va="middle", size_hint=(1, 1),
+        ))
+        save.bind(on_release=lambda *_: self._submit())
+        footer.add_widget(save)
+        root.add_widget(footer)
+
+    def _open_date_picker(self) -> None:
+        def _picked(iso: str | None):
+            self._set_due(iso)
+        _DatePickerModal(_picked, allow_clear=True).open()
+
+    def _set_due(self, iso: str | None) -> None:
+        self._due_iso = iso
+        if iso:
+            try:
+                d = datetime.fromisoformat(iso).date()
+                self._date_label.text = d.strftime("Due %a %d %b %Y")
+                self._date_label.color = _BLUE
+            except Exception:
+                self._date_label.text = f"Due {iso}"
+                self._date_label.color = _BLUE
+        else:
+            self._date_label.text = "No date — Unplanned"
+            self._date_label.color = _MUTED
+
+    def _submit(self) -> None:
+        title = (self._title_input.text or "").strip()
+        if not title:
+            self._error_lbl.text = "Title is required."
+            return
+        if len(title) > 160:
+            self._error_lbl.text = "Title is too long — keep it under 160 characters."
+            return
+        detail = (self._detail_input.text or "").strip() or None
+        self._error_lbl.text = ""
+        try:
+            self._on_save(title, self._due_iso, detail)
+        except Exception:
+            logger.exception("AddTaskModal save callback failed")
+        self.dismiss()
+
+    def show_error(self, msg: str) -> None:
+        self._error_lbl.text = msg or ""
+
+
 # ── Task bucketing ─────────────────────────────────────────────────────────────
 
 def _categorize(row: dict) -> str | None:
@@ -465,15 +819,27 @@ class TasksScreen(BaseScreen):
         self._header_count_lbl = _lbl(
             "", _FMD, _ff(21.19), _MUTED,
             ha="right", va="bottom",
-            **_ph(700.0, 10.0, 520.0, 40.0))
+            **_ph(620.0, 10.0, 440.0, 40.0))
         root.add_widget(self._header_count_lbl)
 
         # "Updated X ago" — refreshed after every fetch
         self._last_updated_lbl = _lbl(
             "", _FMD, _ff(14.13), _DIM,
             ha="right", va="top",
-            **_ph(700.0, 52.0, 520.0, 28.0))
+            **_ph(620.0, 52.0, 440.0, 28.0))
         root.add_widget(self._last_updated_lbl)
+
+        # "+ Add" floating button (top-right of header)
+        add_btn = _TapPill(ct=_GREEN_T, cb=_GREEN_B, bdr=_GREEN_BDR, r=_ff(14))
+        add_btn.size_hint = (None, None)
+        add_btn.size = (_ff(140), _ff(48))
+        add_btn.pos_hint = {"right": 1.0 - 24.02 / FW, "top": 1.0 - 28.0 / FH}
+        add_btn.add_widget(_lbl(
+            "+  Add task", _FSB, _ff(18), _WHITE,
+            ha="center", va="middle", size_hint=(1, 1),
+        ))
+        add_btn.bind(on_release=lambda *_: self._open_add_task_modal())
+        root.add_widget(add_btn)
 
         # Divider line under header (matches morning_brief bottom-of-header divider)
         div = Widget(**_ph(22.6, 100.0, 1214.8, 1.89))
@@ -683,17 +1049,7 @@ class TasksScreen(BaseScreen):
         self._list_box.add_widget(hdr)
         self._list_box.add_widget(Widget(size_hint=(1, None), height=_ff(5)))
 
-    # ── Task row — pure FloatLayout with explicit non-overlapping pos_hint ────
-    #
-    # Column zones (fractions of card width, ~1186 px on 1260×800 display):
-    #   Dot     : x≈0.012  w≈0.009   (11 px)
-    #   Title   : x=0.030  w=0.530   (ends 0.560)   — all buckets
-    #   Source  : x=0.580  w=0.125   (ends 0.705)   — due_today / upcoming
-    #   Due     : x=0.715  w=0.160   (ends 0.875)   — due_today / upcoming
-    #   Accept  : x=0.905  w≈0.037   (44 px)        — unplanned only
-    #   Reject  : x=0.950  w≈0.037   (44 px)        — unplanned only
-    #   (unplanned title is wider: w=0.850, ends 0.880)
-    #
+    # Task row — BoxLayout inside for clean, non-overlapping layout
     def _add_task_row(self, row: dict, bucket: str) -> None:
         task_id    = str(row.get("id") or "")
         col        = _BUCKET_COLOR[bucket]
@@ -705,149 +1061,327 @@ class TasksScreen(BaseScreen):
         is_unplan  = (bucket == "unplanned")
         tags       = _parse_tags(row.get("tags"))
         updated    = _relative_updated(row)
-        has_extra  = bool(detail or tags)
 
+        has_extra = bool(detail or tags)
+        # Unplanned rows are a touch taller to fit the buttons
         ROW_H = _ff(88) if (has_extra or is_unplan) else _ff(72)
 
-        card = _Card(ct=_ROW_T, cb=_ROW_B, bdr=_BDR, r=_ff(14),
-                     size_hint=(1, None), height=ROW_H)
+        card = _Card(ct=_ROW_T, cb=_ROW_B, bdr=_BDR,
+                     r=_ff(14), size_hint=(1, None), height=ROW_H)
+
+        # ── Inner horizontal BoxLayout fills the card ───────────────────────
+        PAD = _ff(14)
+        inner = BoxLayout(
+            orientation="horizontal",
+            size_hint=(1, 1),
+            padding=[PAD, _ff(8), PAD, _ff(8)],
+            spacing=_ff(10),
+        )
+        card.add_widget(inner)
 
         # ── Status dot ─────────────────────────────────────────────────────
         D = _ff(11)
         dot_col = _YELLOW if is_snoozed else col
-        card.add_widget(_Dot(
-            color=dot_col,
-            size_hint=(None, None), size=(D, D),
-            pos_hint={"x": 0.014, "center_y": 0.5}))
+        dot = _Dot(color=dot_col,
+                   size_hint=(None, None), size=(D, D),
+                   pos_hint={"center_y": 0.5})
+        inner.add_widget(dot)
 
-        # ── Title (+ sub-line) ─────────────────────────────────────────────
-        # Wider title for unplanned rows (right side holds buttons, not source/due)
-        TW = 0.850 if is_unplan else 0.530
-
+        # ── Title + optional sub-line ───────────────────────────────────────
         if has_extra:
+            title_box = BoxLayout(orientation="vertical", size_hint=(1, 1),
+                                  spacing=_ff(3))
+            title_box.add_widget(_lbl(
+                title, _FSB, _ff(21.19), _WHITE,
+                ha="left", va="bottom", size_hint=(1, 0.55)))
+
             sub_parts = []
             if detail:
                 sub_parts.append(detail[:70] + ("…" if len(detail) > 70 else ""))
             if tags:
                 sub_parts.append("  ".join(f"#{t}" for t in tags[:3]))
             sub_txt = "  ·  ".join(sub_parts)
-
-            card.add_widget(_lbl(
-                title, _FSB, _ff(21.19), _WHITE,
-                ha="left", va="bottom",
-                size_hint=(TW, 0.50), pos_hint={"x": 0.030, "y": 0.44}))
-            card.add_widget(_lbl(
+            title_box.add_widget(_lbl(
                 sub_txt, _FMD, _ff(14.13), _DIM,
-                ha="left", va="top",
-                size_hint=(TW, 0.38), pos_hint={"x": 0.030, "y": 0.06}))
+                ha="left", va="top", size_hint=(1, 0.45)))
+            inner.add_widget(title_box)
         else:
-            card.add_widget(_lbl(
+            inner.add_widget(_lbl(
                 title, _FSB, _ff(21.19), _WHITE,
-                ha="left", va="middle",
-                size_hint=(TW, 1.0), pos_hint={"x": 0.030, "y": 0.0}))
+                ha="left", va="middle", size_hint=(1, 1)))
 
-        # ── Right section ──────────────────────────────────────────────────
+        # ── Right section ───────────────────────────────────────────────────
         if is_unplan and not is_snoozed:
-            # ─ Accept (✓) green button ──────────────────────────────────
+            # Three actions for unplanned tasks: assign date, complete, cancel.
             BTN = _ff(44)
-            BTN_Y = max(0.0, 0.5 - BTN / (2 * ROW_H))
+            btn_row = BoxLayout(
+                orientation="horizontal",
+                size_hint=(None, 1),
+                width=BTN * 3 + _ff(20),
+                spacing=_ff(10),
+            )
+
+            # Assign date — blue "calendar" pill with "📅" glyph.
+            date_btn = _TapCard(ct=_CARD_T, cb=_CARD_B, bdr=_BDR, r=_ff(10),
+                                size_hint=(None, None), size=(BTN, BTN),
+                                pos_hint={"center_y": 0.5})
+            with date_btn.canvas.after:
+                Color(*_BLUE[:3], 0.85)
+                _date_ring = Line(
+                    rounded_rectangle=(date_btn.x, date_btn.y, BTN, BTN, _ff(10)),
+                    width=1.4,
+                )
+            date_btn.bind(
+                pos=lambda w, v, r=_date_ring: setattr(
+                    r, "rounded_rectangle",
+                    (w.x, w.y, w.width, w.height, _ff(10)),
+                ),
+                size=lambda w, v, r=_date_ring: setattr(
+                    r, "rounded_rectangle",
+                    (w.x, w.y, w.width, w.height, _ff(10)),
+                ),
+            )
+            date_btn.add_widget(_lbl("📅", _FSB, _ff(22), _BLUE,
+                                     ha="center", va="middle", size_hint=(1, 1)))
+            date_btn.bind(on_release=lambda *_, tid=task_id: self._on_task_assign_date(tid))
+            btn_row.add_widget(date_btn)
 
             acc = _TapCard(ct=_GREEN_T, cb=_GREEN_B, bdr=_GREEN_BDR, r=_ff(10),
                            size_hint=(None, None), size=(BTN, BTN),
-                           pos_hint={"x": 0.900, "y": BTN_Y})
-            # pos_hint={"x":0,"y":0} required for FloatLayout children
+                           pos_hint={"center_y": 0.5})
             acc.add_widget(_lbl("✓", _FSB, _ff(22), _WHITE,
-                                ha="center", va="middle",
-                                size_hint=(1, 1), pos_hint={"x": 0, "y": 0}))
+                                ha="center", va="middle", size_hint=(1, 1)))
             acc.bind(on_release=lambda *_, tid=task_id: self._on_task_accept(tid))
-            card.add_widget(acc)
+            btn_row.add_widget(acc)
 
-            # ─ Reject (✕) red button ────────────────────────────────────
             rej = _TapCard(ct=_RED_T, cb=_RED_B, bdr=_RED_BDR, r=_ff(10),
                            size_hint=(None, None), size=(BTN, BTN),
-                           pos_hint={"x": 0.950, "y": BTN_Y})
+                           pos_hint={"center_y": 0.5})
             rej.add_widget(_lbl("✕", _FSB, _ff(22), _WHITE,
-                                ha="center", va="middle",
-                                size_hint=(1, 1), pos_hint={"x": 0, "y": 0}))
+                                ha="center", va="middle", size_hint=(1, 1)))
             rej.bind(on_release=lambda *_, tid=task_id: self._on_task_reject(tid))
-            card.add_widget(rej)
+            btn_row.add_widget(rej)
+
+            inner.add_widget(btn_row)
 
         else:
-            # ─ Source indicator ──────────────────────────────────────────
-            # Icon at x=0.580, label at x=0.605 — end ≤ 0.705, no overlap with due
+            # Source area (icon + label, or SNOOZED badge)
+            SRC_W = _ff(110)
+            src_box = BoxLayout(
+                orientation="horizontal",
+                size_hint=(None, 1),
+                width=SRC_W,
+                spacing=_ff(5),
+            )
             if is_snoozed:
-                card.add_widget(_lbl(
+                src_box.add_widget(_lbl(
                     "SNOOZED", _FSB, _ff(12), _YELLOW,
-                    ha="center", va="middle",
-                    size_hint=(0.115, 0.40), pos_hint={"x": 0.585, "y": 0.30}))
+                    ha="center", va="middle", size_hint=(1, 1)))
             else:
                 src_img_path = _brief_asset(_SRC_ICONS.get(src_kind, "icon_tick.png"))
                 if src_img_path:
-                    card.add_widget(Image(
+                    src_box.add_widget(Image(
                         source=src_img_path, fit_mode="contain",
-                        size_hint=(None, 0.40), width=_ff(22),
-                        pos_hint={"x": 0.582, "y": 0.30}))
-                card.add_widget(_lbl(
+                        size_hint=(None, 1), width=_ff(22)))
+                src_box.add_widget(_lbl(
                     _SRC_LABELS.get(src_kind, "Assistant"),
                     _FMD, _ff(14.13), _DIM,
-                    ha="left", va="middle",
-                    size_hint=(0.095, 1.0), pos_hint={"x": 0.608, "y": 0.0}))
+                    ha="left", va="middle", size_hint=(1, 1)))
+            inner.add_widget(src_box)
 
-            # ─ Due date + updated — x starts at 0.720, well clear of source ──
+            # Due date + updated label stacked vertically
+            due_box = BoxLayout(
+                orientation="vertical",
+                size_hint=(None, 1),
+                width=_ff(95),
+                spacing=0,
+            )
+            due_box.add_widget(_lbl(
+                due_text, _FMD, _ff(16.95), col,
+                ha="right", va="middle" if not updated else "bottom",
+                size_hint=(1, 0.58 if updated else 1)))
             if updated:
-                card.add_widget(_lbl(
-                    due_text, _FMD, _ff(16.95), col,
-                    ha="right", va="bottom",
-                    size_hint=(0.155, 0.55), pos_hint={"x": 0.720, "y": 0.30}))
-                card.add_widget(_lbl(
+                due_box.add_widget(_lbl(
                     updated, _FMD, _ff(11.3), _DIM,
                     ha="right", va="top",
-                    size_hint=(0.155, 0.32), pos_hint={"x": 0.720, "y": 0.04}))
-            else:
-                card.add_widget(_lbl(
-                    due_text, _FMD, _ff(16.95), col,
-                    ha="right", va="middle",
-                    size_hint=(0.155, 0.70), pos_hint={"x": 0.720, "y": 0.15}))
+                    size_hint=(1, 0.42)))
+            inner.add_widget(due_box)
 
         self._list_box.add_widget(card)
         self._list_box.add_widget(Widget(size_hint=(1, None), height=_ff(7)))
 
-    # ── Accept / Reject actions ────────────────────────────────────────────────
+    # ── Unplanned row actions: assign-date / complete / cancel ─────────────────
 
-    def _on_task_accept(self, task_id: str) -> None:
-        """Mark an unplanned task as completed (green-tick tap)."""
-        self._patch_task(task_id, "completed")
-
-    def _on_task_reject(self, task_id: str) -> None:
-        """Cancel an unplanned task (red-cross tap)."""
-        self._patch_task(task_id, "cancelled")
-
-    def _patch_task(self, task_id: str, new_status: str) -> None:
-        """PATCH the task status optimistically (remove from list immediately, sync in background)."""
+    def _on_task_assign_date(self, task_id: str) -> None:
+        """Open a date picker to set due_at on an Unplanned task."""
         if not task_id:
             return
 
-        # Optimistic update — remove the row from every bucket immediately
-        for bucket in self._rows:
-            self._rows[bucket] = [
-                r for r in self._rows[bucket]
-                if str(r.get("id") or "") != task_id
-            ]
-        self._update_counts()
-        self._rebuild_task_list()
+        def _picked(iso: str | None) -> None:
+            if not iso:
+                return
+            self._patch_task(task_id, status=None, due_date=iso)
 
-        # Background API call
+        _DatePickerModal(_picked, allow_clear=False).open()
+
+    def _on_task_accept(self, task_id: str) -> None:
+        """Mark an unplanned task as completed (green-tick tap)."""
+        self._patch_task(task_id, status="completed")
+
+    def _on_task_reject(self, task_id: str) -> None:
+        """Cancel an unplanned task (red-cross tap)."""
+        self._patch_task(task_id, status="cancelled")
+
+    def _patch_task(
+        self,
+        task_id: str,
+        status: str | None = None,
+        due_date: str | None = None,
+    ) -> None:
+        """PATCH a task optimistically. For status changes that move the row out of
+        the open list (completed / cancelled), drop it from the buckets right away.
+        For due_date assignment, refresh from the server so the row re-buckets cleanly.
+        """
+        if not task_id:
+            return
+        if not status and not due_date:
+            return
+
+        drop_row = status in ("completed", "cancelled")
+        if drop_row:
+            for bucket in self._rows:
+                self._rows[bucket] = [
+                    r for r in self._rows[bucket]
+                    if str(r.get("id") or "") != task_id
+                ]
+            self._update_counts()
+            self._rebuild_task_list()
+
         async def _call():
             try:
-                await self.backend.patch_commitment(task_id, new_status)
+                await self.backend.patch_commitment(
+                    task_id, status=status, due_date=due_date
+                )
             except Exception as exc:
                 logger.warning("patch_commitment failed: %s", exc)
-            # Refresh full list after a short delay to stay in sync
-            await asyncio.sleep(0.5)
-            # Re-fetch on main thread via Clock
+            await asyncio.sleep(0.4)
             Clock.schedule_once(self._load_tasks, 0)
 
         run_async(_call())
+
+    # ── Manual add (+ Add task button) ─────────────────────────────────────────
+
+    def _open_add_task_modal(self) -> None:
+        _AddTaskModal(self._on_add_task_submit).open()
+
+    def _on_add_task_submit(
+        self,
+        title: str,
+        due_iso: str | None,
+        detail: str | None,
+    ) -> None:
+        """Called from the Add Task modal save action."""
+        async def _create():
+            try:
+                res = await self.backend.create_commitment(
+                    title=title,
+                    due_date=due_iso,
+                    description=detail,
+                    confirm_duplicate=False,
+                    source="manual",
+                )
+            except Exception as exc:
+                logger.warning("create_commitment failed: %s", exc)
+                return
+            err = res.get("error") if isinstance(res, dict) else None
+            if err == "similar_task_exists":
+                similar = res.get("similar") or {}
+                Clock.schedule_once(
+                    lambda _dt, _sim=similar: self._handle_similar_task(
+                        title=title, due_iso=due_iso, detail=detail, similar=_sim
+                    ),
+                    0,
+                )
+                return
+            await asyncio.sleep(0.2)
+            Clock.schedule_once(self._load_tasks, 0)
+
+        run_async(_create())
+
+    def _handle_similar_task(
+        self,
+        *,
+        title: str,
+        due_iso: str | None,
+        detail: str | None,
+        similar: dict,
+    ) -> None:
+        """Show a small confirmation modal: 'Add anyway' / 'Cancel' on duplicate hit."""
+        modal = ModalView(
+            size_hint=(0.55, 0.36),
+            background_color=(0, 0, 0, 0.6),
+        )
+        root = _ModalCard(ct=_CARD_T, cb=_CARD_B, bdr=_BDR, r=_ff(20))
+        modal.add_widget(root)
+
+        root.add_widget(_lbl(
+            "Similar task exists", _FSB, _ff(22), _WHITE,
+            ha="left", va="middle",
+            size_hint=(0.9, None), height=_ff(40),
+            pos_hint={"x": 0.05, "top": 0.95},
+        ))
+        existing_title = (similar.get("title") or "").strip() or "(no title)"
+        root.add_widget(_lbl(
+            f"You already have:\n'{existing_title}'\n\nAdd this as a new task anyway?",
+            _FMD, _ff(15), _MUTED,
+            ha="left", va="top",
+            size_hint=(0.9, 0.55),
+            pos_hint={"x": 0.05, "top": 0.82},
+        ))
+
+        footer = BoxLayout(
+            orientation="horizontal",
+            size_hint=(0.9, 0.18),
+            pos_hint={"x": 0.05, "y": 0.05},
+            spacing=_ff(10),
+        )
+        cancel = _TapPill(ct=_CARD_T, cb=_CARD_B, bdr=_BDR, r=_ff(10))
+        cancel.add_widget(_lbl(
+            "Cancel", _FMD, _ff(15), _WHITE,
+            ha="center", va="middle", size_hint=(1, 1),
+        ))
+        cancel.bind(on_release=lambda *_: modal.dismiss())
+        footer.add_widget(cancel)
+
+        ok = _TapPill(ct=_GREEN_T, cb=_GREEN_B, bdr=_GREEN_BDR, r=_ff(10))
+        ok.add_widget(_lbl(
+            "Add anyway", _FSB, _ff(15), _WHITE,
+            ha="center", va="middle", size_hint=(1, 1),
+        ))
+
+        def _force_create(*_a) -> None:
+            modal.dismiss()
+
+            async def _go():
+                try:
+                    await self.backend.create_commitment(
+                        title=title,
+                        due_date=due_iso,
+                        description=detail,
+                        confirm_duplicate=True,
+                        source="manual",
+                    )
+                except Exception as exc:
+                    logger.warning("create_commitment (force) failed: %s", exc)
+                await asyncio.sleep(0.2)
+                Clock.schedule_once(self._load_tasks, 0)
+
+            run_async(_go())
+
+        ok.bind(on_release=_force_create)
+        footer.add_widget(ok)
+        root.add_widget(footer)
+        modal.open()
 
     # ── Count badges ──────────────────────────────────────────────────────────
 

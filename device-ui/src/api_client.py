@@ -948,18 +948,77 @@ class BackendClient:
             logger.debug("get_commitments failed: %s", e)
             return {"commitments": [], "count": 0}
 
-    async def patch_commitment(self, commitment_id: str, status: str) -> Dict:
-        """PATCH /api/commitments/{id} — update task status (completed | cancelled | active | snoozed)."""
+    async def patch_commitment(
+        self,
+        commitment_id: str,
+        status: str | None = None,
+        due_date: str | None = None,
+    ) -> Dict:
+        """PATCH /api/commitments/{id} — change status and/or assign a due_date.
+
+        Pass status='completed' / 'cancelled' / 'snoozed' / 'active' to change state,
+        and/or due_date='YYYY-MM-DD' to assign or change the deadline. At least one
+        of status or due_date is required.
+        """
         try:
+            body: Dict = {}
+            if status:
+                body["status"] = status
+            if due_date:
+                body["due_date"] = due_date
             resp = await self.client.patch(
                 f"{self.base_url}/api/commitments/{commitment_id}",
-                json={"status": status},
+                json=body,
             )
             resp.raise_for_status()
             return resp.json()
         except Exception as e:
             logger.debug("patch_commitment failed: %s", e)
             return {}
+
+    async def create_commitment(
+        self,
+        *,
+        title: str,
+        due_date: str | None = None,
+        description: str | None = None,
+        confirm_duplicate: bool = False,
+        source: str = "manual",
+    ) -> Dict:
+        """POST /api/commitments — create a task manually from the device Tasks screen.
+
+        Returns the created row on success, or {'error': 'similar_task_exists',
+        'similar': {...}} on a 409 duplicate hit so the UI can ask the user
+        whether to add anyway (pass confirm_duplicate=True on retry).
+        """
+        body: Dict = {
+            "title": (title or "").strip(),
+            "confirm_duplicate": bool(confirm_duplicate),
+            "source": source,
+        }
+        if due_date:
+            body["due_date"] = due_date
+        if description:
+            body["description"] = description
+        try:
+            resp = await self.client.post(
+                f"{self.base_url}/api/commitments",
+                json=body,
+            )
+            if resp.status_code == 409:
+                try:
+                    detail = resp.json().get("detail") or {}
+                except Exception:
+                    detail = {}
+                return {
+                    "error": "similar_task_exists",
+                    "similar": detail.get("similar") if isinstance(detail, dict) else None,
+                }
+            resp.raise_for_status()
+            return resp.json()
+        except Exception as e:
+            logger.debug("create_commitment failed: %s", e)
+            return {"error": "request_failed", "detail": str(e)}
 
     async def create_realtime_voice_session(self) -> Dict:
         """POST /api/voice/realtime/session — OpenAI Realtime client secret (Bearer token)."""
