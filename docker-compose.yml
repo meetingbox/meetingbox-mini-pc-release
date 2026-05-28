@@ -131,9 +131,12 @@ services:
       - ./scripts/meetingbox-timedatectl:/usr/local/bin/meetingbox-timedatectl:ro
       # nmcli/bluetoothctl in the container talks to host NetworkManager / BlueZ via D-Bus.
       - /run/dbus/system_bus_socket:/run/dbus/system_bus_socket
+      # Bind the whole sound device directory so USB mic hot-plug creates new
+      # pcmC* nodes inside the already-running container. Docker `devices`
+      # snapshots /dev/snd at container start and misses later re-plugs.
+      - /dev/snd:/dev/snd
     devices:
       - /dev/dri:/dev/dri
-      - /dev/snd:/dev/snd
     # Host group names (Docker resolves GIDs on this machine). Omit ``render`` here because
     # some minimal images have no ``render`` group — Docker then fails to start the container.
     # If EGL logs show renderD128 permission denied, add the group on the host and use
