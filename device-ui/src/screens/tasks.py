@@ -430,7 +430,7 @@ class _DatePickerModal(ModalView):
             pill.add_widget(_lbl(
                 label, _FMD, _ff(18), _WHITE,
                 ha="center", va="middle",
-                size_hint=(1, 1),
+                size_hint=(1, 1), pos_hint={"x": 0, "y": 0},
             ))
             iso = dt.isoformat()
             pill.bind(on_release=lambda *_a, _iso=iso: self._pick_and_close(_iso))
@@ -456,7 +456,7 @@ class _DatePickerModal(ModalView):
         ok_btn.add_widget(_lbl(
             "Set custom", _FSB, _ff(15), _WHITE,
             ha="center", va="middle",
-            size_hint=(1, 1),
+            size_hint=(1, 1), pos_hint={"x": 0, "y": 0},
         ))
         ok_btn.bind(on_release=lambda *_: self._submit_custom())
         custom_row.add_widget(ok_btn)
@@ -477,7 +477,8 @@ class _DatePickerModal(ModalView):
             clr.size_hint = (0.5, 1)
             clr.add_widget(_lbl(
                 "No date", _FMD, _ff(16), _MUTED,
-                ha="center", va="middle", size_hint=(1, 1),
+                ha="center", va="middle",
+                size_hint=(1, 1), pos_hint={"x": 0, "y": 0},
             ))
             clr.bind(on_release=lambda *_: self._pick_and_close(None))
             footer.add_widget(clr)
@@ -485,7 +486,8 @@ class _DatePickerModal(ModalView):
         cancel.size_hint = (1, 1) if not allow_clear else (0.5, 1)
         cancel.add_widget(_lbl(
             "Cancel", _FMD, _ff(16), _WHITE,
-            ha="center", va="middle", size_hint=(1, 1),
+            ha="center", va="middle",
+            size_hint=(1, 1), pos_hint={"x": 0, "y": 0},
         ))
         cancel.bind(on_release=lambda *_: self.dismiss())
         footer.add_widget(cancel)
@@ -570,7 +572,8 @@ class _AddTaskModal(ModalView):
         self._date_pill.size_hint = (0.7, 1)
         self._date_label = _lbl(
             "No date — Unplanned", _FMD, _ff(16), _MUTED,
-            ha="center", va="middle", size_hint=(1, 1),
+            ha="center", va="middle",
+            size_hint=(1, 1), pos_hint={"x": 0, "y": 0},
         )
         self._date_pill.add_widget(self._date_label)
         self._date_pill.bind(on_release=lambda *_: self._open_date_picker())
@@ -580,7 +583,8 @@ class _AddTaskModal(ModalView):
         clear_pill.size_hint = (0.3, 1)
         clear_pill.add_widget(_lbl(
             "Clear", _FMD, _ff(15), _DIM,
-            ha="center", va="middle", size_hint=(1, 1),
+            ha="center", va="middle",
+            size_hint=(1, 1), pos_hint={"x": 0, "y": 0},
         ))
         clear_pill.bind(on_release=lambda *_: self._set_due(None))
         date_row.add_widget(clear_pill)
@@ -625,7 +629,8 @@ class _AddTaskModal(ModalView):
         cancel = _TapPill(ct=_CARD_T, cb=_CARD_B, bdr=_BDR, r=_ff(10))
         cancel.add_widget(_lbl(
             "Cancel", _FMD, _ff(16), _WHITE,
-            ha="center", va="middle", size_hint=(1, 1),
+            ha="center", va="middle",
+            size_hint=(1, 1), pos_hint={"x": 0, "y": 0},
         ))
         cancel.bind(on_release=lambda *_: self.dismiss())
         footer.add_widget(cancel)
@@ -633,7 +638,8 @@ class _AddTaskModal(ModalView):
         save = _TapPill(ct=_GREEN_T, cb=_GREEN_B, bdr=_GREEN_BDR, r=_ff(10))
         save.add_widget(_lbl(
             "Save task", _FSB, _ff(16), _WHITE,
-            ha="center", va="middle", size_hint=(1, 1),
+            ha="center", va="middle",
+            size_hint=(1, 1), pos_hint={"x": 0, "y": 0},
         ))
         save.bind(on_release=lambda *_: self._submit())
         footer.add_widget(save)
@@ -837,6 +843,7 @@ class TasksScreen(BaseScreen):
         add_btn.add_widget(_lbl(
             "+  Add task", _FSB, _ff(18), _WHITE,
             ha="center", va="middle", size_hint=(1, 1),
+            pos_hint={"x": 0, "y": 0},
         ))
         add_btn.bind(on_release=lambda *_: self._open_add_task_modal())
         root.add_widget(add_btn)
@@ -1070,10 +1077,13 @@ class TasksScreen(BaseScreen):
                      r=_ff(14), size_hint=(1, None), height=ROW_H)
 
         # ── Inner horizontal BoxLayout fills the card ───────────────────────
+        # pos_hint={"x": 0, "y": 0} is required: without it, Kivy's FloatLayout
+        # sizes the BoxLayout correctly but leaves its pos at (0,0) window coords.
         PAD = _ff(14)
         inner = BoxLayout(
             orientation="horizontal",
             size_hint=(1, 1),
+            pos_hint={"x": 0, "y": 0},
             padding=[PAD, _ff(8), PAD, _ff(8)],
             spacing=_ff(10),
         )
@@ -1121,44 +1131,46 @@ class TasksScreen(BaseScreen):
                 spacing=_ff(10),
             )
 
-            # Assign date — blue "calendar" pill with "📅" glyph.
+            # Assign date — blue pill with calendar icon (or "Date" text fallback)
             date_btn = _TapCard(ct=_CARD_T, cb=_CARD_B, bdr=_BDR, r=_ff(10),
                                 size_hint=(None, None), size=(BTN, BTN),
                                 pos_hint={"center_y": 0.5})
-            with date_btn.canvas.after:
-                Color(*_BLUE[:3], 0.85)
-                _date_ring = Line(
-                    rounded_rectangle=(date_btn.x, date_btn.y, BTN, BTN, _ff(10)),
-                    width=1.4,
-                )
-            date_btn.bind(
-                pos=lambda w, v, r=_date_ring: setattr(
-                    r, "rounded_rectangle",
-                    (w.x, w.y, w.width, w.height, _ff(10)),
-                ),
-                size=lambda w, v, r=_date_ring: setattr(
-                    r, "rounded_rectangle",
-                    (w.x, w.y, w.width, w.height, _ff(10)),
-                ),
-            )
-            date_btn.add_widget(_lbl("📅", _FSB, _ff(22), _BLUE,
-                                     ha="center", va="middle", size_hint=(1, 1)))
+            cal_icon = _brief_asset("icon_calendar.png")
+            if cal_icon:
+                date_btn.add_widget(Image(source=cal_icon, fit_mode="contain",
+                                         size_hint=(0.7, 0.7),
+                                         pos_hint={"center_x": 0.5, "center_y": 0.5}))
+            else:
+                date_btn.add_widget(_lbl("Date", _FMD, _ff(13), _BLUE,
+                                         ha="center", va="middle",
+                                         size_hint=(1, 1), pos_hint={"x": 0, "y": 0}))
             date_btn.bind(on_release=lambda *_, tid=task_id: self._on_task_assign_date(tid))
             btn_row.add_widget(date_btn)
 
             acc = _TapCard(ct=_GREEN_T, cb=_GREEN_B, bdr=_GREEN_BDR, r=_ff(10),
                            size_hint=(None, None), size=(BTN, BTN),
                            pos_hint={"center_y": 0.5})
-            acc.add_widget(_lbl("✓", _FSB, _ff(22), _WHITE,
-                                ha="center", va="middle", size_hint=(1, 1)))
+            tick_icon = _brief_asset("icon_tick.png")
+            if tick_icon:
+                acc.add_widget(Image(source=tick_icon, fit_mode="contain",
+                                     size_hint=(0.65, 0.65),
+                                     pos_hint={"center_x": 0.5, "center_y": 0.5}))
+            else:
+                acc.add_widget(_lbl("Done", _FMD, _ff(13), _WHITE,
+                                    ha="center", va="middle",
+                                    size_hint=(1, 1), pos_hint={"x": 0, "y": 0}))
             acc.bind(on_release=lambda *_, tid=task_id: self._on_task_accept(tid))
             btn_row.add_widget(acc)
 
             rej = _TapCard(ct=_RED_T, cb=_RED_B, bdr=_RED_BDR, r=_ff(10),
                            size_hint=(None, None), size=(BTN, BTN),
                            pos_hint={"center_y": 0.5})
-            rej.add_widget(_lbl("✕", _FSB, _ff(22), _WHITE,
-                                ha="center", va="middle", size_hint=(1, 1)))
+            # Use font_name="" (Kivy built-in Roboto) so × renders on all devices
+            _rej_lbl = Label(text="×", font_name="", font_size=_ff(26),
+                             color=_WHITE, halign="center", valign="middle",
+                             size_hint=(1, 1), pos_hint={"x": 0, "y": 0})
+            _rej_lbl.bind(size=_rej_lbl.setter("text_size"))
+            rej.add_widget(_rej_lbl)
             rej.bind(on_release=lambda *_, tid=task_id: self._on_task_reject(tid))
             btn_row.add_widget(rej)
 
@@ -1348,7 +1360,8 @@ class TasksScreen(BaseScreen):
         cancel = _TapPill(ct=_CARD_T, cb=_CARD_B, bdr=_BDR, r=_ff(10))
         cancel.add_widget(_lbl(
             "Cancel", _FMD, _ff(15), _WHITE,
-            ha="center", va="middle", size_hint=(1, 1),
+            ha="center", va="middle",
+            size_hint=(1, 1), pos_hint={"x": 0, "y": 0},
         ))
         cancel.bind(on_release=lambda *_: modal.dismiss())
         footer.add_widget(cancel)
@@ -1356,7 +1369,8 @@ class TasksScreen(BaseScreen):
         ok = _TapPill(ct=_GREEN_T, cb=_GREEN_B, bdr=_GREEN_BDR, r=_ff(10))
         ok.add_widget(_lbl(
             "Add anyway", _FSB, _ff(15), _WHITE,
-            ha="center", va="middle", size_hint=(1, 1),
+            ha="center", va="middle",
+            size_hint=(1, 1), pos_hint={"x": 0, "y": 0},
         ))
 
         def _force_create(*_a) -> None:

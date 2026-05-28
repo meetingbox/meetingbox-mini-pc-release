@@ -1596,6 +1596,9 @@ class HomeScreen(BaseScreen):
             lambda _dt: self._refresh_status_strip(), 30.0
         )
 
+        # Tasks count badge — fetched from /api/commitments every visit
+        Clock.schedule_once(lambda _dt: self._load_tasks_count(), 2.0)
+
     def on_leave(self):
         # Clean up listening state immediately when leaving home
         self._listening_active = False
@@ -2050,6 +2053,30 @@ class HomeScreen(BaseScreen):
                     # navigate away and back.
                     Clock.schedule_once(lambda _dt2: self._load_system_status(), 30.0)
                 Clock.schedule_once(_backend_offline, 0)
+
+        run_async(_fetch())
+
+    # -----------------------------------------------------------------------
+    # Tasks count badge (independent fetch from /api/commitments)
+    # -----------------------------------------------------------------------
+
+    def _load_tasks_count(self) -> None:
+        """Fetch the real open-task count and update the Tasks chip on the home screen."""
+        async def _fetch():
+            try:
+                result = await self.backend.get_commitments(status="", limit=200)
+                rows: list = result.get("commitments") or []
+                count = sum(
+                    1 for r in rows
+                    if (r.get("status") or "").lower() not in ("completed", "cancelled", "canceled")
+                )
+            except Exception:
+                return
+
+            def _apply(_dt):
+                if self.tasks_card is not None:
+                    self.tasks_card.value_label.text = str(count) if count else "0"
+            Clock.schedule_once(_apply, 0)
 
         run_async(_fetch())
 
