@@ -22,6 +22,7 @@ class MeetingDetailScreen(BaseScreen):
         super().__init__(**kwargs)
         self.meeting_id = None
         self.meeting = None
+        self._agentic_actions = []
         self._build_ui()
 
     def _build_ui(self):
@@ -181,7 +182,7 @@ class MeetingDetailScreen(BaseScreen):
         lbl.bind(texture_size=lambda w, ts: setattr(w, 'height', max(self.suv(26), ts[1] + self.suv(10))))
         return lbl
 
-    def _list_row(self, text, meta=''):
+    def _list_row(self, text, meta='', trailing=None):
         row = BoxLayout(
             orientation='horizontal',
             size_hint_y=None,
@@ -196,6 +197,8 @@ class MeetingDetailScreen(BaseScreen):
         if meta:
             body.add_widget(self._body_text(str(meta), COLORS['gray_400'], self.suf(FONT_SIZES['tiny'])))
         row.add_widget(body)
+        if trailing is not None:
+            row.add_widget(trailing)
         return row
 
     def _bullet(self):
@@ -236,6 +239,24 @@ class MeetingDetailScreen(BaseScreen):
             try:
                 meeting = await self.backend.get_meeting_detail(self.meeting_id)
                 self.meeting = meeting
+                summary = meeting.get('summary', {}) or {}
+                if not isinstance(summary, dict):
+                    summary = {'summary': str(summary or '')}
+                try:
+                    actions = await self.backend.get_actions(self.meeting_id)
+                    self._agentic_actions = [
+                        a for a in actions if isinstance(a, dict) and a.get('id')
+                    ] if isinstance(actions, list) else []
+                except Exception:
+                    self._agentic_actions = []
+                if not self._agentic_actions and self._summary_has_executable_actions(summary):
+                    try:
+                        generated = await self.backend.generate_actions(self.meeting_id)
+                        self._agentic_actions = [
+                            a for a in generated if isinstance(a, dict) and a.get('id')
+                        ] if isinstance(generated, list) else []
+                    except Exception:
+                        pass
                 Clock.schedule_once(lambda _: self._populate(), 0)
             except Exception:
                 Clock.schedule_once(lambda _: self.go_back(), 0)
@@ -311,11 +332,227 @@ class MeetingDetailScreen(BaseScreen):
                         meta_parts.append(str(item['type']).replace('_', ' ').title())
                 else:
                     task = str(item)
-                c.add_widget(self._list_row(task, '  ·  '.join(meta_parts)))
+                linked_action = self._match_agentic_action_for_item(item, set())
+                trailing = self._make_execute_button(linked_action) if linked_action else None
+                if trailing is None and isinstance(item, dict) and self._item_connector(item) == 'calendar':
+                    trailing = self._make_summary_calendar_button(item)
+                c.add_widget(self._list_row(task, '  ·  '.join(meta_parts), trailing=trailing))
         self._finalize_card(c)
 
     def _populate_decisions(self, decisions):
         self._populate_list_section(self.decisions_container, 'Decisions', decisions or [], empty_hidden=False)
+
+    @staticmethod
+    def _action_connector(action):
+        if not isinstance(action, dict):
+            return ''
+        connector = (action.get('connector_target') or '').strip().lower()
+        kind = (action.get('kind') or action.get('type') or '').strip().lower()
+        if connector in {'gmail', 'calendar'}:
+            return connector
+        if kind in {'followup_email', 'email_draft', 'email', 'send_email'}:
+            return 'gmail'
+        if kind in {'schedule_followup', 'calendar_invite', 'calendar', 'calendar_event', 'schedule'}:
+            return 'calendar'
+        return ''
+
+    @staticmethod
+    def _item_connector(item):
+        if not isinstance(item, dict):
+            return ''
+        typ = (item.get('type') or '').strip().lower()
+        task = (item.get('task') or item.get('description') or '').strip().lower()
+        haystack = f'{typ} {task}'
+        if typ in {'email_draft', 'followup_email', 'email', 'send_email'}:
+            return 'gmail'
+        if typ in {'calendar_invite', 'schedule_followup', 'calendar', 'calendar_event', 'schedule'}:
+            return 'calendar'
+        if 'calendar' in haystack or 'schedule' in haystack or 'meeting invite' in haystack:
+            return 'calendar'
+        if 'email' in haystack or 'mail' in haystack:
+            return 'gmail'
+        return ''
+
+    @classmethod
+    def _summary_has_executable_actions(cls, summary):
+        for item in (summary.get('action_items') or summary.get('actions') or []):
+            if cls._item_connector(item) in {'gmail', 'calendar'}:
+                return True
+        return False
+
+    def _match_agentic_action_for_item(self, item, used_ids):
+        target = self._item_connector(item)
+        if not target:
+            return None
+        task = (item.get('task') or item.get('description') or '').strip().lower()
+        candidates = [
+            action for action in self._agentic_actions
+            if str(action.get('id') or '') not in used_ids
+            and self._action_connector(action) == target
+            and not (action.get('executed_at') or action.get('status') == 'executed')
+        ]
+        if not candidates:
+            return None
+        for action in candidates:
+            title = str(action.get('title') or action.get('description') or '').strip().lower()
+            if task and (task in title or title in task):
+                return action
+        return candidates[0]
+
+    def _make_execute_button(self, action):
+        from kivy.uix.button import Button
+
+        connector = self._action_connector(action)
+        if connector not in {'gmail', 'calendar'}:
+            return None
+        action_id = str(action.get('id') or '')
+
+        def _button(text, width, *, create_draft=False, success_text='Done'):
+            btn = Button(
+                text=text,
+                size_hint=(None, None),
+                size=(self.suv(width), self.suv(40)),
+                pos_hint={'center_y': 0.5},
+                background_normal='',
+                background_color=COLORS['blue'],
+                color=COLORS['white'],
+                bold=True,
+                font_size=self.suf(FONT_SIZES['tiny']),
+            )
+            btn.bind(
+                on_release=lambda _w, aid=action_id, b=btn: self._execute_action(
+                    aid,
+                    b,
+                    create_draft=create_draft,
+                    success_text=success_text,
+                )
+            )
+            return btn
+
+        if connector == 'gmail':
+            buttons = BoxLayout(
+                orientation='horizontal',
+                size_hint=(None, None),
+                size=(self.suv(198), self.suv(40)),
+                spacing=self.suv(8),
+                pos_hint={'center_y': 0.5},
+            )
+            buttons.add_widget(_button('Send', 84, create_draft=False, success_text='Sent'))
+            buttons.add_widget(_button('Draft', 104, create_draft=True, success_text='Drafted'))
+            return buttons
+        return _button('Add to calendar', 150, success_text='Added')
+
+    def _make_summary_calendar_button(self, item):
+        from kivy.uix.button import Button
+
+        btn = Button(
+            text='Add to calendar',
+            size_hint=(None, None),
+            size=(self.suv(150), self.suv(40)),
+            pos_hint={'center_y': 0.5},
+            background_normal='',
+            background_color=COLORS['blue'],
+            color=COLORS['white'],
+            bold=True,
+            font_size=self.suf(FONT_SIZES['tiny']),
+        )
+        btn.bind(on_release=lambda _w, b=btn, it=dict(item): self._execute_summary_calendar_item(it, b))
+        return btn
+
+    def _execute_action(self, action_id, btn, *, create_draft=False, success_text='Done'):
+        if not action_id:
+            return
+        btn.disabled = True
+        btn.text = 'Working...'
+
+        async def _run():
+            ok = False
+            try:
+                await self.backend.execute_action(action_id, create_draft=create_draft)
+                self._mark_action_executed(action_id)
+                ok = True
+            except Exception:
+                ok = False
+
+            def _apply(_dt):
+                btn.disabled = False
+                if ok:
+                    btn.text = success_text
+                    btn.background_color = COLORS['green']
+                    self._populate()
+                else:
+                    btn.text = 'Retry'
+
+            Clock.schedule_once(_apply, 0)
+
+        run_async(_run())
+
+    def _execute_summary_calendar_item(self, item, btn):
+        if not self.meeting_id:
+            return
+        btn.disabled = True
+        btn.text = 'Working...'
+
+        async def _run():
+            ok = False
+            error = ''
+            action_id = ''
+            try:
+                generated = await self.backend.generate_actions(self.meeting_id)
+                if isinstance(generated, list):
+                    self._agentic_actions = [
+                        a for a in generated if isinstance(a, dict) and a.get('id')
+                    ]
+                    action = self._match_agentic_action_for_item(item, set())
+                else:
+                    action = None
+                if action is None:
+                    due_date = (item.get('due_date') or '').strip()
+                    if not due_date:
+                        raise RuntimeError('Calendar action needs a due date.')
+                    action = await self.backend.create_manual_action(
+                        self.meeting_id,
+                        {
+                            'connector': 'calendar',
+                            'title': item.get('task') or 'Follow-up',
+                            'description': item.get('task') or '',
+                            'event_title': item.get('task') or 'Follow-up',
+                            'suggested_date': due_date,
+                            'suggested_time': '10:00',
+                            'duration_minutes': 30,
+                            'attendees': [],
+                        },
+                    )
+                    if isinstance(action, dict) and action.get('id'):
+                        self._agentic_actions.append(action)
+                action_id = str((action or {}).get('id') or '')
+                if not action_id:
+                    raise RuntimeError('Calendar action could not be prepared.')
+                await self.backend.execute_action(action_id)
+                self._mark_action_executed(action_id)
+                ok = True
+            except Exception as exc:
+                error = str(exc)
+
+            def _apply(_dt):
+                btn.disabled = False
+                if ok:
+                    btn.text = 'Added'
+                    btn.background_color = COLORS['green']
+                    self._populate()
+                else:
+                    btn.text = 'Need date' if 'due date' in error.lower() else 'Retry'
+
+            Clock.schedule_once(_apply, 0)
+
+        run_async(_run())
+
+    def _mark_action_executed(self, action_id):
+        for action in self._agentic_actions:
+            if str(action.get('id') or '') == str(action_id):
+                action['status'] = 'executed'
+                action['executed_at'] = action.get('executed_at') or 'now'
+                break
 
     def _on_delete(self, _inst):
         async def _delete():
