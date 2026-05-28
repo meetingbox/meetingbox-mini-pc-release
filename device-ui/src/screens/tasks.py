@@ -1165,12 +1165,10 @@ class TasksScreen(BaseScreen):
             rej = _TapCard(ct=_RED_T, cb=_RED_B, bdr=_RED_BDR, r=_ff(10),
                            size_hint=(None, None), size=(BTN, BTN),
                            pos_hint={"center_y": 0.5})
-            # Use font_name="" (Kivy built-in Roboto) so × renders on all devices
-            _rej_lbl = Label(text="×", font_name="", font_size=_ff(26),
-                             color=_WHITE, halign="center", valign="middle",
-                             size_hint=(1, 1), pos_hint={"x": 0, "y": 0})
-            _rej_lbl.bind(size=_rej_lbl.setter("text_size"))
-            rej.add_widget(_rej_lbl)
+            # × (U+00D7) is a basic Latin char present in 42dot fonts
+            rej.add_widget(_lbl("×", _FMD, _ff(26), _WHITE,
+                                ha="center", va="middle",
+                                size_hint=(1, 1), pos_hint={"x": 0, "y": 0}))
             rej.bind(on_release=lambda *_, tid=task_id: self._on_task_reject(tid))
             btn_row.add_widget(rej)
 
