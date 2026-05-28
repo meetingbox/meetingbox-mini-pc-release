@@ -85,7 +85,7 @@ services:
       - TEMP_SEGMENTS_DIR=${TEMP_SEGMENTS_DIR:-/data/audio/temp}
       - UPLOAD_AUDIO_ON_STOP=${UPLOAD_AUDIO_ON_STOP:-1}
       - UPLOAD_AUDIO_API_URL=${UPLOAD_AUDIO_API_URL:-http://127.0.0.1:8000/api/meetings/upload-audio}
-      - UPLOAD_AUDIO_TIMEOUT_SECONDS=${UPLOAD_AUDIO_TIMEOUT_SECONDS:-1200}
+      - UPLOAD_AUDIO_TIMEOUT_SECONDS=${UPLOAD_AUDIO_TIMEOUT_SECONDS:-7200}
       - DEVICE_AUTH_TOKEN=${DEVICE_AUTH_TOKEN:-}
       # Match physical panel (e.g. ultrawide 3520x1080). Kivy reads these before Window is created.
       # Defaults are 1024×600 — without overrides, home-screen scaling stays at the small baseline.
