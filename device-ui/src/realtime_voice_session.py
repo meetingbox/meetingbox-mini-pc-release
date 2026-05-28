@@ -121,12 +121,9 @@ _REALTIME_WAKE_GREETING_INSTRUCTIONS = (
 )
 
 # STT model for the user-speech transcript stream (used by the UI
-# overlay, farewell detection, and grammar correction). The full
-# gpt-4o-transcribe is significantly more accurate than the mini
-# variant on short conversational phrases that were being misheard
-# (e.g. "alright thanks" -> "Aller"), at the cost of a small extra
-# latency that we hide behind the speech-stopped placeholder.
-_DEFAULT_INPUT_TRANSCRIPTION_MODEL = "gpt-4o-transcribe"
+# overlay, farewell detection, and grammar correction). Keep this on
+# Whisper so realtime voice follows the same STT model family as meetings.
+_DEFAULT_INPUT_TRANSCRIPTION_MODEL = "whisper-1"
 # Deliberately neutral — see server/web/routes/voice.py for the rationale.
 _INPUT_TRANSCRIPTION_PROMPT = "Conversational English."
 

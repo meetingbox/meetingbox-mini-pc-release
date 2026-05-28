@@ -502,6 +502,12 @@ class AudioCaptureService:
           len(usb_candidates),
         )
         candidates = usb_candidates
+      else:
+        logger.warning(
+          "MEETINGBOX_USB_MIC_STRICT=1 and no USB-named PortAudio input found; "
+          "using system default input so PipeWire/Pulse can route to the USB mic."
+        )
+        return None
 
     # Sort: concrete USB/external first, built-ins next, generic aliases last.
     # This avoids choosing wrappers like "sysdefault" over the actual USB device.
