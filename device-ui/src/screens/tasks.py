@@ -403,7 +403,7 @@ class _CalendarPickerModal(ModalView):
 
     def __init__(self, on_pick, *, allow_clear: bool = False, **kw):
         super().__init__(
-            size_hint=(0.72, 0.84),
+            size_hint=(0.68, None),   # height computed dynamically in _build
             background_color=(0, 0, 0, 0.6),
             **kw,
         )
@@ -424,25 +424,54 @@ class _CalendarPickerModal(ModalView):
         root = self._root
         root.clear_widgets()
 
-        # Main vertical layout centred inside the card
+        # Fixed row heights
+        GAP    = _ff(6)
+        NAV_H  = _ff(50)
+        DOW_H  = _ff(26)
+        CELL_H = _ff(44)
+        FOOT_H = _ff(48)
+        PAD    = _ff(14)   # vertical padding inside vbox (top + bottom)
+        CELL_G = _ff(4)    # gap between day cells
+
+        weeks = _cal_module.Calendar(firstweekday=6).monthdayscalendar(
+            self._year, self._month
+        )
+        n_weeks = len(weeks)
+
+        # Compute exact vbox height: no spacer, no guessing
+        vbox_h = (
+            PAD
+            + NAV_H + GAP
+            + DOW_H + GAP
+            + n_weeks * CELL_H + max(0, n_weeks - 1) * GAP
+            + GAP
+            + FOOT_H
+            + PAD
+        )
+        # Modal height = vbox_h / 0.90 (vbox is 90% of modal height)
+        self.height = vbox_h / 0.90
+
+        # Vertical BoxLayout with exact height, centred in the card
         vbox = BoxLayout(
             orientation="vertical",
-            size_hint=(0.92, 0.92),
-            pos_hint={"x": 0.04, "y": 0.04},
-            spacing=_ff(6),
+            size_hint=(0.90, None),
+            height=vbox_h,
+            pos_hint={"center_x": 0.5, "center_y": 0.5},
+            spacing=GAP,
+            padding=[0, PAD, 0, PAD],
         )
 
         # ── Month navigation row ──────────────────────────────────────────────
         nav = BoxLayout(
             orientation="horizontal",
-            size_hint=(1, None), height=_ff(50),
+            size_hint=(1, None), height=NAV_H,
             spacing=_ff(8),
         )
         prev_btn = _TapPill(ct=_CARD_T, cb=_CARD_B, bdr=_BDR, r=_ff(10))
         prev_btn.size_hint = (None, 1)
-        prev_btn.width = _ff(52)
+        prev_btn.width = _ff(50)
         prev_btn.add_widget(_lbl(
-            "‹", _FSB, _ff(28), _WHITE,
+            "‹", _FSB, _ff(26), _WHITE,
             ha="center", va="middle",
             size_hint=(1, 1), pos_hint={"x": 0, "y": 0},
         ))
@@ -451,15 +480,15 @@ class _CalendarPickerModal(ModalView):
 
         nav.add_widget(_lbl(
             f"{self._MONTH_NAMES[self._month - 1]}  {self._year}",
-            _FSB, _ff(20), _WHITE,
+            _FSB, _ff(18), _WHITE,
             ha="center", va="middle", size_hint=(1, 1),
         ))
 
         next_btn = _TapPill(ct=_CARD_T, cb=_CARD_B, bdr=_BDR, r=_ff(10))
         next_btn.size_hint = (None, 1)
-        next_btn.width = _ff(52)
+        next_btn.width = _ff(50)
         next_btn.add_widget(_lbl(
-            "›", _FSB, _ff(28), _WHITE,
+            "›", _FSB, _ff(26), _WHITE,
             ha="center", va="middle",
             size_hint=(1, 1), pos_hint={"x": 0, "y": 0},
         ))
@@ -470,32 +499,29 @@ class _CalendarPickerModal(ModalView):
         # ── Day-of-week header ────────────────────────────────────────────────
         dow_row = BoxLayout(
             orientation="horizontal",
-            size_hint=(1, None), height=_ff(28),
-            spacing=_ff(4),
+            size_hint=(1, None), height=DOW_H,
+            spacing=CELL_G,
         )
         for label in self._DOW_LABELS:
             dow_row.add_widget(_lbl(
-                label, _FMD, _ff(12), _DIM,
+                label, _FMD, _ff(11), _DIM,
                 ha="center", va="middle", size_hint=(1, 1),
             ))
         vbox.add_widget(dow_row)
 
         # ── Calendar grid (Sunday-first) ──────────────────────────────────────
-        CELL_H = _ff(46)
-        weeks = _cal_module.Calendar(firstweekday=6).monthdayscalendar(
-            self._year, self._month
-        )
         for week in weeks:
             week_row = BoxLayout(
                 orientation="horizontal",
                 size_hint=(1, None), height=CELL_H,
-                spacing=_ff(4),
+                spacing=CELL_G,
             )
             for day_num in week:
                 if day_num == 0:
                     week_row.add_widget(Widget(size_hint=(1, 1)))
                 else:
-                    d = date(self._year, self._month, day_num)
+                    d          = date(self._year, self._month, day_num)
+                    is_past     = (d < self._today)
                     is_today    = (d == self._today)
                     is_selected = (d == self._selected)
 
@@ -505,36 +531,37 @@ class _CalendarPickerModal(ModalView):
                     elif is_today:
                         ct, cb, bdr = _ROW_T, _ROW_B, _BDR
                         text_col = _BLUE
+                    elif is_past:
+                        ct, cb, bdr = _CARD_T, _CARD_B, (0.25, 0.26, 0.33, 0.4)
+                        text_col = (1.0, 1.0, 1.0, 0.22)
                     else:
                         ct, cb, bdr = _CARD_T, _CARD_B, _BDR
                         text_col = _WHITE
 
-                    cell = _TapPill(ct=ct, cb=cb, bdr=bdr, r=_ff(8))
+                    cell = _TapPill(ct=ct, cb=cb, bdr=bdr, r=_ff(7))
                     cell.size_hint = (1, 1)
                     cell.add_widget(_lbl(
-                        str(day_num), _FMD, _ff(14), text_col,
+                        str(day_num), _FMD, _ff(13), text_col,
                         ha="center", va="middle",
                         size_hint=(1, 1), pos_hint={"x": 0, "y": 0},
                     ))
-                    _iso = d.isoformat()
-                    cell.bind(on_release=lambda *_, iso=_iso: self._select(iso))
+                    if not is_past:
+                        _iso = d.isoformat()
+                        cell.bind(on_release=lambda *_, iso=_iso: self._select(iso))
                     week_row.add_widget(cell)
             vbox.add_widget(week_row)
-
-        # Flexible spacer so footer stays at the bottom regardless of week count
-        vbox.add_widget(Widget(size_hint=(1, 1)))
 
         # ── Footer ────────────────────────────────────────────────────────────
         footer = BoxLayout(
             orientation="horizontal",
-            size_hint=(1, None), height=_ff(50),
+            size_hint=(1, None), height=FOOT_H,
             spacing=_ff(10),
         )
         if self._allow_clear:
             clr = _TapPill(ct=_CARD_T, cb=_CARD_B, bdr=_BDR, r=_ff(10))
             clr.size_hint = (0.5, 1)
             clr.add_widget(_lbl(
-                "No date", _FMD, _ff(16), _MUTED,
+                "No date", _FMD, _ff(14), _MUTED,
                 ha="center", va="middle",
                 size_hint=(1, 1), pos_hint={"x": 0, "y": 0},
             ))
@@ -543,7 +570,7 @@ class _CalendarPickerModal(ModalView):
         cancel = _TapPill(ct=_CARD_T, cb=_CARD_B, bdr=_BDR, r=_ff(10))
         cancel.size_hint = (1, 1) if not self._allow_clear else (0.5, 1)
         cancel.add_widget(_lbl(
-            "Cancel", _FMD, _ff(16), _WHITE,
+            "Cancel", _FMD, _ff(14), _WHITE,
             ha="center", va="middle",
             size_hint=(1, 1), pos_hint={"x": 0, "y": 0},
         ))
@@ -762,23 +789,32 @@ class _AddTaskModal(ModalView):
 def _categorize(row: dict) -> str | None:
     """Return bucket string or None (skip completed/cancelled).
 
-    Snoozed tasks remain visible — they appear in their time bucket.
-    Uses _now_naive() so that both sides of the comparison are naive
-    datetimes and no TypeError is raised.
+    Buckets:
+      "overdue"   — due strictly before today (unfinished past tasks)
+      "due_today" — due today (midnight → 23:59)
+      "upcoming"  — due tomorrow or later
+      "unplanned" — no due date set
+
+    Snoozed tasks remain visible in their time bucket.
+    Uses _now_naive() so comparisons are always between naive datetimes.
     """
     status = (row.get("status") or "").lower()
     if status in ("completed", "cancelled", "canceled"):
         return None
-    # Use due_at preferentially; fall back to remind_at
     raw = (row.get("due_at") or row.get("remind_at") or "").strip()
     if not raw:
         return "unplanned"
     d = _parse_dt(raw)
     if d is None:
         return "unplanned"
-    # Both d and today_end are naive — comparison is safe
-    today_end = _now_naive().replace(hour=23, minute=59, second=59, microsecond=0)
-    return "due_today" if d <= today_end else "upcoming"
+    now_naive    = _now_naive()
+    today_start  = now_naive.replace(hour=0,  minute=0,  second=0,  microsecond=0)
+    today_end    = now_naive.replace(hour=23, minute=59, second=59, microsecond=0)
+    if d < today_start:
+        return "overdue"
+    if d <= today_end:
+        return "due_today"
+    return "upcoming"
 
 
 def _source_kind(row: dict) -> str:
@@ -797,9 +833,20 @@ def _source_kind(row: dict) -> str:
 
 # ── Display metadata ───────────────────────────────────────────────────────────
 
-_BUCKET_COLOR = {"due_today": _BLUE, "upcoming": _PURPLE, "unplanned": _ORANGE}
-_BUCKET_LABEL = {"due_today": "TODAY",    "upcoming": "UPCOMING",  "unplanned": "UNPLANNED"}
+_BUCKET_COLOR = {
+    "overdue":   _RED,
+    "due_today": _BLUE,
+    "upcoming":  _PURPLE,
+    "unplanned": _ORANGE,
+}
+_BUCKET_LABEL = {
+    "overdue":   "UNFINISHED",
+    "due_today": "TODAY",
+    "upcoming":  "UPCOMING",
+    "unplanned": "UNPLANNED",
+}
 _BUCKET_ICONS = {
+    "overdue":   "icon_task_1.png",
     "due_today": "icon_task_1.png",
     "upcoming":  "icon_task_2.png",
     "unplanned": "icon_task_3.png",
@@ -830,7 +877,7 @@ class TasksScreen(BaseScreen):
 
         self._active_tab: str = "all"
         self._rows: dict[str, list] = {
-            "due_today": [], "upcoming": [], "unplanned": []
+            "overdue": [], "due_today": [], "upcoming": [], "unplanned": []
         }
         self._loading: bool = False
         self._refresh_ev = None
@@ -1060,9 +1107,13 @@ class TasksScreen(BaseScreen):
                 size_hint=(1, None), height=_ff(120)))
             return
 
-        buckets = (["due_today", "upcoming", "unplanned"]
-                   if self._active_tab == "all"
-                   else [self._active_tab])
+        if self._active_tab == "all":
+            buckets = ["overdue", "due_today", "upcoming", "unplanned"]
+        elif self._active_tab == "due_today":
+            # "Today" tab shows unfinished overdue + today tasks together
+            buckets = ["overdue", "due_today"]
+        else:
+            buckets = [self._active_tab]
 
         has_any = False
         for bucket in buckets:
@@ -1464,14 +1515,15 @@ class TasksScreen(BaseScreen):
     # ── Count badges ──────────────────────────────────────────────────────────
 
     def _update_counts(self) -> None:
+        n_overdue   = len(self._rows.get("overdue", []))
         n_today     = len(self._rows["due_today"])
         n_upcoming  = len(self._rows["upcoming"])
         n_unplanned = len(self._rows["unplanned"])
-        total = n_today + n_upcoming + n_unplanned
+        total = n_overdue + n_today + n_upcoming + n_unplanned
 
         counts = {
             "all":       total,
-            "due_today": n_today,
+            "due_today": n_overdue + n_today,  # unfinished + today
             "upcoming":  n_upcoming,
             "unplanned": n_unplanned,
         }
@@ -1508,7 +1560,7 @@ class TasksScreen(BaseScreen):
         """
         async def _go():
             bucketed: dict[str, list] = {
-                "due_today": [], "upcoming": [], "unplanned": []
+                "overdue": [], "due_today": [], "upcoming": [], "unplanned": []
             }
             error_msg: str = ""
             try:

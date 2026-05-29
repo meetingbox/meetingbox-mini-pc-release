@@ -45,6 +45,8 @@ from network_util import linux_ethernet_ready
 from screens.base_screen import BaseScreen
 from weather_client import get_weather_client
 
+# Lazy import of _categorize to avoid circulars — imported inside _load_tasks_count
+
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -2290,38 +2292,22 @@ class HomeScreen(BaseScreen):
     # -----------------------------------------------------------------------
 
     def _load_tasks_count(self) -> None:
-        """Fetch tasks due today and update the Tasks chip on the home screen."""
+        """Fetch tasks due today (+ overdue) and update the Tasks chip."""
         async def _fetch():
             try:
+                from screens.tasks import _categorize  # noqa: PLC0415
                 result = await self.backend.get_commitments(status="", limit=200)
                 rows: list = result.get("commitments") or []
-                now = display_now()
-                today_end = now.replace(
-                    hour=23, minute=59, second=59, microsecond=0, tzinfo=None
+                count = sum(
+                    1 for r in rows
+                    if _categorize(r) in ("due_today", "overdue")
                 )
-
-                def _is_due_today(r: dict) -> bool:
-                    status = (r.get("status") or "").lower()
-                    if status in ("completed", "cancelled", "canceled"):
-                        return False
-                    raw = (r.get("due_at") or r.get("remind_at") or "").strip()
-                    if not raw:
-                        return False
-                    try:
-                        d = datetime.fromisoformat(raw.replace("Z", "+00:00"))
-                        if d.tzinfo is not None:
-                            d = to_display_local(d).replace(tzinfo=None)
-                        return d <= today_end
-                    except Exception:
-                        return False
-
-                count = sum(1 for r in rows if _is_due_today(r))
             except Exception:
                 return
 
             def _apply(_dt):
                 if self.tasks_card is not None:
-                    self.tasks_card.value_label.text = str(count) if count else "0"
+                    self.tasks_card.value_label.text = str(count)
             Clock.schedule_once(_apply, 0)
 
         run_async(_fetch())
