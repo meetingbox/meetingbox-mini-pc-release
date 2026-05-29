@@ -875,7 +875,7 @@ class TasksScreen(BaseScreen):
     def __init__(self, **kw):
         super().__init__(**kw)
 
-        self._active_tab: str = "all"
+        self._active_tab: str = "due_today"
         self._rows: dict[str, list] = {
             "overdue": [], "due_today": [], "upcoming": [], "unplanned": []
         }
@@ -984,9 +984,9 @@ class TasksScreen(BaseScreen):
 
     def _build_filter_bar(self, root: FloatLayout) -> None:
         TABS = [
-            ("all",       "All"),
             ("due_today", "Today"),
             ("upcoming",  "Upcoming"),
+            ("overdue",   "Unfinished"),
             ("unplanned", "Unplanned"),
         ]
         bar = _Card(ct=_CARD_T, cb=_CARD_B, bdr=_BDR,
@@ -1107,13 +1107,8 @@ class TasksScreen(BaseScreen):
                 size_hint=(1, None), height=_ff(120)))
             return
 
-        if self._active_tab == "all":
-            buckets = ["overdue", "due_today", "upcoming", "unplanned"]
-        elif self._active_tab == "due_today":
-            # "Today" tab shows unfinished overdue + today tasks together
-            buckets = ["overdue", "due_today"]
-        else:
-            buckets = [self._active_tab]
+        # Each tab maps to exactly one bucket: Today, Upcoming, Unfinished, Unplanned.
+        buckets = [self._active_tab]
 
         has_any = False
         for bucket in buckets:
@@ -1522,9 +1517,9 @@ class TasksScreen(BaseScreen):
         total = n_overdue + n_today + n_upcoming + n_unplanned
 
         counts = {
-            "all":       total,
-            "due_today": n_overdue + n_today,  # unfinished + today
+            "due_today": n_today,
             "upcoming":  n_upcoming,
+            "overdue":   n_overdue,
             "unplanned": n_unplanned,
         }
         for tid, lbl in self._count_labels.items():

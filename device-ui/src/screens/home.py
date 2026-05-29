@@ -2292,16 +2292,17 @@ class HomeScreen(BaseScreen):
     # -----------------------------------------------------------------------
 
     def _load_tasks_count(self) -> None:
-        """Fetch tasks due today (+ overdue) and update the Tasks chip."""
+        """Fetch the number of tasks pending for today and update the Tasks chip.
+
+        Uses the exact same bucketing logic as the Tasks screen so the home
+        count always matches the "Today" tab badge there.
+        """
         async def _fetch():
             try:
                 from screens.tasks import _categorize  # noqa: PLC0415
                 result = await self.backend.get_commitments(status="", limit=200)
                 rows: list = result.get("commitments") or []
-                count = sum(
-                    1 for r in rows
-                    if _categorize(r) in ("due_today", "overdue")
-                )
+                count = sum(1 for r in rows if _categorize(r) == "due_today")
             except Exception:
                 return
 
@@ -2477,7 +2478,13 @@ class HomeScreen(BaseScreen):
                 else "Ask Tony for focus"
             )
 
-        self.tasks_card.value_label.text = str(total_n)
+        # NOTE: do NOT set tasks_card from total_n (server pending_actions_total
+        # counts meeting action items, not commitments — it is usually 0 and
+        # would clobber the real count). The Tasks chip is driven exclusively by
+        # _load_tasks_count() which reads /api/commitments. Re-trigger it here so
+        # applying the home-summary bundle keeps the count fresh instead of
+        # overwriting it with a stale/zero value.
+        self._load_tasks_count()
 
 
 # ---------------------------------------------------------------------------
