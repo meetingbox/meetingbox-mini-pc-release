@@ -2812,6 +2812,16 @@ class MeetingBoxApp(App):
             except Exception:
                 pass
 
+    def _realtime_handle_start_recording(self) -> None:
+        """Called when the realtime agent asks to start a meeting recording."""
+        if self.recording_state.get("active"):
+            logger.info("Realtime start_recording: already recording, ignoring.")
+            return
+        try:
+            self.start_recording()
+        except Exception:
+            logger.exception("Realtime start_recording callback failed")
+
     def _realtime_voice_navigate(self, screen: str, target_date=None) -> None:
         """Open a main UI screen when the cloud Realtime model calls navigate_device_ui."""
         s = (screen or "").strip()
@@ -3397,6 +3407,7 @@ class MeetingBoxApp(App):
                 on_user_speech_stopped=_on_user_speech_stopped,
                 on_email_draft=self._on_email_draft_directive,
                 on_recipient_picker=self._on_recipient_picker_directive,
+                on_start_recording=self._realtime_handle_start_recording,
                 should_suppress_farewell=self._email_workflow_active,
             )
             self._sync_voice_assistant_state()

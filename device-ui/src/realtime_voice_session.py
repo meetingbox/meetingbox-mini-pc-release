@@ -163,6 +163,18 @@ END_SESSION_TOOL: dict = {
     "parameters": {"type": "object", "properties": {}, "required": []},
 }
 
+START_RECORDING_TOOL: dict = {
+    "type": "function",
+    "name": "start_recording",
+    "description": (
+        "Call this tool when the user asks to start recording a meeting. "
+        "Always say a brief confirmation (e.g. 'Starting the recording now') "
+        "BEFORE calling this tool. The voice session will close and recording "
+        "will begin immediately."
+    ),
+    "parameters": {"type": "object", "properties": {}, "required": []},
+}
+
 
 _FAREWELL_EXACT = frozenset({
     "bye", "bye bye", "goodbye", "good bye",
@@ -301,6 +313,7 @@ class RealtimeVoiceSession:
         on_user_speech_stopped=None,
         on_email_draft=None,
         on_recipient_picker=None,
+        on_start_recording=None,
         should_suppress_farewell=None,
     ):
         self._client_secret = (client_secret or "").strip()
@@ -319,6 +332,7 @@ class RealtimeVoiceSession:
         self._on_user_speech_stopped_cb = on_user_speech_stopped
         self._on_email_draft_cb = on_email_draft
         self._on_recipient_picker_cb = on_recipient_picker
+        self._on_start_recording_cb = on_start_recording
         # Optional predicate: when it returns True the aggressive keyword-based
         # client-side farewell close is skipped (e.g. while an email draft is
         # on screen) and we defer to the model's contextual end_session tool.
@@ -1367,7 +1381,7 @@ class RealtimeVoiceSession:
 
         create_response and interrupt_response stay TRUE.
         """
-        merged_tools = list(self._server_tools) + [END_SESSION_TOOL]
+        merged_tools = list(self._server_tools) + [END_SESSION_TOOL, START_RECORDING_TOOL]
         try:
             await ws.send(json.dumps({
                 "type": "session.update",
@@ -1402,6 +1416,7 @@ class RealtimeVoiceSession:
 
         pending: list[dict] = []
         end_session_requested = False
+        start_recording_requested = False
         for item in outputs:
             if not isinstance(item, dict) or item.get("type") != "function_call":
                 continue
@@ -1424,6 +1439,17 @@ class RealtimeVoiceSession:
                     call_id,
                 )
                 end_session_requested = True
+                continue
+
+            # Client-only tool: model was asked to start a meeting recording.
+            # Don't HTTP-roundtrip it — close the session and trigger
+            # start_recording() on the main thread.
+            if name == "start_recording":
+                logger.info(
+                    "Realtime: model called start_recording (call_id=%s) — starting recording.",
+                    call_id,
+                )
+                start_recording_requested = True
                 continue
 
             logger.info(
@@ -1471,7 +1497,7 @@ class RealtimeVoiceSession:
                 # user audio commit, not on a tool-output commit, so we
                 # must always send response.create after function call
                 # outputs to keep the conversation flowing.
-                if not end_session_requested:
+                if not end_session_requested and not start_recording_requested:
                     await ws.send(json.dumps({"type": "response.create"}))
             except Exception:
                 logger.exception("Realtime: tool round-trip failed")
@@ -1485,6 +1511,19 @@ class RealtimeVoiceSession:
                 await ws.close()
             except Exception:
                 pass
+
+        if start_recording_requested:
+            # The model has already spoken its confirmation; close the session
+            # and trigger start_recording() on the Kivy main thread.
+            self._user_ended = True
+            self._stop.set()
+            try:
+                await ws.close()
+            except Exception:
+                pass
+            cb = self._on_start_recording_cb
+            if cb:
+                Clock.schedule_once(lambda _dt: self._safe_call(cb), 0)
 
     # ------------------------------------------------------------------
     # Misc helpers
