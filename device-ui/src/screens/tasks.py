@@ -138,6 +138,12 @@ def _ff(fs: float) -> int:
     return max(6, round(fs * scale))
 
 
+def _ffb(fs: float) -> int:
+    """Font size for the filter bar and everything below it — 25% larger
+    than the base Figma scale (_ff). Used only for text in those regions."""
+    return _ff(fs * 1.25)
+
+
 # ── Gradient texture cache ─────────────────────────────────────────────────────
 _GC: dict = {}
 
@@ -1003,7 +1009,7 @@ class TasksScreen(BaseScreen):
             is_active = (tab_id == self._active_tab)
 
             # Tab label  _ff(21.19) SemiBold
-            lbl = _lbl(tab_text, _FSB, _ff(21.19),
+            lbl = _lbl(tab_text, _FSB, _ffb(21.19),
                        _BLUE if is_active else _MUTED,
                        ha="center", va="middle",
                        size_hint=(0.65, 0.72),
@@ -1012,7 +1018,7 @@ class TasksScreen(BaseScreen):
             self._tab_labels[tab_id] = lbl
 
             # Count badge  _ff(16.95) Medium
-            cnt = _lbl("", _FMD, _ff(16.95),
+            cnt = _lbl("", _FMD, _ffb(16.95),
                        _BLUE if is_active else _WHITE,
                        ha="left", va="middle",
                        size_hint=(0.28, 0.72),
@@ -1066,7 +1072,7 @@ class TasksScreen(BaseScreen):
 
         # Initial loading state
         box.add_widget(_lbl(
-            "Loading tasks…", _FMD, _ff(21.19), _MUTED,
+            "Loading tasks…", _FMD, _ffb(21.19), _MUTED,
             ha="center", va="middle",
             size_hint=(1, None), height=_ff(100)))
 
@@ -1102,7 +1108,7 @@ class TasksScreen(BaseScreen):
         if error_msg:
             self._list_box.add_widget(_lbl(
                 f"Could not load tasks\n{error_msg[:80]}",
-                _FMD, _ff(18.0), _ORANGE,
+                _FMD, _ffb(18.0), _ORANGE,
                 ha="center", va="middle",
                 size_hint=(1, None), height=_ff(120)))
             return
@@ -1123,7 +1129,7 @@ class TasksScreen(BaseScreen):
 
         if not has_any:
             self._list_box.add_widget(_lbl(
-                "No tasks to show", _FMD, _ff(21.19), _MUTED,
+                "No tasks to show", _FMD, _ffb(21.19), _MUTED,
                 ha="center", va="middle",
                 size_hint=(1, None), height=_ff(120)))
 
@@ -1160,14 +1166,14 @@ class TasksScreen(BaseScreen):
 
         # Bucket label  _ff(16.95) SemiBold
         hdr.add_widget(_lbl(
-            _BUCKET_LABEL[bucket], _FSB, _ff(16.95), col,
+            _BUCKET_LABEL[bucket], _FSB, _ffb(16.95), col,
             ha="left", va="middle",
             size_hint=(0.45, 1.0),
             pos_hint={"x": _ff(55) / 1200, "y": 0.0}))
 
         # Count  _ff(16.95) SemiBold
         hdr.add_widget(_lbl(
-            str(count), _FSB, _ff(16.95), col,
+            str(count), _FSB, _ffb(16.95), col,
             ha="left", va="middle",
             size_hint=(0.06, 1.0),
             pos_hint={"x": 0.56, "y": 0.0}))
@@ -1220,7 +1226,7 @@ class TasksScreen(BaseScreen):
             title_box = BoxLayout(orientation="vertical", size_hint=(1, 1),
                                   spacing=_ff(3))
             title_box.add_widget(_lbl(
-                title, _FSB, _ff(21.19), _WHITE,
+                title, _FSB, _ffb(21.19), _WHITE,
                 ha="left", va="bottom", size_hint=(1, 0.55)))
 
             sub_parts = []
@@ -1230,12 +1236,12 @@ class TasksScreen(BaseScreen):
                 sub_parts.append("  ".join(f"#{t}" for t in tags[:3]))
             sub_txt = "  ·  ".join(sub_parts)
             title_box.add_widget(_lbl(
-                sub_txt, _FMD, _ff(14.13), _DIM,
+                sub_txt, _FMD, _ffb(14.13), _DIM,
                 ha="left", va="top", size_hint=(1, 0.45)))
             inner.add_widget(title_box)
         else:
             inner.add_widget(_lbl(
-                title, _FSB, _ff(21.19), _WHITE,
+                title, _FSB, _ffb(21.19), _WHITE,
                 ha="left", va="middle", size_hint=(1, 1)))
 
         # ── Right section ───────────────────────────────────────────────────
@@ -1262,7 +1268,7 @@ class TasksScreen(BaseScreen):
                                              size_hint=(0.7, 0.7),
                                              pos_hint={"center_x": 0.5, "center_y": 0.5}))
                 else:
-                    date_btn.add_widget(_lbl("Date", _FMD, _ff(13), _BLUE,
+                    date_btn.add_widget(_lbl("Date", _FMD, _ffb(13), _BLUE,
                                              ha="center", va="middle",
                                              size_hint=(1, 1), pos_hint={"x": 0, "y": 0}))
                 date_btn.bind(on_release=lambda *_, tid=task_id: self._on_task_assign_date(tid))
@@ -1278,7 +1284,7 @@ class TasksScreen(BaseScreen):
                                      size_hint=(0.65, 0.65),
                                      pos_hint={"center_x": 0.5, "center_y": 0.5}))
             else:
-                acc.add_widget(_lbl("Done", _FMD, _ff(13), _WHITE,
+                acc.add_widget(_lbl("Done", _FMD, _ffb(13), _WHITE,
                                     ha="center", va="middle",
                                     size_hint=(1, 1), pos_hint={"x": 0, "y": 0}))
             acc.bind(on_release=lambda *_, tid=task_id: self._on_task_accept(tid))
@@ -1289,7 +1295,7 @@ class TasksScreen(BaseScreen):
                            size_hint=(None, None), size=(BTN, BTN),
                            pos_hint={"center_y": 0.5})
             # × (U+00D7) is a basic Latin char present in 42dot fonts
-            rej.add_widget(_lbl("×", _FMD, _ff(26), _WHITE,
+            rej.add_widget(_lbl("×", _FMD, _ffb(26), _WHITE,
                                 ha="center", va="middle",
                                 size_hint=(1, 1), pos_hint={"x": 0, "y": 0}))
             rej.bind(on_release=lambda *_, tid=task_id: self._on_task_reject(tid))
@@ -1307,7 +1313,7 @@ class TasksScreen(BaseScreen):
                 spacing=_ff(5),
             )
             src_box.add_widget(_lbl(
-                "SNOOZED", _FSB, _ff(12), _YELLOW,
+                "SNOOZED", _FSB, _ffb(12), _YELLOW,
                 ha="center", va="middle", size_hint=(1, 1)))
             inner.add_widget(src_box)
 
@@ -1319,12 +1325,12 @@ class TasksScreen(BaseScreen):
                 spacing=0,
             )
             due_box.add_widget(_lbl(
-                due_text, _FMD, _ff(16.95), col,
+                due_text, _FMD, _ffb(16.95), col,
                 ha="right", va="middle" if not updated else "bottom",
                 size_hint=(1, 0.58 if updated else 1)))
             if updated:
                 due_box.add_widget(_lbl(
-                    updated, _FMD, _ff(11.3), _DIM,
+                    updated, _FMD, _ffb(11.3), _DIM,
                     ha="right", va="top",
                     size_hint=(1, 0.42)))
             inner.add_widget(due_box)
@@ -1589,7 +1595,7 @@ class TasksScreen(BaseScreen):
         if self._list_box is not None:
             self._list_box.clear_widgets()
             self._list_box.add_widget(_lbl(
-                "Loading tasks…", _FMD, _ff(21.19), _MUTED,
+                "Loading tasks…", _FMD, _ffb(21.19), _MUTED,
                 ha="center", va="middle",
                 size_hint=(1, None), height=_ff(120)))
         # Immediate fetch
