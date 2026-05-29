@@ -1639,7 +1639,7 @@ class HomeScreen(BaseScreen):
     # -----------------------------------------------------------------------
 
     @staticmethod
-    def _subtitle_tail(text: str, max_chars: int = 55) -> str:
+    def _subtitle_tail(text: str, max_chars: int = 80) -> str:
         """Return the last subtitle-sized window of *text*, trimmed to a word
         boundary, so AI streaming feels like scrolling movie subtitles."""
         text = text.strip()
