@@ -585,6 +585,10 @@ class HomeScreen(BaseScreen):
         self._say_bar_dot:       Label | None = None        # ● speaker dot
         self._say_bar_label:     Label | None = None        # subtitle text
         self._say_bar_reset_ev:  object | None = None       # pending idle-reset timer
+        self._voice_session_state: str = "idle"
+        self._ai_stream_target_words: list[str] = []
+        self._ai_stream_revealed_words: int = 0
+        self._ai_stream_tick_ev: object | None = None
 
         self._build_ui()
 
@@ -1644,8 +1648,65 @@ class HomeScreen(BaseScreen):
             )
             self._say_bar_label.text = display
 
+    def _stop_ai_stream_tick(self) -> None:
+        if self._ai_stream_tick_ev is not None:
+            self._ai_stream_tick_ev.cancel()
+            self._ai_stream_tick_ev = None
+
+    def _render_ai_stream_text(self) -> None:
+        if self._say_bar_label is None:
+            return
+        if self._say_bar_dot is not None:
+            self._say_bar_dot.color = _BLUE
+        if self._ai_stream_revealed_words <= 0:
+            self._say_bar_label.text = ""
+            return
+        shown = " ".join(
+            self._ai_stream_target_words[: self._ai_stream_revealed_words]
+        )
+        self._say_bar_label.text = self._subtitle_tail(shown)
+
+    def _ai_stream_tick(self, _dt) -> None:
+        if self._voice_session_state != "speaking":
+            return
+        total = len(self._ai_stream_target_words)
+        if total <= 0:
+            return
+        if self._ai_stream_revealed_words < total:
+            self._ai_stream_revealed_words += 1
+            self._render_ai_stream_text()
+
+    def update_say_bar_ai_stream(self, accumulated_text: str) -> None:
+        """Paced AI subtitle reveal so text stays aligned with speech audio."""
+        text = (accumulated_text or "").strip()
+        words = text.split()
+        if not words:
+            return
+
+        # New response started (or text was reset) — reset reveal state.
+        if len(words) < self._ai_stream_revealed_words:
+            self._ai_stream_revealed_words = 0
+
+        self._ai_stream_target_words = words
+        self._render_ai_stream_text()
+        if self._ai_stream_tick_ev is None:
+            # ~3.3 words/sec gives subtitle pacing close to spoken output.
+            self._ai_stream_tick_ev = Clock.schedule_interval(self._ai_stream_tick, 0.30)
+
+    def finalize_say_bar_ai_stream(self, final_text: str) -> None:
+        """Flush remaining AI words at response end."""
+        words = (final_text or "").strip().split()
+        if words:
+            self._ai_stream_target_words = words
+            self._ai_stream_revealed_words = len(words)
+            self._render_ai_stream_text()
+        self._stop_ai_stream_tick()
+
     def clear_say_bar_transcription(self) -> None:
         """Clear transcription text (called at session start/end)."""
+        self._stop_ai_stream_tick()
+        self._ai_stream_target_words = []
+        self._ai_stream_revealed_words = 0
         if self._say_bar_label is not None:
             self._say_bar_label.text = ""
         if self._say_bar_dot is not None:
@@ -2127,10 +2188,12 @@ class HomeScreen(BaseScreen):
         - speaking  : orb keeps pulsing, pill fades out
         - idle      : full hide (orb back to 1.0x, pill out, soundwave off)
         """
+        self._voice_session_state = state
         if state == "listening":
             # User can speak — show the listening pill and activate say bar
             self._listening_active = True
             self.activate_say_bar()
+            self._stop_ai_stream_tick()
             if self._listening_pill is not None:
                 Animation.cancel_all(self._listening_pill, 'opacity')
                 Animation(opacity=1.0, duration=0.22, t='out_cubic').start(
@@ -2153,6 +2216,11 @@ class HomeScreen(BaseScreen):
             # Agent is busy — hide the pill but keep the orb animated
             self._listening_active = False
             self._current_amplitude = 0.0
+            if state == "thinking":
+                self._stop_ai_stream_tick()
+            else:
+                if self._ai_stream_tick_ev is None:
+                    self._ai_stream_tick_ev = Clock.schedule_interval(self._ai_stream_tick, 0.30)
             if self._listening_pill is not None:
                 Animation.cancel_all(self._listening_pill, 'opacity')
                 Animation(opacity=0.0, duration=0.18, t='in_cubic').start(
@@ -2175,6 +2243,8 @@ class HomeScreen(BaseScreen):
         """End of voice interaction: scale orb back, fade out pill, stop soundwave,
         and animate say bar back to idle."""
         self._listening_active = False
+        self._voice_session_state = "idle"
+        self._stop_ai_stream_tick()
         self._current_amplitude = 0.0
 
         # -- Stop soundwave tick and reset bars to baseline ----------------

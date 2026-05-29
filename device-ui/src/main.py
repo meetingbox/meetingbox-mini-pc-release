@@ -3370,6 +3370,15 @@ class MeetingBoxApp(App):
             # one-shot append so the message still shows up.
             if not overlay._active_ai_msg_ids:
                 overlay.add_ai_message(text)
+            # Flush remaining words in the home say bar at response end.
+            def _say_bar_ai_final(_dt, _t=text):
+                if (self.screen_manager is not None
+                        and self.screen_manager.current == 'home'):
+                    try:
+                        self.screen_manager.get_screen('home').finalize_say_bar_ai_stream(_t)
+                    except Exception:
+                        pass
+            Clock.schedule_once(_say_bar_ai_final, 0)
 
         def _on_ai_transcript_delta(item_id: str, accumulated: str) -> None:
             overlay = self._transcript_overlay
@@ -3381,7 +3390,7 @@ class MeetingBoxApp(App):
                 if (self.screen_manager is not None
                         and self.screen_manager.current == 'home'):
                     try:
-                        self.screen_manager.get_screen('home').update_say_bar_transcription("AI", _t)
+                        self.screen_manager.get_screen('home').update_say_bar_ai_stream(_t)
                     except Exception:
                         pass
             Clock.schedule_once(_say_bar_ai, 0)
