@@ -301,6 +301,7 @@ class RealtimeVoiceSession:
         on_user_speech_stopped=None,
         on_email_draft=None,
         on_recipient_picker=None,
+        should_suppress_farewell=None,
     ):
         self._client_secret = (client_secret or "").strip()
         self._model = (model or "").strip()
@@ -318,6 +319,10 @@ class RealtimeVoiceSession:
         self._on_user_speech_stopped_cb = on_user_speech_stopped
         self._on_email_draft_cb = on_email_draft
         self._on_recipient_picker_cb = on_recipient_picker
+        # Optional predicate: when it returns True the aggressive keyword-based
+        # client-side farewell close is skipped (e.g. while an email draft is
+        # on screen) and we defer to the model's contextual end_session tool.
+        self._should_suppress_farewell_cb = should_suppress_farewell
         self._output_voice = (
             (output_voice or "").strip().lower()
             or _REALTIME_OUTPUT_VOICE_FALLBACK
@@ -605,6 +610,18 @@ class RealtimeVoiceSession:
             cb(*args)
         except Exception:
             logger.exception("Realtime callback failed")
+
+    def _farewell_suppressed(self) -> bool:
+        """True when the keyword farewell fallback must be skipped (e.g. an
+        email draft / recipient picker is on screen). Defers to the model's
+        contextual end_session tool so mid-task closers don't kill the session."""
+        cb = self._should_suppress_farewell_cb
+        if not cb:
+            return False
+        try:
+            return bool(cb())
+        except Exception:
+            return False
 
     def _touch(self) -> None:
         self._last_activity_monotonic = time.monotonic()
@@ -1145,7 +1162,14 @@ class RealtimeVoiceSession:
                         # without waiting for the model to call end_session.
                         # This ensures farewell always works even if the model
                         # is busy with a slow tool call (e.g. mem0 rate-limit).
-                        if _is_farewell(spoken):
+                        #
+                        # BUT during an active email workflow the user naturally
+                        # says closers like "that's it" / "thanks" / "okay done"
+                        # as part of dictating or confirming — which would tear
+                        # the session down with no goodbye. While the workflow is
+                        # active we defer entirely to the model's contextual
+                        # end_session tool instead of the keyword fallback.
+                        if _is_farewell(spoken) and not self._farewell_suppressed():
                             logger.info(
                                 "Realtime: client-side farewell detected %r — closing.", spoken
                             )

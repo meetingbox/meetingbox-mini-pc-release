@@ -2840,11 +2840,35 @@ class MeetingBoxApp(App):
         except Exception:
             logger.debug("send_user_text failed", exc_info=True)
 
+    def _email_workflow_active(self) -> bool:
+        """True while the email draft popup or recipient picker is on screen.
+
+        Used to suppress the voice session's keyword farewell fallback so that
+        mid-email closers ("that's it", "thanks", "okay done") don't silently
+        end the session — the model's contextual end_session tool still works.
+        Called from the session's recv thread; only reads plain bool attrs.
+        """
+        popup = getattr(self, "_email_draft_popup", None)
+        recip = getattr(self, "_recipient_overlay", None)
+        try:
+            if popup is not None and popup.visible:
+                return True
+            if recip is not None and recip.visible:
+                return True
+        except Exception:
+            return False
+        return False
+
     def _on_email_draft_directive(self, draft: dict) -> None:
         """Open/update the draft popup from a show_email_draft directive."""
         popup = getattr(self, "_email_draft_popup", None)
         if popup is None or not isinstance(draft, dict):
             return
+        # The recipient picker's job ends once we're drafting — close it so it
+        # never lingers in front of (or behind) the draft popup.
+        recip = getattr(self, "_recipient_overlay", None)
+        if recip is not None and recip.visible:
+            recip.close()
         try:
             if popup.visible:
                 popup.update_draft(draft)
@@ -2869,8 +2893,23 @@ class MeetingBoxApp(App):
             overlay.close()
         email = (contact or {}).get("email", "")
         name = (contact or {}).get("name", "") or email
-        if email:
-            self._send_voice_user_text(f"Use {email} for {name}.")
+        if not email:
+            return
+        # Once a recipient is confirmed, surface the draft popup right away so
+        # there is no gap between the picker closing and the draft appearing.
+        # If a draft popup is already open (e.g. adding another recipient mid
+        # draft) leave it untouched — the assistant's next show_email_draft
+        # directive will update it.
+        popup = getattr(self, "_email_draft_popup", None)
+        if popup is not None and not popup.visible:
+            try:
+                popup.open_draft({
+                    "to": [{"name": name, "email": email}],
+                    "state": "drafting",
+                })
+            except Exception:
+                logger.debug("Failed to pre-open draft popup", exc_info=True)
+        self._send_voice_user_text(f"Use {email} for {name}.")
 
     def _on_recipient_dismissed(self) -> None:
         overlay = getattr(self, "_recipient_overlay", None)
@@ -3337,6 +3376,7 @@ class MeetingBoxApp(App):
                 on_user_speech_stopped=_on_user_speech_stopped,
                 on_email_draft=self._on_email_draft_directive,
                 on_recipient_picker=self._on_recipient_picker_directive,
+                should_suppress_farewell=self._email_workflow_active,
             )
             self._sync_voice_assistant_state()
             self._realtime_voice_session.start()
