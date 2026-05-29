@@ -181,7 +181,7 @@ class Icon(Widget):
     def _brightness(self, cx, cy, m, lw):
         """Circle + 8 short radiating rays."""
         r_c = m * 0.20
-        Line(circle=(cx, cy, r_c, 32), width=lw)
+        Line(circle=(cx, cy, r_c), width=lw)
         r1, r2 = m * 0.30, m * 0.44
         for angle_deg in range(0, 360, 45):
             rad = math.radians(angle_deg)
