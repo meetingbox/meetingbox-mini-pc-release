@@ -548,6 +548,28 @@ class RealtimeVoiceSession:
             return
         Clock.schedule_once(lambda _dt: self._safe_call(cb, draft), 0)
 
+    def _redact_email_draft_for_model(self, tool_output_json: str) -> str:
+        """Remove the device-only draft payload before the result is sent back to
+        the model. The email draft popup (recipients / subject / body, including
+        the full reply-all Cc list the server resolved) is a device surface; the
+        model must not receive concrete recipients it could use to send a new,
+        mis-threaded email. We keep 'ok' and 'note' and surface only the lifecycle
+        state. Returns a slimmed JSON string (falls back to the original on error)."""
+        try:
+            data = json.loads(tool_output_json)
+        except (json.JSONDecodeError, TypeError):
+            return tool_output_json
+        if not isinstance(data, dict) or "device_email_draft" not in data:
+            return tool_output_json
+        ded = data.get("device_email_draft")
+        slim = {k: v for k, v in data.items() if k != "device_email_draft"}
+        if isinstance(ded, dict) and ded.get("state"):
+            slim["draft_state"] = ded.get("state")
+        try:
+            return json.dumps(slim)
+        except (TypeError, ValueError):
+            return tool_output_json
+
     def _emit_recipient_picker(self, tool_output_json: str) -> None:
         """Forward a show_recipient_picker directive payload to the UI."""
         cb = self._on_recipient_picker_cb
@@ -1417,10 +1439,18 @@ class RealtimeVoiceSession:
             )
             logger.info("Realtime tool result: name=%s out_len=%d", name, len(out or ""))
 
+            model_out = out
             if name == "navigate_device_ui":
                 self._emit_device_navigation(out)
             elif name == "show_email_draft":
                 self._emit_email_draft(out)
+                # The draft popup (incl. the full reply-all recipient list the
+                # server resolved) is a DEVICE-ONLY surface. Strip those concrete
+                # recipients from what we feed back to the model so it can never
+                # use them to send a new (mis-threaded) email. The model only
+                # needs to know the popup updated; the real send always goes via
+                # the reply / reply-all tools, which compute recipients server-side.
+                model_out = self._redact_email_draft_for_model(out)
             elif name == "show_recipient_picker":
                 self._emit_recipient_picker(out)
 
@@ -1429,7 +1459,7 @@ class RealtimeVoiceSession:
                 "item": {
                     "type": "function_call_output",
                     "call_id": call_id,
-                    "output": out,
+                    "output": model_out,
                 },
             })
 
