@@ -1811,6 +1811,21 @@ class HomeScreen(BaseScreen):
             self._ai_audio_total_s,
         )
 
+    def freeze_say_bar_ai_stream(self) -> None:
+        """Barge-in: the AI audio was cut, so stop revealing further words.
+        The already-revealed text stays visible until the next turn clears it.
+        No-op when the assistant isn't actively speaking."""
+        if not self._ai_reveal_active:
+            return
+        _sync_log(
+            "reveal_frozen (barge-in) shown=%s total=%s",
+            self._ai_stream_revealed_words,
+            len(self._ai_stream_target_words),
+        )
+        self._ai_reveal_active = False
+        self._ai_response_done = True
+        self._stop_ai_stream_tick()
+
     def clear_say_bar_transcription(self) -> None:
         """Clear transcription text (called at session start/end)."""
         self._stop_ai_stream_tick()

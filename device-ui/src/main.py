@@ -3407,6 +3407,16 @@ class MeetingBoxApp(App):
                         pass
             Clock.schedule_once(_say_bar_ai_progress, 0)
 
+        def _on_barge_in() -> None:
+            def _say_bar_freeze(_dt):
+                if (self.screen_manager is not None
+                        and self.screen_manager.current == 'home'):
+                    try:
+                        self.screen_manager.get_screen('home').freeze_say_bar_ai_stream()
+                    except Exception:
+                        pass
+            Clock.schedule_once(_say_bar_freeze, 0)
+
         try:
             self._realtime_connected_ok = False
             self._realtime_session_start_monotonic = time.monotonic()
@@ -3426,6 +3436,7 @@ class MeetingBoxApp(App):
                 on_ai_transcript=_on_ai_transcript,
                 on_ai_transcript_delta=_on_ai_transcript_delta,
                 on_ai_audio_progress=_on_ai_audio_progress,
+                on_barge_in=_on_barge_in,
                 on_user_speech_stopped=_on_user_speech_stopped,
                 on_email_draft=self._on_email_draft_directive,
                 on_recipient_picker=self._on_recipient_picker_directive,

@@ -320,6 +320,7 @@ class RealtimeVoiceSession:
         on_ai_transcript=None,
         on_ai_transcript_delta=None,
         on_ai_audio_progress=None,
+        on_barge_in=None,
         on_user_speech_stopped=None,
         on_email_draft=None,
         on_recipient_picker=None,
@@ -340,6 +341,7 @@ class RealtimeVoiceSession:
         self._on_ai_transcript_cb = on_ai_transcript
         self._on_ai_transcript_delta_cb = on_ai_transcript_delta
         self._on_ai_audio_progress_cb = on_ai_audio_progress
+        self._on_barge_in_cb = on_barge_in
         self._on_user_speech_stopped_cb = on_user_speech_stopped
         self._on_email_draft_cb = on_email_draft
         self._on_recipient_picker_cb = on_recipient_picker
@@ -534,6 +536,11 @@ class RealtimeVoiceSession:
             Clock.schedule_once(
                 lambda _dt: self._safe_call(cb, audio_seconds, delta_count), 0
             )
+
+    def _emit_barge_in(self) -> None:
+        cb = self._on_barge_in_cb
+        if cb:
+            Clock.schedule_once(lambda _dt: self._safe_call(cb), 0)
 
     def _emit_user_speech_stopped(self) -> None:
         """Fired the moment VAD decides the user has finished speaking.
@@ -1175,6 +1182,10 @@ class RealtimeVoiceSession:
                     # themselves, not the assistant. The server cancels
                     # the in-flight response on its own (interrupt_response).
                     self._abort_aplay()
+                    # Playback was cut — freeze the subtitle reveal at its
+                    # current position so it doesn't keep advancing words the
+                    # user never heard. No-op if the assistant wasn't speaking.
+                    self._emit_barge_in()
                     self._suppress_audio_until = (
                         time.monotonic() + _BARGE_IN_SUPPRESS_AUDIO_S
                     )
