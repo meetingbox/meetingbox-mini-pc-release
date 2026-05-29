@@ -1828,7 +1828,7 @@ class HomeScreen(BaseScreen):
         )
 
         # Tasks count badge — fetched from /api/commitments every visit
-        Clock.schedule_once(lambda _dt: self._load_tasks_count(), 2.0)
+        Clock.schedule_once(lambda _dt: self._load_tasks_count(), 0)
 
     def on_leave(self):
         # Clean up listening state immediately when leaving home
@@ -2290,15 +2290,32 @@ class HomeScreen(BaseScreen):
     # -----------------------------------------------------------------------
 
     def _load_tasks_count(self) -> None:
-        """Fetch the real open-task count and update the Tasks chip on the home screen."""
+        """Fetch tasks due today and update the Tasks chip on the home screen."""
         async def _fetch():
             try:
                 result = await self.backend.get_commitments(status="", limit=200)
                 rows: list = result.get("commitments") or []
-                count = sum(
-                    1 for r in rows
-                    if (r.get("status") or "").lower() not in ("completed", "cancelled", "canceled")
+                now = display_now()
+                today_end = now.replace(
+                    hour=23, minute=59, second=59, microsecond=0, tzinfo=None
                 )
+
+                def _is_due_today(r: dict) -> bool:
+                    status = (r.get("status") or "").lower()
+                    if status in ("completed", "cancelled", "canceled"):
+                        return False
+                    raw = (r.get("due_at") or r.get("remind_at") or "").strip()
+                    if not raw:
+                        return False
+                    try:
+                        d = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+                        if d.tzinfo is not None:
+                            d = to_display_local(d).replace(tzinfo=None)
+                        return d <= today_end
+                    except Exception:
+                        return False
+
+                count = sum(1 for r in rows if _is_due_today(r))
             except Exception:
                 return
 
