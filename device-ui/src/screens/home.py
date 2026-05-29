@@ -2190,10 +2190,18 @@ class HomeScreen(BaseScreen):
         """
         self._voice_session_state = state
         if state == "listening":
+            # Assistant turn finished (speaking -> listening): flush any
+            # remaining unrevealed AI words so subtitles never get stuck.
+            if (
+                self._ai_stream_target_words
+                and self._ai_stream_revealed_words < len(self._ai_stream_target_words)
+            ):
+                self.finalize_say_bar_ai_stream(" ".join(self._ai_stream_target_words))
+            else:
+                self._stop_ai_stream_tick()
             # User can speak — show the listening pill and activate say bar
             self._listening_active = True
             self.activate_say_bar()
-            self._stop_ai_stream_tick()
             if self._listening_pill is not None:
                 Animation.cancel_all(self._listening_pill, 'opacity')
                 Animation(opacity=1.0, duration=0.22, t='out_cubic').start(
