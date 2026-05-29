@@ -2237,6 +2237,8 @@ class HomeScreen(BaseScreen):
                 pulse.start(self._voice_orb)
         else:
             # idle / unknown — full reset
+            if self._ai_stream_target_words:
+                self.finalize_say_bar_ai_stream(" ".join(self._ai_stream_target_words))
             self.hide_listening_state()
 
     def hide_listening_state(self) -> None:
