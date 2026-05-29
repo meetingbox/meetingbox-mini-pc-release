@@ -739,6 +739,7 @@ class MeetingBoxApp(App):
         self._realtime_session_pending = False
         self._realtime_session_start_monotonic = None
         self._realtime_connected_ok = False
+        self._wake_hide_ev = None        # ClockEvent that resets home after wake timeout
         self._realtime_mic_acquired = False
         self._voice_runtime_state = "idle"
         self.voice_realtime_assistant = False
@@ -2606,7 +2607,9 @@ class MeetingBoxApp(App):
                 try:
                     home = self.screen_manager.get_screen("home")
                     home.show_listening_state()
-                    Clock.schedule_once(
+                    if self._wake_hide_ev is not None:
+                        self._wake_hide_ev.cancel()
+                    self._wake_hide_ev = Clock.schedule_once(
                         lambda _dt2: self._hide_home_listening_state(),
                         timeout,
                     )
@@ -2646,7 +2649,9 @@ class MeetingBoxApp(App):
             try:
                 home = self.screen_manager.get_screen("home")
                 home.show_listening_state()
-                Clock.schedule_once(
+                if self._wake_hide_ev is not None:
+                    self._wake_hide_ev.cancel()
+                self._wake_hide_ev = Clock.schedule_once(
                     lambda _dt: self._hide_home_listening_state(),
                     timeout,
                 )
@@ -2680,7 +2685,9 @@ class MeetingBoxApp(App):
             try:
                 home = self.screen_manager.get_screen("home")
                 home.show_listening_state()
-                Clock.schedule_once(
+                if self._wake_hide_ev is not None:
+                    self._wake_hide_ev.cancel()
+                self._wake_hide_ev = Clock.schedule_once(
                     lambda _dt: self._hide_home_listening_state(),
                     timeout,
                 )
@@ -2767,7 +2774,16 @@ class MeetingBoxApp(App):
             )
 
     def _hide_home_listening_state(self, *_args) -> None:
-        """Called after wake-word timeout to restore the home screen to idle."""
+        """Called after wake-word timeout to restore the home screen to idle.
+
+        Skipped when the Realtime session is live — the session state
+        callbacks own the hide in that case, not the timeout timer.
+        """
+        self._wake_hide_ev = None
+        # Don't reset if a live Realtime session is running
+        if (getattr(self, '_realtime_connected_ok', False)
+                and self._realtime_voice_session is not None):
+            return
         if (self.screen_manager is not None
                 and self.screen_manager.current == 'home'):
             try:
@@ -2967,6 +2983,7 @@ class MeetingBoxApp(App):
 
     def _end_realtime_voice_session(self) -> None:
         self._realtime_mic_acquired = False
+        self._realtime_connected_ok = False
         self._pending_user_msg_id = None
         self._set_voice_runtime_state("idle")
         if self._transcript_overlay is not None:
@@ -3207,6 +3224,10 @@ class MeetingBoxApp(App):
             # Vosk is paused from on_before_open_mic right before ALSA opens for Realtime.
             def _ui(_dt):
                 self._realtime_connected_ok = True
+                # Cancel the wake-word timeout timer — the session owns the UI now
+                if self._wake_hide_ev is not None:
+                    self._wake_hide_ev.cancel()
+                    self._wake_hide_ev = None
                 self._set_voice_runtime_state("listening")
                 self._clear_voice_indicator_override()
                 self._set_voice_indicator_override(

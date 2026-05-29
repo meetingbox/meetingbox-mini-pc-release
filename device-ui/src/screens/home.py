@@ -1619,12 +1619,30 @@ class HomeScreen(BaseScreen):
     # Say-bar transcription helpers
     # -----------------------------------------------------------------------
 
+    @staticmethod
+    def _subtitle_tail(text: str, max_chars: int = 55) -> str:
+        """Return the last subtitle-sized window of *text*, trimmed to a word
+        boundary, so AI streaming feels like scrolling movie subtitles."""
+        text = text.strip()
+        if len(text) <= max_chars:
+            return text
+        tail = text[-max_chars:]
+        space = tail.find(' ')
+        return tail[space + 1:] if space >= 0 else tail
+
     def update_say_bar_transcription(self, speaker: str, text: str) -> None:
-        """Show current transcript line.  speaker='You'|'AI'."""
+        """Show current transcript line.  speaker='You'|'AI'.
+
+        For AI text, only the most-recently-spoken words are shown so the
+        subtitle scrolls naturally in sync with the voice output.
+        """
         if self._say_bar_dot is not None:
             self._say_bar_dot.color = _WHITE if speaker == "You" else _BLUE
         if self._say_bar_label is not None:
-            self._say_bar_label.text = text
+            display = (
+                self._subtitle_tail(text) if speaker == "AI" else text
+            )
+            self._say_bar_label.text = display
 
     def clear_say_bar_transcription(self) -> None:
         """Clear transcription text (called at session start/end)."""
@@ -2067,6 +2085,13 @@ class HomeScreen(BaseScreen):
 
         # -- Say bar: slide orb to right + fade prompts (one-shot) ---------
         self.activate_say_bar()
+
+        # Show an immediate "connecting…" hint so the user gets instant
+        # text feedback while the Realtime session is establishing.
+        # Real transcription will overwrite this as soon as it arrives.
+        if self._say_bar_label is not None and not self._say_bar_label.text:
+            self._say_bar_dot.color = _BLUE  # type: ignore[union-attr]
+            self._say_bar_label.text = "Listening…"
 
         # -- Voice orb pulse (starts simultaneously with the slide) --------
         if self._voice_orb is not None:
