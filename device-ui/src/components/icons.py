@@ -212,7 +212,7 @@ class Icon(Widget):
         """Gear: center circle + 6 rectangular teeth."""
         r_inner = m * 0.22
         r_outer = m * 0.44
-        Line(circle=(cx, cy, r_inner, 32), width=lw)
+        Line(circle=(cx, cy, r_inner), width=lw)
         for i in range(6):
             rad = math.radians(i * 60)
             Line(points=[
