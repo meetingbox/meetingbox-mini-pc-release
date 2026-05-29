@@ -1829,8 +1829,15 @@ class HomeScreen(BaseScreen):
             lambda _dt: self._refresh_status_strip(), 30.0
         )
 
-        # Tasks count badge — fetched from /api/commitments every visit
+        # Tasks count badge — fetch immediately, then refresh every 20 s so a
+        # boot-time empty fetch (backend not ready yet) self-heals without
+        # needing the user to leave and re-enter the home screen.
+        if getattr(self, "_tasks_count_event", None):
+            self._tasks_count_event.cancel()
         Clock.schedule_once(lambda _dt: self._load_tasks_count(), 0)
+        self._tasks_count_event = Clock.schedule_interval(
+            lambda _dt: self._load_tasks_count(), 20.0
+        )
 
     def on_leave(self):
         # Clean up listening state immediately when leaving home
@@ -1863,6 +1870,9 @@ class HomeScreen(BaseScreen):
         if getattr(self, "_status_strip_event", None):
             self._status_strip_event.cancel()
             self._status_strip_event = None
+        if getattr(self, "_tasks_count_event", None):
+            self._tasks_count_event.cancel()
+            self._tasks_count_event = None
         if self._home_cache_subscribed:
             self.app.ui_cache_unsubscribe("home_summary_bundle", self._on_cached_home_summary)
             self._home_cache_subscribed = False
@@ -2302,8 +2312,21 @@ class HomeScreen(BaseScreen):
                 from screens.tasks import _categorize  # noqa: PLC0415
                 result = await self.backend.get_commitments(status="", limit=200)
                 rows: list = result.get("commitments") or []
-                count = sum(1 for r in rows if _categorize(r) == "due_today")
+                breakdown = {"due_today": 0, "overdue": 0, "upcoming": 0,
+                             "unplanned": 0, "skipped": 0}
+                for r in rows:
+                    b = _categorize(r)
+                    breakdown[b if b in breakdown else "skipped"] += 1
+                count = breakdown["due_today"]
+                logger.info(
+                    "tasks chip: fetched %d rows -> today=%d overdue=%d "
+                    "upcoming=%d unplanned=%d skipped=%d",
+                    len(rows), breakdown["due_today"], breakdown["overdue"],
+                    breakdown["upcoming"], breakdown["unplanned"],
+                    breakdown["skipped"],
+                )
             except Exception:
+                logger.exception("tasks chip: _load_tasks_count failed")
                 return
 
             def _apply(_dt):
