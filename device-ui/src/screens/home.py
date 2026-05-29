@@ -2310,7 +2310,11 @@ class HomeScreen(BaseScreen):
         async def _fetch():
             try:
                 from screens.tasks import _categorize  # noqa: PLC0415
-                result = await self.backend.get_commitments(status="", limit=200)
+                # NOTE: the server caps limit at 100 (Query le=100); limit>100
+                # returns HTTP 422 which api_client swallows into an empty list,
+                # making the count always 0. Keep this at 100 (matches the
+                # Tasks screen's own fetch).
+                result = await self.backend.get_commitments(status="", limit=100)
                 rows: list = result.get("commitments") or []
                 breakdown = {"due_today": 0, "overdue": 0, "upcoming": 0,
                              "unplanned": 0, "skipped": 0}
