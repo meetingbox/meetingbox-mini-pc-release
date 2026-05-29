@@ -1100,6 +1100,33 @@ class MeetingBoxApp(App):
         self._sync_voice_assistant_state()
         self._refresh_voice_indicator()
 
+        # Email draft popup + recipient confirmation overlay (voice-first email
+        # workflow). Added BEFORE the transcript overlay so the transcript bar
+        # renders on top and stays visible while drafting. Both start hidden.
+        try:
+            from components.email_draft_popup import EmailDraftPopup
+            self._email_draft_popup = EmailDraftPopup(
+                on_send=self._on_email_draft_send_tapped,
+                on_save_draft=self._on_email_draft_save_tapped,
+                on_discard=self._on_email_draft_discard_tapped,
+                on_close=self._on_email_draft_close_tapped,
+            )
+            self.root_layout.add_widget(self._email_draft_popup)
+        except Exception:
+            logger.exception("EmailDraftPopup failed to load")
+            self._email_draft_popup = None
+
+        try:
+            from components.recipient_confirm_overlay import RecipientConfirmOverlay
+            self._recipient_overlay = RecipientConfirmOverlay(
+                on_select=self._on_recipient_selected,
+                on_dismiss=self._on_recipient_dismissed,
+            )
+            self.root_layout.add_widget(self._recipient_overlay)
+        except Exception:
+            logger.exception("RecipientConfirmOverlay failed to load")
+            self._recipient_overlay = None
+
         # Transcript overlay — floats above everything, starts hidden.
         try:
             from components.transcription_overlay import TranscriptionOverlay
@@ -2796,6 +2823,77 @@ class MeetingBoxApp(App):
         except Exception:
             logger.exception("Realtime navigate to %s failed", name)
 
+    # ── Voice-first email workflow: directives + touch feedback ───────────
+    def _send_voice_user_text(self, text: str) -> None:
+        """Inject a spoken-equivalent user turn into the live Realtime session.
+
+        Used so a screen tap (recipient card, Send / Save / Discard) is handled
+        by the assistant exactly as if the user had said it, preserving the
+        recipient-confirmation and send-approval workflow.
+        """
+        sess = getattr(self, "_realtime_voice_session", None)
+        if sess is None:
+            logger.debug("No active voice session for injected text: %r", text)
+            return
+        try:
+            sess.send_user_text(text)
+        except Exception:
+            logger.debug("send_user_text failed", exc_info=True)
+
+    def _on_email_draft_directive(self, draft: dict) -> None:
+        """Open/update the draft popup from a show_email_draft directive."""
+        popup = getattr(self, "_email_draft_popup", None)
+        if popup is None or not isinstance(draft, dict):
+            return
+        try:
+            if popup.visible:
+                popup.update_draft(draft)
+            else:
+                popup.open_draft(draft)
+        except Exception:
+            logger.exception("Failed to render email draft directive")
+
+    def _on_recipient_picker_directive(self, query: str, candidates: list) -> None:
+        """Show the recipient confirmation overlay from a show_recipient_picker directive."""
+        overlay = getattr(self, "_recipient_overlay", None)
+        if overlay is None:
+            return
+        try:
+            overlay.show_candidates(query, candidates or [])
+        except Exception:
+            logger.exception("Failed to render recipient picker directive")
+
+    def _on_recipient_selected(self, index: int, contact: dict) -> None:
+        overlay = getattr(self, "_recipient_overlay", None)
+        if overlay is not None:
+            overlay.close()
+        email = (contact or {}).get("email", "")
+        name = (contact or {}).get("name", "") or email
+        if email:
+            self._send_voice_user_text(f"Use {email} for {name}.")
+
+    def _on_recipient_dismissed(self) -> None:
+        overlay = getattr(self, "_recipient_overlay", None)
+        if overlay is not None:
+            overlay.close()
+
+    def _on_email_draft_send_tapped(self) -> None:
+        self._send_voice_user_text("Yes, send it.")
+
+    def _on_email_draft_save_tapped(self) -> None:
+        self._send_voice_user_text("Save it as a draft.")
+
+    def _on_email_draft_discard_tapped(self) -> None:
+        popup = getattr(self, "_email_draft_popup", None)
+        if popup is not None:
+            popup.close()
+        self._send_voice_user_text("Discard the email.")
+
+    def _on_email_draft_close_tapped(self) -> None:
+        popup = getattr(self, "_email_draft_popup", None)
+        if popup is not None:
+            popup.close()
+
     def _sync_transcript_overlay_mode(self, screen_name: str | None = None) -> None:
         """Sync the transcript overlay mode for the current screen.
 
@@ -2834,6 +2932,13 @@ class MeetingBoxApp(App):
         self._set_voice_runtime_state("idle")
         if self._transcript_overlay is not None:
             self._transcript_overlay.hide()
+        # Tear down the email workflow overlays when the voice session ends.
+        popup = getattr(self, "_email_draft_popup", None)
+        if popup is not None and popup.visible:
+            popup.close()
+        recip = getattr(self, "_recipient_overlay", None)
+        if recip is not None and recip.visible:
+            recip.close()
         Clock.schedule_once(lambda _dt: self._clear_home_say_bar(), 0)
         sess = self._realtime_voice_session
         started = getattr(self, "_realtime_session_start_monotonic", None)
@@ -3230,6 +3335,8 @@ class MeetingBoxApp(App):
                 on_ai_transcript=_on_ai_transcript,
                 on_ai_transcript_delta=_on_ai_transcript_delta,
                 on_user_speech_stopped=_on_user_speech_stopped,
+                on_email_draft=self._on_email_draft_directive,
+                on_recipient_picker=self._on_recipient_picker_directive,
             )
             self._sync_voice_assistant_state()
             self._realtime_voice_session.start()

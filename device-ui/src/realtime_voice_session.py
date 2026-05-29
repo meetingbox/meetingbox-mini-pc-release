@@ -299,6 +299,8 @@ class RealtimeVoiceSession:
         on_ai_transcript=None,
         on_ai_transcript_delta=None,
         on_user_speech_stopped=None,
+        on_email_draft=None,
+        on_recipient_picker=None,
     ):
         self._client_secret = (client_secret or "").strip()
         self._model = (model or "").strip()
@@ -314,6 +316,8 @@ class RealtimeVoiceSession:
         self._on_ai_transcript_cb = on_ai_transcript
         self._on_ai_transcript_delta_cb = on_ai_transcript_delta
         self._on_user_speech_stopped_cb = on_user_speech_stopped
+        self._on_email_draft_cb = on_email_draft
+        self._on_recipient_picker_cb = on_recipient_picker
         self._output_voice = (
             (output_voice or "").strip().lower()
             or _REALTIME_OUTPUT_VOICE_FALLBACK
@@ -522,6 +526,76 @@ class RealtimeVoiceSession:
             except (ValueError, TypeError):
                 pass
         Clock.schedule_once(lambda _dt: self._safe_call(cb, screen.strip(), target_date), 0)
+
+    def _emit_email_draft(self, tool_output_json: str) -> None:
+        """Forward a show_email_draft directive payload to the UI."""
+        cb = self._on_email_draft_cb
+        if not cb:
+            return
+        try:
+            data = json.loads(tool_output_json)
+        except (json.JSONDecodeError, TypeError):
+            return
+        if not isinstance(data, dict) or not data.get("ok"):
+            return
+        draft = data.get("device_email_draft")
+        if not isinstance(draft, dict):
+            return
+        Clock.schedule_once(lambda _dt: self._safe_call(cb, draft), 0)
+
+    def _emit_recipient_picker(self, tool_output_json: str) -> None:
+        """Forward a show_recipient_picker directive payload to the UI."""
+        cb = self._on_recipient_picker_cb
+        if not cb:
+            return
+        try:
+            data = json.loads(tool_output_json)
+        except (json.JSONDecodeError, TypeError):
+            return
+        if not isinstance(data, dict) or not data.get("ok"):
+            return
+        picker = data.get("device_recipient_picker")
+        if not isinstance(picker, dict):
+            return
+        query = str(picker.get("query") or "")
+        candidates = picker.get("candidates")
+        if not isinstance(candidates, list):
+            candidates = []
+        Clock.schedule_once(
+            lambda _dt: self._safe_call(cb, query, candidates), 0
+        )
+
+    def send_user_text(self, text: str) -> None:
+        """Inject a user turn into the live session (e.g. from a screen tap).
+
+        Creates a conversation item with the given text and asks the model to
+        respond, so a touch interaction is treated exactly like the user having
+        said it aloud — keeping the assistant in control of the email workflow.
+        Safe to call from the Kivy main thread.
+        """
+        msg = (text or "").strip()
+        loop, ws = self._loop, self._ws
+        if not msg or loop is None or ws is None or loop.is_closed():
+            return
+
+        async def _send():
+            try:
+                await ws.send(json.dumps({
+                    "type": "conversation.item.create",
+                    "item": {
+                        "type": "message",
+                        "role": "user",
+                        "content": [{"type": "input_text", "text": msg}],
+                    },
+                }))
+                await ws.send(json.dumps({"type": "response.create"}))
+            except Exception:
+                logger.warning("Realtime send_user_text failed", exc_info=True)
+
+        try:
+            asyncio.run_coroutine_threadsafe(_send(), loop)
+        except Exception:
+            logger.debug("send_user_text schedule failed", exc_info=True)
 
     @staticmethod
     def _safe_call(cb, *args) -> None:
@@ -1321,6 +1395,10 @@ class RealtimeVoiceSession:
 
             if name == "navigate_device_ui":
                 self._emit_device_navigation(out)
+            elif name == "show_email_draft":
+                self._emit_email_draft(out)
+            elif name == "show_recipient_picker":
+                self._emit_recipient_picker(out)
 
             pending.append({
                 "type": "conversation.item.create",
