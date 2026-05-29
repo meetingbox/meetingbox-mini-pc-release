@@ -1357,13 +1357,12 @@ class RealtimeVoiceSession:
                     # truncate the tail. aplay underruns silently between
                     # responses and resumes on the next delta.
                     _sync_log(
-                        "turn=%s audio.done deltas=%s audio_s=%.2f tr_deltas=%s",
+                        "turn=%s audio.done deltas=%s audio_s=%.2f tr_deltas=%s (state stays speaking)",
                         self._sync_turn_seq,
                         self._sync_audio_delta_count,
                         self._sync_audio_seconds,
                         self._sync_tr_delta_count,
                     )
-                    self._emit_state("listening")
 
                 elif t == "response.done":
                     self._touch()
@@ -1387,8 +1386,18 @@ class RealtimeVoiceSession:
                     self._response_in_progress = False
                     self._active_audio_item_id = None
                     self._active_audio_content_index = 0
-                    # _play_delta already extended the mute window to cover
-                    # the audio tail; no extra holdoff needed here.
+                    # Keep UI in "speaking" until the estimated playback tail
+                    # drains; response.done can arrive while aplay is still
+                    # flushing queued PCM.
+                    tail_wait = max(0.0, self._mute_mic_uplink_until - time.monotonic())
+                    tail_wait = min(tail_wait, 8.0)
+                    if tail_wait > 0:
+                        _sync_log(
+                            "turn=%s response.done tail_wait=%.2fs before listening",
+                            self._sync_turn_seq,
+                            tail_wait,
+                        )
+                        await asyncio.sleep(tail_wait)
                     self._emit_state("listening")
 
                 elif t == "response.function_call_arguments.done":
