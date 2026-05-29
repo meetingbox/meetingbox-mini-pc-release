@@ -1386,18 +1386,16 @@ class RealtimeVoiceSession:
                     self._response_in_progress = False
                     self._active_audio_item_id = None
                     self._active_audio_content_index = 0
-                    # Keep UI in "speaking" until the estimated playback tail
-                    # drains; response.done can arrive while aplay is still
-                    # flushing queued PCM.
-                    tail_wait = max(0.0, self._mute_mic_uplink_until - time.monotonic())
-                    tail_wait = min(tail_wait, 8.0)
-                    if tail_wait > 0:
-                        _sync_log(
-                            "turn=%s response.done tail_wait=%.2fs before listening",
-                            self._sync_turn_seq,
-                            tail_wait,
-                        )
-                        await asyncio.sleep(tail_wait)
+                    # Emit "listening" immediately (non-blocking — blocking the
+                    # recv loop here would stall barge-in and keepalive). The UI
+                    # subtitle reveal is paced independently by wall-clock
+                    # playback time, so it stays in sync even though the audio
+                    # tail is still draining through aplay.
+                    _sync_log(
+                        "turn=%s response.done -> listening (audio_s=%.2f)",
+                        self._sync_turn_seq,
+                        self._sync_audio_seconds,
+                    )
                     self._emit_state("listening")
 
                 elif t == "response.function_call_arguments.done":

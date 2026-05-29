@@ -3363,6 +3363,17 @@ class MeetingBoxApp(App):
             # delta callback has already created and populated the AI
             # bubble — there's nothing more to do unless streaming was
             # somehow skipped (e.g. no delta events fired at all).
+            # Mark the say-bar reveal complete so the paced tick can finish
+            # in sync with playback (it does NOT jump to the end).
+            def _say_bar_ai_done(_dt, _t=text):
+                if (self.screen_manager is not None
+                        and self.screen_manager.current == 'home'):
+                    try:
+                        self.screen_manager.get_screen('home').finalize_say_bar_ai_stream(_t)
+                    except Exception:
+                        pass
+            Clock.schedule_once(_say_bar_ai_done, 0)
+
             overlay = self._transcript_overlay
             if overlay is None or not text:
                 return
