@@ -319,6 +319,7 @@ class RealtimeVoiceSession:
         on_user_transcript=None,
         on_ai_transcript=None,
         on_ai_transcript_delta=None,
+        on_ai_audio_progress=None,
         on_user_speech_stopped=None,
         on_email_draft=None,
         on_recipient_picker=None,
@@ -338,6 +339,7 @@ class RealtimeVoiceSession:
         self._on_user_transcript_cb = on_user_transcript
         self._on_ai_transcript_cb = on_ai_transcript
         self._on_ai_transcript_delta_cb = on_ai_transcript_delta
+        self._on_ai_audio_progress_cb = on_ai_audio_progress
         self._on_user_speech_stopped_cb = on_user_speech_stopped
         self._on_email_draft_cb = on_email_draft
         self._on_recipient_picker_cb = on_recipient_picker
@@ -524,6 +526,13 @@ class RealtimeVoiceSession:
         if cb and accumulated:
             Clock.schedule_once(
                 lambda _dt: self._safe_call(cb, item_id, accumulated), 0
+            )
+
+    def _emit_ai_audio_progress(self, audio_seconds: float, delta_count: int) -> None:
+        cb = self._on_ai_audio_progress_cb
+        if cb:
+            Clock.schedule_once(
+                lambda _dt: self._safe_call(cb, audio_seconds, delta_count), 0
             )
 
     def _emit_user_speech_stopped(self) -> None:
@@ -845,6 +854,10 @@ class RealtimeVoiceSession:
                 self._sync_audio_seconds,
                 len(raw),
             )
+        self._emit_ai_audio_progress(
+            self._sync_audio_seconds,
+            self._sync_audio_delta_count,
+        )
         self._mute_mic_uplink_until = max(
             self._mute_mic_uplink_until,
             time.monotonic() + chunk_s + 0.6,

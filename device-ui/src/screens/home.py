@@ -596,6 +596,9 @@ class HomeScreen(BaseScreen):
         self._ai_stream_target_words: list[str] = []
         self._ai_stream_revealed_words: int = 0
         self._ai_stream_tick_ev: object | None = None
+        self._ai_stream_audio_seconds: float = 0.0
+        self._ai_stream_pending_words: list[str] = []
+        self._ai_stream_apply_ev: object | None = None
 
         self._build_ui()
 
@@ -1659,6 +1662,9 @@ class HomeScreen(BaseScreen):
         if self._ai_stream_tick_ev is not None:
             self._ai_stream_tick_ev.cancel()
             self._ai_stream_tick_ev = None
+        if self._ai_stream_apply_ev is not None:
+            self._ai_stream_apply_ev.cancel()
+            self._ai_stream_apply_ev = None
 
     def _render_ai_stream_text(self) -> None:
         if self._say_bar_label is None:
@@ -1679,8 +1685,13 @@ class HomeScreen(BaseScreen):
         total = len(self._ai_stream_target_words)
         if total <= 0:
             return
-        if self._ai_stream_revealed_words < total:
-            self._ai_stream_revealed_words += 1
+        # Audio-driven reveal target: ~2.1 spoken words/sec is a closer
+        # approximation than fixed ticker-only increments.
+        target = max(0, min(total, int(self._ai_stream_audio_seconds * 2.1)))
+        if target < self._ai_stream_revealed_words:
+            target = self._ai_stream_revealed_words
+        if self._ai_stream_revealed_words < target:
+            self._ai_stream_revealed_words = target
             self._render_ai_stream_text()
             if (
                 self._ai_stream_revealed_words == 1
@@ -1694,6 +1705,24 @@ class HomeScreen(BaseScreen):
                     total,
                 )
 
+    def _apply_ai_stream_pending(self, _dt) -> None:
+        self._ai_stream_apply_ev = None
+        if self._voice_session_state != "speaking":
+            return
+        if not self._ai_stream_pending_words:
+            return
+        self._ai_stream_target_words = list(self._ai_stream_pending_words)
+        _sync_log(
+            "stream_apply state=%s words=%s shown=%s",
+            self._voice_session_state,
+            len(self._ai_stream_target_words),
+            self._ai_stream_revealed_words,
+        )
+        self._render_ai_stream_text()
+        if self._ai_stream_tick_ev is None:
+            self._ai_stream_tick_ev = Clock.schedule_interval(self._ai_stream_tick, 0.20)
+            _sync_log("tick_started interval=0.20")
+
     def update_say_bar_ai_stream(self, accumulated_text: str) -> None:
         """Paced AI subtitle reveal so text stays aligned with speech audio."""
         text = (accumulated_text or "").strip()
@@ -1701,28 +1730,48 @@ class HomeScreen(BaseScreen):
         if not words:
             return
 
-        # New response started (or text was reset) — reset reveal state.
-        if len(words) < self._ai_stream_revealed_words:
-            self._ai_stream_revealed_words = 0
+        # Ignore late transcript deltas once speaking ended; they cause
+        # post-speech jitter and tick restarts in listening state.
+        if self._voice_session_state != "speaking":
+            return
 
-        self._ai_stream_target_words = words
+        # New response started (or text was reset) — reset reveal state/audio.
+        if len(words) < len(self._ai_stream_target_words):
+            self._ai_stream_revealed_words = 0
+            self._ai_stream_audio_seconds = 0.0
+            self._ai_stream_target_words = []
+
+        # Coalesce transcript floods: keep only latest and apply once/frame.
+        self._ai_stream_pending_words = words
         _sync_log(
             "stream_update state=%s words=%s shown=%s",
             self._voice_session_state,
             len(words),
             self._ai_stream_revealed_words,
         )
-        self._render_ai_stream_text()
-        if self._ai_stream_tick_ev is None:
-            # ~3.3 words/sec gives subtitle pacing close to spoken output.
-            self._ai_stream_tick_ev = Clock.schedule_interval(self._ai_stream_tick, 0.30)
-            _sync_log("tick_started interval=0.30")
+        if self._ai_stream_apply_ev is None:
+            self._ai_stream_apply_ev = Clock.schedule_once(self._apply_ai_stream_pending, 0)
+
+    def update_say_bar_ai_audio_progress(self, audio_seconds: float, delta_count: int) -> None:
+        if self._voice_session_state != "speaking":
+            return
+        self._ai_stream_audio_seconds = max(self._ai_stream_audio_seconds, float(audio_seconds))
+        if delta_count == 1 or delta_count % 25 == 0:
+            _sync_log(
+                "audio_progress state=%s deltas=%s secs=%.2f shown=%s total=%s",
+                self._voice_session_state,
+                delta_count,
+                self._ai_stream_audio_seconds,
+                self._ai_stream_revealed_words,
+                len(self._ai_stream_target_words),
+            )
 
     def finalize_say_bar_ai_stream(self, final_text: str) -> None:
         """Flush remaining AI words at response end."""
         words = (final_text or "").strip().split()
         if words:
             self._ai_stream_target_words = words
+            self._ai_stream_pending_words = list(words)
             self._ai_stream_revealed_words = len(words)
             self._render_ai_stream_text()
             _sync_log(
@@ -1736,7 +1785,9 @@ class HomeScreen(BaseScreen):
         """Clear transcription text (called at session start/end)."""
         self._stop_ai_stream_tick()
         self._ai_stream_target_words = []
+        self._ai_stream_pending_words = []
         self._ai_stream_revealed_words = 0
+        self._ai_stream_audio_seconds = 0.0
         if self._say_bar_label is not None:
             self._say_bar_label.text = ""
         if self._say_bar_dot is not None:
@@ -2237,6 +2288,7 @@ class HomeScreen(BaseScreen):
                 self.finalize_say_bar_ai_stream(" ".join(self._ai_stream_target_words))
             else:
                 self._stop_ai_stream_tick()
+            self._ai_stream_audio_seconds = 0.0
             # User can speak — show the listening pill and activate say bar
             self._listening_active = True
             self.activate_say_bar()
@@ -2264,9 +2316,13 @@ class HomeScreen(BaseScreen):
             self._current_amplitude = 0.0
             if state == "thinking":
                 self._stop_ai_stream_tick()
+                self._ai_stream_audio_seconds = 0.0
+                self._ai_stream_pending_words = []
+                self._ai_stream_target_words = []
+                self._ai_stream_revealed_words = 0
             else:
                 if self._ai_stream_tick_ev is None:
-                    self._ai_stream_tick_ev = Clock.schedule_interval(self._ai_stream_tick, 0.30)
+                    self._ai_stream_tick_ev = Clock.schedule_interval(self._ai_stream_tick, 0.20)
             if self._listening_pill is not None:
                 Animation.cancel_all(self._listening_pill, 'opacity')
                 Animation(opacity=0.0, duration=0.18, t='in_cubic').start(
