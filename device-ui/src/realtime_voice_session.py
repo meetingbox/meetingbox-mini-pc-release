@@ -436,6 +436,7 @@ class RealtimeVoiceSession:
         # State exposed to the UI / idle watchdog
         self._state = "idle"            # idle | listening | thinking | speaking
         self._response_in_progress = False
+        self._local_barge_cancel_sent = False
         self._active_audio_item_id: str | None = None
         self._active_audio_content_index = 0
         self._last_activity_monotonic = time.monotonic()
@@ -1082,6 +1083,26 @@ class RealtimeVoiceSession:
                     barge_in = mic_rms > max(ref_rms * 0.4, 300.0)
                     if not barge_in:
                         continue
+                    if (
+                        (self._state == "speaking" or self._response_in_progress)
+                        and not self._local_barge_cancel_sent
+                    ):
+                        self._local_barge_cancel_sent = True
+                        logger.info(
+                            "Realtime local barge-in: mic_rms=%.1f ref_rms=%.1f; cancelling playback",
+                            mic_rms,
+                            ref_rms,
+                        )
+                        self._abort_aplay()
+                        self._emit_barge_in()
+                        self._suppress_audio_until = (
+                            time.monotonic() + _BARGE_IN_SUPPRESS_AUDIO_S
+                        )
+                        self._emit_state("listening")
+                        try:
+                            await ws.send(json.dumps({"type": "response.cancel"}))
+                        except Exception:
+                            logger.debug("Realtime local barge-in cancel send failed", exc_info=True)
                 if self._aec is not None:
                     resampled = self._aec_process(resampled)
                     if not resampled:
@@ -1337,6 +1358,7 @@ class RealtimeVoiceSession:
                     # A new response is starting; clear any leftover
                     # barge-in suppression so its audio plays cleanly.
                     self._suppress_audio_until = 0.0
+                    self._local_barge_cancel_sent = False
                     self._response_in_progress = True
                     self._sync_turn_seq += 1
                     self._sync_audio_delta_count = 0
@@ -1395,6 +1417,7 @@ class RealtimeVoiceSession:
                     )
                     await self._handle_response_done(ws, msg)
                     self._response_in_progress = False
+                    self._local_barge_cancel_sent = False
                     self._active_audio_item_id = None
                     self._active_audio_content_index = 0
                     # Emit "listening" immediately (non-blocking — blocking the
