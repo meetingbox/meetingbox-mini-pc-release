@@ -198,30 +198,32 @@ START_RECORDING_TOOL: dict = {
 
 
 _FAREWELL_EXACT = frozenset({
+    # Unambiguous standalone goodbyes only. "thanks" / "thank you" on their own
+    # are common mid-conversation acknowledgements and must NOT be here.
     "bye", "bye bye", "goodbye", "good bye",
     "okay bye", "ok bye", "alright bye",
-    "thanks", "thank you", "thanks bye", "thank you bye",
-    "im done", "i am done", "i'm done", "all done",
+    "thanks bye", "thank you bye",
+    "thanks goodbye", "thank you goodbye",
+    "im done", "i am done", "i'm done",
     "thats all", "that's all", "thats all for now", "that's all for now",
     "thats it", "that's it", "done for now",
-    "stop", "stop now", "shut up", "stop talking",
-    "be quiet", "quiet", "enough", "enough already",
-    "thats enough", "that's enough",
     "we're done", "we are done", "were done",
     "end session", "end the session", "session over",
-    "nothing else", "nothing more", "nothing else for now",
-    "exit", "close", "close session",
+    "nothing else for now",
+    "close session",
 })
 
 _FAREWELL_END_MARKERS = (
+    # Phrases the utterance must END WITH to count as a farewell.
+    # Keep these unambiguous — they must not match mid-conversation filler.
     "bye", "goodbye", "good bye", "okay bye", "ok bye", "alright bye",
     "thanks bye", "thank you bye",
     "thats all", "that's all", "thats all for now", "that's all for now",
     "thats it", "that's it",
-    "im done", "i'm done", "i am done", "all done",
+    "im done", "i'm done", "i am done",
     "we're done", "we are done", "were done",
     "end session", "end the session", "session over",
-    "nothing else", "nothing more",
+    "nothing else",
 )
 
 
