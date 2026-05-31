@@ -116,7 +116,7 @@ _REALTIME_OUTPUT_VOICE_FALLBACK = "marin"
 # user is already mid-sentence after the wake word it gets pre-empted
 # naturally without dead air.
 _REALTIME_WAKE_GREETING_ENABLED = os.environ.get(
-    "REALTIME_WAKE_GREETING_ENABLED", "0"
+    "REALTIME_WAKE_GREETING_ENABLED", "1"
 ).strip().lower() not in ("", "0", "false", "no", "off")
 
 _REALTIME_WAKE_GREETING_INSTRUCTIONS = (

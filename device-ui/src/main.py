@@ -3381,6 +3381,9 @@ class MeetingBoxApp(App):
             # one-shot append so the message still shows up.
             if not overlay._active_ai_msg_ids:
                 overlay.add_ai_message(text)
+            else:
+                # Let the paced tick finish the reveal in sync with playback.
+                overlay.finalize_ai_message(overlay._ai_stream_item_id or "", text)
 
         def _on_ai_transcript_delta(item_id: str, accumulated: str) -> None:
             overlay = self._transcript_overlay
@@ -3398,6 +3401,14 @@ class MeetingBoxApp(App):
             Clock.schedule_once(_say_bar_ai, 0)
 
         def _on_ai_audio_progress(audio_seconds: float, delta_count: int) -> None:
+            # Drive the transcript overlay's paced reveal (non-home screens)
+            # off the same audio clock the home say-bar uses.
+            overlay = self._transcript_overlay
+            if overlay is not None:
+                Clock.schedule_once(
+                    lambda _dt, _s=audio_seconds: overlay.note_ai_audio_progress(_s), 0
+                )
+
             def _say_bar_ai_progress(_dt, _secs=audio_seconds, _n=delta_count):
                 if (self.screen_manager is not None
                         and self.screen_manager.current == 'home'):
@@ -3413,6 +3424,14 @@ class MeetingBoxApp(App):
                         and self.screen_manager.current == 'home'):
                     try:
                         self.screen_manager.get_screen('home').freeze_say_bar_ai_stream()
+                    except Exception:
+                        pass
+                # Freeze the transcript overlay reveal too (non-home screens),
+                # so the on-screen subtitle stops the instant the user barges.
+                overlay = self._transcript_overlay
+                if overlay is not None:
+                    try:
+                        overlay.freeze_ai_stream()
                     except Exception:
                         pass
             Clock.schedule_once(_say_bar_freeze, 0)
