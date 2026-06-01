@@ -28,7 +28,10 @@ Public API preserved for ``main.py`` + ``processing.py``:
 from __future__ import annotations
 
 import logging
+import os
 import re
+import shutil
+import subprocess
 from datetime import datetime
 from typing import Optional
 
@@ -1880,13 +1883,7 @@ class SummaryReviewScreen(BaseScreen):
     def on_leave(self):
         # Stop any in-flight audio playback so it doesn't keep
         # playing on the home screen / settings / etc.
-        sound = getattr(self, "_audio_sound", None)
-        if sound is not None:
-            try:
-                sound.stop()
-            except Exception:  # noqa: BLE001
-                pass
-            self._audio_sound = None
+        self._stop_recording_playback()
         if hasattr(self, "play_pill") and self.play_pill is not None:
             self.play_pill.set_playing(False)
 
@@ -2229,39 +2226,73 @@ class SummaryReviewScreen(BaseScreen):
     def _on_share(self):
         logger.info("Share pressed for meeting %s", self.meeting_id)
 
+    @staticmethod
+    def _aplay_device_argv() -> list[str]:
+        dev = (os.getenv("MEETINGBOX_APLAY_DEVICE") or "").strip()
+        return ["-D", dev] if dev else []
+
+    def _stop_recording_playback(self) -> None:
+        ev = getattr(self, "_audio_poll_event", None)
+        if ev is not None:
+            try:
+                ev.cancel()
+            except Exception:  # noqa: BLE001
+                pass
+            self._audio_poll_event = None
+
+        proc = getattr(self, "_audio_proc", None)
+        self._audio_proc = None
+        if proc is None:
+            return
+        try:
+            if proc.poll() is None:
+                proc.terminate()
+                try:
+                    proc.wait(timeout=1.0)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+        except Exception:  # noqa: BLE001
+            logger.debug("Failed to stop meeting audio playback", exc_info=True)
+
+    def _poll_recording_playback(self, _dt) -> bool:
+        proc = getattr(self, "_audio_proc", None)
+        if proc is None:
+            self._audio_poll_event = None
+            return False
+        if proc.poll() is None:
+            return True
+        rc = proc.returncode
+        self._audio_proc = None
+        self._audio_poll_event = None
+        if rc:
+            logger.warning("Meeting audio aplay exited with code %s", rc)
+        if hasattr(self, "play_pill") and self.play_pill is not None:
+            self.play_pill.set_playing(False)
+        return False
+
     def _on_play_recording(self):
         """Toggle audio playback of the meeting's saved recording.
 
         Streams the audio file from the backend to a temp file on first
-        press, then loads it with Kivy's ``SoundLoader`` and toggles
-        play/pause on subsequent presses. The pill's glyph + text are
-        kept in sync via ``_PlayRecordingPill.set_playing``.
+        press, then plays it through ``aplay`` so it uses the same ALSA
+        output path as the rest of the device voice feedback.
         """
         if not self.meeting_id:
             logger.info("Play Recording pressed without a meeting id")
             return
-        sound = getattr(self, "_audio_sound", None)
-        if sound is not None:
-            try:
-                if sound.state == "play":
-                    sound.stop()
-                    self.play_pill.set_playing(False)
-                else:
-                    sound.play()
-                    self.play_pill.set_playing(True)
-            except Exception:  # noqa: BLE001
-                logger.exception("Audio toggle failed")
+        proc = getattr(self, "_audio_proc", None)
+        if proc is not None and proc.poll() is None:
+            self._stop_recording_playback()
+            self.play_pill.set_playing(False)
             return
-        # First press — fetch the audio file in the background, then
-        # load + play it. Keep the pill in the "playing" state from the
-        # moment the user tapped so the UI feels responsive.
+        self._audio_proc = None
+        # First press — fetch the audio file in the background, then play it.
+        # Keep the pill in the "playing" state from the moment the user tapped
+        # so the UI feels responsive.
         self.play_pill.set_playing(True)
 
         async def _run():
-            import os
             import tempfile
-
-            from kivy.core.audio import SoundLoader
 
             tmp_dir = tempfile.gettempdir()
             tmp_path = os.path.join(tmp_dir, f"meetingbox_{self.meeting_id}.wav")
@@ -2277,15 +2308,31 @@ class SummaryReviewScreen(BaseScreen):
                 if not downloaded:
                     self.play_pill.set_playing(False)
                     return
-                snd = SoundLoader.load(downloaded)
-                if snd is None:
-                    logger.warning("SoundLoader could not load meeting audio: %s", downloaded)
+                aplay = shutil.which("aplay")
+                if not aplay:
+                    logger.warning("aplay not found; cannot play meeting audio")
                     self.play_pill.set_playing(False)
                     return
-                self._audio_sound = snd
-                # When playback finishes naturally, flip back to play.
-                snd.bind(on_stop=lambda *_: self.play_pill.set_playing(False))
-                snd.play()
+                try:
+                    self._audio_proc = subprocess.Popen(
+                        [aplay, "-q", *self._aplay_device_argv(), downloaded],
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                    )
+                except Exception:  # noqa: BLE001
+                    logger.exception("Failed to start meeting audio playback")
+                    self._audio_proc = None
+                    self.play_pill.set_playing(False)
+                    return
+                ev = getattr(self, "_audio_poll_event", None)
+                if ev is not None:
+                    try:
+                        ev.cancel()
+                    except Exception:  # noqa: BLE001
+                        pass
+                self._audio_poll_event = Clock.schedule_interval(
+                    self._poll_recording_playback, 0.25,
+                )
 
             Clock.schedule_once(_apply, 0)
 
