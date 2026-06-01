@@ -49,13 +49,6 @@ from weather_client import get_weather_client
 
 logger = logging.getLogger(__name__)
 
-_SYNC_DEBUG = True
-
-
-def _sync_log(msg: str, *args) -> None:
-    if _SYNC_DEBUG:
-        logger.info("SYNCDBG(home): " + msg, *args)
-
 # ---------------------------------------------------------------------------
 # Figma design constants (frame 390:187, 1260 × 800 px)
 # ---------------------------------------------------------------------------
@@ -1682,17 +1675,6 @@ class HomeScreen(BaseScreen):
         if self._ai_stream_revealed_words < total:
             self._ai_stream_revealed_words += 1
             self._render_ai_stream_text()
-            if (
-                self._ai_stream_revealed_words == 1
-                or self._ai_stream_revealed_words % 10 == 0
-                or self._ai_stream_revealed_words == total
-            ):
-                _sync_log(
-                    "reveal state=%s shown=%s total=%s",
-                    self._voice_session_state,
-                    self._ai_stream_revealed_words,
-                    total,
-                )
 
     def update_say_bar_ai_stream(self, accumulated_text: str) -> None:
         """Paced AI subtitle reveal so text stays aligned with speech audio."""
@@ -1706,17 +1688,10 @@ class HomeScreen(BaseScreen):
             self._ai_stream_revealed_words = 0
 
         self._ai_stream_target_words = words
-        _sync_log(
-            "stream_update state=%s words=%s shown=%s",
-            self._voice_session_state,
-            len(words),
-            self._ai_stream_revealed_words,
-        )
         self._render_ai_stream_text()
         if self._ai_stream_tick_ev is None:
             # ~3.3 words/sec gives subtitle pacing close to spoken output.
             self._ai_stream_tick_ev = Clock.schedule_interval(self._ai_stream_tick, 0.30)
-            _sync_log("tick_started interval=0.30")
 
     def finalize_say_bar_ai_stream(self, final_text: str) -> None:
         """Flush remaining AI words at response end."""
@@ -1725,11 +1700,6 @@ class HomeScreen(BaseScreen):
             self._ai_stream_target_words = words
             self._ai_stream_revealed_words = len(words)
             self._render_ai_stream_text()
-            _sync_log(
-                "finalize state=%s words=%s",
-                self._voice_session_state,
-                len(words),
-            )
         self._stop_ai_stream_tick()
 
     def clear_say_bar_transcription(self) -> None:
@@ -2218,15 +2188,7 @@ class HomeScreen(BaseScreen):
         - speaking  : orb keeps pulsing, pill fades out
         - idle      : full hide (orb back to 1.0x, pill out, soundwave off)
         """
-        prev_state = self._voice_session_state
         self._voice_session_state = state
-        _sync_log(
-            "state %s -> %s shown=%s total=%s",
-            prev_state,
-            state,
-            self._ai_stream_revealed_words,
-            len(self._ai_stream_target_words),
-        )
         if state == "listening":
             # Assistant turn finished (speaking -> listening): flush any
             # remaining unrevealed AI words so subtitles never get stuck.

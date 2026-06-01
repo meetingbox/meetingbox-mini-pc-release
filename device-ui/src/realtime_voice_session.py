@@ -63,15 +63,6 @@ except ImportError:
 
 REALTIME_VOICE_IMPLEMENTED = True
 
-_SYNC_DEBUG = str(os.getenv("MEETINGBOX_SUBTITLE_SYNC_DEBUG", "1")).strip().lower() in (
-    "1", "true", "yes", "on",
-)
-
-
-def _sync_log(msg: str, *args) -> None:
-    if _SYNC_DEBUG:
-        logger.info("SYNCDBG(rt): " + msg, *args)
-
 
 # ---------------------------------------------------------------------------
 # Tunables
@@ -435,11 +426,6 @@ class RealtimeVoiceSession:
         self._active_audio_item_id: str | None = None
         self._active_audio_content_index = 0
         self._last_activity_monotonic = time.monotonic()
-        # Sync-debug counters (one "turn" = one assistant response lifecycle)
-        self._sync_turn_seq = 0
-        self._sync_audio_delta_count = 0
-        self._sync_audio_seconds = 0.0
-        self._sync_tr_delta_count = 0
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -834,17 +820,6 @@ class RealtimeVoiceSession:
         # echo without an exact acoustic delay measurement, so we always mute the
         # uplink while the speaker is active regardless of whether AEC is running.
         chunk_s = len(raw) / (_REALTIME_RATE * 2)   # PCM16 mono bytes → seconds
-        self._sync_audio_delta_count += 1
-        self._sync_audio_seconds += chunk_s
-        if self._sync_audio_delta_count == 1 or self._sync_audio_delta_count % 25 == 0:
-            _sync_log(
-                "turn=%s audio.delta n=%s chunk_s=%.3f total_s=%.2f bytes=%s",
-                self._sync_turn_seq,
-                self._sync_audio_delta_count,
-                chunk_s,
-                self._sync_audio_seconds,
-                len(raw),
-            )
         self._mute_mic_uplink_until = max(
             self._mute_mic_uplink_until,
             time.monotonic() + chunk_s + 0.6,
@@ -1293,16 +1268,6 @@ class RealtimeVoiceSession:
                             self._active_ai_transcript_item_id = str(item_id)
                             self._ai_transcript_buf = ""
                         self._ai_transcript_buf += delta
-                        self._sync_tr_delta_count += 1
-                        if self._sync_tr_delta_count == 1 or self._sync_tr_delta_count % 20 == 0:
-                            _sync_log(
-                                "turn=%s tr.delta n=%s chars=%s accum_chars=%s item=%s",
-                                self._sync_turn_seq,
-                                self._sync_tr_delta_count,
-                                len(delta),
-                                len(self._ai_transcript_buf),
-                                str(item_id),
-                            )
                         self._emit_ai_transcript_delta(
                             str(item_id), self._ai_transcript_buf
                         )
@@ -1314,11 +1279,6 @@ class RealtimeVoiceSession:
                     # barge-in suppression so its audio plays cleanly.
                     self._suppress_audio_until = 0.0
                     self._response_in_progress = True
-                    self._sync_turn_seq += 1
-                    self._sync_audio_delta_count = 0
-                    self._sync_audio_seconds = 0.0
-                    self._sync_tr_delta_count = 0
-                    _sync_log("turn=%s started", self._sync_turn_seq)
                     self._emit_state("thinking")
 
                 elif t in ("response.output_audio.delta", "response.audio.delta"):
@@ -1343,13 +1303,6 @@ class RealtimeVoiceSession:
                     # haven't reached the speaker yet. Closing now would
                     # truncate the tail. aplay underruns silently between
                     # responses and resumes on the next delta.
-                    _sync_log(
-                        "turn=%s audio.done deltas=%s audio_s=%.2f tr_deltas=%s",
-                        self._sync_turn_seq,
-                        self._sync_audio_delta_count,
-                        self._sync_audio_seconds,
-                        self._sync_tr_delta_count,
-                    )
                     self._emit_state("listening")
 
                 elif t == "response.done":
@@ -1362,14 +1315,6 @@ class RealtimeVoiceSession:
                     if leftover:
                         logger.info("AI said (flushed from deltas): %r", leftover)
                         self._emit_ai_transcript(leftover)
-                    _sync_log(
-                        "turn=%s response.done deltas=%s audio_s=%.2f tr_deltas=%s leftover_chars=%s",
-                        self._sync_turn_seq,
-                        self._sync_audio_delta_count,
-                        self._sync_audio_seconds,
-                        self._sync_tr_delta_count,
-                        len(leftover),
-                    )
                     await self._handle_response_done(ws, msg)
                     self._response_in_progress = False
                     self._active_audio_item_id = None
