@@ -82,6 +82,7 @@ class AudioCaptureService:
     self._output_path: Path | None = None
     self._wav_writer: wave.Wave_write | None = None
     self._last_level_emit_at = 0.0
+    self._mic_status: str | None = None
     self.vad = webrtcvad.Vad(self.config["vad"]["aggressiveness"])
 
     storage_cfg = self.config.get("storage", {})
@@ -134,6 +135,20 @@ class AudioCaptureService:
     logger.info("Initialized - target %dHz, %dch", self.TARGET_RATE, self.TARGET_CHANNELS)
 
   # --- Device handling -------------------------------------------------
+
+  def _emit_mic_status(self, status: str, *, message: str | None = None) -> None:
+    if status == self._mic_status and not message:
+      return
+    self._mic_status = status
+    payload = {
+      "type": "mic_status",
+      "status": status,
+      "session_id": self.current_session_id,
+      "timestamp": datetime.now().isoformat(),
+    }
+    if message:
+      payload["message"] = message
+    self._emit_event(payload)
 
   def _using_sounddevice(self) -> bool:
     return self.capture_backend == "sounddevice" and sd is not None
@@ -555,14 +570,12 @@ class AudioCaptureService:
     self.current_session_id = session_id
     self.is_recording = True
     self.is_paused = False
+    self._mic_status = None
 
     session_temp = self.temp_dir / session_id
     session_temp.mkdir(parents=True, exist_ok=True)
 
     try:
-      mic_index = self.find_mic_device()
-      self.stream = self._open_input_stream(mic_index)
-
       output_path = self.recordings_dir / f"{session_id}.wav"
       output_path.parent.mkdir(parents=True, exist_ok=True)
       wav_writer = wave.open(str(output_path), "wb")
@@ -577,8 +590,22 @@ class AudioCaptureService:
       self.stream = None
       self._output_path = None
       self._wav_writer = None
-      logger.exception("Failed to open microphone / WAV for session %s", session_id)
+      logger.exception("Failed to open WAV for session %s", session_id)
       return False
+
+    try:
+      mic_index = self.find_mic_device()
+      self.stream = self._open_input_stream(mic_index)
+      self._emit_mic_status("connected")
+    except Exception as exc:
+      self.stream = None
+      logger.warning(
+        "Recording session %s started without an available mic; will keep retrying: %s",
+        session_id,
+        exc,
+        exc_info=True,
+      )
+      self._emit_mic_status("waiting", message="No microphone available yet. Recording will attach when a mic is connected.")
 
     self._emit_event({
       "type": "recording_started",
@@ -697,6 +724,7 @@ class AudioCaptureService:
       })
 
     self.current_session_id = None
+    self._mic_status = None
     return session_id
 
   def start_mic_test(self) -> bool:
@@ -836,10 +864,12 @@ class AudioCaptureService:
       mic_index = self.find_mic_device()
       self.stream = self._open_input_stream(mic_index)
       logger.warning("PortAudio capture stream reopened (mic_index=%s)", mic_index)
+      self._emit_mic_status("connected")
       return True
     except Exception:
       logger.exception("Failed to reopen capture stream")
       self.stream = None
+      self._emit_mic_status("waiting")
       return False
 
   def recording_loop(self) -> None:
@@ -853,22 +883,36 @@ class AudioCaptureService:
     last_successful_read_at = time.monotonic()
     silence_warning_logged_at = 0.0
     consecutive_read_errors = 0
-    # If no chunk arrives for this many seconds while we're actively
-    # recording (and not paused), force a fresh stream.
+    silent_audio_started_at: float | None = None
+    # Keep the meeting alive across USB unplug/replug and mic swaps.
+    # When no input stream is available, retry forever until stop_recording.
+    RECONNECT_RETRY_S = 1.0
     READ_WATCHDOG_S = 5.0
-    MAX_READ_RETRIES_PER_SECOND = 5
-    last_retry_window_start = time.monotonic()
-    retries_this_window = 0
+    SILENT_REOPEN_S = 20.0
+    SILENT_PEAK_THRESHOLD = 80
+    last_reconnect_attempt_at = 0.0
 
     try:
       while self.is_recording:
         if self.stream is None:
-          # Stream was torn down externally — try to recover before
-          # exiting the loop so the user doesn't end up with
-          # ``is_recording=True`` but no audio coming in.
-          if not self._reopen_capture_stream():
-            time.sleep(0.5)
+          now = time.monotonic()
+          if now - self._last_level_emit_at >= 1.0:
+            self._emit_event({
+              "type": "audio_level",
+              "session_id": self.current_session_id,
+              "level": 0.0,
+              "timestamp": datetime.now().isoformat(),
+            })
+            self._last_level_emit_at = now
+          if now - last_reconnect_attempt_at < RECONNECT_RETRY_S:
+            time.sleep(0.2)
             continue
+          last_reconnect_attempt_at = now
+          logger.info("No active microphone stream; retrying mic discovery")
+          if not self._reopen_capture_stream():
+            time.sleep(RECONNECT_RETRY_S)
+            continue
+          consecutive_read_errors = 0
         try:
           chunk = self._read_input_chunk()
           consecutive_read_errors = 0
@@ -880,18 +924,9 @@ class AudioCaptureService:
             consecutive_read_errors,
             exc_info=True,
           )
-          now = time.monotonic()
-          if now - last_retry_window_start > 1.0:
-            last_retry_window_start = now
-            retries_this_window = 0
-          retries_this_window += 1
-          if retries_this_window > MAX_READ_RETRIES_PER_SECOND:
-            logger.error("Too many PortAudio read failures — bailing out of recording loop")
-            self.is_recording = False
-            self.is_paused = False
-            break
-          if not self._reopen_capture_stream():
-            time.sleep(0.5)
+          self._emit_mic_status("waiting", message="Microphone disconnected or unavailable. Waiting for a working mic.")
+          self._stop_close_stream()
+          time.sleep(0.2)
           continue
 
         if self.is_paused:
@@ -921,8 +956,25 @@ class AudioCaptureService:
           if len(samples) > 0:
             rms = float(np.sqrt(np.mean(np.square(samples.astype(np.float64)))))
             level = min(1.0, rms / 5000.0)
+            peak = int(np.max(np.abs(samples)))
           else:
             level = 0.0
+            peak = 0
+          if peak <= SILENT_PEAK_THRESHOLD:
+            if silent_audio_started_at is None:
+              silent_audio_started_at = now
+            elif now - silent_audio_started_at >= SILENT_REOPEN_S:
+              logger.warning(
+                "Audio stayed near-silent for %.0fs (peak<=%d); refreshing mic stream",
+                now - silent_audio_started_at,
+                SILENT_PEAK_THRESHOLD,
+              )
+              self._emit_mic_status("checking", message="Refreshing microphone because input stayed silent.")
+              self._stop_close_stream()
+              silent_audio_started_at = None
+              continue
+          else:
+            silent_audio_started_at = None
           self._emit_event({
             "type": "audio_level",
             "session_id": self.current_session_id,
