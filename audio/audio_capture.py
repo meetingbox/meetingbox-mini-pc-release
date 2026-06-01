@@ -1,6 +1,7 @@
 import json
 import logging
 import os
+import subprocess
 import sys
 import threading
 import time
@@ -39,6 +40,59 @@ PAIRING_STATUS_URL = os.getenv(
 # routes any line starting with this prefix into the device-ui event
 # dispatcher; everything else is treated as regular log output.
 EVT_PREFIX = "MEETINGBOX_EVT|"
+
+
+class ARecordInputStream:
+  """Small stream wrapper around arecord for USB mic hot-plug recovery."""
+
+  def __init__(self, device: str, rate: int, channels: int, chunk_frames: int) -> None:
+    self.device = device
+    self.rate = rate
+    self.channels = channels
+    self.chunk_bytes = max(1, int(chunk_frames)) * max(1, int(channels)) * 2
+    self.proc = subprocess.Popen(
+      [
+        "arecord",
+        "-q",
+        "-D",
+        device,
+        "-f",
+        "S16_LE",
+        "-r",
+        str(rate),
+        "-c",
+        str(channels),
+        "-t",
+        "raw",
+      ],
+      stdout=subprocess.PIPE,
+      stderr=subprocess.DEVNULL,
+    )
+    time.sleep(0.05)
+    if self.proc.poll() is not None:
+      raise RuntimeError(f"arecord exited while opening {device} (code={self.proc.returncode})")
+
+  def read(self) -> bytes:
+    if self.proc.poll() is not None:
+      raise RuntimeError(f"arecord exited for {self.device} (code={self.proc.returncode})")
+    if self.proc.stdout is None:
+      raise RuntimeError("arecord stdout is closed")
+    data = self.proc.stdout.read(self.chunk_bytes)
+    if len(data) != self.chunk_bytes:
+      raise RuntimeError(f"arecord short read from {self.device}: {len(data)}/{self.chunk_bytes}")
+    return data
+
+  def stop(self) -> None:
+    if self.proc.poll() is None:
+      self.proc.terminate()
+      try:
+        self.proc.wait(timeout=1.0)
+      except subprocess.TimeoutExpired:
+        self.proc.kill()
+        self.proc.wait(timeout=1.0)
+
+  def close(self) -> None:
+    self.stop()
 
 
 def _load_device_auth_token() -> str:
@@ -101,10 +155,10 @@ class AudioCaptureService:
       self.input_gain = 1.0
     if self.input_gain > 1.0:
       logger.info("Applying AUDIO_INPUT_GAIN=%sx to captured microphone samples", self.input_gain)
-    self.capture_backend = os.getenv("AUDIO_CAPTURE_BACKEND", "pyaudio").strip().lower()
-    if self.capture_backend not in ("pyaudio", "sounddevice"):
-      logger.warning("Unknown AUDIO_CAPTURE_BACKEND=%r; using pyaudio", self.capture_backend)
-      self.capture_backend = "pyaudio"
+    self.capture_backend = os.getenv("AUDIO_CAPTURE_BACKEND", "arecord").strip().lower()
+    if self.capture_backend not in ("arecord", "pyaudio", "sounddevice"):
+      logger.warning("Unknown AUDIO_CAPTURE_BACKEND=%r; using arecord", self.capture_backend)
+      self.capture_backend = "arecord"
     if self.capture_backend == "sounddevice" and sd is None:
       logger.warning("AUDIO_CAPTURE_BACKEND=sounddevice requested but sounddevice is unavailable; using pyaudio")
       self.capture_backend = "pyaudio"
@@ -153,7 +207,27 @@ class AudioCaptureService:
   def _using_sounddevice(self) -> bool:
     return self.capture_backend == "sounddevice" and sd is not None
 
+  def _using_arecord(self) -> bool:
+    return self.capture_backend == "arecord"
+
+  def _resolve_arecord_device(self) -> str:
+    configured = (os.getenv("AUDIO_ALSA_INPUT_DEVICE") or "").strip()
+    if configured:
+      return configured
+    try:
+      cards = Path("/proc/asound/cards").read_text(encoding="utf-8", errors="ignore")
+    except OSError:
+      cards = ""
+    if "USB-Audio" in cards and "[Device" in cards:
+      return "plughw:CARD=Device,DEV=0"
+    return "default"
+
   def _open_input_stream(self, mic_index):
+    if self._using_arecord():
+      device = self._resolve_arecord_device()
+      logger.info("Opening arecord input device %s", device)
+      return ARecordInputStream(device, self.TARGET_RATE, self.TARGET_CHANNELS, self.config["audio"]["chunk_size"])
+
     if self._using_sounddevice():
       stream = sd.RawInputStream(
         samplerate=self.RATE,
@@ -175,6 +249,8 @@ class AudioCaptureService:
     )
 
   def _read_input_chunk(self) -> bytes:
+    if self._using_arecord():
+      return self.stream.read()
     if self._using_sounddevice():
       data, overflowed = self.stream.read(self.CHUNK)
       if overflowed:
@@ -188,6 +264,8 @@ class AudioCaptureService:
     try:
       if self._using_sounddevice():
         self.stream.stop()
+      elif self._using_arecord():
+        self.stream.stop()
       else:
         self.stream.stop_stream()
     except Exception:
@@ -199,7 +277,7 @@ class AudioCaptureService:
     self.stream = None
 
   def _sample_width_bytes(self) -> int:
-    if self._using_sounddevice():
+    if self._using_arecord() or self._using_sounddevice():
       return 2
     return self.audio.get_sample_size(self.FORMAT)
 
@@ -255,6 +333,13 @@ class AudioCaptureService:
     USB mic during runtime is picked up on the next ``start_recording`` /
     ``start_mic_test`` instead of requiring a container restart.
     """
+    if self._using_arecord():
+      self.RATE = self.TARGET_RATE
+      self.CAPTURE_CHANNELS = self.TARGET_CHANNELS
+      self.CHUNK = self.config["audio"]["chunk_size"]
+      logger.info("Using arecord backend; device=%s", self._resolve_arecord_device())
+      return None
+
     if self._using_sounddevice():
       return self.find_sounddevice_mic_device()
 
@@ -1269,9 +1354,7 @@ if __name__ == "__main__":
   try:
     service.run()
   finally:
-    if service.stream:
-      service.stream.stop_stream()
-      service.stream.close()
+    service._stop_close_stream()
     service.audio.terminate()
     logger.info("PyAudio terminated")
 
