@@ -3386,16 +3386,6 @@ class MeetingBoxApp(App):
                         pass
             Clock.schedule_once(_say_bar_ai, 0)
 
-        def _on_ai_audio_progress(audio_seconds: float, delta_count: int) -> None:
-            def _say_bar_ai_progress(_dt, _secs=audio_seconds, _n=delta_count):
-                if (self.screen_manager is not None
-                        and self.screen_manager.current == 'home'):
-                    try:
-                        self.screen_manager.get_screen('home').update_say_bar_ai_audio_progress(_secs, _n)
-                    except Exception:
-                        pass
-            Clock.schedule_once(_say_bar_ai_progress, 0)
-
         try:
             self._realtime_connected_ok = False
             self._realtime_session_start_monotonic = time.monotonic()
@@ -3414,7 +3404,6 @@ class MeetingBoxApp(App):
                 on_user_transcript=_on_user_transcript,
                 on_ai_transcript=_on_ai_transcript,
                 on_ai_transcript_delta=_on_ai_transcript_delta,
-                on_ai_audio_progress=_on_ai_audio_progress,
                 on_user_speech_stopped=_on_user_speech_stopped,
                 on_email_draft=self._on_email_draft_directive,
                 on_recipient_picker=self._on_recipient_picker_directive,
