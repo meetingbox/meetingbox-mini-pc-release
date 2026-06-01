@@ -544,7 +544,10 @@ class RealtimeVoiceSession:
                 target_date = _date.fromisoformat(str(target_date_str).strip())
             except (ValueError, TypeError):
                 pass
-        Clock.schedule_once(lambda _dt: self._safe_call(cb, screen.strip(), target_date), 0)
+        target_tab = data.get("target_tab") or None
+        Clock.schedule_once(
+            lambda _dt: self._safe_call(cb, screen.strip(), target_date, target_tab), 0
+        )
 
     def _emit_email_draft(self, tool_output_json: str) -> None:
         """Forward a show_email_draft directive payload to the UI."""

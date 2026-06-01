@@ -1078,6 +1078,21 @@ class TasksScreen(BaseScreen):
 
     # ── Tab selection ──────────────────────────────────────────────────────────
 
+    def set_active_tab(self, tab_id: str) -> None:
+        """Called by main.py to jump to a specific tab (today/upcoming/overdue/unplanned).
+
+        Safe to call before or after on_enter; stores the requested tab so it
+        is applied when the task list is next built.
+        """
+        valid = {"due_today", "upcoming", "overdue", "unplanned"}
+        if tab_id not in valid:
+            return
+        self._active_tab = tab_id
+        # If the screen is already visible (we're navigating within it), refresh now.
+        if self._tab_labels:
+            self._sync_tab_styles()
+            self._rebuild_task_list()
+
     def _on_tab(self, tab_id: str) -> None:
         if tab_id == self._active_tab:
             return

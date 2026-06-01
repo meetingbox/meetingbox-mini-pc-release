@@ -2822,7 +2822,7 @@ class MeetingBoxApp(App):
         except Exception:
             logger.exception("Realtime start_recording callback failed")
 
-    def _realtime_voice_navigate(self, screen: str, target_date=None) -> None:
+    def _realtime_voice_navigate(self, screen: str, target_date=None, target_tab=None) -> None:
         """Open a main UI screen when the cloud Realtime model calls navigate_device_ui."""
         s = (screen or "").strip()
         routes = {
@@ -2830,6 +2830,7 @@ class MeetingBoxApp(App):
             "calendar": ("calendar", "slide_left"),
             "emails": ("emails", "slide_left"),
             "meetings": ("meetings", "slide_left"),
+            "tasks": ("tasks", "slide_left"),
             "morning_brief": ("morning_brief", "slide_left"),
             "settings": ("settings", "slide_left"),
             "mic_test": ("mic_test", "slide_left"),
@@ -2838,12 +2839,30 @@ class MeetingBoxApp(App):
         if not pair:
             return
         name, tr = pair
-        if target_date and name == "calendar":
+
+        if name == "calendar" and target_date:
             try:
                 cal = self.screen_manager.get_screen("calendar")
-                cal.set_target_date(target_date)
+                if self.screen_manager.current == "calendar":
+                    # Already on calendar screen — goto_screen would call on_leave()
+                    # which clears _target_date before on_enter() runs, causing the
+                    # screen to snap back to today.  Skip goto_screen entirely and
+                    # refresh directly instead.
+                    cal.set_target_date(target_date)
+                    cal.on_enter()
+                    return
+                else:
+                    cal.set_target_date(target_date)
             except Exception:
                 logger.exception("Failed to set calendar target_date")
+
+        if name == "tasks" and target_tab:
+            try:
+                tsk = self.screen_manager.get_screen("tasks")
+                tsk.set_active_tab(target_tab)
+            except Exception:
+                logger.exception("Failed to set tasks target_tab")
+
         try:
             self.goto_screen(name, tr)
         except Exception:
