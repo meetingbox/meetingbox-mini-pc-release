@@ -109,10 +109,7 @@ _BARGE_IN_SUPPRESS_AUDIO_S = 0.4
 # echo and a hard voice floor, sustained over a few consecutive frames.
 _LOCAL_BARGE_MIN_RMS = 1500.0     # absolute voice floor (~ close-talk speech)
 _LOCAL_BARGE_REF_RATIO = 1.8      # mic must beat the echo reference by this factor
-# The mic must stay above the barge floor CONTINUOUSLY for this long before we
-# treat it as a genuine interruption. This filters short fillers ("umm"),
-# coughs, and single noise spikes — only sustained speech cancels the response.
-_LOCAL_BARGE_MIN_SPEECH_S = 0.6   # ~600ms of continuous speech
+_LOCAL_BARGE_MIN_FRAMES = 3       # consecutive qualifying frames (~80ms) to debounce
 
 # Close the session if the user is silent (and we're not speaking) for
 # this many seconds. Matches the previous behavior.
@@ -449,10 +446,10 @@ class RealtimeVoiceSession:
         self._state = "idle"            # idle | listening | thinking | speaking
         self._response_in_progress = False
         self._local_barge_cancel_sent = False
-        # Monotonic time the current run of clear above-echo speech began
-        # (0 = no active run). Local barge-in only cancels once this run has
-        # lasted _LOCAL_BARGE_MIN_SPEECH_S, so short fillers/noise can't cancel.
-        self._barge_voice_start_mono = 0.0
+        # Consecutive mic frames that clearly beat the playback echo — used to
+        # debounce local barge-in so a single noisy frame or the assistant's
+        # own echo can't cancel a response.
+        self._barge_voice_frames = 0
         self._active_audio_item_id: str | None = None
         self._active_audio_content_index = 0
         self._last_activity_monotonic = time.monotonic()
@@ -1100,39 +1097,30 @@ class RealtimeVoiceSession:
                     # voice back into the input buffer during the mute window.
                     barge_in = mic_rms > max(ref_rms * 0.4, 300.0)
                     if not barge_in:
-                        # Below the echo floor — the run of speech is broken, so
-                        # reset the sustained-speech timer (must be CONTINUOUS).
-                        self._barge_voice_start_mono = 0.0
+                        self._barge_voice_frames = 0
                         continue
                     # Local barge-in CANCEL is destructive (it kills the live
                     # response), so it needs a MUCH stricter test than the echo
                     # gate above. Acoustic echo puts the mic at ~0.5-0.9x of the
                     # playback reference, so "louder than 40% of echo" fires on
                     # the assistant's OWN voice and cancels every response.
-                    # Require the mic to clearly beat the echo AND a voice floor,
-                    # and to stay there CONTINUOUSLY for _LOCAL_BARGE_MIN_SPEECH_S
-                    # so short fillers ("umm"), coughs and spikes don't interrupt.
+                    # Require the mic to clearly beat the echo, sit well above a
+                    # voice floor, and persist for several consecutive frames
+                    # before treating it as a genuine interruption.
                     strong_barge = (
                         mic_rms > _LOCAL_BARGE_MIN_RMS
                         and mic_rms > ref_rms * _LOCAL_BARGE_REF_RATIO
                     )
-                    now = time.monotonic()
-                    if not strong_barge:
-                        self._barge_voice_start_mono = 0.0
-                    elif self._barge_voice_start_mono <= 0.0:
-                        self._barge_voice_start_mono = now
-                    sustained_s = (
-                        now - self._barge_voice_start_mono
-                        if self._barge_voice_start_mono > 0.0
-                        else 0.0
+                    self._barge_voice_frames = (
+                        self._barge_voice_frames + 1 if strong_barge else 0
                     )
                     if (
-                        sustained_s >= _LOCAL_BARGE_MIN_SPEECH_S
+                        self._barge_voice_frames >= _LOCAL_BARGE_MIN_FRAMES
                         and (self._state == "speaking" or self._response_in_progress)
                         and not self._local_barge_cancel_sent
                     ):
                         self._local_barge_cancel_sent = True
-                        self._barge_voice_start_mono = 0.0
+                        self._barge_voice_frames = 0
                         logger.info(
                             "Realtime local barge-in: mic_rms=%.1f ref_rms=%.1f; cancelling playback",
                             mic_rms,
@@ -1404,7 +1392,7 @@ class RealtimeVoiceSession:
                     # barge-in suppression so its audio plays cleanly.
                     self._suppress_audio_until = 0.0
                     self._local_barge_cancel_sent = False
-                    self._barge_voice_start_mono = 0.0
+                    self._barge_voice_frames = 0
                     self._response_in_progress = True
                     self._sync_turn_seq += 1
                     self._sync_audio_delta_count = 0
@@ -1464,7 +1452,7 @@ class RealtimeVoiceSession:
                     await self._handle_response_done(ws, msg)
                     self._response_in_progress = False
                     self._local_barge_cancel_sent = False
-                    self._barge_voice_start_mono = 0.0
+                    self._barge_voice_frames = 0
                     self._active_audio_item_id = None
                     self._active_audio_content_index = 0
                     # Emit "listening" immediately (non-blocking — blocking the
