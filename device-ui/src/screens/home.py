@@ -1687,8 +1687,7 @@ class HomeScreen(BaseScreen):
             return
         # Audio-driven reveal target: ~2.1 spoken words/sec is a closer
         # approximation than fixed ticker-only increments.
-        # Conservative read speed: keep subtitles readable on device glass.
-        target = max(0, min(total, int(self._ai_stream_audio_seconds * 1.7)))
+        target = max(0, min(total, int(self._ai_stream_audio_seconds * 2.1)))
         if target < self._ai_stream_revealed_words:
             target = self._ai_stream_revealed_words
         if self._ai_stream_revealed_words < target:
@@ -1721,8 +1720,8 @@ class HomeScreen(BaseScreen):
         )
         self._render_ai_stream_text()
         if self._ai_stream_tick_ev is None:
-            self._ai_stream_tick_ev = Clock.schedule_interval(self._ai_stream_tick, 0.25)
-            _sync_log("tick_started interval=0.25")
+            self._ai_stream_tick_ev = Clock.schedule_interval(self._ai_stream_tick, 0.20)
+            _sync_log("tick_started interval=0.20")
 
     def update_say_bar_ai_stream(self, accumulated_text: str) -> None:
         """Paced AI subtitle reveal so text stays aligned with speech audio."""
@@ -2323,7 +2322,7 @@ class HomeScreen(BaseScreen):
                 self._ai_stream_revealed_words = 0
             else:
                 if self._ai_stream_tick_ev is None:
-                    self._ai_stream_tick_ev = Clock.schedule_interval(self._ai_stream_tick, 0.25)
+                    self._ai_stream_tick_ev = Clock.schedule_interval(self._ai_stream_tick, 0.20)
             if self._listening_pill is not None:
                 Animation.cancel_all(self._listening_pill, 'opacity')
                 Animation(opacity=0.0, duration=0.18, t='in_cubic').start(
