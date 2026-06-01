@@ -1,6 +1,7 @@
 import json
 import logging
 import os
+import select
 import subprocess
 import sys
 import threading
@@ -77,6 +78,9 @@ class ARecordInputStream:
       raise RuntimeError(f"arecord exited for {self.device} (code={self.proc.returncode})")
     if self.proc.stdout is None:
       raise RuntimeError("arecord stdout is closed")
+    ready, _, _ = select.select([self.proc.stdout], [], [], 2.0)
+    if not ready:
+      raise RuntimeError(f"arecord read timeout from {self.device}")
     data = self.proc.stdout.read(self.chunk_bytes)
     if len(data) != self.chunk_bytes:
       raise RuntimeError(f"arecord short read from {self.device}: {len(data)}/{self.chunk_bytes}")
