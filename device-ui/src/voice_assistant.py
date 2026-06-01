@@ -688,28 +688,7 @@ class VoiceAssistant:
 
     def _resolve_input_device(self):
         preferred = resolve_sounddevice_capture_device_index(sd)
-        candidates = capture_device_fallback_candidates(sd, preferred)
-
-        # Inject the ALSA-string device from audio_device_resolve when
-        # sounddevice's PortAudio enumeration misses it (common in Docker
-        # where `arecord -l` sees the USB card but PortAudio index fails).
-        # This mirrors what RealtimeVoiceSession already does.
-        try:
-            from audio_device_resolve import resolve_audio_pair
-            pair = resolve_audio_pair(sd)
-            pair_capture = pair.capture
-            if pair_capture is not None and pair_capture not in candidates:
-                candidates = [pair_capture, *candidates]
-                if preferred is None:
-                    preferred = pair_capture
-                logger.info(
-                    "Voice: injecting ALSA capture device %s (%s)",
-                    pair_capture, pair.capture_name or pair_capture,
-                )
-        except Exception:
-            logger.debug("Voice: AudioPair injection failed", exc_info=True)
-
-        return preferred, candidates
+        return preferred, capture_device_fallback_candidates(sd, preferred)
 
     def _samplerates_to_try(self, device_id) -> list[int]:
         # Prefer the device's default sample rate first — ALSA/USB often returns paInvalidSampleRate for everything else.
@@ -778,7 +757,7 @@ class VoiceAssistant:
                     kwargs = {
                         "channels": 1,
                         "samplerate": samplerate,
-                        "blocksize": 8192,
+                        "blocksize": 4000,
                         "dtype": "int16",
                         "callback": callback,
                     }
