@@ -2228,7 +2228,23 @@ class SummaryReviewScreen(BaseScreen):
 
     @staticmethod
     def _aplay_device_argv() -> list[str]:
-        dev = (os.getenv("MEETINGBOX_APLAY_DEVICE") or "").strip()
+        dev = (os.getenv("AUDIO_OUTPUT_DEVICE") or "").strip()
+        if not dev:
+            try:
+                from audio_device_resolve import resolve_audio_pair
+
+                pair = resolve_audio_pair()
+                dev = pair.playback or ""
+                if dev:
+                    logger.info(
+                        "Meeting playback aplay: using resolved device %s (%s)",
+                        dev,
+                        pair.playback_name or dev,
+                    )
+            except Exception:  # noqa: BLE001
+                logger.debug("Could not resolve meeting playback device", exc_info=True)
+        if not dev:
+            dev = (os.getenv("MEETINGBOX_APLAY_DEVICE") or "").strip()
         return ["-D", dev] if dev else []
 
     def _stop_recording_playback(self) -> None:
