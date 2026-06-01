@@ -167,6 +167,12 @@ class AudioCaptureService:
       logger.warning("AUDIO_CAPTURE_BACKEND=sounddevice requested but sounddevice is unavailable; using pyaudio")
       self.capture_backend = "pyaudio"
     logger.info("Audio capture backend: %s", self.capture_backend)
+    self.hotplug_use_system_default = (
+      (os.getenv("AUDIO_HOTPLUG_USE_SYSTEM_DEFAULT") or "0").strip().lower()
+      not in ("0", "false", "no", "off")
+    )
+    if self.hotplug_use_system_default:
+      logger.info("Audio hot-plug mode: using system default input route")
     # Same token as device-ui: paired device Bearer so uploads/command polling
     # keep working after pairing without copying the token into .env manually.
     self._upload_auth_token = _load_device_auth_token()
@@ -222,6 +228,8 @@ class AudioCaptureService:
       cards = Path("/proc/asound/cards").read_text(encoding="utf-8", errors="ignore")
     except OSError:
       cards = ""
+    # Current USB dongle appears as card id "Device". Use the card id, not a
+    # numeric hw index, so moving USB ports does not change the configured mic.
     if "USB-Audio" in cards and "[Device" in cards:
       return "plughw:CARD=Device,DEV=0"
     return "default"
@@ -322,15 +330,17 @@ class AudioCaptureService:
     Auto-detect the best available input device.
 
     Strategy (no hardcoded mic names):
-      1. If AUDIO_INPUT_DEVICE_INDEX_STRICT=1 and AUDIO_INPUT_DEVICE_INDEX is set,
+      1. Unless AUDIO_HOTPLUG_USE_SYSTEM_DEFAULT=0, use the system default
+         input route so PipeWire/Pulse can follow USB unplug/replug.
+      2. If AUDIO_INPUT_DEVICE_INDEX_STRICT=1 and AUDIO_INPUT_DEVICE_INDEX is set,
          use that index directly. Fixed PortAudio indices are unsafe for hot-plug.
-      2. If AUDIO_INPUT_DEVICE_NAME is set, use first device whose name contains it.
-      3. Re-enumerate the PortAudio device list (hot-plug support).
-      4. Test each one to see if it actually supports our sample rate.
-      5. Prefer USB / external devices over built-in ones (and when any USB
+      3. If AUDIO_INPUT_DEVICE_NAME is set, use first device whose name contains it.
+      4. Re-enumerate the PortAudio device list (hot-plug support).
+      5. Test each one to see if it actually supports our sample rate.
+      6. Prefer USB / external devices over built-in ones (and when any USB
          device is detected, ignore non-USB devices entirely unless
          ``MEETINGBOX_USB_MIC_STRICT=0`` is set).
-      6. If nothing passes the sample-rate test, return None (system default).
+      7. If nothing passes the sample-rate test, return None (system default).
 
     This way any USB mic -- ReSpeaker, Jabra, Samson, cheap USB dongle,
     etc. -- works automatically without code changes, and a re-plug of the
@@ -350,6 +360,14 @@ class AudioCaptureService:
     # Force PortAudio to re-scan ALSA before any device-list read below.
     self._reinit_portaudio()
     self.CAPTURE_CHANNELS = self.TARGET_CHANNELS
+    idx_env = os.getenv("AUDIO_INPUT_DEVICE_INDEX")
+    idx_strict = (os.getenv("AUDIO_INPUT_DEVICE_INDEX_STRICT") or "").strip().lower() in ("1", "true", "yes", "on")
+    name_pattern = os.getenv("AUDIO_INPUT_DEVICE_NAME", "").strip()
+    if self.hotplug_use_system_default and not idx_strict and not name_pattern:
+      self.RATE = self.TARGET_RATE
+      self.CHUNK = self.config["audio"]["chunk_size"]
+      logger.info("Using system default input for USB hot-plug resilience")
+      return None
 
     def supports_rate(dev: dict, rate: int, channels: int) -> bool:
       try:
@@ -418,7 +436,6 @@ class AudioCaptureService:
     # Explicit device index is disabled by default because PortAudio indices
     # change when USB mics are unplugged, moved to another port, or replaced.
     # Enable only for lab/debug setups with AUDIO_INPUT_DEVICE_INDEX_STRICT=1.
-    idx_env = os.getenv("AUDIO_INPUT_DEVICE_INDEX")
     idx_strict = (os.getenv("AUDIO_INPUT_DEVICE_INDEX_STRICT") or "").strip().lower() in ("1", "true", "yes", "on")
     if idx_env is not None and idx_env.strip() != "" and not idx_strict:
       logger.warning(
@@ -459,7 +476,6 @@ class AudioCaptureService:
         logger.warning("AUDIO_INPUT_DEVICE_INDEX=%s unusable: %s — falling back to auto-detect", idx_env, e)
 
     # Explicit device name substring (e.g. AUDIO_INPUT_DEVICE_NAME="USB PnP")
-    name_pattern = os.getenv("AUDIO_INPUT_DEVICE_NAME", "").strip()
     if name_pattern:
       for i in range(self.audio.get_device_count()):
         device_info = self.audio.get_device_info_by_index(i)
@@ -597,6 +613,13 @@ class AudioCaptureService:
 
     idx_s = os.getenv("AUDIO_INPUT_DEVICE_INDEX", "").strip()
     idx_strict = (os.getenv("AUDIO_INPUT_DEVICE_INDEX_STRICT") or "").strip().lower() in ("1", "true", "yes", "on")
+    name_pattern = os.getenv("AUDIO_INPUT_DEVICE_NAME", "").strip().lower()
+    if self.hotplug_use_system_default and not idx_strict and not name_pattern:
+      self.RATE = self.TARGET_RATE
+      self.CHUNK = self.config["audio"]["chunk_size"]
+      self.CAPTURE_CHANNELS = self.TARGET_CHANNELS
+      logger.info("Using sounddevice system default input for USB hot-plug resilience")
+      return None
     if idx_s.isdigit() and not idx_strict:
       logger.warning(
         "Ignoring AUDIO_INPUT_DEVICE_INDEX=%s because fixed indices break USB hot-plug; "
@@ -606,7 +629,6 @@ class AudioCaptureService:
     if idx_s.isdigit() and idx_strict:
       return int(idx_s)
 
-    name_pattern = os.getenv("AUDIO_INPUT_DEVICE_NAME", "").strip().lower()
     if name_pattern:
       for idx, dev in devices:
         if name_pattern in (dev.get("name") or "").lower():
