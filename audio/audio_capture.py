@@ -240,7 +240,8 @@ class AudioCaptureService:
     Auto-detect the best available input device.
 
     Strategy (no hardcoded mic names):
-      1. If AUDIO_INPUT_DEVICE_INDEX is set, use that index directly.
+      1. If AUDIO_INPUT_DEVICE_INDEX_STRICT=1 and AUDIO_INPUT_DEVICE_INDEX is set,
+         use that index directly. Fixed PortAudio indices are unsafe for hot-plug.
       2. If AUDIO_INPUT_DEVICE_NAME is set, use first device whose name contains it.
       3. Re-enumerate the PortAudio device list (hot-plug support).
       4. Test each one to see if it actually supports our sample rate.
@@ -325,9 +326,18 @@ class AudioCaptureService:
         return "generic alias"
       return "built-in"
 
-    # Explicit device index (e.g. AUDIO_INPUT_DEVICE_INDEX=1)
+    # Explicit device index is disabled by default because PortAudio indices
+    # change when USB mics are unplugged, moved to another port, or replaced.
+    # Enable only for lab/debug setups with AUDIO_INPUT_DEVICE_INDEX_STRICT=1.
     idx_env = os.getenv("AUDIO_INPUT_DEVICE_INDEX")
-    if idx_env is not None and idx_env.strip() != "":
+    idx_strict = (os.getenv("AUDIO_INPUT_DEVICE_INDEX_STRICT") or "").strip().lower() in ("1", "true", "yes", "on")
+    if idx_env is not None and idx_env.strip() != "" and not idx_strict:
+      logger.warning(
+        "Ignoring AUDIO_INPUT_DEVICE_INDEX=%s because fixed indices break USB hot-plug; "
+        "set AUDIO_INPUT_DEVICE_INDEX_STRICT=1 to force it.",
+        idx_env,
+      )
+    if idx_env is not None and idx_env.strip() != "" and idx_strict:
       try:
         idx = int(idx_env.strip())
         info = self.audio.get_device_info_by_index(idx)
@@ -433,6 +443,12 @@ class AudioCaptureService:
           len(usb_candidates),
         )
         candidates = usb_candidates
+      else:
+        logger.warning(
+          "MEETINGBOX_USB_MIC_STRICT=1 and no USB-named PortAudio input found; "
+          "using system default input so PipeWire/Pulse can route to the current mic."
+        )
+        return None
 
     # Sort: concrete USB/external first, built-ins next, generic aliases last.
     # This avoids choosing wrappers like "sysdefault" over the actual USB device.
@@ -491,7 +507,14 @@ class AudioCaptureService:
       logger.info("  [%d] %s  (rate=%s)", idx, dev.get("name") or "", dev.get("default_samplerate"))
 
     idx_s = os.getenv("AUDIO_INPUT_DEVICE_INDEX", "").strip()
-    if idx_s.isdigit():
+    idx_strict = (os.getenv("AUDIO_INPUT_DEVICE_INDEX_STRICT") or "").strip().lower() in ("1", "true", "yes", "on")
+    if idx_s.isdigit() and not idx_strict:
+      logger.warning(
+        "Ignoring AUDIO_INPUT_DEVICE_INDEX=%s because fixed indices break USB hot-plug; "
+        "set AUDIO_INPUT_DEVICE_INDEX_STRICT=1 to force it.",
+        idx_s,
+      )
+    if idx_s.isdigit() and idx_strict:
       return int(idx_s)
 
     name_pattern = os.getenv("AUDIO_INPUT_DEVICE_NAME", "").strip().lower()
