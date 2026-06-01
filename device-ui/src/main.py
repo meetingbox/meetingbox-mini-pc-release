@@ -2863,6 +2863,13 @@ class MeetingBoxApp(App):
             except Exception:
                 logger.exception("Failed to set tasks target_tab")
 
+        if name == "emails" and target_tab:
+            try:
+                em = self.screen_manager.get_screen("emails")
+                em.set_active_tab(target_tab)
+            except Exception:
+                logger.exception("Failed to set emails target_tab")
+
         try:
             self.goto_screen(name, tr)
         except Exception:
