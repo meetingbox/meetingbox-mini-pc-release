@@ -2264,7 +2264,7 @@ class SummaryReviewScreen(BaseScreen):
             from kivy.core.audio import SoundLoader
 
             tmp_dir = tempfile.gettempdir()
-            tmp_path = os.path.join(tmp_dir, f"meetingbox_{self.meeting_id}.audio")
+            tmp_path = os.path.join(tmp_dir, f"meetingbox_{self.meeting_id}.wav")
             try:
                 downloaded = await self.backend.download_meeting_audio(
                     self.meeting_id, tmp_path
@@ -2279,6 +2279,7 @@ class SummaryReviewScreen(BaseScreen):
                     return
                 snd = SoundLoader.load(downloaded)
                 if snd is None:
+                    logger.warning("SoundLoader could not load meeting audio: %s", downloaded)
                     self.play_pill.set_playing(False)
                     return
                 self._audio_sound = snd
