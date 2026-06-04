@@ -70,10 +70,8 @@ from summary_layout import (
     META_CARD,
     META_DATE,
     META_DATE_FS_RATIO,
-    META_EXPORT,
     META_FILE_ICON,
     META_PARTICIPANTS,
-    META_SHARE,
     META_TITLE,
     META_TITLE_FS_RATIO,
     PAGE_TITLE,
@@ -96,10 +94,14 @@ from summary_layout import (
     TAB_ACTIVE_BORDER,
     TAB_ACTIVE_FILL,
     TAB_ACTIVE_RADIUS,
+    TAB_DECISIONS,
     TAB_FS_RATIO,
+    TAB_KEY_POINTS,
     TAB_OVERVIEW,
-    TAB_PARTICIPANTS,
     TAB_TRANSCRIPT,
+    TOPBAR,
+    TOP_EXPORT,
+    TOP_SHARE,
     canvas_box,
     content_header,
     font_px,
@@ -116,22 +118,25 @@ _IST = timezone(timedelta(hours=5, minutes=30))
 
 _TAB_IDS: tuple[str, ...] = (
     "overview",
+    "key_points",
     "action_items",
-    "participants",
+    "decisions",
     "transcript",
 )
 
 _TAB_BOXES = {
     "overview": TAB_OVERVIEW,
+    "key_points": TAB_KEY_POINTS,
     "action_items": TAB_ACTION_ITEMS,
-    "participants": TAB_PARTICIPANTS,
+    "decisions": TAB_DECISIONS,
     "transcript": TAB_TRANSCRIPT,
 }
 
 _TAB_LABELS = {
     "overview": "Overview",
+    "key_points": "Key Points",
     "action_items": "Action Items",
-    "participants": "Participants",
+    "decisions": "Decisions Made",
     "transcript": "Transcript",
 }
 
@@ -227,6 +232,168 @@ class _ImgBtn(ButtonBehavior, Image):
     """Tappable PNG button."""
 
 
+class _Band(Widget):
+    """Flat horizontal surface with bottom divider."""
+
+    def __init__(self, *, fill=(1, 1, 1, 1), border=(229 / 255, 229 / 255, 234 / 255, 1), **kwargs):
+        super().__init__(**kwargs)
+        self._fill = fill
+        self._border = border
+        with self.canvas:
+            Color(*self._fill)
+            self._rect = Rectangle(pos=self.pos, size=self.size)
+            Color(*self._border)
+            self._line = Line(points=[0, 0, 0, 0], width=1.0)
+        self.bind(pos=self._sync, size=self._sync)
+
+    def _sync(self, *_):
+        self._rect.pos = self.pos
+        self._rect.size = self.size
+        self._line.points = [self.x, self.y, self.x + self.width, self.y]
+
+
+class _BackChevronButton(ButtonBehavior, Widget):
+    """Circular back button with chevron icon."""
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        with self.canvas:
+            Color(242 / 255, 242 / 255, 247 / 255, 1)
+            self._bg = RoundedRectangle(pos=self.pos, size=self.size, radius=[999])
+            Color(28 / 255, 28 / 255, 30 / 255, 1)
+            self._chev = Line(points=[0, 0, 0, 0, 0, 0], width=2.0, cap="round", joint="round")
+        self.bind(pos=self._sync, size=self._sync)
+
+    def _sync(self, *_):
+        self._bg.pos = self.pos
+        self._bg.size = self.size
+        self._bg.radius = [min(self.width, self.height) / 2]
+        cx = self.x + self.width * 0.5
+        cy = self.y + self.height * 0.5
+        dx = self.width * 0.12
+        dy = self.height * 0.16
+        self._chev.points = [cx + dx, cy + dy, cx - dx, cy, cx + dx, cy - dy]
+
+
+class _PillActionButton(ButtonBehavior, Widget):
+    """Top-right pill button with custom line icon + label."""
+
+    def __init__(self, *, label_text: str, icon_kind: str, fs_ratio: float = SECTION_BODY_FS_RATIO, **kwargs):
+        super().__init__(**kwargs)
+        self._fs_ratio = fs_ratio
+        self._icon_kind = icon_kind
+        self._icon_label = Label(
+            text="",
+            color=COL_ACCENT,
+            size_hint=(None, None),
+        )
+        self._label = Label(
+            text=label_text,
+            color=COL_WHITE,
+            font_name=_FONT_BOLD,
+            bold=False,
+            halign="left",
+            valign="middle",
+            size_hint=(None, None),
+        )
+        self._label.bind(size=self._label.setter("text_size"))
+        self.add_widget(self._icon_label)
+        self.add_widget(self._label)
+        with self.canvas.before:
+            Color(1, 1, 1, 1)
+            self._bg = RoundedRectangle(pos=self.pos, size=self.size, radius=[999])
+            Color(209 / 255, 209 / 255, 214 / 255, 1)
+            self._line = Line(rounded_rectangle=(self.x, self.y, self.width, self.height, 999), width=1.0)
+        with self.canvas.after:
+            Color(*COL_ACCENT)
+            self._icon_line_a = Line(points=[0, 0, 0, 0], width=1.8, cap="round", joint="round")
+            self._icon_line_b = Line(points=[0, 0, 0, 0], width=1.8, cap="round", joint="round")
+            self._icon_line_c = Line(points=[0, 0, 0, 0], width=1.8, cap="round", joint="round")
+        self.bind(pos=self._sync, size=self._sync)
+
+    def _sync(self, *_):
+        self._bg.pos = self.pos
+        self._bg.size = self.size
+        rad = min(self.height / 2, 980)
+        self._bg.radius = [rad]
+        self._line.rounded_rectangle = (self.x, self.y, self.width, self.height, rad)
+        icon_size = min(16.0, self.height * 0.45)
+        ix = self.x + 12.0
+        iy = self.y + (self.height - icon_size) / 2
+        self._icon_label.pos = (ix, iy)
+        self._icon_label.size = (icon_size, icon_size)
+        self._label.pos = (ix + icon_size + 6, self.y)
+        self._label.size = (max(1, self.width - icon_size - 24), self.height)
+        self._draw_icon(ix, iy, icon_size)
+
+    def _draw_icon(self, x: float, y: float, s: float) -> None:
+        if self._icon_kind == "export":
+            self._icon_line_a.points = [x + s * 0.2, y + s * 0.75, x + s * 0.8, y + s * 0.75]
+            self._icon_line_b.points = [x + s * 0.5, y + s * 0.2, x + s * 0.5, y + s * 0.68]
+            self._icon_line_c.points = [x + s * 0.34, y + s * 0.36, x + s * 0.5, y + s * 0.2, x + s * 0.66, y + s * 0.36]
+            return
+        # share icon: square + upward arrow
+        self._icon_line_a.rectangle = (x + s * 0.2, y + s * 0.2, s * 0.6, s * 0.5)
+        self._icon_line_b.points = [x + s * 0.5, y + s * 0.2, x + s * 0.5, y + s * 0.86]
+        self._icon_line_c.points = [x + s * 0.34, y + s * 0.7, x + s * 0.5, y + s * 0.86, x + s * 0.66, y + s * 0.7]
+
+
+class _FileIconBadge(Widget):
+    """Rounded square file icon badge."""
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        with self.canvas:
+            Color(242 / 255, 242 / 255, 247 / 255, 1)
+            self._bg = RoundedRectangle(pos=self.pos, size=self.size, radius=[12.0])
+            Color(*COL_ACCENT)
+            self._sheet = Line(points=[0, 0, 0, 0, 0, 0, 0, 0, 0, 0], width=1.8, cap="round", joint="round")
+            self._fold = Line(points=[0, 0, 0, 0, 0, 0], width=1.8, cap="round", joint="round")
+        self.bind(pos=self._sync, size=self._sync)
+
+    def _sync(self, *_):
+        self._bg.pos = self.pos
+        self._bg.size = self.size
+        self._bg.radius = [12.0]
+        s = min(self.width, self.height) * 0.52
+        x = self.x + (self.width - s) / 2
+        y = self.y + (self.height - s) / 2
+        self._sheet.points = [x, y, x, y + s, x + s * 0.72, y + s, x + s, y + s * 0.78, x + s, y]
+        self._fold.points = [x + s * 0.72, y + s, x + s * 0.72, y + s * 0.78, x + s, y + s * 0.78]
+
+
+class _CheckToggle(ButtonBehavior, Widget):
+    """Simple checkbox with optional checkmark."""
+
+    def __init__(self, *, checked: bool = False, **kwargs):
+        super().__init__(**kwargs)
+        self.checked = bool(checked)
+        with self.canvas:
+            Color(229 / 255, 229 / 255, 234 / 255, 1)
+            self._box = RoundedRectangle(pos=self.pos, size=self.size, radius=[8])
+            self._line_color = Color(209 / 255, 209 / 255, 214 / 255, 1)
+            self._line = Line(rounded_rectangle=(self.x, self.y, self.width, self.height, 8), width=1.0)
+            self._tick_color = Color(*COL_ACCENT)
+            self._tick = Line(points=[0, 0, 0, 0, 0, 0], width=1.8, cap="round", joint="round")
+        self.bind(pos=self._sync, size=self._sync)
+        self._sync()
+
+    def _sync(self, *_):
+        self._box.pos = self.pos
+        self._box.size = self.size
+        self._box.radius = [8]
+        self._line.rounded_rectangle = (self.x, self.y, self.width, self.height, 8)
+        if self.checked:
+            self._tick.points = [
+                self.x + self.width * 0.24,
+                self.y + self.height * 0.52,
+                self.x + self.width * 0.42,
+                self.y + self.height * 0.32,
+                self.x + self.width * 0.72,
+                self.y + self.height * 0.66,
+            ]
+        else:
+            self._tick.points = []
 class _GradientCard(Widget):
     """Rounded card surface with subtle border."""
 
@@ -285,12 +452,14 @@ class _SidebarTab(ButtonBehavior, Widget):
         label_text: str,
         on_click,
         glyph: Optional[str] = None,
+        icon_kind: str = "dot",
         fs_ratio: float = TAB_FS_RATIO,
         **kwargs,
     ):
         super().__init__(**kwargs)
         self._fs_ratio = fs_ratio
         self._active = False
+        self._icon_kind = icon_kind
         with self.canvas.before:
             self._bg_color = Color(*TAB_ACTIVE_FILL)
             self._bg_color.a = 0.0  # invisible until active
@@ -309,6 +478,12 @@ class _SidebarTab(ButtonBehavior, Widget):
                 ),
                 width=1.2,
             )
+        with self.canvas.after:
+            self._icon_color = Color(*COL_MUTED)
+            self._icon_a = Line(points=[0, 0, 0, 0], width=1.5, cap="round", joint="round")
+            self._icon_b = Line(points=[0, 0, 0, 0], width=1.5, cap="round", joint="round")
+            self._icon_c = Line(points=[0, 0, 0, 0], width=1.5, cap="round", joint="round")
+            self._icon_d = Line(points=[0, 0, 0, 0], width=1.5, cap="round", joint="round")
 
         # Optional small glyph dot at the left edge — rendered as a small
         # filled circle if no PNG is available. Keeps the layout minimal
@@ -355,11 +530,43 @@ class _SidebarTab(ButtonBehavior, Widget):
             TAB_ACTIVE_RADIUS,
         )
         pad_x = max(8, int(self.width * 0.06))
-        glyph_w = max(10, int(self.height * 0.42))
+        glyph_w = max(12, int(self.height * 0.36))
         self._glyph_label.pos = (self.x + pad_x, self.y)
         self._glyph_label.size = (glyph_w, self.height)
         self._label.pos = (self.x + pad_x + glyph_w + 8, self.y)
         self._label.size = (max(1, self.width - pad_x - glyph_w - 16), self.height)
+        self._draw_icon(self.x + pad_x + 1, self.y + (self.height - glyph_w) / 2, glyph_w)
+
+    def _draw_icon(self, x: float, y: float, s: float) -> None:
+        if self._icon_kind == "overview":
+            self._icon_a.circle = (x + s * 0.5, y + s * 0.5, s * 0.23)
+            self._icon_b.points = []
+            self._icon_c.points = []
+            self._icon_d.points = []
+            return
+        if self._icon_kind == "key_points":
+            self._icon_a.points = [x + s * 0.5, y + s * 0.1, x + s * 0.86, y + s * 0.45, x + s * 0.62, y + s * 0.88, x + s * 0.3, y + s * 0.88]
+            self._icon_b.points = [x + s * 0.48, y + s * 0.1, x + s * 0.48, y + s * 0.32]
+            self._icon_c.points = []
+            self._icon_d.points = []
+            return
+        if self._icon_kind == "action_items":
+            self._icon_a.rectangle = (x + s * 0.15, y + s * 0.15, s * 0.7, s * 0.7)
+            self._icon_b.points = [x + s * 0.28, y + s * 0.5, x + s * 0.42, y + s * 0.34, x + s * 0.7, y + s * 0.64]
+            self._icon_c.points = []
+            self._icon_d.points = []
+            return
+        if self._icon_kind == "decisions":
+            self._icon_a.points = [x + s * 0.2, y + s * 0.28, x + s * 0.8, y + s * 0.28]
+            self._icon_b.points = [x + s * 0.2, y + s * 0.5, x + s * 0.8, y + s * 0.5]
+            self._icon_c.points = [x + s * 0.2, y + s * 0.72, x + s * 0.8, y + s * 0.72]
+            self._icon_d.points = [x + s * 0.2, y + s * 0.18, x + s * 0.2, y + s * 0.82]
+            return
+        # transcript
+        self._icon_a.rectangle = (x + s * 0.18, y + s * 0.14, s * 0.64, s * 0.72)
+        self._icon_b.points = [x + s * 0.3, y + s * 0.62, x + s * 0.7, y + s * 0.62]
+        self._icon_c.points = [x + s * 0.3, y + s * 0.45, x + s * 0.64, y + s * 0.45]
+        self._icon_d.points = [x + s * 0.3, y + s * 0.3, x + s * 0.56, y + s * 0.3]
 
     def set_active(self, active: bool) -> None:
         if active == self._active:
@@ -369,6 +576,7 @@ class _SidebarTab(ButtonBehavior, Widget):
         self._border_color.a = 1.0 if active else 0.0
         self._label.color = COL_ACCENT if active else COL_MUTED
         self._glyph_label.color = COL_ACCENT if active else COL_MUTED
+        self._icon_color.rgba = (COL_ACCENT if active else COL_MUTED)
         self._label.bold = bool(active)
 
 
@@ -711,7 +919,10 @@ class SummaryReviewScreen(BaseScreen):
         Clock.schedule_once(lambda _dt: self._on_root_resize(self._root, self._root.size), 0)
 
     def _build_header(self):
-        self._add_img_btn("btn_back.png", BACK_BTN, on_release=lambda *_: self._on_back())
+        self._canvas.add_widget(_Band(**kivy_hints(TOPBAR)))
+        back_btn = _BackChevronButton(**kivy_hints(BACK_BTN))
+        back_btn.bind(on_release=lambda *_: self._on_back())
+        self._canvas.add_widget(back_btn)
         self._add_label(
             "Meeting Summary",
             PAGE_TITLE,
@@ -720,10 +931,26 @@ class SummaryReviewScreen(BaseScreen):
             bold=True,
             halign="left",
         )
+        export_btn = _PillActionButton(
+            label_text="Export",
+            icon_kind="export",
+            **kivy_hints(TOP_EXPORT),
+        )
+        export_btn.bind(on_release=lambda *_: self._on_export())
+        self._scaled_labels.append((export_btn._label, SECTION_BODY_FS_RATIO))
+        self._canvas.add_widget(export_btn)
+        share_btn = _PillActionButton(
+            label_text="Share",
+            icon_kind="share",
+            **kivy_hints(TOP_SHARE),
+        )
+        share_btn.bind(on_release=lambda *_: self._on_share())
+        self._scaled_labels.append((share_btn._label, SECTION_BODY_FS_RATIO))
+        self._canvas.add_widget(share_btn)
 
     def _build_meta_card(self):
-        self._canvas.add_widget(_GradientCard(**kivy_hints(META_CARD)))
-        self._add_image("icon_file_box.png", META_FILE_ICON)
+        self._canvas.add_widget(_Band(**kivy_hints(META_CARD)))
+        self._canvas.add_widget(_FileIconBadge(**kivy_hints(META_FILE_ICON)))
         self.meta_title_label = self._add_label(
             "Product Sync",
             META_TITLE,
@@ -739,11 +966,14 @@ class SummaryReviewScreen(BaseScreen):
             COL_MUTED,
             halign="left",
         )
-        self._chip_participants_widget = self._add_image(
-            "chip_participants.png", META_PARTICIPANTS,
+        self.play_pill = _PlayRecordingPill(
+            duration_text="",
+            **kivy_hints(META_PARTICIPANTS),
         )
-        self._add_img_btn("btn_export.png", META_EXPORT, on_release=lambda *_: self._on_export())
-        self._add_img_btn("btn_share.png", META_SHARE, on_release=lambda *_: self._on_share())
+        self.play_pill.bind(on_release=lambda *_: self._on_play_recording())
+        self._scaled_labels.append((self.play_pill._label_main, PLAY_RECORDING_FS_RATIO))
+        self._scaled_labels.append((self.play_pill._label_dur, SECTION_HINT_FS_RATIO))
+        self._canvas.add_widget(self.play_pill)
 
     def _build_sidebar(self):
         self._canvas.add_widget(
@@ -758,7 +988,8 @@ class SummaryReviewScreen(BaseScreen):
         for tid in _TAB_IDS:
             tab = _SidebarTab(
                 label_text=_TAB_LABELS[tid],
-                glyph="•",
+                glyph="",
+                icon_kind=tid,
                 on_click=lambda tid=tid: self._show_tab(tid),
                 **kivy_hints(_TAB_BOXES[tid]),
             )
@@ -766,15 +997,6 @@ class SummaryReviewScreen(BaseScreen):
             self._scaled_labels.append((tab._glyph_label, TAB_FS_RATIO))
             self._sidebar_tabs[tid] = tab
             self._canvas.add_widget(tab)
-
-        self.play_pill = _PlayRecordingPill(
-            duration_text="",
-            **kivy_hints(PLAY_RECORDING),
-        )
-        self._scaled_labels.append((self.play_pill._label_main, PLAY_RECORDING_FS_RATIO))
-        self._scaled_labels.append((self.play_pill._label_dur, SECTION_HINT_FS_RATIO))
-        self.play_pill.bind(on_release=lambda *_: self._on_play_recording())
-        self._canvas.add_widget(self.play_pill)
 
     def _build_footer(self):
         self.footer_left_label = self._add_label(
@@ -822,8 +1044,9 @@ class SummaryReviewScreen(BaseScreen):
     def _build_tab(self, tab_id: str) -> list[Widget]:
         builder = {
             "overview": self._build_overview,
+            "key_points": self._build_key_points,
             "action_items": self._build_action_items_full,
-            "participants": self._build_participants,
+            "decisions": self._build_decisions_full,
             "transcript": self._build_transcript,
         }[tab_id]
         return builder()
@@ -1090,7 +1313,7 @@ class SummaryReviewScreen(BaseScreen):
 
     def _build_action_items_full(self) -> list[Widget]:
         widgets, scroll, container = self._build_full_card(
-            icon_filename="action_items_icon.png",
+            icon_filename=None,
             title_text="Action Items",
         )
         # Leave room for the bulk action buttons at the bottom-right of
@@ -1120,15 +1343,10 @@ class SummaryReviewScreen(BaseScreen):
             )
             action_id = str((linked_action or {}).get("id") or "")
             selected = bool(action_id and action_id in self._selected_agentic_action_ids)
-            check = _ImgBtn(
-                source=_png(
-                    "action_check_done.png" if selected or (not action_id and item.get("completed")) else "action_check_pending.png"
-                ),
-                allow_stretch=True,
-                keep_ratio=True,
-                fit_mode="contain",
+            check = _CheckToggle(
+                checked=(selected or (not action_id and item.get("completed"))),
                 size_hint=(None, None),
-                size=(32, 32),
+                size=(28, 28),
                 pos_hint={"center_y": 0.5},
             )
             if action_id:
@@ -1609,7 +1827,7 @@ class SummaryReviewScreen(BaseScreen):
 
     def _build_decisions_full(self) -> list[Widget]:
         widgets, _scroll, container = self._build_full_card(
-            icon_filename="decisions_icon.png",
+            icon_filename=None,
             title_text="Decisions Made",
         )
         if not self._decisions:
@@ -2085,29 +2303,8 @@ class SummaryReviewScreen(BaseScreen):
         return False
 
     def _apply_participants_visibility(self) -> None:
-        """Hide the Participants chip + sidebar tab when there's no
-        diarization data, otherwise show them. Called from
-        ``_apply_local_data`` after the merged data lands."""
-        visible = self._has_diarization()
-        chip = getattr(self, "_chip_participants_widget", None)
-        if chip is not None:
-            chip.opacity = 1.0 if visible else 0.0
-        tab = self._sidebar_tabs.get("participants")
-        if tab is not None:
-            tab.opacity = 1.0 if visible else 0.0
-            tab.disabled = not visible
-        transcript_tab = self._sidebar_tabs.get("transcript")
-        if transcript_tab is not None:
-            compact_box = TAB_TRANSCRIPT if visible else TAB_PARTICIPANTS
-            transcript_tab.size_hint = (compact_box["w"], compact_box["h"])
-            transcript_tab.pos_hint = {
-                "x": compact_box["x"],
-                "y": 1.0 - compact_box["y_top"] - compact_box["h"],
-            }
-        # If the user is currently on the Participants tab and we just
-        # hid it, fall back to Overview.
-        if not visible and self._active_tab == "participants":
-            self._show_tab("overview")
+        """Reserved for legacy participants mode (no-op in redesign)."""
+        return
 
     # ------------------------------------------------------------------
     # Formatting helpers
