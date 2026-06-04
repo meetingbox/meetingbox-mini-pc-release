@@ -32,7 +32,7 @@ import os
 import re
 import shutil
 import subprocess
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from kivy.clock import Clock
@@ -96,9 +96,7 @@ from summary_layout import (
     TAB_ACTIVE_BORDER,
     TAB_ACTIVE_FILL,
     TAB_ACTIVE_RADIUS,
-    TAB_DECISIONS,
     TAB_FS_RATIO,
-    TAB_KEY_POINTS,
     TAB_OVERVIEW,
     TAB_PARTICIPANTS,
     TAB_TRANSCRIPT,
@@ -114,30 +112,25 @@ logger = logging.getLogger(__name__)
 _FIGMA = ASSETS_DIR / "summary" / "figma"
 _BG = (BG_RGB[0] / 255, BG_RGB[1] / 255, BG_RGB[2] / 255, 1.0)
 _FONT_BOLD = "42dot-Sans"
+_IST = timezone(timedelta(hours=5, minutes=30))
 
 _TAB_IDS: tuple[str, ...] = (
     "overview",
-    "key_points",
     "action_items",
-    "decisions",
     "participants",
     "transcript",
 )
 
 _TAB_BOXES = {
     "overview": TAB_OVERVIEW,
-    "key_points": TAB_KEY_POINTS,
     "action_items": TAB_ACTION_ITEMS,
-    "decisions": TAB_DECISIONS,
     "participants": TAB_PARTICIPANTS,
     "transcript": TAB_TRANSCRIPT,
 }
 
 _TAB_LABELS = {
     "overview": "Overview",
-    "key_points": "Key Points",
     "action_items": "Action Items",
-    "decisions": "Decisions Made",
     "participants": "Participants",
     "transcript": "Transcript",
 }
@@ -374,7 +367,8 @@ class _SidebarTab(ButtonBehavior, Widget):
         self._active = active
         self._bg_color.a = 1.0 if active else 0.0
         self._border_color.a = 1.0 if active else 0.0
-        self._label.color = COL_WHITE if active else COL_MUTED
+        self._label.color = COL_ACCENT if active else COL_MUTED
+        self._glyph_label.color = COL_ACCENT if active else COL_MUTED
         self._label.bold = bool(active)
 
 
@@ -828,9 +822,7 @@ class SummaryReviewScreen(BaseScreen):
     def _build_tab(self, tab_id: str) -> list[Widget]:
         builder = {
             "overview": self._build_overview,
-            "key_points": self._build_key_points,
             "action_items": self._build_action_items_full,
-            "decisions": self._build_decisions_full,
             "participants": self._build_participants,
             "transcript": self._build_transcript,
         }[tab_id]
@@ -952,41 +944,6 @@ class SummaryReviewScreen(BaseScreen):
         )
         container.add_widget(ai_card)
 
-        if self._topics:
-            key_card = self._overview_card(
-                "Key Topics",
-                glyph="◆",
-                min_height=112.0,
-                tab_id="key_points",
-            )
-            for t in self._topics:
-                row = BoxLayout(orientation="vertical", size_hint_y=None, height=52, spacing=6)
-                top = BoxLayout(orientation="horizontal", size_hint_y=None, height=26)
-                top.add_widget(
-                    self._overview_label(
-                        (t.get("name") or "—").strip(),
-                        color=COL_WHITE,
-                        bold=True,
-                    )
-                )
-                pct = self._overview_label(
-                    f"{max(0, min(100, int(t.get('value', 0))))}%",
-                    ratio=SECTION_HINT_FS_RATIO,
-                    color=COL_HINT,
-                    halign="right",
-                )
-                pct.size_hint_x = None
-                pct.width = 76
-                top.add_widget(pct)
-                row.add_widget(top)
-                bar_wrap = BoxLayout(size_hint_y=None, height=8)
-                bar_wrap.add_widget(
-                    _ProgressBar(value=max(0, min(100, int(t.get("value", 0)))) / 100.0)
-                )
-                row.add_widget(bar_wrap)
-                key_card.add_widget(row)
-            container.add_widget(key_card)
-
         if self._action_items:
             actions_card = self._overview_card(
                 "Action Items",
@@ -1013,19 +970,6 @@ class SummaryReviewScreen(BaseScreen):
                         self._overview_label(meta, ratio=SECTION_HINT_FS_RATIO, color=COL_HINT)
                     )
             container.add_widget(actions_card)
-
-        if self._decisions:
-            decisions_card = self._overview_card(
-                "Decisions Made",
-                glyph="⌁",
-                min_height=112.0,
-                tab_id="decisions",
-            )
-            for decision in self._decisions:
-                decisions_card.add_widget(
-                    self._overview_label("• " + decision, color=COL_MUTED)
-                )
-            container.add_widget(decisions_card)
         return widgets
 
     def _render_overview_data(self) -> None:
@@ -2168,15 +2112,21 @@ class SummaryReviewScreen(BaseScreen):
     # ------------------------------------------------------------------
     # Formatting helpers
     # ------------------------------------------------------------------
+    @staticmethod
+    def _to_ist_datetime(raw) -> datetime:
+        if isinstance(raw, (int, float)):
+            return datetime.fromtimestamp(float(raw), tz=timezone.utc).astimezone(_IST)
+        dt = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(_IST)
+
     def _format_meta_line(self, data: dict) -> str:
         date_part = ""
         started = data.get("started_at") or data.get("start_time")
         if started:
             try:
-                if isinstance(started, (int, float)):
-                    dt = datetime.fromtimestamp(float(started))
-                else:
-                    dt = datetime.fromisoformat(str(started).replace("Z", "+00:00"))
+                dt = self._to_ist_datetime(started)
                 date_part = dt.strftime("%b %d, %I:%M %p").lstrip("0").replace(" 0", " ")
             except Exception:  # noqa: BLE001
                 date_part = str(started)
@@ -2195,10 +2145,7 @@ class SummaryReviewScreen(BaseScreen):
         if not raw:
             return "—"
         try:
-            if isinstance(raw, (int, float)):
-                dt = datetime.fromtimestamp(float(raw))
-            else:
-                dt = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+            dt = self._to_ist_datetime(raw)
             return dt.strftime("%b %d, %I:%M %p").lstrip("0").replace(" 0", " ")
         except Exception:  # noqa: BLE001
             return str(raw)
@@ -2209,7 +2156,7 @@ class SummaryReviewScreen(BaseScreen):
         if not raw:
             return ""
         try:
-            dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+            dt = SummaryReviewScreen._to_ist_datetime(raw)
             return dt.strftime("%b %d").lstrip("0").replace(" 0", " ")
         except Exception:  # noqa: BLE001
             return raw[:14]

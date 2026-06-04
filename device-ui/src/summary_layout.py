@@ -54,7 +54,7 @@ def canvas_box(lx: float, ly: float, lw: float, lh: float) -> Box:
 # ── Header ───────────────────────────────────────────────────────────────
 BACK_BTN = canvas_box(28.0, 22.0, 60.0, 60.0)
 PAGE_TITLE = canvas_box(104.0, 30.0, 360.0, 42.0)
-PAGE_TITLE_FS_RATIO = 30.0 / CANVAS_H
+PAGE_TITLE_FS_RATIO = 28.0 / CANVAS_H
 
 
 # ── Meta card ────────────────────────────────────────────────────────────
@@ -70,8 +70,8 @@ META_RECORDED = canvas_box(_M_X + 262.0, _M_Y + 82.0, 110.0, 28.0)
 META_EXPORT = canvas_box(_M_X + 880.0, _M_Y + 30.0, 140.0, 52.0)
 META_SHARE = canvas_box(_M_X + 1034.0, _M_Y + 30.0, 140.0, 52.0)
 
-META_TITLE_FS_RATIO = 28.0 / CANVAS_H
-META_DATE_FS_RATIO = 22.0 / CANVAS_H
+META_TITLE_FS_RATIO = 20.0 / CANVAS_H
+META_DATE_FS_RATIO = 15.0 / CANVAS_H
 
 
 # ── Sidebar ──────────────────────────────────────────────────────────────
@@ -97,12 +97,10 @@ def _tab(i: int) -> Box:
 
 
 TAB_OVERVIEW = _tab(0)
-TAB_KEY_POINTS = _tab(1)
-TAB_ACTION_ITEMS = _tab(2)
-TAB_DECISIONS = _tab(3)
-TAB_PARTICIPANTS = _tab(4)
-TAB_TRANSCRIPT = _tab(5)
-TAB_FS_RATIO = 18.0 / CANVAS_H
+TAB_ACTION_ITEMS = _tab(1)
+TAB_PARTICIPANTS = _tab(2)
+TAB_TRANSCRIPT = _tab(3)
+TAB_FS_RATIO = 15.0 / CANVAS_H
 
 # Play recording pill — sits at the bottom of the sidebar with a 14px gutter
 # from the sidebar's bottom edge.
@@ -112,7 +110,7 @@ PLAY_RECORDING = canvas_box(
     _TAB_W,
     56.0,
 )
-PLAY_RECORDING_FS_RATIO = 18.0 / CANVAS_H
+PLAY_RECORDING_FS_RATIO = 15.0 / CANVAS_H
 
 
 # ── Content area (everything to the right of the sidebar) ────────────────
@@ -148,49 +146,49 @@ FULL_TAB_CARD = canvas_box(_C_X, _C_Y, _C_W, _C_H)
 # ── Footer ───────────────────────────────────────────────────────────────
 FOOTER_LEFT = canvas_box(36.0, 760.0, 500.0, 28.0)
 FOOTER_RIGHT = canvas_box(724.0, 760.0, 500.0, 28.0)
-FOOTER_FS_RATIO = 16.0 / CANVAS_H
+FOOTER_FS_RATIO = 12.0 / CANVAS_H
 
 
 # ── Typography ───────────────────────────────────────────────────────────
-SECTION_TITLE_FS_RATIO = 22.0 / CANVAS_H   # "AI Summary", "Action items", ...
-SECTION_BODY_FS_RATIO = 18.0 / CANVAS_H    # row text, summary body
-SECTION_HINT_FS_RATIO = 16.0 / CANVAS_H    # "View all", date strings
+SECTION_TITLE_FS_RATIO = 13.0 / CANVAS_H   # section header label
+SECTION_BODY_FS_RATIO = 15.0 / CANVAS_H    # row text, summary body
+SECTION_HINT_FS_RATIO = 12.0 / CANVAS_H    # helper/date text
 
 
 # ── Colours (sampled from the screenshot) ────────────────────────────────
-BG_RGB = (1, 8, 26)  # #01081A
+BG_RGB = (242, 242, 247)  # #F2F2F7
 
 # Cards
-CARD_FILL = (0x01 / 255, 0x0E / 255, 0x31 / 255, 1.0)
-CARD_BORDER = (0x3F / 255, 0x42 / 255, 0x53 / 255, 1.0)
-CARD_RADIUS = 18.0
+CARD_FILL = (1.0, 1.0, 1.0, 1.0)
+CARD_BORDER = (229 / 255, 229 / 255, 234 / 255, 1.0)
+CARD_RADIUS = 16.0
 
 # Sidebar
-SIDEBAR_FILL = (0x01 / 255, 0x0E / 255, 0x31 / 255, 1.0)
-SIDEBAR_BORDER = (0x3F / 255, 0x42 / 255, 0x53 / 255, 1.0)
+SIDEBAR_FILL = (1.0, 1.0, 1.0, 1.0)
+SIDEBAR_BORDER = (229 / 255, 229 / 255, 234 / 255, 1.0)
 
 # Active tab pill
-TAB_ACTIVE_FILL = (0x14 / 255, 0x1F / 255, 0x4A / 255, 1.0)   # subtle blue tint
-TAB_ACTIVE_BORDER = (0x33 / 255, 0x5C / 255, 0xA8 / 255, 1.0) # light blue border
-TAB_ACTIVE_RADIUS = 12.0
+TAB_ACTIVE_FILL = (0.0, 122 / 255, 1.0, 0.10)
+TAB_ACTIVE_BORDER = (0.0, 122 / 255, 1.0, 0.35)
+TAB_ACTIVE_RADIUS = 10.0
 
 # Play recording pill
-PLAY_FILL = (0x06 / 255, 0x16 / 255, 0x42 / 255, 1.0)
-PLAY_BORDER = (0x3F / 255, 0x42 / 255, 0x53 / 255, 1.0)
+PLAY_FILL = (1.0, 1.0, 1.0, 1.0)
+PLAY_BORDER = (209 / 255, 209 / 255, 214 / 255, 1.0)
 PLAY_RADIUS = 12.0
 
 # Progress bar
-PROG_TRACK_FILL = (0x14 / 255, 0x1F / 255, 0x4A / 255, 1.0)
-PROG_FILL = (0x00 / 255, 0x6B / 255, 0xF9 / 255, 1.0)
+PROG_TRACK_FILL = (229 / 255, 229 / 255, 234 / 255, 1.0)
+PROG_FILL = (0.0, 122 / 255, 1.0, 1.0)
 PROG_RADIUS = 4.0
 
 # CTA accent button (used when a tab needs a "View all" link)
-ACCENT_BLUE = (0x00 / 255, 0x6B / 255, 0xF9 / 255, 1.0)
+ACCENT_BLUE = (0.0, 122 / 255, 1.0, 1.0)
 
 # Text
-COL_WHITE = (1.0, 1.0, 1.0, 1.0)
-COL_MUTED = (182 / 255, 186 / 255, 242 / 255, 1.0)
-COL_HINT = (155 / 255, 162 / 255, 178 / 255, 1.0)
+COL_WHITE = (28 / 255, 28 / 255, 30 / 255, 1.0)
+COL_MUTED = (28 / 255, 28 / 255, 30 / 255, 1.0)
+COL_HINT = (142 / 255, 142 / 255, 147 / 255, 1.0)
 COL_ACCENT = ACCENT_BLUE
 
 
