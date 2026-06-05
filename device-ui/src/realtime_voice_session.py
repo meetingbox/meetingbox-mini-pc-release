@@ -121,11 +121,44 @@ _REALTIME_WAKE_GREETING_INSTRUCTIONS = (
 )
 
 # STT model for the user-speech transcript stream (used by the UI
-# overlay, farewell detection, and grammar correction). Keep this on
-# Whisper so realtime voice follows the same STT model family as meetings.
-_DEFAULT_INPUT_TRANSCRIPTION_MODEL = "whisper-1"
+# overlay, farewell detection, and grammar correction).
+#
+# gpt-4o-mini-transcribe streams partial transcripts as
+# `conversation.item.input_audio_transcription.delta` events so the
+# user's words appear on screen live, word-by-word, while they speak.
+# whisper-1 (the old default) only returns ONE final transcript at
+# end-of-utterance — which is why text used to appear all at once after
+# the user finished. Override via REALTIME_TRANSCRIBE_MODEL=whisper-1 to
+# revert.
+_DEFAULT_INPUT_TRANSCRIPTION_MODEL = (
+    os.environ.get("REALTIME_TRANSCRIBE_MODEL", "gpt-4o-mini-transcribe").strip()
+    or "gpt-4o-mini-transcribe"
+)
 # Deliberately neutral — see server/web/routes/voice.py for the rationale.
 _INPUT_TRANSCRIPTION_PROMPT = "Conversational English."
+
+# Turn-end detection eagerness for semantic VAD. Higher = the assistant
+# replies sooner after the user stops talking (less dead air); lower =
+# waits longer to be sure the user is done. "low" was historically forced
+# because the device lacked acoustic echo cancellation and high eagerness
+# caught speaker echo as user speech. AEC (speex) is now enabled, so we
+# can run "medium" for a snappier turn-around. Override via
+# REALTIME_VAD_EAGERNESS (low|medium|high|auto).
+_REALTIME_VAD_EAGERNESS = (
+    os.environ.get("REALTIME_VAD_EAGERNESS", "medium").strip().lower() or "medium"
+)
+
+# Live on-screen captions WHILE the user speaks. OpenAI's input transcription
+# only runs AFTER end-of-turn (post-commit), so it can't show words mid-speech.
+# To fill that gap we run the on-device Vosk model (the same one used for wake
+# word) on the outgoing mic PCM in a side thread and stream its partial
+# hypotheses to the transcript bubble. These are DISPLAY-ONLY and get replaced
+# by OpenAI's accurate transcript once the turn commits; the model itself never
+# uses them (it responds directly from audio). Disable via REALTIME_LIVE_CAPTION=0.
+_REALTIME_LIVE_CAPTION = (
+    os.environ.get("REALTIME_LIVE_CAPTION", "1").strip().lower()
+    not in ("0", "false", "no", "off", "")
+)
 
 
 # ---------------------------------------------------------------------------
@@ -311,11 +344,22 @@ class RealtimeVoiceSession:
         on_ai_transcript=None,
         on_ai_transcript_delta=None,
         on_user_speech_stopped=None,
+        on_user_speech_started=None,
         on_email_draft=None,
         on_recipient_picker=None,
         on_start_recording=None,
         should_suppress_farewell=None,
+        prewarm: bool = False,
+        vosk_model=None,
     ):
+        # Warm-standby: when True, connect + run the session.update handshake
+        # but HOLD (no mic, no audio, no greeting) until activate() is called on
+        # wake. Removes the per-wake mint + WS-connect + prefill from the felt
+        # latency path. Cold sessions (prewarm=False) behave exactly as before.
+        self._prewarm = bool(prewarm)
+        self._activate_event: asyncio.Event | None = None
+        self._activate_requested = False
+        self._session_update_sent = False
         self._client_secret = (client_secret or "").strip()
         self._model = (model or "").strip()
         self._backend_base_url = (backend_base_url or "").strip()
@@ -330,6 +374,7 @@ class RealtimeVoiceSession:
         self._on_ai_transcript_cb = on_ai_transcript
         self._on_ai_transcript_delta_cb = on_ai_transcript_delta
         self._on_user_speech_stopped_cb = on_user_speech_stopped
+        self._on_user_speech_started_cb = on_user_speech_started
         self._on_email_draft_cb = on_email_draft
         self._on_recipient_picker_cb = on_recipient_picker
         self._on_start_recording_cb = on_start_recording
@@ -403,6 +448,18 @@ class RealtimeVoiceSession:
         self._aec_near_buf = bytearray()
         self._aec_buf_lock = threading.Lock()
 
+        # Live caption (on-device Vosk partials while the user speaks). Enabled
+        # only when the feature flag is on AND a preloaded Vosk model was handed
+        # in (we reuse the wake-word model — no second copy in memory).
+        self._vosk_model = vosk_model
+        self._caption_enabled = bool(_REALTIME_LIVE_CAPTION and vosk_model is not None)
+        self._caption_rec = None
+        self._caption_q: queue.Queue | None = None
+        self._caption_thread: threading.Thread | None = None
+        self._caption_reset = threading.Event()
+        self._caption_active = False  # True only between speech_started/stopped
+        self._caption_text = ""        # finalized segments for the current utterance
+
         # Streaming buffer for AI audio transcript deltas. We flush it
         # on the matching .done event, or on response.done as a fallback
         # when the API never emits .done at all.
@@ -411,6 +468,12 @@ class RealtimeVoiceSession:
         # The UI uses this to decide whether to update the existing AI
         # bubble or create a new one for a fresh response.
         self._active_ai_transcript_item_id: str = ""
+        # Running buffer for the USER transcript while streaming partials
+        # arrive (gpt-4o-mini-transcribe emits incremental deltas). We
+        # accumulate so the on-screen bubble shows the growing sentence
+        # rather than only the latest fragment. Reset per utterance.
+        self._user_transcript_buf: str = ""
+        self._active_user_transcript_item_id: str = ""
 
         # Tools we received from the server in session.created. Cached so
         # we can re-send them in session.update with end_session appended.
@@ -447,6 +510,27 @@ class RealtimeVoiceSession:
     def ended_unexpectedly(self) -> bool:
         """True if the session ended without user intent (WS drop, timeout)."""
         return not self._user_ended
+
+    def activate(self) -> None:
+        """Promote a pre-warmed (held) session to active: open the mic and
+        start streaming. Safe to call from the Kivy main thread."""
+        self._activate_requested = True
+        loop, ev = self._loop, self._activate_event
+        if loop is not None and ev is not None and not loop.is_closed():
+            try:
+                loop.call_soon_threadsafe(ev.set)
+            except Exception:
+                pass
+
+    def is_held(self) -> bool:
+        """True iff this is a warm session that is connected and waiting to be
+        activated (i.e. usable as an instant-response standby)."""
+        return (
+            self._prewarm
+            and not self._activate_requested
+            and self._ws is not None
+            and not self._stop.is_set()
+        )
 
     def stop(self) -> None:
         self._user_ended = True
@@ -490,10 +574,12 @@ class RealtimeVoiceSession:
         if cb:
             Clock.schedule_once(lambda _dt: self._safe_call(cb, state), 0)
 
-    def _emit_user_transcript(self, text: str) -> None:
+    def _emit_user_transcript(self, text: str, is_final: bool = True) -> None:
         cb = self._on_user_transcript_cb
         if cb and text:
-            Clock.schedule_once(lambda _dt: self._safe_call(cb, text), 0)
+            Clock.schedule_once(
+                lambda _dt: self._safe_call(cb, text, is_final), 0
+            )
 
     def _emit_ai_transcript(self, text: str) -> None:
         cb = self._on_ai_transcript_cb
@@ -522,6 +608,85 @@ class RealtimeVoiceSession:
         cb = self._on_user_speech_stopped_cb
         if cb:
             Clock.schedule_once(lambda _dt: self._safe_call(cb), 0)
+
+    def _emit_user_speech_started(self) -> None:
+        """Fired when VAD detects the user has begun a new utterance.
+
+        The UI uses this to reset its per-utterance bubble trackers so live
+        captions (and the final transcript) land in a fresh bubble.
+        """
+        cb = self._on_user_speech_started_cb
+        if cb:
+            Clock.schedule_once(lambda _dt: self._safe_call(cb), 0)
+
+    # ------------------------------------------------------------------
+    # Live caption (on-device Vosk partials while the user speaks)
+    # ------------------------------------------------------------------
+
+    def _start_caption_worker(self) -> None:
+        """Spin up the Vosk recognizer + side thread for live captions.
+
+        No-op unless the feature is enabled and a model is available. Runs on
+        its own thread so the CPU-heavy decode never stalls the asyncio loop
+        (mic upload / audio playback heartbeat)."""
+        if not self._caption_enabled or self._caption_thread is not None:
+            return
+        try:
+            from vosk import KaldiRecognizer
+            # Vosk resamples internally, so feeding 24 kHz against a 16 kHz
+            # model is fine — we just declare the input rate.
+            self._caption_rec = KaldiRecognizer(self._vosk_model, _REALTIME_RATE)
+        except Exception:
+            logger.debug("Live caption: recognizer init failed; disabling", exc_info=True)
+            self._caption_enabled = False
+            return
+        self._caption_q = queue.Queue(maxsize=64)
+        self._caption_thread = threading.Thread(
+            target=self._caption_worker, daemon=True, name="rtv-caption"
+        )
+        self._caption_thread.start()
+        logger.info("Realtime live caption: on-device Vosk partials enabled")
+
+    def _caption_worker(self) -> None:
+        rec = self._caption_rec
+        q = self._caption_q
+        if rec is None or q is None:
+            return
+        while not self._stop.is_set():
+            try:
+                pcm = q.get(timeout=0.2)
+            except queue.Empty:
+                continue
+            if pcm is None:
+                break
+            # New utterance — drop any in-progress decode state.
+            if self._caption_reset.is_set():
+                self._caption_reset.clear()
+                try:
+                    rec.Reset()
+                except Exception:
+                    pass
+                self._caption_text = ""
+            # Only surface captions between speech_started and speech_stopped;
+            # after the turn commits, OpenAI's accurate transcript takes over.
+            if not self._caption_active:
+                continue
+            try:
+                if rec.AcceptWaveform(pcm):
+                    res = json.loads(rec.Result() or "{}")
+                    seg = (res.get("text") or "").strip()
+                    if seg:
+                        self._caption_text = (self._caption_text + " " + seg).strip()
+                        if self._caption_active:
+                            self._emit_user_transcript(self._caption_text, is_final=False)
+                else:
+                    pres = json.loads(rec.PartialResult() or "{}")
+                    part = (pres.get("partial") or "").strip()
+                    if part and self._caption_active:
+                        live = (self._caption_text + " " + part).strip()
+                        self._emit_user_transcript(live, is_final=False)
+            except Exception:
+                logger.debug("Live caption decode failed", exc_info=True)
 
     def _emit_device_navigation(self, tool_output_json: str) -> None:
         cb = self._on_device_navigate_cb
@@ -903,9 +1068,40 @@ class RealtimeVoiceSession:
                 close_timeout=3,
             ) as ws:
                 self._ws = ws
+                self._activate_event = asyncio.Event()
 
-                # Let the UI close any local mic (e.g. Vosk wake word)
-                # before we open ALSA for the Realtime session.
+                # Start receiving immediately so the session.created ->
+                # session.update -> session.updated handshake completes and the
+                # socket is kept alive — including while held in warm standby.
+                recv_task = asyncio.create_task(self._recv_loop())
+
+                # Warm standby: hold the connected session WITHOUT opening the
+                # mic or streaming audio until activate() is called (on wake).
+                # No mic + no audio in => no VAD turn => zero billable response
+                # while held. Vosk keeps the mic to detect the wake word.
+                if self._prewarm and not self._activate_requested:
+                    self._emit_state("idle")
+                    act_task = asyncio.create_task(self._activate_event.wait())
+                    done, _pending = await asyncio.wait(
+                        {act_task, recv_task},
+                        return_when=asyncio.FIRST_COMPLETED,
+                    )
+                    if recv_task in done:
+                        # Connection closed before the user ever woke it
+                        # (idle timeout / drop). Return and let the outer
+                        # finally emit a single session_end; main.py re-prewarms.
+                        act_task.cancel()
+                        return
+
+                # Warm session just woken: fire the spoken "I'm listening"
+                # greeting NOW, before the ALSA mic handoff, so its ~1 s
+                # generation on the already-warm connection overlaps with mic
+                # setup. (Cold sessions greet from the session.updated handler.)
+                if self._prewarm:
+                    await self._send_wake_greeting(ws)
+
+                # Active path: let the UI close any local mic (e.g. Vosk wake
+                # word) before we open ALSA for the Realtime session.
                 if self._on_before_open_mic_cb is not None:
                     self._safe_call(self._on_before_open_mic_cb)
                     await asyncio.sleep(0.01)
@@ -918,8 +1114,16 @@ class RealtimeVoiceSession:
                     return
 
                 self._emit_state("listening")
+                # Signal the UI that the live session is ready. Moved here from
+                # the session.created handler so a warm-standby connect does NOT
+                # flip the UI to "listening" before the user actually wakes it.
+                if not self._connected_fired:
+                    self._connected_fired = True
+                    self._emit_connected()
 
-                recv_task = asyncio.create_task(self._recv_loop())
+                # Start the live-caption side thread now that the mic is open.
+                self._start_caption_worker()
+
                 pump_task = asyncio.create_task(self._pump_mic())
                 idle_task = asyncio.create_task(self._idle_watchdog())
 
@@ -1044,6 +1248,13 @@ class RealtimeVoiceSession:
                     resampled = self._aec_process(resampled)
                     if not resampled:
                         continue
+                # Feed the same echo-cancelled PCM to the live-caption recognizer
+                # (non-blocking; dropped if the side thread falls behind).
+                if self._caption_q is not None:
+                    try:
+                        self._caption_q.put_nowait(resampled)
+                    except queue.Full:
+                        pass
                 payload = base64.b64encode(resampled).decode("ascii")
                 await ws.send(json.dumps({
                     "type": "input_audio_buffer.append",
@@ -1103,39 +1314,36 @@ class RealtimeVoiceSession:
                 # ---- Session lifecycle --------------------------------
                 if t == "session.created":
                     self._log_session_summary(msg, label="session.created")
-                    if not self._connected_fired:
-                        self._connected_fired = True
+                    # Configure the session as soon as it is created — this runs
+                    # during warm-standby hold too. The UI "connected" signal is
+                    # emitted separately, only once the mic actually opens (see
+                    # _async_main), so a held session never shows "listening".
+                    if not self._session_update_sent:
+                        self._session_update_sent = True
                         await self._send_session_update(ws)
-                        self._emit_connected()
 
                 elif t == "session.updated":
                     self._log_session_summary(msg, label="session.updated")
-                    # Fire the wake-word greeting once per session, right
-                    # after our session.update is acknowledged so the model
-                    # has its full tool list + voice config. Interruptible,
-                    # so a user already mid-sentence pre-empts it cleanly.
-                    if (
-                        _REALTIME_WAKE_GREETING_ENABLED
-                        and not self._wake_greeting_sent
-                    ):
-                        self._wake_greeting_sent = True
-                        try:
-                            await ws.send(json.dumps({
-                                "type": "response.create",
-                                "response": {
-                                    "instructions": _REALTIME_WAKE_GREETING_INSTRUCTIONS,
-                                },
-                            }))
-                            logger.info("Realtime: wake-word greeting sent")
-                        except Exception:
-                            logger.warning(
-                                "Realtime: wake-word greeting send failed",
-                                exc_info=True,
-                            )
+                    # Cold sessions fire the wake greeting here, once the
+                    # session.update is acked. Warm (prewarm) sessions complete
+                    # this handshake while HELD — long before the user wakes
+                    # them — so they fire the greeting on activate() instead
+                    # (see _async_main), giving an instant "I'm listening".
+                    if not self._prewarm:
+                        await self._send_wake_greeting(ws)
 
                 # ---- User speech --------------------------------------
                 elif t == "input_audio_buffer.speech_started":
                     self._touch()
+                    # Fresh utterance — clear the streaming transcript buffer
+                    # so partial deltas don't append to the previous turn.
+                    self._user_transcript_buf = ""
+                    self._active_user_transcript_item_id = ""
+                    # Reset the live-caption recognizer + reset the UI bubble
+                    # tracker so captions render into a fresh bubble.
+                    self._caption_active = True
+                    self._caption_reset.set()
+                    self._emit_user_speech_started()
                     # User started talking. Cut playback now so they hear
                     # themselves, not the assistant. The server cancels
                     # the in-flight response on its own (interrupt_response).
@@ -1163,6 +1371,9 @@ class RealtimeVoiceSession:
                 elif t == "input_audio_buffer.speech_stopped":
                     self._touch()
                     self._emit_state("thinking")
+                    # Stop live captions — OpenAI's accurate transcript now
+                    # owns the bubble for this finished utterance.
+                    self._caption_active = False
                     # Tell the UI to drop in a placeholder user bubble
                     # right away so the gap before transcription/AI is
                     # filled with immediate visual feedback.
@@ -1178,13 +1389,28 @@ class RealtimeVoiceSession:
                     "input_audio_buffer.transcription.delta",
                 ):
                     self._touch()
-                    partial = self._extract_transcript(msg)
-                    if not partial:
-                        delta = msg.get("delta")
-                        if isinstance(delta, str):
-                            partial = delta.strip()
-                    if partial:
-                        self._emit_user_transcript(partial)
+                    # Deltas are INCREMENTAL fragments — accumulate them so
+                    # the bubble shows the growing sentence, not just the
+                    # latest fragment (mirrors the AI transcript buffer).
+                    delta = msg.get("delta")
+                    if not isinstance(delta, str) or not delta:
+                        delta = self._extract_transcript(msg)
+                    if isinstance(delta, str) and delta:
+                        item_id = (
+                            msg.get("item_id")
+                            or msg.get("response_id")
+                            or self._active_user_transcript_item_id
+                            or "user_active"
+                        )
+                        if item_id != self._active_user_transcript_item_id:
+                            self._active_user_transcript_item_id = str(item_id)
+                            self._user_transcript_buf = ""
+                        self._user_transcript_buf += delta
+                        # Partial — not final, so the UI skips grammar
+                        # correction until the .completed event.
+                        self._emit_user_transcript(
+                            self._user_transcript_buf, is_final=False
+                        )
 
                 # ---- User transcript (final) ---------------------------
                 elif t in (
@@ -1193,9 +1419,13 @@ class RealtimeVoiceSession:
                 ):
                     self._touch()
                     spoken = self._extract_transcript(msg)
+                    # Utterance finished — reset the streaming buffer so the
+                    # next utterance starts clean.
+                    self._user_transcript_buf = ""
+                    self._active_user_transcript_item_id = ""
                     if spoken:
                         logger.info("User said: %r", spoken)
-                        self._emit_user_transcript(spoken)
+                        self._emit_user_transcript(spoken, is_final=True)
                         # Client-side farewell fallback: if the transcript is
                         # a clear goodbye phrase, close the session immediately
                         # without waiting for the model to call end_session.
@@ -1362,6 +1592,28 @@ class RealtimeVoiceSession:
     # Session update — minimal override
     # ------------------------------------------------------------------
 
+    async def _send_wake_greeting(self, ws) -> None:
+        """Send the short spoken 'I'm listening' acknowledgment once per
+        session. Interruptible (interrupt_response stays true), so a user
+        already mid-sentence pre-empts it cleanly. For warm sessions this is
+        fired on activate() so it comes back in ~1 s instead of after a cold
+        mint + connect + prefill."""
+        if not _REALTIME_WAKE_GREETING_ENABLED or self._wake_greeting_sent:
+            return
+        self._wake_greeting_sent = True
+        try:
+            await ws.send(json.dumps({
+                "type": "response.create",
+                "response": {
+                    "instructions": _REALTIME_WAKE_GREETING_INSTRUCTIONS,
+                },
+            }))
+            logger.info("Realtime: wake-word greeting sent")
+        except Exception:
+            logger.warning(
+                "Realtime: wake-word greeting send failed", exc_info=True
+            )
+
     async def _send_session_update(self, ws) -> None:
         """Override only what we need + register the client-side end_session tool.
 
@@ -1376,28 +1628,38 @@ class RealtimeVoiceSession:
         We override:
           - input.transcription.model — enables a transcript stream of
             user speech (used for farewell detection and the transcript
-            overlay). We do NOT override eagerness — the server deliberately
-            sets "low" for device hardware that lacks echo cancellation;
-            overriding to "high" caused speaker-echo false triggers and
-            mid-sentence self-interruptions.
+            overlay).
+          - input.turn_detection.eagerness — how quickly the assistant
+            replies after the user stops. The server defaults to "low"
+            (most conservative) for hardware without echo cancellation;
+            AEC (speex) is now enabled, so we bump to "medium" (env
+            REALTIME_VAD_EAGERNESS) for a snappier turn-around while
+            keeping create_response/interrupt_response TRUE.
           - tools — server tools + end_session.
-
-        create_response and interrupt_response stay TRUE.
         """
         merged_tools = list(self._server_tools) + [END_SESSION_TOOL, START_RECORDING_TOOL]
+        audio_input: dict = {
+            "transcription": {
+                "model": _DEFAULT_INPUT_TRANSCRIPTION_MODEL,
+                "language": "en",
+                "prompt": _INPUT_TRANSCRIPTION_PROMPT,
+            },
+        }
+        # "auto" means: leave the server's turn_detection untouched.
+        if _REALTIME_VAD_EAGERNESS and _REALTIME_VAD_EAGERNESS != "auto":
+            audio_input["turn_detection"] = {
+                "type": "semantic_vad",
+                "eagerness": _REALTIME_VAD_EAGERNESS,
+                "create_response": True,
+                "interrupt_response": True,
+            }
         try:
             await ws.send(json.dumps({
                 "type": "session.update",
                 "session": {
                     "type": "realtime",
                     "audio": {
-                        "input": {
-                            "transcription": {
-                                "model": _DEFAULT_INPUT_TRANSCRIPTION_MODEL,
-                                "language": "en",
-                                "prompt": _INPUT_TRANSCRIPTION_PROMPT,
-                            },
-                        },
+                        "input": audio_input,
                     },
                     "tools": merged_tools,
                 },

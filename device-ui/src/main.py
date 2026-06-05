@@ -244,6 +244,12 @@ try:
 except ImportError:
     REALTIME_VOICE_IMPLEMENTED = False
 
+# Warm-standby: hold a pre-connected Realtime session so wake activates it
+# instantly. Disable (set 0) to fall back to cold per-wake sessions.
+REALTIME_WARM_STANDBY = os.environ.get(
+    "REALTIME_WARM_STANDBY", "1"
+).strip().lower() not in ("", "0", "false", "no", "off")
+
 # Boot-flow screens
 from screens.splash import SplashScreen
 from screens.welcome import WelcomeScreen
@@ -736,6 +742,11 @@ class MeetingBoxApp(App):
 
         # OpenAI Realtime assistant (optional; uses server /api/voice + wake phrase).
         self._realtime_voice_session = None
+        # Pre-warmed Realtime session held in standby (connected, mic closed) so
+        # the wake word can ACTIVATE it instantly instead of minting + connecting
+        # on the felt-latency path. See REALTIME_WARM_STANDBY.
+        self._warm_voice_session = None
+        self._warm_voice_pending = False
         self._realtime_session_pending = False
         self._realtime_session_start_monotonic = None
         self._realtime_connected_ok = False
@@ -1482,6 +1493,13 @@ class MeetingBoxApp(App):
                     wake_phrase=vwp,
                     enabled=self.voice_assistant_enabled,
                 )
+                # Now that we know the cloud assistant is enabled and the
+                # device is authed, pre-warm a Realtime standby session so the
+                # first wake word activates instantly.
+                try:
+                    self._schedule_voice_prewarm(delay=1.5)
+                except Exception:
+                    logger.debug("voice prewarm schedule (settings) failed", exc_info=True)
             except Exception as e:
                 logger.warning("Could not load settings: %s", e)
             try:
@@ -2629,6 +2647,11 @@ class MeetingBoxApp(App):
 
             def _kick_realtime(_dt):
                 self._show_home_listening_after_wake()
+                # Instant path: if a pre-warmed session is held in standby,
+                # just activate it (no mint, no connect, no greeting). Falls
+                # back to a cold per-wake session if none is ready.
+                if REALTIME_WARM_STANDBY and self._activate_warm_voice_session():
+                    return
                 self._start_realtime_voice_session()
 
             Clock.schedule_once(_kick_realtime, 0)
@@ -2947,20 +2970,12 @@ class MeetingBoxApp(App):
         name = (contact or {}).get("name", "") or email
         if not email:
             return
-        # Once a recipient is confirmed, surface the draft popup right away so
-        # there is no gap between the picker closing and the draft appearing.
-        # If a draft popup is already open (e.g. adding another recipient mid
-        # draft) leave it untouched — the assistant's next show_email_draft
-        # directive will update it.
-        popup = getattr(self, "_email_draft_popup", None)
-        if popup is not None and not popup.visible:
-            try:
-                popup.open_draft({
-                    "to": [{"name": name, "email": email}],
-                    "state": "drafting",
-                })
-            except Exception:
-                logger.debug("Failed to pre-open draft popup", exc_info=True)
+        # Do NOT pre-open the email draft popup here. The picker is shared
+        # between the email flow AND the calendar-invite attendee flow. Opening
+        # the draft popup unconditionally caused it to appear (and stay) in the
+        # calendar flow where show_email_draft is never called. The model's next
+        # show_email_draft directive opens the popup in the email flow; for
+        # calendar there is no such directive so nothing extra appears.
         self._send_voice_user_text(f"Use {email} for {name}.")
 
     def _on_recipient_dismissed(self) -> None:
@@ -3067,6 +3082,82 @@ class MeetingBoxApp(App):
         self._hide_home_listening_state()
         self._refresh_voice_indicator()
 
+    # ------------------------------------------------------------------
+    # Warm-standby Realtime session (instant wake response)
+    # ------------------------------------------------------------------
+
+    def _schedule_voice_prewarm(self, delay: float = 0.5) -> None:
+        """Schedule a warm-standby Realtime session to connect (idempotent)."""
+        if not REALTIME_WARM_STANDBY:
+            return
+        try:
+            Clock.schedule_once(
+                lambda _dt: self._prewarm_realtime_voice_session(), max(0.0, delay)
+            )
+        except Exception:
+            logger.debug("voice prewarm schedule failed", exc_info=True)
+
+    def _prewarm_realtime_voice_session(self) -> None:
+        """Mint + connect a Realtime session and hold it in standby (mic closed,
+        no greeting) so the next wake word activates it instantly. No-ops unless
+        the cloud assistant is enabled, authed, idle, and not already warm."""
+        if not REALTIME_WARM_STANDBY or not REALTIME_VOICE_IMPLEMENTED:
+            return
+        if USE_MOCK_BACKEND or WAKE_LOCAL_VOICE_ONLY:
+            return
+        if not getattr(self, "voice_realtime_assistant", False):
+            return
+        if self.recording_state.get("active"):
+            return
+        if self._realtime_voice_session is not None:
+            return  # an active session owns the mic right now
+        if self._warm_voice_session is not None or self._warm_voice_pending:
+            return  # already warm / warming
+        if not get_device_auth_token().strip():
+            return
+        self._warm_voice_pending = True
+
+        async def _go():
+            try:
+                data = await self.backend.create_realtime_voice_session()
+            except Exception as e:
+                logger.debug("Realtime warm prewarm mint failed: %s", e)
+                self._warm_voice_pending = False
+                return
+            Clock.schedule_once(
+                lambda _dt, d=data: self._run_realtime_voice_session(d, prewarm=True), 0
+            )
+
+        run_async(_go())
+
+    def _activate_warm_voice_session(self) -> bool:
+        """Promote the held warm session to active on wake. Returns True if a
+        warm session was ready and activated; False if the caller should
+        cold-start instead."""
+        if self.recording_state.get("active"):
+            return False
+        sess = self._warm_voice_session
+        if sess is None or not getattr(sess, "is_held", None) or not sess.is_held():
+            return False
+        self._warm_voice_session = None
+        self._realtime_voice_session = sess
+        self._realtime_session_pending = False
+        self._realtime_connected_ok = False
+        self._realtime_session_start_monotonic = time.monotonic()
+        self._sync_voice_assistant_state()
+        try:
+            sess.activate()
+        except Exception:
+            logger.exception("Realtime warm activate failed; cold-starting")
+            try:
+                sess.stop()
+            except Exception:
+                pass
+            self._realtime_voice_session = None
+            return False
+        logger.info("Realtime: activated pre-warmed standby session on wake")
+        return True
+
     def _start_realtime_voice_session(self) -> None:
         if self.recording_state.get("active"):
             logger.info("Realtime voice session blocked while recording is active")
@@ -3162,9 +3253,18 @@ class MeetingBoxApp(App):
 
         run_async(_go())
 
-    def _run_realtime_voice_session(self, data: dict) -> None:
-        self._realtime_session_pending = False
+    def _run_realtime_voice_session(self, data: dict, prewarm: bool = False) -> None:
+        if prewarm:
+            self._warm_voice_pending = False
+            # An active session may have started while the warm mint was in
+            # flight (e.g. wake fired during prewarm). Don't open a 2nd socket.
+            if self._realtime_voice_session is not None or self._warm_voice_session is not None:
+                return
+        else:
+            self._realtime_session_pending = False
         if self.recording_state.get("active"):
+            if prewarm:
+                return
             logger.info("Realtime voice session launch cancelled because recording is active")
             self._sync_voice_assistant_state()
             return
@@ -3175,6 +3275,8 @@ class MeetingBoxApp(App):
             )
         except ImportError:
             logger.exception("realtime_voice_session module missing")
+            if prewarm:
+                return
             self._clear_voice_indicator_override()
             self._sync_voice_assistant_state()
             Clock.schedule_once(lambda _dt: self._begin_local_voice_command_session(), 0)
@@ -3189,6 +3291,8 @@ class MeetingBoxApp(App):
         if isinstance(sess_blob, dict):
             rt_voice = extract_realtime_output_voice(sess_blob)
         if not secret or not model:
+            if prewarm:
+                return
             self._clear_voice_indicator_override()
             self._sync_voice_assistant_state()
             Clock.schedule_once(lambda _dt: self._begin_local_voice_command_session(), 0)
@@ -3225,13 +3329,28 @@ class MeetingBoxApp(App):
             # If the session ended unexpectedly (WS dropped, OpenAI hit the
             # ~15-60 min hard session cap), immediately start a fresh session
             # so the user doesn't have to re-say the wake word mid-thought.
-            sess = self._realtime_voice_session
+            sess = self._realtime_voice_session or self._warm_voice_session
+            activated = True
             unexpected = False
             try:
+                if sess is not None:
+                    activated = bool(getattr(sess, "_activate_requested", True))
                 if sess is not None and hasattr(sess, "ended_unexpectedly"):
                     unexpected = bool(sess.ended_unexpectedly())
             except Exception:
-                unexpected = False
+                activated, unexpected = True, False
+
+            # A warm-standby session that dropped before it was ever woken
+            # (idle timeout / network blip): discard quietly and re-prewarm.
+            # No UI, no mic, no auto-activation.
+            if not activated:
+                def _after_warm_end(_dt, _s=sess):
+                    if self._warm_voice_session is _s:
+                        self._warm_voice_session = None
+                    self._warm_voice_pending = False
+                    self._schedule_voice_prewarm(delay=1.0)
+                Clock.schedule_once(_after_warm_end, 0)
+                return
 
             def _after_end(_dt):
                 self._end_realtime_voice_session()
@@ -3248,6 +3367,10 @@ class MeetingBoxApp(App):
                             logger.exception("Realtime auto-reconnect failed")
 
                     Clock.schedule_once(_reconnect, 0.3)
+                else:
+                    # Clean end of a conversation — re-arm a warm standby
+                    # session so the NEXT wake word is instant again.
+                    self._schedule_voice_prewarm(delay=1.0)
 
             Clock.schedule_once(_after_end, 0)
 
@@ -3324,7 +3447,7 @@ class MeetingBoxApp(App):
                         pass
             Clock.schedule_once(_say_bar_placeholder, 0)
 
-        def _on_user_transcript(text: str) -> None:
+        def _on_user_transcript(text: str, is_final: bool = True) -> None:
             overlay = self._transcript_overlay
             if overlay is None:
                 return
@@ -3358,9 +3481,13 @@ class MeetingBoxApp(App):
                         pass
             Clock.schedule_once(_say_bar_user, 0)
 
-            # Grammar correction — run only on non-trivial text so we don't
-            # fire an API call for every tiny streaming fragment. The corrected
-            # text replaces the bubble once the background call returns.
+            # Grammar correction — run only on the FINAL transcript so we
+            # don't fire an API call (and flicker the bubble) for every
+            # streaming partial. Partials are display-only; the .completed
+            # event arrives as is_final=True and triggers the single
+            # correction pass.
+            if not is_final:
+                return
             if not text or len(text) < 4:
                 return
             _backend = BACKEND_URL
@@ -3413,9 +3540,10 @@ class MeetingBoxApp(App):
             Clock.schedule_once(_say_bar_ai, 0)
 
         try:
-            self._realtime_connected_ok = False
-            self._realtime_session_start_monotonic = time.monotonic()
-            self._realtime_voice_session = RealtimeVoiceSession(
+            if not prewarm:
+                self._realtime_connected_ok = False
+                self._realtime_session_start_monotonic = time.monotonic()
+            sess = RealtimeVoiceSession(
                 client_secret=secret,
                 model=model,
                 backend_base_url=BACKEND_URL,
@@ -3435,11 +3563,24 @@ class MeetingBoxApp(App):
                 on_recipient_picker=self._on_recipient_picker_directive,
                 on_start_recording=self._realtime_handle_start_recording,
                 should_suppress_farewell=self._email_workflow_active,
+                prewarm=prewarm,
             )
-            self._sync_voice_assistant_state()
-            self._realtime_voice_session.start()
+            if prewarm:
+                # Held in standby: do NOT touch the active-session pointer or UI.
+                # It connects + runs session.update and waits for activate().
+                self._warm_voice_session = sess
+                sess.start()
+                logger.info("Realtime: warm-standby session connecting (held until wake)")
+            else:
+                self._realtime_voice_session = sess
+                self._sync_voice_assistant_state()
+                sess.start()
         except Exception:
             logger.exception("Realtime voice session failed to start")
+            if prewarm:
+                self._warm_voice_session = None
+                self._warm_voice_pending = False
+                return
             self._realtime_voice_session = None
             self._realtime_mic_acquired = False
             self._set_voice_runtime_state("idle")
