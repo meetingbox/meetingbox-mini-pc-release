@@ -126,6 +126,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
                       title: 'Room / Location',
                       onPressed: () => _go('/settings/room-label'),
                     ),
+                    _section('ACCOUNT'),
+                    SettingsItem(
+                      title: 'Pair / link account',
+                      subtitle:
+                          'Enter a pairing code to link this device to your account',
+                      onPressed: () => _go('/pair-device'),
+                    ),
                     _section('NETWORK'),
                     SettingsItem(
                       title: 'WiFi',

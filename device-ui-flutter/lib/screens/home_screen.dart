@@ -144,8 +144,25 @@ class _HomeScreenState extends State<HomeScreen> {
           width: 76.28,
           height: 76.28,
           child: GestureDetector(
+            behavior: HitTestBehavior.opaque,
             onTap: () => _go('/settings'),
-            child: _asset('assets/home/figma/email_icon_settings_badge.png'),
+            // Keep the button visible even when the synced PNG asset is missing
+            // (assets/home/figma is .gitignored and may be absent on a fresh
+            // device build) so Settings is always reachable.
+            child: Image.asset(
+              'assets/home/figma/email_icon_settings_badge.png',
+              fit: BoxFit.contain,
+              errorBuilder: (_, __, ___) => Container(
+                decoration: BoxDecoration(
+                  color: const Color(0xFF010B26),
+                  shape: BoxShape.circle,
+                  border: Border.all(color: AppColors.rowBorder),
+                ),
+                alignment: Alignment.center,
+                child: const Icon(Icons.settings,
+                    color: AppColors.white, size: 34),
+              ),
+            ),
           ),
         ),
         _pos(
