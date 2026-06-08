@@ -55,17 +55,26 @@ class VoiceEventClient extends ChangeNotifier {
     return Uri.parse('$ws/v1/events');
   }
 
-  void connect() {
+  Future<void> connect() async {
     if (_disposed) return;
     try {
-      _channel = WebSocketChannel.connect(_wsUri);
-      _sub = _channel!.stream.listen(
+      final channel = WebSocketChannel.connect(_wsUri);
+      _channel = channel;
+      // Surfaces connection failures here (bridge down) so they are caught
+      // instead of escaping as an unhandled async error.
+      await channel.ready;
+      if (_disposed) {
+        channel.sink.close();
+        return;
+      }
+      _sub = channel.stream.listen(
         _onMessage,
         onError: (_) => _scheduleReconnect(),
         onDone: _scheduleReconnect,
         cancelOnError: true,
       );
     } catch (_) {
+      // Bridge not up yet — retry quietly.
       _scheduleReconnect();
     }
   }
@@ -75,8 +84,8 @@ class VoiceEventClient extends ChangeNotifier {
     _sub = null;
     _channel = null;
     if (_disposed) return;
-    _reconnect?.cancel();
-    _reconnect = Timer(const Duration(seconds: 3), connect);
+    if (_reconnect?.isActive ?? false) return;
+    _reconnect = Timer(const Duration(seconds: 5), connect);
   }
 
   void _onMessage(dynamic raw) {

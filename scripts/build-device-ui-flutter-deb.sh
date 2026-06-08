@@ -68,6 +68,12 @@ fi
     echo "Scaffolding Linux runner..."
     flutter create --platforms=linux .
   fi
+  # Apply the kiosk runner (fullscreen + no title bar, honors FULLSCREEN env).
+  # flutter create regenerates the default windowed runner, so overwrite it.
+  if [[ -f "$PKG_SRC/my_application.cc" && -d linux/runner ]]; then
+    echo "Applying kiosk fullscreen runner..."
+    cp "$PKG_SRC/my_application.cc" linux/runner/my_application.cc
+  fi
   flutter pub get
   echo "Building Flutter Linux release bundle..."
   flutter build linux --release "${DART_DEFINES[@]}"

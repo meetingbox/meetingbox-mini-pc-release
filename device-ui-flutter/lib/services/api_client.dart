@@ -112,15 +112,19 @@ class ApiClient {
     }
   }
 
+  /// Reachability probe matching `device-ui/src/api_client.py::health_check`.
+  /// Many deployments only reverse-proxy `/api/*`, so `/api/health` 404s.
+  /// Try `/health` first, then `/api/system/status`.
   Future<bool> healthCheck() async {
-    try {
-      final resp = await _client
-          .get(_uri('/api/health'), headers: _headers)
-          .timeout(const Duration(seconds: 8));
-      return resp.statusCode == 200;
-    } catch (_) {
-      return false;
+    for (final path in ['/health', '/api/system/status']) {
+      try {
+        final resp = await _client
+            .get(_uri(path), headers: _headers)
+            .timeout(const Duration(seconds: 12));
+        if (resp.statusCode == 200) return true;
+      } catch (_) {}
     }
+    return false;
   }
 
   Future<Map<String, dynamic>> getRecordingStatus() async {
