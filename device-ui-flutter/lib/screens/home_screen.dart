@@ -139,36 +139,9 @@ class _HomeScreenState extends State<HomeScreen> {
           ),
         ),
         _pos(
-          left: 1159.71,
-          top: 21.19,
-          width: 76.28,
-          height: 76.28,
-          child: GestureDetector(
-            behavior: HitTestBehavior.opaque,
-            onTap: () => _go('/settings'),
-            // Keep the button visible even when the synced PNG asset is missing
-            // (assets/home/figma is .gitignored and may be absent on a fresh
-            // device build) so Settings is always reachable.
-            child: Image.asset(
-              'assets/home/figma/email_icon_settings_badge.png',
-              fit: BoxFit.contain,
-              errorBuilder: (_, __, ___) => Container(
-                decoration: BoxDecoration(
-                  color: const Color(0xFF010B26),
-                  shape: BoxShape.circle,
-                  border: Border.all(color: AppColors.rowBorder),
-                ),
-                alignment: Alignment.center,
-                child: const Icon(Icons.settings,
-                    color: AppColors.white, size: 34),
-              ),
-            ),
-          ),
-        ),
-        _pos(
-          left: 1000,
+          left: 900,
           top: 7,
-          width: 230,
+          width: 250,
           height: 28,
           child: Row(
             mainAxisAlignment: MainAxisAlignment.end,
@@ -179,7 +152,51 @@ class _HomeScreenState extends State<HomeScreen> {
             ],
           ),
         ),
+        // Settings — last in stack so status text never covers it.
+        _settingsButton(),
       ],
+    );
+  }
+
+  /// Top-right settings control (Figma 1159.71, 21.19). Uses a tracked PNG
+  /// under assets/calendar/figma so release builds always bundle the icon.
+  Widget _settingsButton() {
+    return _pos(
+      left: 1159.71,
+      top: 21.19,
+      width: 76.28,
+      height: 76.28,
+      child: Material(
+        color: Colors.transparent,
+        child: InkWell(
+          customBorder: const CircleBorder(),
+          onTap: () => _go('/settings'),
+          child: DecoratedBox(
+            decoration: BoxDecoration(
+              shape: BoxShape.circle,
+              gradient: const LinearGradient(
+                begin: Alignment.topCenter,
+                end: Alignment.bottomCenter,
+                colors: [Color(0xFF000F33), Color(0xFF01081A)],
+              ),
+              border: Border.all(color: AppColors.rowBorder),
+            ),
+            child: Center(
+              child: Image.asset(
+                'assets/calendar/figma/icon_settings_badge.png',
+                width: 76.28,
+                height: 76.28,
+                fit: BoxFit.contain,
+                errorBuilder: (_, __, ___) => const Icon(
+                  Icons.settings,
+                  color: AppColors.white,
+                  size: 34,
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
     );
   }
 

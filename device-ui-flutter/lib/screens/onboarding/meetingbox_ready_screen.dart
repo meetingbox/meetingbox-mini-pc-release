@@ -40,9 +40,15 @@ class _MeetingBoxReadyScreenState extends State<MeetingBoxReadyScreen> {
     if (!widget.config.mockBackend) {
       apiOk = await widget.api.postSetupComplete(wifi: wifi);
     }
-    await widget.setupState.markSetupComplete();
+    var localOk = false;
+    try {
+      await widget.setupState.markSetupComplete();
+      localOk = true;
+    } catch (_) {
+      localOk = false;
+    }
     if (!mounted) return;
-    if (apiOk) {
+    if (apiOk || localOk) {
       context.go('/home');
     } else {
       setState(() => _busy = false);

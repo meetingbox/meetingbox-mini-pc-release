@@ -2,18 +2,29 @@ import 'dart:convert';
 
 import 'package:http/http.dart' as http;
 import 'package:meetingbox_device_ui/config/app_config.dart';
+import 'package:meetingbox_device_ui/services/device_auth_store.dart';
 
 /// REST client — subset of `device-ui/src/api_client.py` for Phase 0–1.
 class ApiClient {
-  ApiClient(this.config, {http.Client? client}) : _client = client ?? http.Client();
+  ApiClient(this.config, {DeviceAuthStore? authStore, http.Client? client})
+      : authStore = authStore,
+        _client = client ?? http.Client();
 
   final AppConfig config;
+  final DeviceAuthStore? authStore;
   final http.Client _client;
+
+  String get _authToken {
+    final stored = authStore?.token.trim() ?? '';
+    if (stored.isNotEmpty) return stored;
+    return config.deviceAuthToken.trim();
+  }
 
   Map<String, String> get _headers {
     final h = <String, String>{'Content-Type': 'application/json'};
-    if (config.deviceAuthToken.isNotEmpty) {
-      h['Authorization'] = 'Bearer ${config.deviceAuthToken}';
+    final tok = _authToken;
+    if (tok.isNotEmpty) {
+      h['Authorization'] = 'Bearer $tok';
     }
     return h;
   }
@@ -90,10 +101,16 @@ class ApiClient {
       } catch (_) {}
       throw ApiException(detail, resp.statusCode);
     }
-    return jsonDecode(resp.body) as Map<String, dynamic>;
+    final data = jsonDecode(resp.body) as Map<String, dynamic>;
+    final access = (data['access_token'] as String?)?.trim() ?? '';
+    if (access.isNotEmpty) {
+      await authStore?.persist(access);
+    }
+    return data;
   }
 
   /// Notify the backend that on-device setup finished (best-effort).
+  /// Mirrors `device-ui/src/api_client.py::post_setup_complete`.
   Future<bool> postSetupComplete({
     required String wifi,
     String flow = 'wifi_on_device_v1',
@@ -101,9 +118,12 @@ class ApiClient {
     try {
       final resp = await _client
           .post(
-            _uri('/api/system/setup-complete'),
+            _uri('/api/device/setup-complete'),
             headers: _headers,
-            body: jsonEncode({'wifi': wifi, 'flow': flow}),
+            body: jsonEncode({
+              'wifi_ssid': wifi,
+              'onboarding_flow': flow,
+            }),
           )
           .timeout(const Duration(seconds: 12));
       return resp.statusCode >= 200 && resp.statusCode < 300;
@@ -139,25 +159,28 @@ class ApiClient {
     return {'recording': false};
   }
 
-  Future<bool> startRecording({String? title}) async {
+  /// POST /api/meetings/start — returns `{ session_id, status }`.
+  Future<Map<String, dynamic>> startRecording({String? title}) async {
     try {
       final resp = await _client
           .post(
-            _uri('/api/meetings/start-recording'),
+            _uri('/api/meetings/start'),
             headers: _headers,
             body: jsonEncode({if (title != null) 'title': title}),
           )
           .timeout(const Duration(seconds: 15));
-      return resp.statusCode >= 200 && resp.statusCode < 300;
-    } catch (_) {
-      return false;
-    }
+      if (resp.statusCode >= 200 && resp.statusCode < 300) {
+        return jsonDecode(resp.body) as Map<String, dynamic>;
+      }
+    } catch (_) {}
+    return {};
   }
 
+  /// POST /api/meetings/stop — returns `{ session_id, status }`.
   Future<Map<String, dynamic>> stopRecording() async {
     try {
       final resp = await _client
-          .post(_uri('/api/meetings/stop-recording'), headers: _headers)
+          .post(_uri('/api/meetings/stop'), headers: _headers)
           .timeout(const Duration(seconds: 20));
       if (resp.statusCode >= 200 && resp.statusCode < 300) {
         return jsonDecode(resp.body) as Map<String, dynamic>;

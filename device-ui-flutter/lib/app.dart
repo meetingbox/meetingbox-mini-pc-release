@@ -4,6 +4,7 @@ import 'package:meetingbox_device_ui/config/app_config.dart';
 import 'package:meetingbox_device_ui/core/theme/app_theme.dart';
 import 'package:meetingbox_device_ui/routing/app_router.dart';
 import 'package:meetingbox_device_ui/services/api_client.dart';
+import 'package:meetingbox_device_ui/services/device_auth_store.dart';
 import 'package:meetingbox_device_ui/services/device_bridge_client.dart';
 import 'package:meetingbox_device_ui/services/onboarding_state.dart';
 import 'package:meetingbox_device_ui/services/setup_state.dart';
@@ -11,9 +12,14 @@ import 'package:meetingbox_device_ui/services/voice_event_client.dart';
 import 'package:meetingbox_device_ui/widgets/voice_overlay.dart';
 
 class MeetingBoxDeviceApp extends StatefulWidget {
-  const MeetingBoxDeviceApp({super.key, required this.config});
+  const MeetingBoxDeviceApp({
+    super.key,
+    required this.config,
+    required this.authStore,
+  });
 
   final AppConfig config;
+  final DeviceAuthStore authStore;
 
   @override
   State<MeetingBoxDeviceApp> createState() => _MeetingBoxDeviceAppState();
@@ -30,7 +36,7 @@ class _MeetingBoxDeviceAppState extends State<MeetingBoxDeviceApp> {
   @override
   void initState() {
     super.initState();
-    _api = ApiClient(widget.config);
+    _api = ApiClient(widget.config, authStore: widget.authStore);
     _bridge = DeviceBridgeClient(widget.config);
     _setupState = SetupState();
     _onboarding = OnboardingState();

@@ -28,6 +28,7 @@ class _RecordingScreenState extends State<RecordingScreen> {
   Timer? _timer;
   int _elapsed = 0;
   bool _paused = false;
+  String? _sessionId;
   late final String _startedAt;
 
   @override
@@ -40,7 +41,9 @@ class _RecordingScreenState extends State<RecordingScreen> {
 
   Future<void> _start() async {
     if (!widget.config.mockBackend) {
-      await widget.api.startRecording();
+      final result = await widget.api.startRecording();
+      final sid = (result['session_id'] ?? '').toString();
+      if (sid.isNotEmpty) _sessionId = sid;
     }
     _timer = Timer.periodic(const Duration(seconds: 1), (_) {
       if (!_paused && mounted) setState(() => _elapsed++);
@@ -91,7 +94,12 @@ class _RecordingScreenState extends State<RecordingScreen> {
       result = await widget.api.stopRecording();
     }
     if (!mounted) return;
-    final id = (result['meeting_id'] ?? result['id'] ?? '').toString();
+    final id = (result['meeting_id'] ??
+            result['session_id'] ??
+            _sessionId ??
+            result['id'] ??
+            '')
+        .toString();
     context.go('/processing', extra: id.isEmpty ? null : id);
   }
 

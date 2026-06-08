@@ -1,3 +1,5 @@
+import 'package:meetingbox_device_ui/config/platform_env.dart';
+
 /// Runtime configuration — mirrors `device-ui/src/config.py` env vars.
 class AppConfig {
   AppConfig({
@@ -24,8 +26,23 @@ class AppConfig {
 
   static const splashDuration = Duration(seconds: 2);
 
-  /// Load from `--dart-define` flags (set in systemd or launch script).
+  /// Load from process env (launcher/systemd) with `--dart-define` fallback.
   factory AppConfig.fromEnvironment() {
+    String env(String key, {required String defaultValue}) {
+      final runtime = readPlatformEnv(key)?.trim();
+      if (runtime != null && runtime.isNotEmpty) return runtime;
+      return String.fromEnvironment(key, defaultValue: defaultValue);
+    }
+
+    bool envBool(String key, {required String defaultValue}) {
+      return env(key, defaultValue: defaultValue) == '1';
+    }
+
+    int envInt(String key, {required String defaultValue}) {
+      return int.tryParse(env(key, defaultValue: defaultValue)) ??
+          int.parse(defaultValue);
+    }
+
     String stripApi(String url) {
       final u = url.trim().replaceAll(RegExp(r'/+$'), '');
       if (u.toLowerCase().endsWith('/api')) {
@@ -42,33 +59,21 @@ class AppConfig {
     }
 
     final backend = stripApi(
-      const String.fromEnvironment('BACKEND_URL', defaultValue: 'http://localhost:8000'),
+      env('BACKEND_URL', defaultValue: 'http://localhost:8000'),
     );
-    const wsEnv = String.fromEnvironment('BACKEND_WS_URL', defaultValue: '');
+    final wsEnv = env('BACKEND_WS_URL', defaultValue: '');
     final ws = wsEnv.isNotEmpty ? wsEnv : deriveWs(backend);
 
     return AppConfig(
       backendUrl: backend,
       backendWsUrl: ws,
-      deviceBridgeUrl: const String.fromEnvironment(
-        'DEVICE_BRIDGE_URL',
-        defaultValue: 'http://127.0.0.1:8765',
-      ),
-      displayWidth: int.tryParse(
-            const String.fromEnvironment('DISPLAY_WIDTH', defaultValue: '1260'),
-          ) ??
-          1260,
-      displayHeight: int.tryParse(
-            const String.fromEnvironment('DISPLAY_HEIGHT', defaultValue: '800'),
-          ) ??
-          800,
-      fullscreen: const String.fromEnvironment('FULLSCREEN', defaultValue: '0') == '1',
-      mockBackend: const String.fromEnvironment('MOCK_BACKEND', defaultValue: '0') == '1',
-      dashboardUrl: const String.fromEnvironment(
-        'DASHBOARD_PUBLIC_URL',
-        defaultValue: 'http://meetingbox.local',
-      ),
-      deviceAuthToken: const String.fromEnvironment('DEVICE_AUTH_TOKEN', defaultValue: ''),
+      deviceBridgeUrl: env('DEVICE_BRIDGE_URL', defaultValue: 'http://127.0.0.1:8765'),
+      displayWidth: envInt('DISPLAY_WIDTH', defaultValue: '1260'),
+      displayHeight: envInt('DISPLAY_HEIGHT', defaultValue: '800'),
+      fullscreen: envBool('FULLSCREEN', defaultValue: '0'),
+      mockBackend: envBool('MOCK_BACKEND', defaultValue: '0'),
+      dashboardUrl: env('DASHBOARD_PUBLIC_URL', defaultValue: 'http://meetingbox.local'),
+      deviceAuthToken: env('DEVICE_AUTH_TOKEN', defaultValue: ''),
     );
   }
 }
