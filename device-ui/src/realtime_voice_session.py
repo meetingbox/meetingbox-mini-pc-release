@@ -141,11 +141,12 @@ _INPUT_TRANSCRIPTION_PROMPT = "Conversational English."
 # replies sooner after the user stops talking (less dead air); lower =
 # waits longer to be sure the user is done. "low" was historically forced
 # because the device lacked acoustic echo cancellation and high eagerness
-# caught speaker echo as user speech. AEC (speex) is now enabled, so we
-# can run "medium" for a snappier turn-around. Override via
-# REALTIME_VAD_EAGERNESS (low|medium|high|auto).
+# caught speaker echo as user speech. AEC (speex) + an uplink mute window
+# during playback are now in place, so we run "high" for the snappiest
+# turn-around (model replies sooner after you stop; ~2s end-of-turn cap).
+# Override via REALTIME_VAD_EAGERNESS (low|medium|high|auto).
 _REALTIME_VAD_EAGERNESS = (
-    os.environ.get("REALTIME_VAD_EAGERNESS", "medium").strip().lower() or "medium"
+    os.environ.get("REALTIME_VAD_EAGERNESS", "high").strip().lower() or "high"
 )
 
 # Live on-screen captions WHILE the user speaks. OpenAI's input transcription
