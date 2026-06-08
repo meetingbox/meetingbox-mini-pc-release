@@ -1,0 +1,15 @@
+[Unit]
+Description=MeetingBox Flutter device UI (kiosk)
+After=graphical.target network.target meetingbox-device-bridge.service
+Wants=network.target meetingbox-device-bridge.service
+
+[Service]
+Type=simple
+EnvironmentFile=-/etc/meetingbox/device-ui-flutter.env
+Environment=DISPLAY=:0
+ExecStart=/usr/bin/meetingbox-flutter-ui
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=graphical.target

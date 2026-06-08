@@ -1,0 +1,21 @@
+# Flutter / Dart
+.dart_tool/
+.flutter-plugins
+.flutter-plugins-dependencies
+.packages
+build/
+*.iml
+.idea/
+.vscode/
+
+# Linux build output
+linux/flutter/ephemeral/
+
+# Env (device secrets)
+.env
+
+# Synced assets (copied from device-ui; run scripts/sync-assets.*)
+assets/welcome/*
+!assets/welcome/.gitkeep
+assets/home/figma/*
+!assets/home/figma/.gitkeep
