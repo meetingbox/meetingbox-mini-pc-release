@@ -21,10 +21,11 @@ on_summary_failed.
 from __future__ import annotations
 
 import logging
+import math
 from typing import Optional
 
 from kivy.clock import Clock
-from kivy.graphics import Color, Ellipse, Line
+from kivy.graphics import Color, Ellipse, Line, RoundedRectangle
 from kivy.uix.anchorlayout import AnchorLayout
 from kivy.uix.floatlayout import FloatLayout
 from kivy.uix.label import Label
@@ -45,7 +46,9 @@ from processing_layout import (
     META,
     META_FS_RATIO,
     ORB,
+    ORB_CONCENTRIC,
     ORB_FILL,
+    ORB_RING,
     RING_BOT,
     RING_TOP,
     STAGE,
@@ -60,6 +63,7 @@ from processing_layout import (
     scaled_canvas,
 )
 from screens.base_screen import BaseScreen
+from ui_bg import vertical_gradient_texture
 
 logger = logging.getLogger(__name__)
 
@@ -76,29 +80,39 @@ _DEFAULT_STAGES = (
 
 
 class _PulseOrb(Widget):
-    """Navy disc + a steady purple rim and three calm sonar rings.
-
-    The rings expand smoothly from the centre and fade out, phased a third of a
-    cycle apart, giving a gentle "thinking" pulse without any bitmap/GIF asset.
+    """Light glow disc with faint concentric rings, a soft purple rim and a
+    calm centre waveform — a code-drawn stand-in for the Figma "summarising"
+    orb (the design intends a supplied GIF here; this keeps it on-brand and
+    animated without a bitmap).
     """
 
+    _N_RINGS = 4
+    _N_BARS = 12
     _PERIOD_S = 2.6
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         self._phase = 0.0
         self._event = None
+        self._bar_phase = [i * 0.5 for i in range(self._N_BARS)]
+        self._tex = vertical_gradient_texture(RING_TOP, RING_BOT)
         with self.canvas:
             Color(*ORB_FILL)
             self._disc = Ellipse(pos=self.pos, size=self.size)
-            self._rim_color = Color(RING_BOT[0], RING_BOT[1], RING_BOT[2], 0.9)
+            # Faint static concentric rings (nested circles in the design).
+            self._concentric = []
+            for _ in range(self._N_RINGS):
+                Color(*ORB_CONCENTRIC)
+                self._concentric.append(Line(circle=(0, 0, 0), width=1.4))
+            # Soft outer purple rim.
+            self._rim_color = Color(*ORB_RING)
             self._rim = Line(circle=(0, 0, 0), width=2.0)
-            self._ring_colors = []
-            self._rings = []
-            for _ in range(3):
-                c = Color(RING_TOP[0], RING_TOP[1], RING_TOP[2], 0.0)
-                self._ring_colors.append(c)
-                self._rings.append(Line(circle=(0, 0, 0), width=2.0))
+            # Centre waveform bars (purple gradient, rounded).
+            self._bar_color = Color(1, 1, 1, 1)
+            self._bars = [
+                RoundedRectangle(pos=(0, 0), size=(1, 1), radius=[5], texture=self._tex)
+                for _ in range(self._N_BARS)
+            ]
         self.bind(pos=self._redraw, size=self._redraw)
 
     def start(self) -> None:
@@ -111,7 +125,7 @@ class _PulseOrb(Widget):
             self._event = None
 
     def _tick(self, dt: float) -> None:
-        self._phase = (self._phase + dt / self._PERIOD_S) % 1.0
+        self._phase = (self._phase + dt * 2.4) % math.tau
         self._redraw()
 
     def _redraw(self, *_):
@@ -122,15 +136,29 @@ class _PulseOrb(Widget):
         R = min(w, h) / 2.0
         self._disc.pos = self.pos
         self._disc.size = self.size
-        rim_w = max(1.5, w * 0.012)
+        for i, ring in enumerate(self._concentric):
+            ring.width = max(1.0, w * 0.006)
+            ring.circle = (cx, cy, R * (0.40 + 0.18 * i))
+        rim_w = max(1.5, w * 0.014)
         self._rim.width = rim_w
         self._rim.circle = (cx, cy, R - rim_w / 2.0)
-        for i, (col, ring) in enumerate(zip(self._ring_colors, self._rings)):
-            p = (self._phase + i / 3.0) % 1.0
-            r = (0.12 + 0.84 * p) * R
-            col.a = max(0.0, (1.0 - p) * 0.55)
-            ring.width = max(1.2, w * 0.01)
-            ring.circle = (cx, cy, r)
+
+        # Centre waveform: a calm sine-driven set of bars within the orb.
+        n = self._N_BARS
+        span = R * 1.05
+        bar_w = max(2.0, span / (n * 1.7))
+        gap = (span - bar_w * n) / max(1, n - 1)
+        centre = (n - 1) / 2.0
+        max_h = R * 0.95
+        start_x = cx - span / 2.0
+        for i, rect in enumerate(self._bars):
+            bell = max(0.18, math.cos(((i - centre) / centre) * math.pi / 2.0))
+            wob = 0.5 + 0.5 * math.sin(self._phase + self._bar_phase[i])
+            bar_h = max(bar_w, max_h * bell * (0.45 + 0.55 * wob))
+            bx = start_x + i * (bar_w + gap)
+            rect.pos = (bx, cy - bar_h / 2.0)
+            rect.size = (bar_w, bar_h)
+            rect.radius = [bar_w / 2.0]
 
 
 class ProcessingScreen(BaseScreen):
@@ -148,9 +176,9 @@ class ProcessingScreen(BaseScreen):
     # ------------------------------------------------------------------ UI
     def _build_ui(self):
         self._root = FloatLayout(size_hint=(1, 1))
-        from ui_bg import attach_gradient_bg
+        from ui_bg import attach_swirl_bg
 
-        attach_gradient_bg(self._root, BG_TOP, BG_BOT)
+        attach_swirl_bg(self._root, BG_TOP, BG_BOT)
         self._root.bind(size=self._on_root_resize)
 
         anchor = AnchorLayout(anchor_x="center", anchor_y="center", size_hint=(1, 1))
@@ -162,27 +190,27 @@ class ProcessingScreen(BaseScreen):
         self._canvas.add_widget(self.orb)
 
         self.headline_status = self._add_label(
-            "Recording Complete", HEADLINE, HEADLINE_FS_RATIO, COL_HEADLINE, bold=True,
+            "Recording Complete", HEADLINE, HEADLINE_FS_RATIO, COL_HEADLINE, bold=True, shorten=False,
         )
         self.meta_label = self._add_label("Meeting", META, META_FS_RATIO, COL_TEXT)
         self.summarizing_label = self._add_label(
-            "Summarizing your meeting...", SUMMARIZING, SUMMARIZING_FS_RATIO, COL_HEADLINE, bold=True,
+            "Summarizing your meeting...", SUMMARIZING, SUMMARIZING_FS_RATIO, COL_HEADLINE, bold=True, shorten=False,
         )
         self.subtitle_label = self._add_label(
-            "This may take a few seconds", SUBTITLE, SUBTITLE_FS_RATIO, COL_MUTED,
+            "This may take a few seconds", SUBTITLE, SUBTITLE_FS_RATIO, COL_MUTED, shorten=False,
         )
         self.stage_label = self._add_label(
-            _DEFAULT_STAGES[0], STAGE, STAGE_FS_RATIO, COL_PURPLE,
+            _DEFAULT_STAGES[0], STAGE, STAGE_FS_RATIO, COL_PURPLE, shorten=False,
         )
         self.countdown_label = self._add_label(
-            "Back to home screen in 3 seconds", COUNTDOWN, COUNTDOWN_FS_RATIO, COL_COUNTDOWN,
+            "Back to home screen in 3 seconds", COUNTDOWN, COUNTDOWN_FS_RATIO, COL_COUNTDOWN, shorten=False,
         )
 
         self.add_widget(self._root)
         Clock.schedule_once(lambda _dt: self._on_root_resize(self._root, self._root.size), 0)
 
     # --------------------------------------------------------------- helpers
-    def _add_label(self, text, box, fs_ratio, color, *, bold=False):
+    def _add_label(self, text, box, fs_ratio, color, *, bold=False, shorten=True):
         lbl = Label(
             text=text,
             font_name=_FONT,
@@ -190,7 +218,7 @@ class ProcessingScreen(BaseScreen):
             color=color,
             halign="center",
             valign="middle",
-            shorten=True,
+            shorten=shorten,
             shorten_from="right",
             max_lines=1,
             **kivy_hints(box),

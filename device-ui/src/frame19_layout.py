@@ -82,9 +82,10 @@ TIMER_FS_RATIO = 55.0 / CANVAS_H
 STOP_FS_RATIO = 40.0 / CANVAS_H
 
 # ── Colours (sampled from Figma design context) ───────────────────────────
-# Background: #010C25 swirl + rgba(255,255,255,0.45) wash ≈ #7C8499.
-BG_TOP = (0.52, 0.55, 0.63, 1.0)
-BG_BOT = (0.45, 0.48, 0.56, 1.0)
+# Background: light paper-swirl bitmap + rgba(255,255,255,0.40) wash. The
+# gradient values below are only the fallback when the bitmap is missing.
+BG_TOP = (0.965, 0.965, 0.972, 1.0)
+BG_BOT = (0.902, 0.910, 0.925, 1.0)
 
 COL_TEXT = (53 / 255, 57 / 255, 59 / 255, 1.0)          # #35393B
 COL_PURPLE = (109 / 255, 72 / 255, 204 / 255, 1.0)      # #6D48CC
@@ -95,9 +96,10 @@ COL_REC_GREY = (130 / 255, 134 / 255, 150 / 255, 1.0)   # paused dot
 WAVE_TOP = (164 / 255, 143 / 255, 210 / 255, 1.0)       # #A48FD2
 WAVE_BOT = (109 / 255, 73 / 255, 195 / 255, 1.0)        # #6D49C3
 
-# Orb.
-ORB_FILL = (1 / 255, 12 / 255, 37 / 255, 1.0)           # #010C25
-ORB_RING = (109 / 255, 72 / 255, 204 / 255, 0.92)       # #6D48CC @ 92 %
+# Orb — light translucent glow disc with a soft purple ring (matches Figma,
+# where the orb interior is near-transparent over the light background).
+ORB_FILL = (1.0, 1.0, 1.0, 0.22)
+ORB_RING = (138 / 255, 110 / 255, 205 / 255, 0.85)      # #8A6ECD
 
 # Capsule buttons (pause / play / stop).
 PILL_FILL = (244 / 255, 245 / 255, 247 / 255, 1.0)      # #F4F5F7

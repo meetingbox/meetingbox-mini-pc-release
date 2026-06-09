@@ -73,7 +73,7 @@ from frame19_layout import (
     scaled_canvas,
 )
 from screens.base_screen import BaseScreen
-from ui_bg import attach_gradient_bg, vertical_gradient_texture
+from ui_bg import attach_swirl_bg, vertical_gradient_texture
 
 logger = logging.getLogger(__name__)
 
@@ -111,12 +111,19 @@ class _Wavebar(Widget):
     """
 
     _SILENCE_THRESHOLD = 0.04
-    _FLAT_RATIO = 0.06
+    _FLAT_RATIO = 0.10
 
-    def __init__(self, *, n_bars: int = 7, **kwargs):
+    def __init__(self, *, n_bars: int = 11, **kwargs):
         super().__init__(**kwargs)
         self.n_bars = n_bars
-        self._bar_max_ratio = 0.98
+        self._bar_max_ratio = 1.0
+        # A fixed bell-ish envelope so the row reads as a calm voice waveform
+        # even at rest (matches the Figma static), amplified by live audio.
+        centre = (n_bars - 1) / 2.0
+        self._envelope = [
+            0.30 + 0.62 * max(0.0, math.cos(((i - centre) / centre) * math.pi / 2.0))
+            for i in range(n_bars)
+        ]
         self._levels = [self._FLAT_RATIO] * n_bars
         self._latest_audio = 0.0
         self._anim_event = None
@@ -168,14 +175,18 @@ class _Wavebar(Widget):
         centre = (n - 1) / 2.0
         voice = self._is_active and self._latest_audio > self._SILENCE_THRESHOLD
         for i in range(n):
+            env = self._envelope[i]
+            self._idle_phase[i] = (self._idle_phase[i] + dt * 1.8) % math.tau
+            breathe = 0.5 + 0.5 * math.sin(self._idle_phase[i])
             if voice:
-                d = (i - centre) / centre
-                bell = max(0.0, math.cos(d * math.pi / 2.0))
-                target = max(self._FLAT_RATIO, self._latest_audio * (0.35 + 0.65 * bell) * self._jitter[i])
+                target = max(
+                    self._FLAT_RATIO,
+                    env * (0.45 + 0.55 * self._latest_audio) * self._jitter[i],
+                )
             else:
-                # Gentle breathing so the row never looks frozen.
-                self._idle_phase[i] = (self._idle_phase[i] + dt * 1.6) % math.tau
-                target = self._FLAT_RATIO + 0.03 * (0.5 + 0.5 * math.sin(self._idle_phase[i]))
+                # Calm idle: keep the bell shape, breathing softly so it reads
+                # as a live waveform without any audio.
+                target = env * (0.30 + 0.16 * breathe)
             self._levels[i] += (target - self._levels[i]) * 0.35
         self._latest_audio *= 0.93
         if voice and random.random() < 0.18:
@@ -187,7 +198,7 @@ class _Wavebar(Widget):
         if w <= 0 or h <= 0:
             return
         n = self.n_bars
-        bar_w = max(1.0, (w * 0.42) / n)
+        bar_w = max(1.0, (w * 0.52) / n)
         gap = (w - bar_w * n) / max(1, n - 1)
         max_h = h * self._bar_max_ratio
         cy = self.y + h / 2.0
@@ -463,7 +474,8 @@ class _StatusBar(Widget):
         super().__init__(**kwargs)
         with self.canvas:
             Color(*COL_TEXT)
-            self._wifi = [Line(points=[], width=1.6, cap="round") for _ in range(3)]
+            self._wifi = [Line(circle=(0, 0, 0), width=1.6, cap="round") for _ in range(2)]
+            self._wifi_dot = RoundedRectangle(pos=(0, 0), size=(0, 0), radius=[2])
             self._batt = Line(rounded_rectangle=(0, 0, 0, 0, 2), width=1.6)
             self._batt_tip = Line(points=[], width=1.6, cap="round")
             self._batt_fill = RoundedRectangle(pos=(0, 0), size=(0, 0), radius=[1])
@@ -473,17 +485,18 @@ class _StatusBar(Widget):
         x, y, w, h = self.x, self.y, self.width, self.height
         if w <= 0 or h <= 0:
             return
-        # Wifi arcs (approx with chev-like polylines) on the left third.
-        cx = x + w * 0.16
-        base = y + h * 0.25
-        for i, ln in enumerate(self._wifi):
-            spread = (i + 1) * w * 0.05
-            top = base + (i + 1) * h * 0.18
-            ln.points = [cx - spread, base, cx, top, cx + spread, base]
+        # Upward-opening wifi arcs (0° = top, clockwise) + base dot.
+        cx = x + w * 0.18
+        base = y + h * 0.32
+        self._wifi[0].circle = (cx, base, h * 0.42, 305, 415)
+        self._wifi[1].circle = (cx, base, h * 0.24, 305, 415)
+        d = h * 0.12
+        self._wifi_dot.pos = (cx - d / 2, base - d / 2)
+        self._wifi_dot.size = (d, d)
         # Battery on the right.
         bw = w * 0.42
         bh = h * 0.5
-        bx = x + w - bw - w * 0.04
+        bx = x + w - bw - w * 0.08
         by = y + (h - bh) / 2.0
         self._batt.rounded_rectangle = (bx, by, bw, bh, 2)
         self._batt_tip.points = [bx + bw + 2, by + bh * 0.3, bx + bw + 2, by + bh * 0.7]
@@ -504,7 +517,7 @@ class RecordingScreen(BaseScreen):
     # ------------------------------------------------------------------ UI
     def _build_ui(self):
         self._root = FloatLayout(size_hint=(1, 1))
-        attach_gradient_bg(self._root, BG_TOP, BG_BOT)
+        attach_swirl_bg(self._root, BG_TOP, BG_BOT)
         self._root.bind(size=self._on_root_resize)
 
         anchor = AnchorLayout(anchor_x="center", anchor_y="center", size_hint=(1, 1))

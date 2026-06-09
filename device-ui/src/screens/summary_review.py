@@ -64,7 +64,7 @@ from summary_layout import (
     kivy_hints,
     scaled_canvas,
 )
-from ui_bg import attach_gradient_bg
+from ui_bg import attach_swirl_bg
 
 logger = logging.getLogger(__name__)
 
@@ -218,16 +218,18 @@ class _MiniStatus(Widget):
     def _sync(self, *_):
         h = self.height
         wifi_cx = self.x + h * 0.55
-        base_y = self.y + h * 0.34
-        self._w1.circle = (wifi_cx, base_y, h * 0.34, 220, 320)
-        self._w2.circle = (wifi_cx, base_y, h * 0.18, 220, 320)
-        d = h * 0.10
+        base_y = self.y + h * 0.30
+        # Upward-opening wifi arcs (0° = top, clockwise) + base dot.
+        self._w1.circle = (wifi_cx, base_y, h * 0.40, 305, 415)
+        self._w2.circle = (wifi_cx, base_y, h * 0.24, 305, 415)
+        d = h * 0.12
         self._dot.pos = (wifi_cx - d / 2, base_y - d / 2)
         self._dot.size = (d, d)
-        bx = self.x + self.width - h * 1.5
-        by = self.y + h * 0.30
+        # Battery on the right.
         bw = h * 1.2
-        bh = h * 0.46
+        bh = h * 0.48
+        bx = self.x + self.width - bw - h * 0.2
+        by = self.y + (h - bh) / 2.0
         self._batt.rounded_rectangle = (bx, by, bw, bh, 3)
         self._batt_fill.pos = (bx + 2, by + 2)
         self._batt_fill.size = (max(0, bw * 0.7 - 2), bh - 4)
@@ -303,7 +305,7 @@ class SummaryReviewScreen(BaseScreen):
     # ------------------------------------------------------------------ UI
     def _build_ui(self):
         self._root = FloatLayout(size_hint=(1, 1))
-        attach_gradient_bg(self._root, BG_TOP, BG_BOT)
+        attach_swirl_bg(self._root, BG_TOP, BG_BOT)
         self._root.bind(size=self._on_root_resize)
 
         anchor = AnchorLayout(anchor_x="center", anchor_y="center", size_hint=(1, 1))

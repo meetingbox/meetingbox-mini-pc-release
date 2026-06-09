@@ -48,16 +48,17 @@ def canvas_box(lx: float, ly: float, lw: float, lh: float) -> Box:
 
 
 # ── Boxes ─────────────────────────────────────────────────────────────────
-STATUS_BAR = canvas_box(1129.0, 28.0, 91.13, 21.0)
-ORB = canvas_box(493.0, 226.0, 258.0, 258.0)
+# Centred labels span a wide box so longer copy never ellipsises.
+STATUS_BAR = canvas_box(1120.0, 24.0, 116.0, 30.0)
+ORB = canvas_box(502.0, 226.0, 258.0, 258.0)
 
-HEADLINE = canvas_box(418.0, 92.0, 424.0, 55.0)          # "Recording Complete"
-META = canvas_box(330.0, 171.0, 600.0, 36.0)             # "Meeting Name · 32 min"
+HEADLINE = canvas_box(130.0, 90.0, 1000.0, 58.0)         # "Recording Complete"
+META = canvas_box(180.0, 168.0, 900.0, 40.0)             # "Meeting Name · 32 min"
 
-SUMMARIZING = canvas_box(366.0, 504.0, 528.0, 48.0)      # centred
-SUBTITLE = canvas_box(330.0, 572.0, 600.0, 30.0)         # centred
-STAGE = canvas_box(330.0, 646.0, 600.0, 36.0)            # rotating, centred
-COUNTDOWN = canvas_box(330.0, 712.0, 600.0, 30.0)        # centred
+SUMMARIZING = canvas_box(130.0, 504.0, 1000.0, 54.0)     # centred
+SUBTITLE = canvas_box(180.0, 572.0, 900.0, 32.0)         # centred
+STAGE = canvas_box(180.0, 642.0, 900.0, 40.0)            # rotating, centred
+COUNTDOWN = canvas_box(180.0, 712.0, 900.0, 32.0)        # centred
 
 # ── Typography (Figma px on the 800-tall canvas) ──────────────────────────
 HEADLINE_FS_RATIO = 45.0 / CANVAS_H
@@ -68,18 +69,24 @@ STAGE_FS_RATIO = 28.0 / CANVAS_H
 COUNTDOWN_FS_RATIO = 24.0 / CANVAS_H
 
 # ── Colours ───────────────────────────────────────────────────────────────
-BG_TOP = (0.52, 0.55, 0.63, 1.0)
-BG_BOT = (0.45, 0.48, 0.56, 1.0)
+# Light paper-swirl bitmap background; gradient below is only the fallback.
+BG_TOP = (0.965, 0.965, 0.972, 1.0)
+BG_BOT = (0.902, 0.910, 0.925, 1.0)
 
 COL_HEADLINE = (47 / 255, 47 / 255, 47 / 255, 1.0)       # #2F2F2F
 COL_TEXT = (53 / 255, 57 / 255, 59 / 255, 1.0)           # #35393B
 COL_MUTED = (53 / 255, 57 / 255, 59 / 255, 0.78)
 COL_COUNTDOWN = (53 / 255, 57 / 255, 59 / 255, 0.70)
-COL_PURPLE = (109 / 255, 72 / 255, 204 / 255, 1.0)       # #6D48CC
+COL_PURPLE = (109 / 255, 73 / 255, 204 / 255, 1.0)       # #6D49CC
 
+# Waveform / ring purple gradient (top → bottom), matching Figma.
 RING_TOP = (164 / 255, 143 / 255, 210 / 255, 1.0)        # #A48FD2
 RING_BOT = (109 / 255, 73 / 255, 195 / 255, 1.0)         # #6D49C3
-ORB_FILL = (1 / 255, 12 / 255, 37 / 255, 1.0)            # #010C25
+# Orb interior is a soft light glow over the background (not a dark disc),
+# with faint concentric rings and a soft outer purple ring.
+ORB_FILL = (1.0, 1.0, 1.0, 0.22)
+ORB_CONCENTRIC = (138 / 255, 110 / 255, 205 / 255, 0.22)
+ORB_RING = (138 / 255, 110 / 255, 205 / 255, 0.80)       # #8A6ECD
 
 
 def scaled_canvas(screen_w: float, screen_h: float) -> tuple[float, float]:
