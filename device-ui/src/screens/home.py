@@ -561,6 +561,11 @@ class HomeScreen(BaseScreen):
         self._summary_poll_event: object | None = None
         self._home_cache_subscribed: bool = False
 
+        # "Meeting summary is ready" notification (polls the app-level
+        # processing-summary cache populated after a recording is summarised).
+        self._summary_ready_popup: FloatLayout | None = None
+        self._shown_summary_ids: set[str] = set()
+
         # Status strip widget refs (Icon instances from components/icons.py)
         self._sts_battery: object | None = None   # battery Icon
         self._sts_bat_lbl: Label | None  = None   # "87%" label next to battery icon
@@ -594,6 +599,7 @@ class HomeScreen(BaseScreen):
 
     def _build_ui(self) -> None:
         root = FloatLayout(size_hint=(1, 1))
+        self._root = root
 
         # Solid background #01081A
         with root.canvas.before:
@@ -1835,9 +1841,15 @@ class HomeScreen(BaseScreen):
         self._voice_state_event = Clock.schedule_interval(
             lambda _dt: self._refresh_voice_pill(), 2.0
         )
+        # Watch the app-level processing-summary cache so a "summary ready"
+        # notification can pop up while the user is back on the home screen.
         if self._summary_poll_event:
             self._summary_poll_event.cancel()
             self._summary_poll_event = None
+        Clock.schedule_once(lambda _dt: self._check_summary_ready(), 0.5)
+        self._summary_poll_event = Clock.schedule_interval(
+            lambda _dt: self._check_summary_ready(), 1.5
+        )
 
         # Status strip — initial load + 30-second refresh
         if getattr(self, "_status_strip_event", None):
@@ -1885,6 +1897,7 @@ class HomeScreen(BaseScreen):
         if self._summary_poll_event:
             self._summary_poll_event.cancel()
             self._summary_poll_event = None
+        self._dismiss_summary_popup()
         if getattr(self, "_status_strip_event", None):
             self._status_strip_event.cancel()
             self._status_strip_event = None
@@ -1896,6 +1909,127 @@ class HomeScreen(BaseScreen):
             self._home_cache_subscribed = False
         try:
             get_weather_client().unsubscribe(self._on_weather_snapshot)
+        except Exception:
+            pass
+
+    # -----------------------------------------------------------------------
+    # "Meeting summary is ready" notification
+    # -----------------------------------------------------------------------
+
+    def _check_summary_ready(self, *_):
+        """Show the summary-ready pill when the app cache has a fresh summary."""
+        if self._summary_ready_popup is not None:
+            return
+        cache = getattr(self.app, "_processing_summary_cache", None)
+        if not isinstance(cache, dict) or not cache:
+            return
+        for meeting_id, entry in list(cache.items()):
+            if not isinstance(entry, dict) or not entry.get("ok"):
+                continue
+            if meeting_id in self._shown_summary_ids:
+                continue
+            self._show_summary_ready_popup(meeting_id, entry.get("summary") or {})
+            break
+
+    def _show_summary_ready_popup(self, meeting_id: str, summary: dict) -> None:
+        self._dismiss_summary_popup()
+
+        title = ""
+        if isinstance(summary, dict):
+            for key in ("title", "meeting_title", "name"):
+                val = (summary.get(key) or "").strip()
+                if val:
+                    title = val
+                    break
+        title = title or "Your meeting"
+
+        # Long white pill with fully-rounded edges, centred near the top.
+        PW, PH, PT = 760.0, 88.0, 120.0
+        PX = (_FW - PW) / 2.0
+        popup = FloatLayout(
+            size_hint=(_sw(PW), _sh(PH)),
+            pos_hint={"x": _x(PX), "y": _y(PT, PH)},
+        )
+        bg = _Card(
+            top=_WHITE,
+            bot=_WHITE,
+            border=(0.88, 0.88, 0.91, 1.0),
+            radius=_ff(PH / 2.0),
+            size_hint=(1, 1),
+            pos_hint={"x": 0, "y": 0},
+        )
+        popup.add_widget(bg)
+
+        popup.add_widget(_lbl(
+            "Meeting summary is ready", _FONT_SB, _ff(22), (0.11, 0.11, 0.12, 1.0),
+            bold=True, halign="left", valign="middle",
+            size_hint=(0.56, 0.34),
+            pos_hint={"x": 0.045, "center_y": 0.63},
+        ))
+        popup.add_widget(_lbl(
+            title, _FONT_MD, _ff(17), (0.45, 0.45, 0.50, 1.0),
+            halign="left", valign="middle",
+            shorten=True, shorten_from="right", max_lines=1,
+            size_hint=(0.56, 0.30),
+            pos_hint={"x": 0.045, "center_y": 0.34},
+        ))
+
+        view_btn = _TappableCard(
+            top=_BLUE, bot=_BLUE, border=_BLUE, radius=_ff(26),
+            size_hint=(0.1447, 0.59),
+            pos_hint={"x": 0.687, "center_y": 0.5},
+        )
+        view_btn.add_widget(_lbl(
+            "View", _FONT_SB, _ff(20), _WHITE, bold=True,
+            halign="center", valign="middle",
+            size_hint=(1, 1), pos_hint={"x": 0, "y": 0},
+        ))
+        view_btn.bind(
+            on_release=lambda *_a, mid=meeting_id, sm=summary: self._on_view_summary(mid, sm)
+        )
+        popup.add_widget(view_btn)
+
+        close_btn = _TappableCard(
+            top=(0.93, 0.93, 0.95, 1.0), bot=(0.93, 0.93, 0.95, 1.0),
+            border=(0.86, 0.86, 0.89, 1.0), radius=_ff(26),
+            size_hint=(0.126, 0.59),
+            pos_hint={"x": 0.847, "center_y": 0.5},
+        )
+        close_btn.add_widget(_lbl(
+            "Close", _FONT_MD, _ff(18), (0.30, 0.30, 0.34, 1.0),
+            halign="center", valign="middle",
+            size_hint=(1, 1), pos_hint={"x": 0, "y": 0},
+        ))
+        close_btn.bind(
+            on_release=lambda *_a, mid=meeting_id: self._dismiss_summary_popup(mark=mid)
+        )
+        popup.add_widget(close_btn)
+
+        self._summary_ready_popup = popup
+        if getattr(self, "_root", None) is not None:
+            self._root.add_widget(popup)
+
+    def _on_view_summary(self, meeting_id: str, summary: dict) -> None:
+        self._shown_summary_ids.add(meeting_id)
+        self._dismiss_summary_popup()
+        try:
+            screen = self.app.screen_manager.get_screen("summary_review")
+            if hasattr(screen, "set_meeting_data"):
+                screen.set_meeting_data(meeting_id, summary or {})
+        except Exception:
+            logger.exception("Failed to open summary_review from home popup")
+        self.app.goto_screen("summary_review", "fade")
+
+    def _dismiss_summary_popup(self, mark: str | None = None) -> None:
+        if mark:
+            self._shown_summary_ids.add(mark)
+        popup = self._summary_ready_popup
+        self._summary_ready_popup = None
+        if popup is None:
+            return
+        try:
+            if popup.parent is not None:
+                popup.parent.remove_widget(popup)
         except Exception:
             pass
 
