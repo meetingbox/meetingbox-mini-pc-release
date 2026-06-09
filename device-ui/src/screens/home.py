@@ -1897,7 +1897,12 @@ class HomeScreen(BaseScreen):
         if self._summary_poll_event:
             self._summary_poll_event.cancel()
             self._summary_poll_event = None
-        self._dismiss_summary_popup()
+        # NOTE: deliberately do NOT dismiss the "summary ready" popup here.
+        # goto_screen() fires on_leave()+on_enter() even for redundant same-screen
+        # navigation (e.g. spurious "Nav → home" from voice events), which would
+        # otherwise remove+recreate the popup every cycle and make it blink /
+        # unclickable. The popup is parented to the home root (only visible on
+        # home) and is dismissed explicitly by its "View"/"Close" buttons.
         if getattr(self, "_status_strip_event", None):
             self._status_strip_event.cancel()
             self._status_strip_event = None
