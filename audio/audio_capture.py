@@ -42,6 +42,45 @@ PAIRING_STATUS_URL = os.getenv(
 # dispatcher; everything else is treated as regular log output.
 EVT_PREFIX = "MEETINGBOX_EVT|"
 
+# Local device bridge. The Flutter device UI subscribes to the bridge event
+# WebSocket (``/v1/events``); audio capture mirrors live mic levels and
+# recording state to it (best-effort) so the recording screen's waveform
+# reacts to the user's voice. Overridable so the daemon and bridge can run
+# on different hosts.
+DEVICE_BRIDGE_URL = os.getenv("DEVICE_BRIDGE_URL", "http://127.0.0.1:8765").rstrip("/")
+BRIDGE_PUBLISH_PATH = "/v1/events/publish"
+# Lifecycle event types -> the ``recording_state`` the UI understands.
+_BRIDGE_LIFECYCLE_STATE = {
+    "recording_started": "recording",
+    "recording_resumed": "recording",
+    "recording_paused": "paused",
+    "recording_stopped": "stopped",
+}
+
+
+def _publish_to_bridge(payload: dict) -> None:
+  """Best-effort POST of a UI event to the local device bridge.
+
+  Runs on a daemon thread so audio capture never blocks on the UI bridge
+  being slow or unavailable. Any failure is swallowed.
+  """
+  url = f"{DEVICE_BRIDGE_URL}{BRIDGE_PUBLISH_PATH}"
+  data = json.dumps(payload).encode("utf-8")
+
+  def _do() -> None:
+    try:
+      req = urlrequest.Request(
+        url,
+        data=data,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+      )
+      urlrequest.urlopen(req, timeout=1.5).close()
+    except Exception:  # noqa: BLE001 - UI events are best-effort
+      pass
+
+  threading.Thread(target=_do, daemon=True).start()
+
 
 class ARecordInputStream:
   """Small stream wrapper around arecord for USB mic hot-plug recovery."""
@@ -1270,6 +1309,18 @@ class AudioCaptureService:
       sys.stdout.flush()
     except (OSError, ValueError):
       logger.debug("emit_event failed", exc_info=True)
+
+    # Mirror UI-relevant events to the local device bridge so the Flutter
+    # recording screen (which subscribes to the bridge WebSocket) receives
+    # live mic levels and recording state. Best-effort; never blocks capture.
+    try:
+      etype = payload.get("type") if isinstance(payload, dict) else None
+      if etype == "audio_level":
+        _publish_to_bridge({"type": "audio_level", "level": payload.get("level", 0.0)})
+      elif etype in _BRIDGE_LIFECYCLE_STATE:
+        _publish_to_bridge({"type": "recording_state", "state": _BRIDGE_LIFECYCLE_STATE[etype]})
+    except Exception:  # noqa: BLE001 - forwarding is best-effort
+      logger.debug("bridge forward failed", exc_info=True)
 
   def _resolve_device_id_via_api(self) -> str | None:
     """One-shot lookup of this mini-PC's device id via the backend.
