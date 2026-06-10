@@ -177,12 +177,21 @@ def _register_asta_fonts() -> None:
     from config import ASSETS_DIR as _AD
 
     fd = _AD / "fonts"
+    # Prefer the genuine 42dot Sans TTFs (the Figma design font); fall back to
+    # AstaSans (the previous stand-in) when they are missing.
     files = {
-        "regular":   fd / "AstaSans-Regular.ttf",
-        "bold":      fd / "AstaSans-Bold.ttf",
-        "semibold":  fd / "AstaSans-SemiBold.ttf",
-        "medium":    fd / "AstaSans-Medium.ttf",
+        "regular":   fd / "42dotSans-Regular.ttf",
+        "bold":      fd / "42dotSans-Bold.ttf",
+        "semibold":  fd / "42dotSans-SemiBold.ttf",
+        "medium":    fd / "42dotSans-Medium.ttf",
     }
+    if not all(p.is_file() for p in files.values()):
+        files = {
+            "regular":   fd / "AstaSans-Regular.ttf",
+            "bold":      fd / "AstaSans-Bold.ttf",
+            "semibold":  fd / "AstaSans-SemiBold.ttf",
+            "medium":    fd / "AstaSans-Medium.ttf",
+        }
     if not all(p.is_file() for p in files.values()):
         return
     try:

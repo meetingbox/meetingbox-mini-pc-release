@@ -244,6 +244,14 @@ class ProcessingScreen(BaseScreen):
 
     # ------------------------------------------------------------- lifecycle
     def on_enter(self):
+        # NOTE: on_enter can fire twice per navigation — once manually from
+        # main.goto_screen() and once auto-dispatched by Kivy's ScreenManager.
+        # Cancel any timers from a prior call before re-scheduling so we never
+        # leak an orphaned countdown Clock event. A leaked countdown keeps
+        # ticking past zero and calls goto("home") every second forever, which
+        # yanks the user off whatever screen they open next (the "blank" bug).
+        self._cancel_timers()
+
         self._meeting_id = getattr(self.app, "current_session_id", None)
         self.headline_status.text = "Recording Complete"
         self.summarizing_label.text = "Summarizing your meeting..."
@@ -261,6 +269,9 @@ class ProcessingScreen(BaseScreen):
 
     def on_leave(self):
         self.orb.stop()
+        self._cancel_timers()
+
+    def _cancel_timers(self) -> None:
         for ev_name in ("_countdown_event", "_stage_event"):
             ev = getattr(self, ev_name, None)
             if ev is not None:

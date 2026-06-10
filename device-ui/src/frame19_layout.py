@@ -91,6 +91,7 @@ COL_TEXT = (53 / 255, 57 / 255, 59 / 255, 1.0)          # #35393B
 COL_PURPLE = (109 / 255, 72 / 255, 204 / 255, 1.0)      # #6D48CC
 COL_REC_RED = (254 / 255, 36 / 255, 0 / 255, 1.0)       # #FE2400
 COL_REC_GREY = (130 / 255, 134 / 255, 150 / 255, 1.0)   # paused dot
+COL_BATT_GREEN = (52 / 255, 199 / 255, 89 / 255, 1.0)   # battery fill (Group 203)
 
 # Waveform vertical gradient (top → bottom).
 WAVE_TOP = (164 / 255, 143 / 255, 210 / 255, 1.0)       # #A48FD2

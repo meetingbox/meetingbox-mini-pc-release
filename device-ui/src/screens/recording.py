@@ -45,6 +45,7 @@ from frame19_layout import (
     BG_BOT,
     BG_TOP,
     BTN_PAUSE,
+    COL_BATT_GREEN,
     COL_PURPLE,
     COL_REC_GREY,
     COL_REC_RED,
@@ -78,6 +79,7 @@ from ui_bg import attach_swirl_bg, vertical_gradient_texture
 logger = logging.getLogger(__name__)
 
 _FONT = "42dot-Sans"
+_FONT_SB = "42dot-SB"
 
 
 class _Orb(Widget):
@@ -113,15 +115,16 @@ class _Wavebar(Widget):
     _SILENCE_THRESHOLD = 0.04
     _FLAT_RATIO = 0.10
 
-    def __init__(self, *, n_bars: int = 11, **kwargs):
+    def __init__(self, *, n_bars: int = 7, **kwargs):
         super().__init__(**kwargs)
         self.n_bars = n_bars
         self._bar_max_ratio = 1.0
         # A fixed bell-ish envelope so the row reads as a calm voice waveform
-        # even at rest (matches the Figma static), amplified by live audio.
+        # even at rest (matches the Figma static — 7 bars, tall centre,
+        # short edges), amplified by live audio.
         centre = (n_bars - 1) / 2.0
         self._envelope = [
-            0.30 + 0.62 * max(0.0, math.cos(((i - centre) / centre) * math.pi / 2.0))
+            0.24 + 0.76 * max(0.0, math.cos(((i - centre) / centre) * math.pi / 2.0))
             for i in range(n_bars)
         ]
         self._levels = [self._FLAT_RATIO] * n_bars
@@ -181,12 +184,14 @@ class _Wavebar(Widget):
             if voice:
                 target = max(
                     self._FLAT_RATIO,
-                    env * (0.45 + 0.55 * self._latest_audio) * self._jitter[i],
+                    env * (0.50 + 0.50 * self._latest_audio) * self._jitter[i],
                 )
             else:
                 # Calm idle: keep the bell shape, breathing softly so it reads
-                # as a live waveform without any audio.
-                target = env * (0.30 + 0.16 * breathe)
+                # as a live waveform without any audio. Amplitudes sized so the
+                # idle state matches the Figma static (centre bar near the top
+                # of the wave box).
+                target = env * (0.68 + 0.14 * breathe)
             self._levels[i] += (target - self._levels[i]) * 0.35
         self._latest_audio *= 0.93
         if voice and random.random() < 0.18:
@@ -198,7 +203,8 @@ class _Wavebar(Widget):
         if w <= 0 or h <= 0:
             return
         n = self.n_bars
-        bar_w = max(1.0, (w * 0.52) / n)
+        # Figma: bars are slightly wider than the gaps between them.
+        bar_w = max(1.0, (w * 0.58) / n)
         gap = (w - bar_w * n) / max(1, n - 1)
         max_h = h * self._bar_max_ratio
         cy = self.y + h / 2.0
@@ -214,8 +220,11 @@ class _Wavebar(Widget):
 class _TimerDigits(Widget):
     """Steady ``HH:MM:SS`` display split into fixed-width cells (no jitter)."""
 
-    _DIGIT_W_RATIO = 0.14
-    _SEP_W_RATIO = 0.08
+    # Cell widths as a fraction of the TIMER box (400px on the Figma canvas).
+    # Sized so "00:01:21" at 55px renders compact like the design (~260px wide)
+    # instead of spreading digits across the whole box.
+    _DIGIT_W_RATIO = 0.09
+    _SEP_W_RATIO = 0.05
 
     def __init__(self, *, fs_ratio: float, color: tuple, **kwargs):
         super().__init__(**kwargs)
@@ -381,9 +390,11 @@ class _RoundButton(ButtonBehavior, Widget):
         self._border.width = bw
         self._border.circle = (cx, cy, r - bw / 2.0)
 
-        bar_w = max(2.0, w * 0.066)
-        bar_h = max(4.0, h * 0.39)
-        gap = bar_w * 0.5
+        # Figma pause glyph: two thick rounded bars (~11px wide on an 88px
+        # button) with a gap roughly equal to one bar width.
+        bar_w = max(3.0, w * 0.115)
+        bar_h = max(4.0, h * 0.38)
+        gap = bar_w * 0.85
         tri_h = h * 0.40
         tri_w = tri_h * 0.92
         left = cx - tri_w * 0.35
@@ -425,7 +436,7 @@ class _StopPill(ButtonBehavior, Widget):
             self._square = RoundedRectangle(pos=(0, 0), size=(0, 0), radius=[6])
         self._label = Label(
             text="Stop Recording",
-            font_name=_FONT,
+            font_name=_FONT_SB,
             color=COL_TEXT,
             halign="center",
             valign="middle",
@@ -468,40 +479,61 @@ class _StopPill(ButtonBehavior, Widget):
 
 
 class _StatusBar(Widget):
-    """Minimal top-right wifi + battery glyphs (Group 203)."""
+    """Minimal top-right wifi + battery glyphs (Group 203).
+
+    The wifi is drawn the way the Figma asset looks — a *solid* glyph made of
+    alternating dark/background wedges (stroked arcs fuse into a blob at this
+    small size). The gap colour matches the light bg behind the status bar.
+    """
+
+    _GAP = (0.937, 0.945, 0.955, 1.0)
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         with self.canvas:
+            # Solid wifi: dark wedge → gap wedge → dark wedge → gap wedge + dot.
+            self._wedges: list[Ellipse] = []
+            for col in (COL_TEXT, self._GAP, COL_TEXT, self._GAP):
+                Color(*col)
+                self._wedges.append(
+                    Ellipse(pos=(0, 0), size=(0, 0), angle_start=-50, angle_end=50)
+                )
             Color(*COL_TEXT)
-            self._wifi = [Line(circle=(0, 0, 0), width=1.6, cap="round") for _ in range(2)]
-            self._wifi_dot = RoundedRectangle(pos=(0, 0), size=(0, 0), radius=[2])
-            self._batt = Line(rounded_rectangle=(0, 0, 0, 0, 2), width=1.6)
-            self._batt_tip = Line(points=[], width=1.6, cap="round")
-            self._batt_fill = RoundedRectangle(pos=(0, 0), size=(0, 0), radius=[1])
+            self._wifi_dot = Ellipse(pos=(0, 0), size=(0, 0))
+            self._batt = Line(rounded_rectangle=(0, 0, 0, 0, 2), width=1.8)
+            self._batt_tip = Line(points=[], width=1.8, cap="round")
+            # Figma battery fill is green (Group 203).
+            Color(*COL_BATT_GREEN)
+            self._batt_fill = RoundedRectangle(pos=(0, 0), size=(0, 0), radius=[2])
         self.bind(pos=self._sync, size=self._sync)
 
     def _sync(self, *_):
         x, y, w, h = self.x, self.y, self.width, self.height
         if w <= 0 or h <= 0:
             return
-        # Upward-opening wifi arcs (0° = top, clockwise) + base dot.
+        self._batt.width = max(1.5, h * 0.09)
+        self._batt_tip.width = max(1.5, h * 0.09)
+        # Solid upward-opening wifi wedges + base dot.
         cx = x + w * 0.18
-        base = y + h * 0.32
-        self._wifi[0].circle = (cx, base, h * 0.42, 305, 415)
-        self._wifi[1].circle = (cx, base, h * 0.24, 305, 415)
-        d = h * 0.12
+        base = y + h * 0.08
+        big_r = h * 0.85
+        for ell, k in zip(self._wedges, (1.0, 0.72, 0.50, 0.27)):
+            r = big_r * k
+            ell.pos = (cx - r, base - r)
+            ell.size = (2 * r, 2 * r)
+        d = big_r * 0.34
         self._wifi_dot.pos = (cx - d / 2, base - d / 2)
         self._wifi_dot.size = (d, d)
-        # Battery on the right.
+        # Battery on the right — green fill nearly full like the design.
         bw = w * 0.42
-        bh = h * 0.5
-        bx = x + w - bw - w * 0.08
+        bh = h * 0.62
+        bx = x + w - bw - w * 0.06
         by = y + (h - bh) / 2.0
-        self._batt.rounded_rectangle = (bx, by, bw, bh, 2)
-        self._batt_tip.points = [bx + bw + 2, by + bh * 0.3, bx + bw + 2, by + bh * 0.7]
-        self._batt_fill.pos = (bx + 2, by + 2)
-        self._batt_fill.size = (bw * 0.65, bh - 4)
+        self._batt.rounded_rectangle = (bx, by, bw, bh, 3)
+        self._batt_tip.points = [bx + bw + 2.5, by + bh * 0.3, bx + bw + 2.5, by + bh * 0.7]
+        pad = max(1.5, bh * 0.12)
+        self._batt_fill.pos = (bx + pad, by + pad)
+        self._batt_fill.size = (max(1.0, (bw - 2 * pad) * 0.92), bh - 2 * pad)
 
 
 class RecordingScreen(BaseScreen):
@@ -534,11 +566,23 @@ class RecordingScreen(BaseScreen):
         self._canvas.add_widget(self.wavebar)
 
         # Status group (dot + Recording.... + Started at …).
-        self.status_dot = _StatusDot(**kivy_hints(REC_DOT))
+        # The dot is positioned dynamically just before the caption text — the
+        # caption length changes ("Recording...." vs "Recording Paused"), so a
+        # fixed Figma x would overlap the longer string.
+        dot_box = kivy_hints(REC_DOT)
+        self.status_dot = _StatusDot(size_hint=dot_box["size_hint"])
         self._canvas.add_widget(self.status_dot)
         self.rec_label = self._add_label(
             "Recording....", REC_LABEL, REC_LABEL_FS_RATIO, COL_TEXT, bold=False,
+            font_name=_FONT_SB,
         )
+        self.rec_label.bind(
+            text=self._sync_rec_dot,
+            pos=self._sync_rec_dot,
+            size=self._sync_rec_dot,
+            font_size=self._sync_rec_dot,
+        )
+        self.status_dot.bind(size=self._sync_rec_dot)
         self.started_label = self._add_label(
             "Started at --:-- --", STARTED_LABEL, STARTED_FS_RATIO, COL_TEXT, bold=False,
         )
@@ -561,10 +605,10 @@ class RecordingScreen(BaseScreen):
         Clock.schedule_once(lambda _dt: self._on_root_resize(self._root, self._root.size), 0)
 
     # --------------------------------------------------------------- helpers
-    def _add_label(self, text, box, fs_ratio, color, *, bold=False, halign="center"):
+    def _add_label(self, text, box, fs_ratio, color, *, bold=False, halign="center", font_name=_FONT):
         lbl = Label(
             text=text,
-            font_name=_FONT,
+            font_name=font_name,
             bold=bold,
             color=color,
             halign=halign,
@@ -584,6 +628,31 @@ class RecordingScreen(BaseScreen):
                 lbl.font_size = font_px(lbl._fs_ratio, h)  # noqa: SLF001
         if hasattr(self, "stop_pill"):
             self.stop_pill.font_size = font_px(STOP_FS_RATIO, h)
+        self._sync_rec_dot()
+
+    def _sync_rec_dot(self, *_):
+        """Park the status dot just left of the caption's rendered text."""
+        lbl = getattr(self, "rec_label", None)
+        dot = getattr(self, "status_dot", None)
+        if lbl is None or dot is None or not lbl.text or lbl.width <= 0:
+            return
+        try:
+            from kivy.core.text import Label as CoreLabel
+
+            cl = CoreLabel(
+                text=lbl.text,
+                font_size=lbl.font_size,
+                font_name=lbl.font_name,
+                bold=lbl.bold,
+            )
+            cl.refresh()
+            text_w = float(cl.texture.size[0]) if cl.texture is not None else lbl.width * 0.5
+        except Exception:  # noqa: BLE001
+            text_w = lbl.width * 0.5
+        cx = lbl.x + lbl.width / 2.0
+        cy = lbl.y + lbl.height / 2.0
+        gap = dot.width * 0.85
+        dot.pos = (cx - text_w / 2.0 - gap - dot.width, cy - dot.height / 2.0)
 
     # ------------------------------------------------------------- lifecycle
     def on_enter(self):
@@ -601,7 +670,8 @@ class RecordingScreen(BaseScreen):
         self.pause_btn.set_paused(False)
 
         now = display_now()
-        self.started_label.text = f"Started at {now.strftime('%I:%M %p').lstrip('0')}"
+        # Figma shows "Started at 11:01AM" (no space before AM/PM).
+        self.started_label.text = f"Started at {now.strftime('%I:%M%p').lstrip('0')}"
 
         self.timer_event = Clock.schedule_interval(self._tick_timer, 0.5)
         self.wavebar.start()
