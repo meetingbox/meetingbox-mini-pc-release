@@ -273,6 +273,7 @@ from screens.all_set import AllSetScreen
 
 # Core screens
 from screens.home import HomeScreen
+from screens.voice_session import VoiceSessionScreen
 from screens.recording import RecordingScreen
 from screens.processing import ProcessingScreen
 from screens.complete import CompleteScreen
@@ -1059,6 +1060,7 @@ class MeetingBoxApp(App):
         self.screen_manager.add_widget(AllSetScreen(name='all_set'))
 
         self.screen_manager.add_widget(HomeScreen(name='home'))
+        self.screen_manager.add_widget(VoiceSessionScreen(name='voice_session'))
         self.screen_manager.add_widget(RecordingScreen(name='recording'))
         self.screen_manager.add_widget(ProcessingScreen(name='processing'))
         self.screen_manager.add_widget(CompleteScreen(name='complete'))
