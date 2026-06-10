@@ -31,6 +31,7 @@ from kivy.uix.image import Image
 from kivy.uix.label import Label
 from kivy.uix.widget import Widget
 
+from components.device_status_bar import DeviceStatusBar
 from config import ASSETS_DIR
 from processing_layout import (
     BG_BOT,
@@ -161,7 +162,10 @@ class ProcessingScreen(BaseScreen):
         self._canvas = FloatLayout(size_hint=(None, None))
         anchor.add_widget(self._canvas)
 
-        self._canvas.add_widget(_StatusBar(**kivy_hints(STATUS_BAR)))
+        self._canvas.add_widget(DeviceStatusBar(
+            debug_location="processing.py:DeviceStatusBar",
+            **kivy_hints(STATUS_BAR),
+        ))
 
         self.orb = _ProcessingOrbGif(**kivy_hints(ORB))
         self._canvas.add_widget(self.orb)

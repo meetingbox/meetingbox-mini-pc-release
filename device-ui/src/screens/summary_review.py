@@ -32,11 +32,14 @@ from kivy.graphics import Color, Line, Mesh, RoundedRectangle
 from kivy.uix.anchorlayout import AnchorLayout
 from kivy.uix.behaviors import ButtonBehavior
 from kivy.uix.floatlayout import FloatLayout
+from kivy.uix.image import Image
 from kivy.uix.label import Label
 from kivy.uix.scrollview import ScrollView
 from kivy.uix.widget import Widget
 
 from async_helper import run_async
+from components.device_status_bar import DeviceStatusBar
+from config import ASSETS_DIR
 from screens.base_screen import BaseScreen
 from summary_layout import (
     AI_BODY_FS_RATIO,
@@ -71,6 +74,7 @@ logger = logging.getLogger(__name__)
 
 _FONT = "42dot-Sans"
 _IST = timezone(timedelta(hours=5, minutes=30))
+_SPARKLE_ICON = str(ASSETS_DIR / "home" / "figma" / "icon_sparkle.png")
 
 
 # Section markers emitted by the backend report composer. The device only shows
@@ -327,7 +331,10 @@ class SummaryReviewScreen(BaseScreen):
         back_btn.bind(on_release=lambda *_: self._on_back())
         self._canvas.add_widget(back_btn)
 
-        self._canvas.add_widget(_MiniStatus(**kivy_hints(STATUS_BAR)))
+        self._canvas.add_widget(DeviceStatusBar(
+            debug_location="summary_review.py:DeviceStatusBar",
+            **kivy_hints(STATUS_BAR),
+        ))
 
         self.title_label = self._add_label(
             "Meeting Name", TITLE, TITLE_FS_RATIO, COL_TITLE, bold=True, halign="left",
@@ -337,7 +344,17 @@ class SummaryReviewScreen(BaseScreen):
         )
 
         self._canvas.add_widget(_Card(**kivy_hints(CARD)))
-        self._canvas.add_widget(_Sparkle(**kivy_hints(AI_SPARKLE)))
+        sparkle_src = _SPARKLE_ICON if (ASSETS_DIR / "home" / "figma" / "icon_sparkle.png").is_file() else ""
+        if sparkle_src:
+            self._canvas.add_widget(Image(
+                source=sparkle_src,
+                fit_mode="contain",
+                allow_stretch=True,
+                keep_ratio=True,
+                **kivy_hints(AI_SPARKLE),
+            ))
+        else:
+            self._canvas.add_widget(_Sparkle(**kivy_hints(AI_SPARKLE)))
         self._add_label(
             "AI Summary", AI_HEADER, AI_HEADER_FS_RATIO, COL_AI_HEADER, bold=True, halign="left",
         )

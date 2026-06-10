@@ -40,6 +40,7 @@ from kivy.uix.floatlayout import FloatLayout
 from kivy.uix.label import Label
 from kivy.uix.widget import Widget
 
+from components.device_status_bar import DeviceStatusBar
 from config import display_now
 from frame19_layout import (
     BG_BOT,
@@ -556,8 +557,11 @@ class RecordingScreen(BaseScreen):
         self._canvas = FloatLayout(size_hint=(None, None))
         anchor.add_widget(self._canvas)
 
-        # Top-right status bar.
-        self._canvas.add_widget(_StatusBar(**kivy_hints(STATUS_BAR)))
+        # Top-right hardware-aware status bar.
+        self._canvas.add_widget(DeviceStatusBar(
+            debug_location="recording.py:DeviceStatusBar",
+            **kivy_hints(STATUS_BAR),
+        ))
 
         # Centre orb + waveform.
         self._canvas.add_widget(_Orb(**kivy_hints(ORB)))
