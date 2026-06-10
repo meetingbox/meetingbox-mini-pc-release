@@ -78,6 +78,7 @@ COL_TEXT = (53 / 255, 57 / 255, 59 / 255, 1.0)           # #35393B
 COL_MUTED = (53 / 255, 57 / 255, 59 / 255, 0.78)
 COL_COUNTDOWN = (53 / 255, 57 / 255, 59 / 255, 0.70)
 COL_PURPLE = (109 / 255, 73 / 255, 204 / 255, 1.0)       # #6D49CC
+COL_BATT_GREEN = (52 / 255, 199 / 255, 89 / 255, 1.0)    # battery fill
 
 # Waveform / ring purple gradient (top → bottom), matching Figma.
 RING_TOP = (164 / 255, 143 / 255, 210 / 255, 1.0)        # #A48FD2

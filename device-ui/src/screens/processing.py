@@ -1,10 +1,10 @@
 """Processing / "Summarizing" screen — Figma ``1036:16``
 (dvqlN0JtWQODt6jYbTrbDG, "Copy").
 
-Shown immediately after a recording stops. Drawn entirely with Kivy primitives:
+Shown immediately after a recording stops:
 
   * "Recording Complete" + "Meeting Name · 32 min" header
-  * a centre orb with a calm, breathing concentric-ring animation
+  * the supplied centre orb GIF from ``assets/figma/processing_orb.gif``
   * "Summarizing your meeting..." / "This may take a few seconds" captions
   * a rotating stage line
   * a bottom countdown — "Back to home screen in N seconds" — that returns to
@@ -21,19 +21,21 @@ on_summary_failed.
 from __future__ import annotations
 
 import logging
-import math
 from typing import Optional
 
 from kivy.clock import Clock
 from kivy.graphics import Color, Ellipse, Line, RoundedRectangle
 from kivy.uix.anchorlayout import AnchorLayout
 from kivy.uix.floatlayout import FloatLayout
+from kivy.uix.image import Image
 from kivy.uix.label import Label
 from kivy.uix.widget import Widget
 
+from config import ASSETS_DIR
 from processing_layout import (
     BG_BOT,
     BG_TOP,
+    COL_BATT_GREEN,
     COL_COUNTDOWN,
     COL_HEADLINE,
     COL_MUTED,
@@ -46,11 +48,6 @@ from processing_layout import (
     META,
     META_FS_RATIO,
     ORB,
-    ORB_CONCENTRIC,
-    ORB_FILL,
-    ORB_RING,
-    RING_BOT,
-    RING_TOP,
     STAGE,
     STAGE_FS_RATIO,
     STATUS_BAR,
@@ -63,11 +60,11 @@ from processing_layout import (
     scaled_canvas,
 )
 from screens.base_screen import BaseScreen
-from ui_bg import vertical_gradient_texture
 
 logger = logging.getLogger(__name__)
 
 _FONT = "42dot-Sans"
+_PROCESSING_ORB_GIF = str(ASSETS_DIR / "figma" / "processing_orb.gif")
 
 # Seconds the user stays on this screen before being returned home.
 _RETURN_COUNTDOWN_S = 3
@@ -79,86 +76,64 @@ _DEFAULT_STAGES = (
 )
 
 
-class _PulseOrb(Widget):
-    """Light glow disc with faint concentric rings, a soft purple rim and a
-    calm centre waveform — a code-drawn stand-in for the Figma "summarising"
-    orb (the design intends a supplied GIF here; this keeps it on-brand and
-    animated without a bitmap).
-    """
+class _StatusBar(Widget):
+    """Top-right wifi + green battery glyphs from the processing Figma frame."""
 
-    _N_RINGS = 4
-    _N_BARS = 12
-    _PERIOD_S = 2.6
+    _GAP = (0.937, 0.945, 0.955, 1.0)
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
-        self._phase = 0.0
-        self._event = None
-        self._bar_phase = [i * 0.5 for i in range(self._N_BARS)]
-        self._tex = vertical_gradient_texture(RING_TOP, RING_BOT)
         with self.canvas:
-            Color(*ORB_FILL)
-            self._disc = Ellipse(pos=self.pos, size=self.size)
-            # Faint static concentric rings (nested circles in the design).
-            self._concentric = []
-            for _ in range(self._N_RINGS):
-                Color(*ORB_CONCENTRIC)
-                self._concentric.append(Line(circle=(0, 0, 0), width=1.4))
-            # Soft outer purple rim.
-            self._rim_color = Color(*ORB_RING)
-            self._rim = Line(circle=(0, 0, 0), width=2.0)
-            # Centre waveform bars (purple gradient, rounded).
-            self._bar_color = Color(1, 1, 1, 1)
-            self._bars = [
-                RoundedRectangle(pos=(0, 0), size=(1, 1), radius=[5], texture=self._tex)
-                for _ in range(self._N_BARS)
-            ]
-        self.bind(pos=self._redraw, size=self._redraw)
+            self._wedges: list[Ellipse] = []
+            for col in (COL_TEXT, self._GAP, COL_TEXT, self._GAP):
+                Color(*col)
+                self._wedges.append(Ellipse(pos=(0, 0), size=(0, 0), angle_start=-50, angle_end=50))
+            Color(*COL_TEXT)
+            self._wifi_dot = Ellipse(pos=(0, 0), size=(0, 0))
+            self._batt = Line(rounded_rectangle=(0, 0, 0, 0, 2), width=1.8)
+            self._batt_tip = Line(points=[], width=1.8, cap="round")
+            Color(*COL_BATT_GREEN)
+            self._batt_fill = RoundedRectangle(pos=(0, 0), size=(0, 0), radius=[2])
+        self.bind(pos=self._sync, size=self._sync)
 
-    def start(self) -> None:
-        if self._event is None:
-            self._event = Clock.schedule_interval(self._tick, 1 / 30.0)
-
-    def stop(self) -> None:
-        if self._event is not None:
-            self._event.cancel()
-            self._event = None
-
-    def _tick(self, dt: float) -> None:
-        self._phase = (self._phase + dt * 2.4) % math.tau
-        self._redraw()
-
-    def _redraw(self, *_):
+    def _sync(self, *_):
         x, y, w, h = self.x, self.y, self.width, self.height
         if w <= 0 or h <= 0:
             return
-        cx, cy = x + w / 2.0, y + h / 2.0
-        R = min(w, h) / 2.0
-        self._disc.pos = self.pos
-        self._disc.size = self.size
-        for i, ring in enumerate(self._concentric):
-            ring.width = max(1.0, w * 0.006)
-            ring.circle = (cx, cy, R * (0.40 + 0.18 * i))
-        rim_w = max(1.5, w * 0.014)
-        self._rim.width = rim_w
-        self._rim.circle = (cx, cy, R - rim_w / 2.0)
+        self._batt.width = max(1.2, h * 0.055)
+        self._batt_tip.width = max(1.2, h * 0.055)
 
-        # Centre waveform: a calm sine-driven set of bars within the orb.
-        n = self._N_BARS
-        span = R * 1.05
-        bar_w = max(2.0, span / (n * 1.7))
-        gap = (span - bar_w * n) / max(1, n - 1)
-        centre = (n - 1) / 2.0
-        max_h = R * 0.95
-        start_x = cx - span / 2.0
-        for i, rect in enumerate(self._bars):
-            bell = max(0.18, math.cos(((i - centre) / centre) * math.pi / 2.0))
-            wob = 0.5 + 0.5 * math.sin(self._phase + self._bar_phase[i])
-            bar_h = max(bar_w, max_h * bell * (0.45 + 0.55 * wob))
-            bx = start_x + i * (bar_w + gap)
-            rect.pos = (bx, cy - bar_h / 2.0)
-            rect.size = (bar_w, bar_h)
-            rect.radius = [bar_w / 2.0]
+        cx = x + w * 0.18
+        base = y + h * 0.08
+        big_r = h * 0.60
+        for ell, k in zip(self._wedges, (1.0, 0.72, 0.50, 0.27)):
+            r = big_r * k
+            ell.pos = (cx - r, base - r)
+            ell.size = (2 * r, 2 * r)
+        d = big_r * 0.34
+        self._wifi_dot.pos = (cx - d / 2, base - d / 2)
+        self._wifi_dot.size = (d, d)
+
+        bw = w * 0.30
+        bh = h * 0.42
+        bx = x + w - bw - w * 0.10
+        by = y + (h - bh) / 2.0
+        self._batt.rounded_rectangle = (bx, by, bw, bh, 3)
+        self._batt_tip.points = [bx + bw + 2.5, by + bh * 0.3, bx + bw + 2.5, by + bh * 0.7]
+        pad = max(1.5, bh * 0.12)
+        self._batt_fill.pos = (bx + pad, by + pad)
+        self._batt_fill.size = (max(1.0, (bw - 2 * pad) * 0.92), bh - 2 * pad)
+
+
+class _ProcessingOrbGif(Image):
+    def __init__(self, **kwargs):
+        super().__init__(
+            source=_PROCESSING_ORB_GIF,
+            fit_mode="contain",
+            anim_delay=0.05,
+            anim_loop=0,
+            **kwargs,
+        )
 
 
 class ProcessingScreen(BaseScreen):
@@ -186,7 +161,9 @@ class ProcessingScreen(BaseScreen):
         self._canvas = FloatLayout(size_hint=(None, None))
         anchor.add_widget(self._canvas)
 
-        self.orb = _PulseOrb(**kivy_hints(ORB))
+        self._canvas.add_widget(_StatusBar(**kivy_hints(STATUS_BAR)))
+
+        self.orb = _ProcessingOrbGif(**kivy_hints(ORB))
         self._canvas.add_widget(self.orb)
 
         self.headline_status = self._add_label(
@@ -260,7 +237,6 @@ class ProcessingScreen(BaseScreen):
         self.stage_label.text = _DEFAULT_STAGES[0]
         self.meta_label.text = self._meta_text()
 
-        self.orb.start()
         self._stage_event = Clock.schedule_interval(self._rotate_stage, 0.9)
 
         self._countdown_left = _RETURN_COUNTDOWN_S
@@ -268,7 +244,6 @@ class ProcessingScreen(BaseScreen):
         self._countdown_event = Clock.schedule_interval(self._tick_countdown, 1.0)
 
     def on_leave(self):
-        self.orb.stop()
         self._cancel_timers()
 
     def _cancel_timers(self) -> None:

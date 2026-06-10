@@ -27,6 +27,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from kivy.clock import Clock
+from kivy.core.window import Window
 from kivy.graphics import Color, Line, Mesh, RoundedRectangle
 from kivy.uix.anchorlayout import AnchorLayout
 from kivy.uix.behaviors import ButtonBehavior
@@ -264,10 +265,17 @@ class _ScrollText(ScrollView):
         self._label.bind(texture_size=self._sync_height)
 
     def _sync_width(self, *_args):
-        self._label.text_size = (self.width, None)
+        self._sync_label_box()
 
     def _sync_height(self, *_args):
         self._label.height = max(self._label.texture_size[1], self.height)
+        self._sync_label_box()
+
+    def _sync_label_box(self) -> None:
+        self._label.text_size = (
+            max(1.0, float(self.width)),
+            max(1.0, float(self._label.height or self.height)),
+        )
 
     @property
     def text(self) -> str:
@@ -276,6 +284,8 @@ class _ScrollText(ScrollView):
     @text.setter
     def text(self, value: str) -> None:
         self._label.text = value or ""
+        self.scroll_y = 1
+        Clock.schedule_once(lambda _dt: self._sync_label_box(), 0)
 
     @property
     def font_size(self):
@@ -323,7 +333,7 @@ class SummaryReviewScreen(BaseScreen):
             "Meeting Name", TITLE, TITLE_FS_RATIO, COL_TITLE, bold=True, halign="left",
         )
         self.meta_label = self._add_label(
-            "Create time —", META, META_FS_RATIO, COL_META, halign="left",
+            "Created time —", META, META_FS_RATIO, COL_META, halign="left",
         )
 
         self._canvas.add_widget(_Card(**kivy_hints(CARD)))
@@ -364,8 +374,38 @@ class SummaryReviewScreen(BaseScreen):
         self._canvas.add_widget(lbl)
         return lbl
 
+    def _resolve_layout_size(self, size) -> tuple[float, float]:
+        raw_w, raw_h = float(size[0] or 0), float(size[1] or 0)
+        if raw_w >= 300 and raw_h >= 300:
+            return raw_w, raw_h
+        mgr = self.parent
+        if mgr is not None:
+            mgr_w, mgr_h = float(mgr.width or 0), float(mgr.height or 0)
+            if mgr_w >= 300 and mgr_h >= 300:
+                return mgr_w, mgr_h
+        return float(Window.width), float(Window.height)
+
+    def _ensure_screen_size(self, size) -> tuple[float, float]:
+        """ScreenManager may leave this screen at Kivy's default 100×100 when
+        opened from the home popup callback. Expand the Screen widget itself,
+        not just the inner canvas, or the page renders as a black full-screen."""
+        raw_w, raw_h = self._resolve_layout_size(size)
+        if float(self.width or 0) < 300 or float(self.height or 0) < 300:
+            self.size_hint = (1, 1)
+            self.size = (raw_w, raw_h)
+        # An interrupted transition can leave this screen parked one full
+        # window-width off-viewport (ShaderTransition copies screen_out.pos
+        # onto screen_in). Snap back to the manager origin so the page is
+        # actually inside the viewport.
+        mgr = self.parent
+        target_pos = (float(mgr.x), float(mgr.y)) if mgr is not None else (0.0, 0.0)
+        if (float(self.x), float(self.y)) != target_pos:
+            self.pos = target_pos
+        return raw_w, raw_h
+
     def _on_root_resize(self, _root, size):
-        w, h = scaled_canvas(size[0], size[1])
+        raw_w, raw_h = self._ensure_screen_size(size)
+        w, h = scaled_canvas(raw_w, raw_h)
         self._canvas.size = (w, h)
         for lbl, ratio in self._scaled_labels:
             if lbl is None:
@@ -383,7 +423,10 @@ class SummaryReviewScreen(BaseScreen):
         self._fetch_meeting_detail()
 
     def on_enter(self):
+        self._ensure_screen_size(self.size)
         self._apply_local_data()
+        Clock.schedule_once(lambda _dt: self._on_root_resize(self._root, self._root.size), 0)
+        Clock.schedule_once(lambda _dt: self._on_root_resize(self._root, self._root.size), 0.05)
 
     def on_leave(self):
         pass
@@ -453,7 +496,7 @@ class SummaryReviewScreen(BaseScreen):
                 created = dt.strftime("%I:%M %p").lstrip("0")
             except Exception:  # noqa: BLE001
                 created = ""
-        created_part = f"Create time {created}" if created else "Create time —"
+        created_part = f"Created time {created}" if created else "Created time —"
 
         duration_part = ""
         try:
@@ -466,7 +509,7 @@ class SummaryReviewScreen(BaseScreen):
             duration_part = f"{seconds} sec"
 
         if duration_part:
-            return f"{created_part}    \u2022    {duration_part}"
+            return f"{created_part}  \u2022  {duration_part}"
         return created_part
 
     # ------------------------------------------------------------- handlers

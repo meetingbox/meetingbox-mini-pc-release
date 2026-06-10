@@ -8,10 +8,12 @@ size, and colour is taken directly from the Figma node data.  Live data
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import math
 import time
 from datetime import datetime, timedelta
+from pathlib import Path
 
 from kivy.animation import Animation
 from kivy.clock import Clock
@@ -450,6 +452,31 @@ class _TappableCard(ButtonBehavior, FloatLayout):
         self._bg_rect.size   = self.size
         self._bg_rect.radius = [r]
         self._line.rounded_rectangle = (self.x, self.y, self.width, self.height, r)
+
+
+class _SummaryPopupPill(FloatLayout):
+    """Container for the "summary is ready" pill.
+
+    Swallows any touch inside its bounds that its buttons did not handle, so
+    taps on the pill never fall through to the home cards underneath (the
+    summary card's on_touch_up handler would otherwise also fire and start a
+    competing navigation to meeting_detail).
+    """
+
+    def on_touch_down(self, touch):
+        if super().on_touch_down(touch):
+            return True
+        return self.collide_point(*touch.pos)
+
+    def on_touch_move(self, touch):
+        if super().on_touch_move(touch):
+            return True
+        return self.collide_point(*touch.pos)
+
+    def on_touch_up(self, touch):
+        if super().on_touch_up(touch):
+            return True
+        return self.collide_point(*touch.pos)
 
 
 class _Card(FloatLayout):
@@ -1951,7 +1978,7 @@ class HomeScreen(BaseScreen):
         # Long white pill with fully-rounded edges, centred near the top.
         PW, PH, PT = 760.0, 88.0, 120.0
         PX = (_FW - PW) / 2.0
-        popup = FloatLayout(
+        popup = _SummaryPopupPill(
             size_hint=(_sw(PW), _sh(PH)),
             pos_hint={"x": _x(PX), "y": _y(PT, PH)},
         )

@@ -107,8 +107,8 @@ class _Orb(Widget):
 class _Wavebar(Widget):
     """Voice waveform — 7 rounded bars with a vertical purple gradient.
 
-    Reacts to live mic levels fed via :meth:`feed_level`. A small idle ripple
-    keeps it alive while silent so the user can see the mic is listening;
+    Acts like a VU meter: bars stay FLAT while silent and rise from flat in
+    direct proportion to the live mic level fed via :meth:`feed_level`;
     speech amplifies the centre bars more than the edges (bell envelope).
     """
 
@@ -179,19 +179,18 @@ class _Wavebar(Widget):
         voice = self._is_active and self._latest_audio > self._SILENCE_THRESHOLD
         for i in range(n):
             env = self._envelope[i]
-            self._idle_phase[i] = (self._idle_phase[i] + dt * 1.8) % math.tau
-            breathe = 0.5 + 0.5 * math.sin(self._idle_phase[i])
             if voice:
+                # VU-meter behaviour: bar height rises from the flat stub in
+                # direct proportion to the live mic level (bell envelope keeps
+                # the centre tallest), so louder voice = taller bars.
                 target = max(
                     self._FLAT_RATIO,
-                    env * (0.50 + 0.50 * self._latest_audio) * self._jitter[i],
+                    (self._FLAT_RATIO + (1.0 - self._FLAT_RATIO) * self._latest_audio)
+                    * env * self._jitter[i],
                 )
             else:
-                # Calm idle: keep the bell shape, breathing softly so it reads
-                # as a live waveform without any audio. Amplitudes sized so the
-                # idle state matches the Figma static (centre bar near the top
-                # of the wave box).
-                target = env * (0.68 + 0.14 * breathe)
+                # No audio (silence / mic gone / paused): stay flat.
+                target = self._FLAT_RATIO
             self._levels[i] += (target - self._levels[i]) * 0.35
         self._latest_audio *= 0.93
         if voice and random.random() < 0.18:
