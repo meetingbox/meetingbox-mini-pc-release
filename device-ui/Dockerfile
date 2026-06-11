@@ -72,6 +72,7 @@ RUN set -eux; \
             bluez \
             pulseaudio-utils \
             pipewire \
+            pipewire-alsa \
             wireplumber \
         ; then \
             success=1; \
