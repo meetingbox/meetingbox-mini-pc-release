@@ -1,8 +1,6 @@
 from __future__ import annotations
 
-import json
 import threading
-import time
 from pathlib import Path
 
 from kivy.clock import Clock
@@ -15,27 +13,7 @@ import hardware
 import network_util
 from config import ASSETS_DIR
 
-_DEBUG_LOG_PATH = Path("debug-3c47bd.log")
 _WIFI_ICON = str(ASSETS_DIR / "home" / "figma" / "new_wifi_icon.png")
-
-
-# region agent log
-def _agent_log(hypothesis_id: str, location: str, message: str, data: dict | None = None) -> None:
-    try:
-        payload = {
-            "sessionId": "3c47bd",
-            "runId": "status-icons-assets",
-            "hypothesisId": hypothesis_id,
-            "location": location,
-            "message": message,
-            "data": data or {},
-            "timestamp": int(time.time() * 1000),
-        }
-        with _DEBUG_LOG_PATH.open("a", encoding="utf-8") as fh:
-            fh.write(json.dumps(payload, separators=(",", ":")) + "\n")
-    except Exception:
-        pass
-# endregion
 
 
 class _BatteryIcon(Widget):
@@ -144,22 +122,6 @@ class DeviceStatusBar(FloatLayout):
             item.pos_hint = {"x": x, "center_y": 0.5}
             self.add_widget(item)
             x += float(item.size_hint_x or 0) + gap
-
-        # region agent log
-        _agent_log(
-            "S1,S2,S3",
-            self._debug_location,
-            "device status bar applied",
-            {
-                "battery": battery,
-                "ethernet_ready": ethernet_ready,
-                "wifi_radio": wifi_radio,
-                "show_wifi": show_wifi,
-                "show_battery": show_battery,
-                "children": [type(child).__name__ for child in self.children],
-            },
-        )
-        # endregion
 
     def on_parent(self, *_):
         if self.parent is None and self._status_event is not None:
