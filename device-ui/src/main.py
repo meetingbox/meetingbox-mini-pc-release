@@ -344,26 +344,8 @@ def setup_logging():
 
 setup_logging()
 logger = logging.getLogger(__name__)
-_DEBUG_LOG_PATH = Path("debug-3c47bd.log")
 
 
-# region agent log
-def _agent_log(hypothesis_id: str, location: str, message: str, data: dict | None = None) -> None:
-    try:
-        payload = {
-            "sessionId": "3c47bd",
-            "runId": "multi-device-summary",
-            "hypothesisId": hypothesis_id,
-            "location": location,
-            "message": message,
-            "data": data or {},
-            "timestamp": int(time.time() * 1000),
-        }
-        with _DEBUG_LOG_PATH.open("a", encoding="utf-8") as fh:
-            fh.write(json.dumps(payload, separators=(",", ":")) + "\n")
-    except Exception:
-        pass
-# endregion
 
 if _FULLSCREEN and _W == 1024 and _H == 600:
     logger.warning(
@@ -1639,21 +1621,6 @@ class MeetingBoxApp(App):
             if isinstance(candidate, str) and candidate:
                 ev_id = candidate
                 break
-        # region agent log
-        _agent_log(
-            "M1,M2",
-            "main.py:_event_belongs_to_this_device",
-            "websocket device filter evaluated",
-            {
-                "event_type": event.get("type") if isinstance(event, dict) else None,
-                "local_device_id": my_id,
-                "event_device_id": ev_id,
-                "meeting_id": (data or {}).get("meeting_id") if isinstance(data, dict) else None,
-                "session_id": (data or {}).get("session_id") if isinstance(data, dict) else None,
-                "has_event_device_id": bool(ev_id),
-            },
-        )
-        # endregion
         if not my_id:
             return True
         if isinstance(ev_id, str) and ev_id:
@@ -1686,20 +1653,6 @@ class MeetingBoxApp(App):
                 and event_session_id
                 and event_session_id == self.current_session_id
             )
-            # region agent log
-            _agent_log(
-                "M1,M3,M4",
-                "main.py:_event_belongs_to_this_device",
-                "unscoped websocket device event evaluated",
-                {
-                    "event_type": etype,
-                    "event_session_id": event_session_id,
-                    "current_session_id": self.current_session_id,
-                    "local_device_id": my_id,
-                    "allowed_by_current_session": allow_current_session,
-                },
-            )
-            # endregion
             return allow_current_session
         return True
 
@@ -1711,20 +1664,6 @@ class MeetingBoxApp(App):
                 logger.debug(f"WS event: {etype}")
 
                 if not self._event_belongs_to_this_device(event, data):
-                    # region agent log
-                    _agent_log(
-                        "M1",
-                        "main.py:_websocket_listener",
-                        "dropped cross-device websocket event",
-                        {
-                            "event_type": etype,
-                            "local_device_id": self.device_id,
-                            "event_device_id": data.get("device_id") if isinstance(data, dict) else None,
-                            "meeting_id": data.get("meeting_id") if isinstance(data, dict) else None,
-                            "session_id": data.get("session_id") if isinstance(data, dict) else None,
-                        },
-                    )
-                    # endregion
                     logger.debug("Dropping cross-device WS event %s", etype)
                     continue
 
@@ -1836,19 +1775,6 @@ class MeetingBoxApp(App):
 
     def on_recording_started(self, data):
         sid = data.get('session_id')
-        # region agent log
-        _agent_log(
-            "M3",
-            "main.py:on_recording_started",
-            "recording_started accepted",
-            {
-                "session_id": sid,
-                "event_device_id": data.get("device_id") if isinstance(data, dict) else None,
-                "local_device_id": self.device_id,
-                "previous_current_session_id": self.current_session_id,
-            },
-        )
-        # endregion
         # API + local audio may both publish recording_started when Redis is shared.
         if sid and self.current_session_id == sid and self.recording_state.get('active'):
             return
@@ -1890,20 +1816,6 @@ class MeetingBoxApp(App):
         except Exception:
             pass
         sid = data.get('session_id') or self.current_session_id
-        # region agent log
-        _agent_log(
-            "M3,M4",
-            "main.py:on_recording_stopped",
-            "recording_stopped accepted",
-            {
-                "session_id": data.get("session_id") if isinstance(data, dict) else None,
-                "resolved_sid": sid,
-                "event_device_id": data.get("device_id") if isinstance(data, dict) else None,
-                "local_device_id": self.device_id,
-                "current_session_id": self.current_session_id,
-            },
-        )
-        # endregion
         duration_seconds = data.get('duration') or self._current_recording_elapsed_seconds()
         self._prime_processing_screen(sid, duration_seconds)
         self._kick_post_stop_meeting_polls(sid)
@@ -2044,20 +1956,6 @@ class MeetingBoxApp(App):
         """Handle summary_complete event from AI service (if it fires separately)."""
         meeting_id = data.get('meeting_id')
         summary = data.get('summary') or {}
-        # region agent log
-        _agent_log(
-            "M1,M2,M4",
-            "main.py:on_summary_complete",
-            "summary_complete accepted",
-            {
-                "meeting_id": meeting_id,
-                "event_device_id": data.get("device_id") if isinstance(data, dict) else None,
-                "local_device_id": self.device_id,
-                "current_session_id": self.current_session_id,
-                "summary_keys": sorted(list(summary.keys())) if isinstance(summary, dict) else [],
-            },
-        )
-        # endregion
         if not meeting_id:
             return
         if isinstance(summary, dict) and summary.get('status') == 'failed':
@@ -2075,18 +1973,6 @@ class MeetingBoxApp(App):
     def _show_processing_summary_ready(self, meeting_id: str, summary: dict):
         """Keep user on processing screen and enable CTA once summary is ready."""
         if not self.current_session_id or meeting_id != self.current_session_id:
-            # region agent log
-            _agent_log(
-                "M4",
-                "main.py:_show_processing_summary_ready",
-                "summary ready rejected for non-current session",
-                {
-                    "meeting_id": meeting_id,
-                    "current_session_id": self.current_session_id,
-                    "local_device_id": self.device_id,
-                },
-            )
-            # endregion
             return
         ready_for_review = self._summary_payload_ready_for_review(summary or {})
         if ready_for_review:
@@ -2094,23 +1980,6 @@ class MeetingBoxApp(App):
                 self._processing_summary_cache[meeting_id] = {'ok': True, 'summary': summary or {}}
             except Exception:
                 pass
-        # region agent log
-        _agent_log(
-            "M2,M4",
-            "main.py:_show_processing_summary_ready",
-            "summary ready cached",
-            {
-                "meeting_id": meeting_id,
-                "ready_for_review": ready_for_review,
-                "local_device_id": self.device_id,
-                "current_session_id": self.current_session_id,
-                "cache_keys": list(self._processing_summary_cache.keys()),
-                "cache_contains_current_session": bool(
-                    self.current_session_id and self.current_session_id in self._processing_summary_cache
-                ),
-            },
-        )
-        # endregion
         # Any path reaching here is the authoritative "summary ready" signal —
         # silence the fallback poll so we don't duplicate work.
         if ready_for_review and self._summary_poll_meeting_id == meeting_id:
