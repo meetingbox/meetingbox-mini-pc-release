@@ -3459,11 +3459,18 @@ class MeetingBoxApp(App):
             self._set_voice_runtime_state(state)
 
             def _update_home(_dt):
-                if (self.screen_manager is not None
-                        and self.screen_manager.current == 'home'):
+                if self.screen_manager is None:
+                    return
+                current = self.screen_manager.current
+                if current == 'home':
                     try:
                         home = self.screen_manager.get_screen('home')
                         home.set_voice_session_state(state)
+                    except Exception:
+                        pass
+                elif current == 'tasks':
+                    try:
+                        self.screen_manager.get_screen('tasks').set_voice_session_state(state)
                     except Exception:
                         pass
 

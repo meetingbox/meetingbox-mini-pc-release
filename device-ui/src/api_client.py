@@ -953,12 +953,14 @@ class BackendClient:
         commitment_id: str,
         status: str | None = None,
         due_date: str | None = None,
+        title: str | None = None,
+        description: str | None = None,
     ) -> Dict:
-        """PATCH /api/commitments/{id} — change status and/or assign a due_date.
+        """PATCH /api/commitments/{id} — change status, due_date, title and/or description.
 
         Pass status='completed' / 'cancelled' / 'snoozed' / 'active' to change state,
-        and/or due_date='YYYY-MM-DD' to assign or change the deadline. At least one
-        of status or due_date is required.
+        due_date='YYYY-MM-DD' to assign or change the deadline, and/or title /
+        description to edit the task text. At least one field is required.
         """
         try:
             body: Dict = {}
@@ -966,6 +968,10 @@ class BackendClient:
                 body["status"] = status
             if due_date:
                 body["due_date"] = due_date
+            if title is not None:
+                body["title"] = title
+            if description is not None:
+                body["description"] = description
             resp = await self.client.patch(
                 f"{self.base_url}/api/commitments/{commitment_id}",
                 json=body,
