@@ -30,23 +30,6 @@ _src_dir = Path(__file__).resolve().parent
 if str(_src_dir) not in sys.path:
     sys.path.insert(0, str(_src_dir))
 
-
-def _agent_debug_log(run_id: str, hypothesis_id: str, location: str, message: str, data: dict | None = None) -> None:
-    payload = {
-        "sessionId": "3c47bd",
-        "runId": run_id,
-        "hypothesisId": hypothesis_id,
-        "location": location,
-        "message": message,
-        "data": data or {},
-        "timestamp": int(time.time() * 1000),
-    }
-    try:
-        with open("debug-3c47bd.log", "a", encoding="utf-8") as fh:
-            fh.write(json.dumps(payload, default=str) + "\n")
-    except OSError:
-        pass
-
 from xauthority_util import display_refers_to_screen_zero, xauthority_list_has_display_zero
 
 # Before importing Kivy: stable clipboard provider on Linux (see kivy_options).
@@ -1785,20 +1768,6 @@ class MeetingBoxApp(App):
             return
         self.current_session_id = sid
         self.current_recording_mode = mode
-        # region agent log
-        _agent_debug_log(
-            "pre-fix",
-            "D,E",
-            "main.py:on_recording_started",
-            "recording_started event accepted",
-            {
-                "session_id": sid,
-                "event_recording_mode": data.get("recording_mode"),
-                "resolved_mode": mode,
-                "current_screen": getattr(self.screen_manager, "current", None),
-            },
-        )
-        # endregion
         self._transcription_done_for_session = None
         self._transcript_cta_satisfied_meeting_id = None
         self._transcript_cta_poll_meeting_id = None
@@ -2386,20 +2355,6 @@ class MeetingBoxApp(App):
         if mode not in {"meeting", "note"}:
             mode = "meeting"
         self.current_recording_mode = mode
-        # region agent log
-        _agent_debug_log(
-            "pre-fix",
-            "C,D",
-            "main.py:start_recording:entry",
-            "start_recording called",
-            {
-                "requested_recording_mode": recording_mode,
-                "normalized_mode": mode,
-                "current_screen": getattr(self.screen_manager, "current", None),
-                "recording_active": bool(self.recording_state.get("active")),
-            },
-        )
-        # endregion
         self._suspend_voice_assistant_for_recording()
 
         async def _start():
@@ -2421,20 +2376,6 @@ class MeetingBoxApp(App):
                     self.current_recording_mode = (
                         result.get('recording_mode') or mode
                     )
-                    # region agent log
-                    _agent_debug_log(
-                        "pre-fix",
-                        "D",
-                        "main.py:start_recording:backend_result",
-                        "backend start_recording returned",
-                        {
-                            "requested_mode": mode,
-                            "session_id": self.current_session_id,
-                            "result_recording_mode": result.get("recording_mode"),
-                            "resolved_mode": self.current_recording_mode,
-                        },
-                    )
-                    # endregion
                     # The backend only confirms that the start command was sent.
                     # The recording screen opens from on_recording_started, which
                     # is emitted by audio_capture.py after the mic stream is open.
@@ -4455,22 +4396,6 @@ class MeetingBoxApp(App):
             # confirm/cancel are answers to a local prompt, not new commands
             and intent.name not in ("confirm", "cancel")
         )
-        # region agent log
-        _agent_debug_log(
-            "pre-fix",
-            "A,B",
-            "main.py:_process_voice_intent",
-            "local voice intent reached app",
-            {
-                "intent_name": intent.name,
-                "intent_phrase": intent.phrase,
-                "realtime_suppresses_local": realtime_suppresses_local,
-                "voice_realtime_assistant": bool(getattr(self, "voice_realtime_assistant", False)),
-                "wake_local_voice_only": bool(WAKE_LOCAL_VOICE_ONLY),
-                "current_screen": getattr(self.screen_manager, "current", None),
-            },
-        )
-        # endregion
         if realtime_suppresses_local:
             return
 
@@ -4858,22 +4783,6 @@ class MeetingBoxApp(App):
         run_async(_run())
 
     def _execute_voice_intent(self, intent: VoiceIntent) -> None:
-        if intent.name in {"start_meeting", "start_note"}:
-            # region agent log
-            _agent_debug_log(
-                "pre-fix",
-                "A,B",
-                "main.py:_execute_voice_intent",
-                "executing local start intent",
-                {
-                    "intent_name": intent.name,
-                    "intent_phrase": intent.phrase,
-                    "will_request_mode": "note" if intent.name == "start_note" else "meeting",
-                    "recording_active": bool(self.recording_state.get("active")),
-                    "current_screen": getattr(self.screen_manager, "current", None),
-                },
-            )
-            # endregion
         if intent.name == "start_meeting":
             if self.recording_state.get("active"):
                 self._voice_reply("A meeting is already recording.", duration=3.0)
