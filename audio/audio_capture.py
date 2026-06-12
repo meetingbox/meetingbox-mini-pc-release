@@ -27,6 +27,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(name)s] %(levelna
 logger = logging.getLogger("meetingbox.audio")
 
 DEVICE_AUTH_TOKEN_FILE = os.getenv("DEVICE_AUTH_TOKEN_FILE", "/data/config/device_auth_token").strip()
+DEVICE_AUTH_TOKEN_REVOKED_MARKER = Path(DEVICE_AUTH_TOKEN_FILE).with_name("device_auth_token.revoked")
 # Device identity (multi-device scoping). Set via the ``DEVICE_ID`` env
 # var or resolved at startup from ``/api/device/pairing-status`` using
 # the persisted device auth token. Tagged on every emitted event so the
@@ -150,7 +151,24 @@ def _load_device_auth_token() -> str:
           return token
     except OSError as exc:
       logger.warning("Could not read device auth token file %s: %s", path, exc)
+  try:
+    if DEVICE_AUTH_TOKEN_REVOKED_MARKER.is_file():
+      return ""
+  except OSError:
+    pass
   return os.getenv("DEVICE_AUTH_TOKEN", "").strip()
+
+
+def _mark_device_auth_token_revoked() -> None:
+  try:
+    Path(DEVICE_AUTH_TOKEN_FILE).unlink(missing_ok=True)
+  except OSError as exc:
+    logger.warning("Could not remove revoked device auth token file %s: %s", DEVICE_AUTH_TOKEN_FILE, exc)
+  try:
+    DEVICE_AUTH_TOKEN_REVOKED_MARKER.parent.mkdir(parents=True, exist_ok=True)
+    DEVICE_AUTH_TOKEN_REVOKED_MARKER.write_text("revoked\n", encoding="utf-8")
+  except OSError as exc:
+    logger.warning("Could not write device auth revoke marker %s: %s", DEVICE_AUTH_TOKEN_REVOKED_MARKER, exc)
 
 
 class AudioCaptureService:
@@ -874,6 +892,17 @@ class AudioCaptureService:
     except urlerror.HTTPError as e:
       detail = e.read().decode("utf-8", errors="ignore")
       logger.error("Upload HTTP error for %s: %s %s", session_id, e.code, detail[:200])
+      if e.code in (401, 403):
+        _mark_device_auth_token_revoked()
+        self._upload_auth_token = ""
+        self._emit_event({
+          "type": "error",
+          "error_type": "Device pairing expired",
+          "message": "This device is no longer paired with the server. Pair it again before recording.",
+          "session_id": session_id,
+          "recording_mode": recording_mode,
+          "timestamp": datetime.now().isoformat(),
+        })
     except Exception as e:
       logger.error("Upload failed for %s: %s", session_id, e)
     return False
@@ -925,7 +954,7 @@ class AudioCaptureService:
       attempted_upload = True
       uploaded = self._upload_recording_via_api(final_path, session_id, recording_mode)
 
-    if attempted_upload and not uploaded:
+    if attempted_upload and not uploaded and self._upload_auth_token:
       self._emit_event({
         "type": "error",
         "error_type": "Upload Failed",

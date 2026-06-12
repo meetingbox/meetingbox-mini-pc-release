@@ -119,6 +119,7 @@ _WS_ENV = (os.getenv("BACKEND_WS_URL", "") or "").strip()
 BACKEND_WS_URL = _fix_ws_wrong_under_api(_WS_ENV) if _WS_ENV else _default_ws_url(BACKEND_URL)
 DEVICE_AUTH_TOKEN = os.getenv('DEVICE_AUTH_TOKEN', '')
 DEVICE_AUTH_TOKEN_FILE_NAME = 'device_auth_token'
+DEVICE_AUTH_TOKEN_REVOKED_MARKER_NAME = 'device_auth_token.revoked'
 
 # Use mock backend for testing (set MOCK_BACKEND=1)
 USE_MOCK_BACKEND = os.getenv('MOCK_BACKEND', '0') == '1'
@@ -675,17 +676,30 @@ def get_device_auth_token() -> str:
                     return t
         except OSError:
             continue
+    for d in _device_token_storage_dirs():
+        try:
+            if (d / DEVICE_AUTH_TOKEN_REVOKED_MARKER_NAME).is_file():
+                return ""
+        except OSError:
+            continue
     return (DEVICE_AUTH_TOKEN or "").strip()
 
 
-def clear_stored_device_auth_token() -> None:
-    """Remove persisted mbd_ token (after unpair). Env DEVICE_AUTH_TOKEN is unchanged."""
+def clear_stored_device_auth_token(*, revoked: bool = True) -> None:
+    """Remove persisted mbd_ token and suppress stale env fallback after revoke."""
     for d in _device_token_storage_dirs():
         path = d / DEVICE_AUTH_TOKEN_FILE_NAME
         try:
             path.unlink(missing_ok=True)
         except OSError as e:
             logger.warning('Could not remove device auth token file %s: %s', path, e)
+        if revoked:
+            try:
+                d.mkdir(parents=True, exist_ok=True)
+                marker = d / DEVICE_AUTH_TOKEN_REVOKED_MARKER_NAME
+                marker.write_text('revoked\n', encoding='utf-8')
+            except OSError as e:
+                logger.debug('Could not write device auth revoke marker in %s: %s', d, e)
 
 
 def persist_device_auth_token(token: str) -> bool:
@@ -706,6 +720,10 @@ def persist_device_auth_token(token: str) -> bool:
         path = d / DEVICE_AUTH_TOKEN_FILE_NAME
         try:
             path.write_text(t + '\n', encoding='utf-8')
+            try:
+                (d / DEVICE_AUTH_TOKEN_REVOKED_MARKER_NAME).unlink(missing_ok=True)
+            except OSError:
+                pass
             try:
                 path.chmod(0o600)
             except OSError:
