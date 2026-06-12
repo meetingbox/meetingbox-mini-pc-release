@@ -32,6 +32,23 @@ from mic_input_resolve import (
 
 logger = logging.getLogger(__name__)
 
+
+def _agent_debug_log(run_id: str, hypothesis_id: str, location: str, message: str, data: dict | None = None) -> None:
+    payload = {
+        "sessionId": "3c47bd",
+        "runId": run_id,
+        "hypothesisId": hypothesis_id,
+        "location": location,
+        "message": message,
+        "data": data or {},
+        "timestamp": int(time.time() * 1000),
+    }
+    try:
+        with open("debug-3c47bd.log", "a", encoding="utf-8") as fh:
+            fh.write(json.dumps(payload, default=str) + "\n")
+    except OSError:
+        pass
+
 try:
     import sounddevice as sd
 except ImportError:
@@ -680,6 +697,33 @@ class VoiceAssistant:
             except Exception:
                 logger.exception("Voice assistant wake callback failed")
         intent = self._interpreter.handle_transcript(norm)
+        try:
+            tracked = {"start_meeting", "start_note", "show_tasks"}
+            scores = []
+            for spec in getattr(self._interpreter, "_intent_specs", ()):
+                if spec.name not in tracked:
+                    continue
+                score = max((_best_phrase_similarity(norm, phrase) for phrase in spec.phrases), default=0.0)
+                scores.append({"name": spec.name, "score": round(float(score), 3)})
+            scores.sort(key=lambda row: row["score"], reverse=True)
+            # region agent log
+            _agent_debug_log(
+                "pre-fix",
+                "A,B",
+                "voice_assistant.py:_handle_transcript",
+                "local voice transcript classified",
+                {
+                    "transcript": norm,
+                    "preempt_intent": getattr(preempt, "name", None),
+                    "final_intent": getattr(intent, "name", None),
+                    "in_command_window": self.in_command_window(),
+                    "heard_wake_phrase": self._interpreter.heard_wake_phrase(norm),
+                    "scores": scores,
+                },
+            )
+            # endregion
+        except Exception:
+            logger.debug("Voice debug log failed", exc_info=True)
         if (
             self._on_conversation_turn is not None
             and intent is None

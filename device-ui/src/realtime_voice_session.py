@@ -56,6 +56,23 @@ from api_client import invoke_realtime_tool_sync
 
 logger = logging.getLogger(__name__)
 
+
+def _agent_debug_log(run_id: str, hypothesis_id: str, location: str, message: str, data: dict | None = None) -> None:
+    payload = {
+        "sessionId": "3c47bd",
+        "runId": run_id,
+        "hypothesisId": hypothesis_id,
+        "location": location,
+        "message": message,
+        "data": data or {},
+        "timestamp": int(time.time() * 1000),
+    }
+    try:
+        with open("debug-3c47bd.log", "a", encoding="utf-8") as fh:
+            fh.write(json.dumps(payload, default=str) + "\n")
+    except OSError:
+        pass
+
 try:
     import sounddevice as sd
 except ImportError:
@@ -1562,6 +1579,19 @@ class RealtimeVoiceSession:
                         spoken = ""
                     if spoken:
                         logger.info("User said: %r", spoken)
+                        # region agent log
+                        _agent_debug_log(
+                            "pre-fix",
+                            "B,C",
+                            "realtime_voice_session.py:user_transcript_completed",
+                            "realtime user transcript completed",
+                            {
+                                "spoken": spoken,
+                                "state": self._state,
+                                "user_ended": self._user_ended,
+                            },
+                        )
+                        # endregion
                         self._emit_user_transcript(spoken, is_final=True)
                         # Client-side farewell fallback: if the transcript is
                         # a clear goodbye phrase, close the session immediately
@@ -1860,6 +1890,20 @@ class RealtimeVoiceSession:
                     call_id,
                     mode,
                 )
+                # region agent log
+                _agent_debug_log(
+                    "pre-fix",
+                    "C",
+                    "realtime_voice_session.py:_handle_response_done",
+                    "realtime start_recording tool call",
+                    {
+                        "call_id": call_id,
+                        "raw_arguments": args,
+                        "parsed_recording_mode": (parsed_args or {}).get("recording_mode"),
+                        "resolved_mode": mode,
+                    },
+                )
+                # endregion
                 start_recording_requested = True
                 start_recording_mode = mode
                 continue

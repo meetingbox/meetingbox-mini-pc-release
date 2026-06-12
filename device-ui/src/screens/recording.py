@@ -21,6 +21,7 @@ on_resumed, on_audio_level, on_audio_segment.
 
 from __future__ import annotations
 
+import json
 import logging
 import math
 import random
@@ -78,6 +79,23 @@ from screens.base_screen import BaseScreen
 from ui_bg import attach_swirl_bg, vertical_gradient_texture
 
 logger = logging.getLogger(__name__)
+
+
+def _agent_debug_log(run_id: str, hypothesis_id: str, location: str, message: str, data: dict | None = None) -> None:
+    payload = {
+        "sessionId": "3c47bd",
+        "runId": run_id,
+        "hypothesisId": hypothesis_id,
+        "location": location,
+        "message": message,
+        "data": data or {},
+        "timestamp": int(time.time() * 1000),
+    }
+    try:
+        with open("debug-3c47bd.log", "a", encoding="utf-8") as fh:
+            fh.write(json.dumps(payload, default=str) + "\n")
+    except OSError:
+        pass
 
 _FONT = "42dot-Sans"
 _FONT_SB = "42dot-SB"
@@ -676,6 +694,19 @@ class RecordingScreen(BaseScreen):
         self._rec_active_start = time.monotonic()
         self.timer_label.set_text("00:00:00")
         self.rec_label.text = self._recording_label_text()
+        # region agent log
+        _agent_debug_log(
+            "pre-fix",
+            "E",
+            "recording.py:on_enter",
+            "recording screen entered",
+            {
+                "app_current_recording_mode": getattr(self.app, "current_recording_mode", None),
+                "resolved_screen_mode": self._recording_mode(),
+                "label_text": self.rec_label.text,
+            },
+        )
+        # endregion
         self.status_dot.set_recording(True)
         self.pause_btn.set_paused(False)
 

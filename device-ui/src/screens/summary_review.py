@@ -21,12 +21,9 @@ Public API preserved for ``main.py``:
 
 from __future__ import annotations
 
-import json
 import logging
 import re
-import time
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
 from typing import Optional
 
 from kivy.clock import Clock
@@ -74,33 +71,6 @@ from summary_layout import (
 from ui_bg import attach_swirl_bg
 
 logger = logging.getLogger(__name__)
-
-
-def _agent_debug_log(run_id: str, hypothesis_id: str, location: str, message: str, data: dict | None = None) -> None:
-    # region agent log
-    payload = {
-        "sessionId": "3c47bd",
-        "runId": run_id,
-        "hypothesisId": hypothesis_id,
-        "location": location,
-        "message": message,
-        "data": data or {},
-        "timestamp": int(time.time() * 1000),
-    }
-    line = json.dumps(payload, default=str) + "\n"
-    here = Path(__file__).resolve()
-    for path in (
-        Path("/data/config/debug-3c47bd.log"),
-        here.parent.parent.parent.parent / "debug-3c47bd.log",
-        Path("debug-3c47bd.log"),
-    ):
-        try:
-            with open(path, "a", encoding="utf-8") as fh:
-                fh.write(line)
-            break
-        except OSError:
-            continue
-    # endregion
 
 _FONT = "42dot-Sans"
 _IST = timezone(timedelta(hours=5, minutes=30))
@@ -466,38 +436,11 @@ class SummaryReviewScreen(BaseScreen):
     def set_meeting_data(self, meeting_id: str, summary_data: dict):
         self.meeting_id = meeting_id
         self._summary_data = dict(summary_data or {})
-        # region agent log
-        _agent_debug_log(
-            "pre-fix",
-            "E",
-            "summary_review.py:set_meeting_data",
-            "summary review received meeting data",
-            {
-                "meeting_id": meeting_id,
-                "summary_keys": sorted(list(self._summary_data.keys())),
-                "has_summary_text": bool(self._overview_summary_text()),
-            },
-        )
-        # endregion
         self._apply_local_data()
         self._fetch_meeting_detail()
 
     def on_enter(self):
         self._ensure_screen_size(self.size)
-        # region agent log
-        _agent_debug_log(
-            "pre-fix",
-            "E",
-            "summary_review.py:on_enter",
-            "summary review entered",
-            {
-                "meeting_id": self.meeting_id,
-                "screen_size": [float(self.width or 0), float(self.height or 0)],
-                "root_size": [float(self._root.width or 0), float(self._root.height or 0)],
-                "has_summary_text": bool(self._overview_summary_text()),
-            },
-        )
-        # endregion
         self._apply_local_data()
         Clock.schedule_once(lambda _dt: self._on_root_resize(self._root, self._root.size), 0)
         Clock.schedule_once(lambda _dt: self._on_root_resize(self._root, self._root.size), 0.05)
