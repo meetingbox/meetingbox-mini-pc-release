@@ -546,6 +546,13 @@ class RecordingScreen(BaseScreen):
         self._rec_active_start = None
         self._build_ui()
 
+    def _recording_mode(self) -> str:
+        mode = (getattr(self.app, "current_recording_mode", "meeting") or "meeting").strip().lower()
+        return "note" if mode == "note" else "meeting"
+
+    def _recording_label_text(self) -> str:
+        return "Taking notes...." if self._recording_mode() == "note" else "Recording...."
+
     # ------------------------------------------------------------------ UI
     def _build_ui(self):
         self._root = FloatLayout(size_hint=(1, 1))
@@ -668,7 +675,7 @@ class RecordingScreen(BaseScreen):
         self._rec_base_elapsed = 0.0
         self._rec_active_start = time.monotonic()
         self.timer_label.set_text("00:00:00")
-        self.rec_label.text = "Recording...."
+        self.rec_label.text = self._recording_label_text()
         self.status_dot.set_recording(True)
         self.pause_btn.set_paused(False)
 
@@ -732,7 +739,7 @@ class RecordingScreen(BaseScreen):
             return
         self._is_paused = False
         self._rec_active_start = time.monotonic()
-        self.rec_label.text = "Recording...."
+        self.rec_label.text = self._recording_label_text()
         self.status_dot.set_recording(True)
         self.pause_btn.set_paused(False)
         self.wavebar.start_voice()

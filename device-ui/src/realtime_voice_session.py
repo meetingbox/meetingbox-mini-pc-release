@@ -227,12 +227,24 @@ START_RECORDING_TOOL: dict = {
     "type": "function",
     "name": "start_recording",
     "description": (
-        "Call this tool when the user asks to start recording a meeting. "
+        "Call this tool when the user asks to start recording. Use recording_mode='meeting' "
+        "for meeting recordings, and recording_mode='note' when the user asks to take notes, "
+        "record notes, make a todo list, or capture tasks. "
         "Always say a brief confirmation (e.g. 'Starting the recording now') "
         "BEFORE calling this tool. The voice session will close and recording "
         "will begin immediately."
     ),
-    "parameters": {"type": "object", "properties": {}, "required": []},
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "recording_mode": {
+                "type": "string",
+                "enum": ["meeting", "note"],
+                "description": "meeting for meeting summary flow; note for note/todo extraction flow.",
+            },
+        },
+        "required": [],
+    },
 }
 
 
@@ -1807,6 +1819,7 @@ class RealtimeVoiceSession:
         pending: list[dict] = []
         end_session_requested = False
         start_recording_requested = False
+        start_recording_mode = "meeting"
         for item in outputs:
             if not isinstance(item, dict) or item.get("type") != "function_call":
                 continue
@@ -1835,11 +1848,20 @@ class RealtimeVoiceSession:
             # Don't HTTP-roundtrip it — close the session and trigger
             # start_recording() on the main thread.
             if name == "start_recording":
+                try:
+                    parsed_args = json.loads(args or "{}")
+                except (TypeError, ValueError):
+                    parsed_args = {}
+                mode = str((parsed_args or {}).get("recording_mode") or "meeting").strip().lower()
+                if mode not in {"meeting", "note"}:
+                    mode = "meeting"
                 logger.info(
-                    "Realtime: model called start_recording (call_id=%s) — starting recording.",
+                    "Realtime: model called start_recording (call_id=%s mode=%s) — starting recording.",
                     call_id,
+                    mode,
                 )
                 start_recording_requested = True
+                start_recording_mode = mode
                 continue
 
             logger.info(
@@ -1919,7 +1941,7 @@ class RealtimeVoiceSession:
                 pass
             cb = self._on_start_recording_cb
             if cb:
-                Clock.schedule_once(lambda _dt: self._safe_call(cb), 0)
+                Clock.schedule_once(lambda _dt, m=start_recording_mode: self._safe_call(cb, m), 0)
 
     # ------------------------------------------------------------------
     # Misc helpers

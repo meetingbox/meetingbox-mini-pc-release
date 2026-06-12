@@ -419,13 +419,19 @@ class BackendClient:
     # MEETINGS API
     # ==================================================================
 
-    async def start_recording(self) -> Dict:
+    async def start_recording(self, recording_mode: str = "meeting") -> Dict:
         """
         POST /api/meetings/start
         Returns: { session_id, status }
         """
         try:
-            resp = await self.client.post(f"{self.base_url}/api/meetings/start")
+            mode = (recording_mode or "meeting").strip().lower()
+            if mode not in {"meeting", "note"}:
+                mode = "meeting"
+            resp = await self.client.post(
+                f"{self.base_url}/api/meetings/start",
+                json={"recording_mode": mode},
+            )
             resp.raise_for_status()
             data = resp.json()
             logger.info(f"Started recording: {data.get('session_id')}")

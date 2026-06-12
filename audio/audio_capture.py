@@ -174,6 +174,7 @@ class AudioCaptureService:
     self.is_paused = False
     self.is_mic_test = False
     self.current_session_id: str | None = None
+    self.current_recording_mode = "meeting"
     self._recording_thread: object | None = None  # threading.Thread
     self._mic_test_thread: object | None = None  # threading.Thread
     self._output_path: Path | None = None
@@ -730,7 +731,7 @@ class AudioCaptureService:
 
   # --- Recording lifecycle ---------------------------------------------
 
-  def start_recording(self, session_id: str | None = None) -> bool:
+  def start_recording(self, session_id: str | None = None, recording_mode: str = "meeting") -> bool:
     if self.is_recording:
       logger.warning("Already recording")
       return False
@@ -739,8 +740,12 @@ class AudioCaptureService:
 
     if session_id is None:
       session_id = datetime.now().strftime("%Y%m%d_%H%M%S")
+    mode = (recording_mode or "meeting").strip().lower()
+    if mode not in {"meeting", "note"}:
+      mode = "meeting"
 
     self.current_session_id = session_id
+    self.current_recording_mode = mode
     self.is_recording = True
     self.is_paused = False
     self._mic_status = None
@@ -783,13 +788,14 @@ class AudioCaptureService:
     self._emit_event({
       "type": "recording_started",
       "session_id": session_id,
+      "recording_mode": mode,
       "timestamp": datetime.now().isoformat(),
     })
 
     logger.info("Recording started - session %s", session_id)
     return True
 
-  def _build_multipart_payload(self, wav_path: Path, session_id: str) -> tuple[str, bytes]:
+  def _build_multipart_payload(self, wav_path: Path, session_id: str, recording_mode: str = "meeting") -> tuple[str, bytes]:
     boundary = f"----MeetingBoxBoundary{uuid.uuid4().hex}"
     crlf = b"\r\n"
     chunks: list[bytes] = []
@@ -798,6 +804,11 @@ class AudioCaptureService:
     chunks.append(b'Content-Disposition: form-data; name="session_id"')
     chunks.append(b"")
     chunks.append(session_id.encode("utf-8"))
+
+    chunks.append(f"--{boundary}".encode("utf-8"))
+    chunks.append(b'Content-Disposition: form-data; name="recording_mode"')
+    chunks.append(b"")
+    chunks.append((recording_mode or "meeting").encode("utf-8"))
 
     chunks.append(f"--{boundary}".encode("utf-8"))
     chunks.append(
@@ -811,13 +822,13 @@ class AudioCaptureService:
     body = crlf.join(chunks) + crlf
     return boundary, body
 
-  def _upload_recording_via_api(self, wav_path: Path, session_id: str) -> bool:
+  def _upload_recording_via_api(self, wav_path: Path, session_id: str, recording_mode: str = "meeting") -> bool:
     if not wav_path.exists():
       logger.error("Upload skipped: WAV file does not exist (%s)", wav_path)
       return False
 
     try:
-      boundary, body = self._build_multipart_payload(wav_path, session_id)
+      boundary, body = self._build_multipart_payload(wav_path, session_id, recording_mode)
       headers = {"Content-Type": f"multipart/form-data; boundary={boundary}"}
       if self._upload_auth_token:
         headers["Authorization"] = f"Bearer {self._upload_auth_token}"
@@ -850,6 +861,7 @@ class AudioCaptureService:
       self._emit_event({
         "type": "recording_stopped",
         "session_id": sid,
+        "recording_mode": self.current_recording_mode,
         "path": None,
         "timestamp": datetime.now().isoformat(),
       })
@@ -881,11 +893,12 @@ class AudioCaptureService:
     self._output_path = None
 
     session_id = self.current_session_id
+    recording_mode = self.current_recording_mode
     uploaded = False
     attempted_upload = False
     if self.upload_on_stop and final_path and session_id:
       attempted_upload = True
-      uploaded = self._upload_recording_via_api(final_path, session_id)
+      uploaded = self._upload_recording_via_api(final_path, session_id, recording_mode)
 
     if attempted_upload and not uploaded:
       self._emit_event({
@@ -893,10 +906,12 @@ class AudioCaptureService:
         "error_type": "Upload Failed",
         "message": "Could not upload audio for cloud transcription/summarization.",
         "session_id": session_id,
+        "recording_mode": recording_mode,
         "timestamp": datetime.now().isoformat(),
       })
 
     self.current_session_id = None
+    self.current_recording_mode = "meeting"
     self._mic_status = None
     return session_id
 
@@ -1269,7 +1284,8 @@ class AudioCaptureService:
     action = command.get("action")
     if action == "start_recording":
       session_id = command.get("session_id")
-      if self.start_recording(session_id):
+      mode = command.get("recording_mode") or command.get("mode") or "meeting"
+      if self.start_recording(session_id, mode):
         thread = threading.Thread(target=self.recording_loop, daemon=True)
         thread.start()
         self._recording_thread = thread

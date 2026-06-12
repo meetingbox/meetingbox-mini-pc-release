@@ -355,7 +355,7 @@ class SummaryReviewScreen(BaseScreen):
             ))
         else:
             self._canvas.add_widget(_Sparkle(**kivy_hints(AI_SPARKLE)))
-        self._add_label(
+        self.header_label = self._add_label(
             "AI Summary", AI_HEADER, AI_HEADER_FS_RATIO, COL_AI_HEADER, bold=True, halign="left",
         )
 
@@ -451,13 +451,18 @@ class SummaryReviewScreen(BaseScreen):
     # --------------------------------------------------------------- data
     def _apply_local_data(self):
         data = self._summary_data or {}
-        title = (data.get("title") or self._meeting_title or "Meeting").strip() or "Meeting"
+        is_note = self._is_note_data(data)
+        title_default = "Notes" if is_note else "Meeting"
+        title = (data.get("title") or self._meeting_title or title_default).strip() or title_default
+        if is_note:
+            title = "Notes"
         self._meeting_title = title
         self.title_label.text = title
+        self.header_label.text = "Notes" if is_note else "AI Summary"
         self.meta_label.text = self._format_meta_line(data)
         self.summary_scroll.text = (
             self._overview_summary_text()
-            or "Summary will appear here once processing finishes."
+            or ("Notes will appear here once processing finishes." if is_note else "Summary will appear here once processing finishes.")
         )
 
     def _overview_summary_text(self) -> str:
@@ -467,7 +472,14 @@ class SummaryReviewScreen(BaseScreen):
             summary_text = (summary.get("summary") or "").strip()
         else:
             summary_text = (summary or "").strip()
+        if self._is_note_data(data):
+            return summary_text
         return _summary_card_text(summary_text)
+
+    @staticmethod
+    def _is_note_data(data: dict) -> bool:
+        mode = str((data or {}).get("recording_mode") or (data or {}).get("content_type") or "").strip().lower()
+        return mode in {"note", "notes"}
 
     def _fetch_meeting_detail(self):
         if not self.meeting_id:
