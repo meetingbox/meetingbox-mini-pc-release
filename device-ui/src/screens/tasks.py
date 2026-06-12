@@ -705,7 +705,7 @@ class TasksScreen(BaseScreen):
 
         # "Tasks" title — black, 42dot Bold 40
         root.add_widget(_lbl("Tasks", _F_BOLD, _ff(40), _TITLE_BLK, bold=True,
-                             ha="left", va="middle", **_ph(98.0, 84.0, 320.0, 56.0)))
+                             ha="left", va="middle", **_ph(98.0, 88.0, 320.0, 48.0)))
 
     # ── Tab bar  (Figma 29,170 1202×69 #DFDFDF r38) ─────────────────────────────
 
@@ -732,7 +732,7 @@ class TasksScreen(BaseScreen):
             inner.bind(minimum_width=inner.setter("width"))
 
             # Auto-width label (no text_size binding → no feedback loop).
-            lbl = Label(text=text, font_name=_F_SB, font_size=_ff(28), color=_TAB_TXT,
+            lbl = Label(text=text, font_name=_F_SB, font_size=_ff(32), color=_TAB_TXT,
                         halign="center", valign="middle", size_hint=(None, 1))
             lbl.bind(texture_size=lambda w, ts: setattr(w, "width", ts[0] + _ff(2)))
             inner.add_widget(lbl)
@@ -866,32 +866,35 @@ class TasksScreen(BaseScreen):
         show_due = bucket in _SHOW_DUE
         due_text = _short_due(row) if show_due else ""
 
-        ROW_H = _ff(68)
+        ROW_H = _ff(72)
         roww = FloatLayout(size_hint=(1, None), height=ROW_H)
 
-        # status dot
+        # status dot — Figma: x:58, size:13×13 within 1202px card
         D = _ff(13)
         roww.add_widget(_Dot(_ACTIVE, size_hint=(None, None), size=(D, D),
-                             pos_hint={"x": _ff(29) / 1202.0, "center_y": 0.5}))
+                             pos_hint={"x": 58.0 / 1202.0, "center_y": 0.5}))
 
-        # 3-dot more button (right)
-        more = _MoreButton(size_hint=(None, None), size=(_ff(41), _ff(12)),
-                           pos_hint={"right": 1.0 - _ff(20) / 1202.0, "center_y": 0.5})
+        # 3-dot more button — Figma: x:1089, width:41, height:9, right edge at 1130
+        more = _MoreButton(size_hint=(None, None), size=(_ff(41), _ff(9)),
+                           pos_hint={"right": 1130.0 / 1202.0, "center_y": 0.5})
         more.bind(on_release=lambda btn, tid=task_id, r=row, b=bucket: self._open_menu(btn, tid, r, b))
         roww.add_widget(more)
 
-        # due date (left of the more button)
-        title_right = 1.0 - _ff(80) / 1202.0
+        # due date (left of the more button, 10px gap from button left edge at 1089)
+        # right edge of due date = 1079/1202; due date width = 180px
+        _DUE_RIGHT = 1079.0 / 1202.0
+        title_right = _DUE_RIGHT
         if due_text:
-            roww.add_widget(_lbl(due_text, _F_MED, _ff(20), _DUE_TXT, ha="right", va="middle",
+            roww.add_widget(_lbl(due_text, _F_MED, _ff(24), _DUE_TXT, ha="right", va="middle",
                                  size_hint=(None, 1), width=_ff(180),
-                                 pos_hint={"right": 1.0 - _ff(80) / 1202.0, "y": 0}))
-            title_right = 1.0 - _ff(280) / 1202.0
+                                 pos_hint={"right": _DUE_RIGHT, "y": 0}))
+            # title ends 10px left of due date's left edge (899/1202)
+            title_right = 889.0 / 1202.0
 
-        # title
-        title_x = _ff(69) / 1202.0
-        title_w = title_right - title_x
-        roww.add_widget(_lbl(title, _F_MED, _ff(30), _TASK_TXT, ha="left", va="middle",
+        # title — Figma: x:98, fontSize:37, color #464E59
+        title_x = 98.0 / 1202.0
+        title_w = max(0.05, title_right - title_x)
+        roww.add_widget(_lbl(title, _F_MED, _ff(37), _TASK_TXT, ha="left", va="middle",
                              size_hint=(title_w, 1), pos_hint={"x": title_x, "center_y": 0.5},
                              shorten=True, shorten_from="right"))
 
