@@ -30,6 +30,23 @@ _src_dir = Path(__file__).resolve().parent
 if str(_src_dir) not in sys.path:
     sys.path.insert(0, str(_src_dir))
 
+
+def _agent_debug_log(run_id: str, hypothesis_id: str, location: str, message: str, data: dict | None = None) -> None:
+    payload = {
+        "sessionId": "3c47bd",
+        "runId": run_id,
+        "hypothesisId": hypothesis_id,
+        "location": location,
+        "message": message,
+        "data": data or {},
+        "timestamp": int(time.time() * 1000),
+    }
+    try:
+        with open("debug-3c47bd.log", "a", encoding="utf-8") as fh:
+            fh.write(json.dumps(payload, default=str) + "\n")
+    except OSError:
+        pass
+
 from xauthority_util import display_refers_to_screen_zero, xauthority_list_has_display_zero
 
 # Before importing Kivy: stable clipboard provider on Linux (see kivy_options).
@@ -637,6 +654,8 @@ class MeetingBoxApp(App):
 
         # Application state
         self.current_session_id = None
+        self.current_recording_mode = "meeting"
+        self._note_tasks_persisted: set[str] = set()
         self.recording_state = {
             'active': False,
             'paused': False,
@@ -1758,14 +1777,34 @@ class MeetingBoxApp(App):
 
     def on_recording_started(self, data):
         sid = data.get('session_id')
+        mode = (data.get('recording_mode') or self.current_recording_mode or "meeting").strip().lower()
+        if mode not in {"meeting", "note"}:
+            mode = "meeting"
         # API + local audio may both publish recording_started when Redis is shared.
         if sid and self.current_session_id == sid and self.recording_state.get('active'):
             return
         self.current_session_id = sid
+        self.current_recording_mode = mode
+        # region agent log
+        _agent_debug_log(
+            "pre-fix",
+            "D,E",
+            "main.py:on_recording_started",
+            "recording_started event accepted",
+            {
+                "session_id": sid,
+                "event_recording_mode": data.get("recording_mode"),
+                "resolved_mode": mode,
+                "current_screen": getattr(self.screen_manager, "current", None),
+            },
+        )
+        # endregion
         self._transcription_done_for_session = None
         self._transcript_cta_satisfied_meeting_id = None
         self._transcript_cta_poll_meeting_id = None
         self.recording_state.update(active=True, paused=False, elapsed=0)
+        self._voice_start_in_flight = False
+        self._voice_start_confirmation_pending = False
         self._reset_recording_elapsed_clock()
         Clock.schedule_once(lambda _: self._suspend_voice_assistant_for_recording(), 0)
         Clock.schedule_once(lambda _: self.goto_screen('recording', 'fade'), 0)
@@ -1787,9 +1826,12 @@ class MeetingBoxApp(App):
             logger.debug("Processing screen unavailable for metadata prime: %s", e)
             return
         if hasattr(screen, 'on_processing_started'):
+            mode = self.current_recording_mode if self.current_recording_mode in {"meeting", "note"} else "meeting"
+            title_prefix = "Notes" if mode == "note" else "Meeting"
             screen.on_processing_started({
-                'title': f'Meeting {sid}',
+                'title': f'{title_prefix} {sid}',
                 'duration': max(0, int(duration_seconds or 0)),
+                'recording_mode': mode,
             })
 
     def on_recording_stopped(self, data):
@@ -1873,7 +1915,9 @@ class MeetingBoxApp(App):
         def _update_status(_dt):
             screen = self.screen_manager.get_screen('processing')
             if hasattr(screen, 'set_processing_status'):
-                screen.set_processing_status('Transcription done. Building meeting report…')
+                mode = (data.get('recording_mode') or self.current_recording_mode or "meeting").strip().lower()
+                text = 'Transcription done. Extracting notes…' if mode == "note" else 'Transcription done. Building meeting report…'
+                screen.set_processing_status(text)
 
         Clock.schedule_once(_update_status, 0)
 
@@ -1907,7 +1951,9 @@ class MeetingBoxApp(App):
         def _update_status(_dt):
             screen = self.screen_manager.get_screen('processing')
             if hasattr(screen, 'set_processing_status'):
-                screen.set_processing_status('Building meeting report…')
+                mode = (data.get('recording_mode') or self.current_recording_mode or "meeting").strip().lower()
+                text = 'Creating notes…' if mode == "note" else 'Building meeting report…'
+                screen.set_processing_status(text)
 
         Clock.schedule_once(_update_status, 0)
         self._auto_summarize(meeting_id)
@@ -1939,6 +1985,11 @@ class MeetingBoxApp(App):
         """Handle summary_complete event from AI service (if it fires separately)."""
         meeting_id = data.get('meeting_id')
         summary = data.get('summary') or {}
+        mode = (data.get('recording_mode') or self.current_recording_mode or "meeting").strip().lower()
+        if mode not in {"meeting", "note"}:
+            mode = "meeting"
+        if isinstance(summary, dict):
+            summary.setdefault('recording_mode', mode)
         if not meeting_id:
             return
         if isinstance(summary, dict) and summary.get('status') == 'failed':
@@ -1958,9 +2009,14 @@ class MeetingBoxApp(App):
         ready_for_review = self._summary_payload_ready_for_review(summary or {})
         if ready_for_review:
             try:
+                if isinstance(summary, dict):
+                    summary.setdefault('recording_mode', self.current_recording_mode)
                 self._processing_summary_cache[meeting_id] = {'ok': True, 'summary': summary or {}}
             except Exception:
                 pass
+            if (self.current_recording_mode == "note"
+                    or str((summary or {}).get("recording_mode") or "").strip().lower() == "note"):
+                run_async(self._persist_note_tasks_from_summary(meeting_id, summary or {}))
         # Any path reaching here is the authoritative "summary ready" signal —
         # silence the fallback poll so we don't duplicate work.
         if ready_for_review and self._summary_poll_meeting_id == meeting_id:
@@ -2020,6 +2076,106 @@ class MeetingBoxApp(App):
             or ''
         )
         return bool(str(text).strip())
+
+    @staticmethod
+    def _note_todo_candidates(summary: dict) -> list[dict]:
+        """Build task rows when the server did not persist note todos."""
+        if not isinstance(summary, dict):
+            return []
+        created = summary.get("created_tasks") or []
+        if isinstance(created, list) and created:
+            return []
+
+        items: list[dict] = []
+        raw_action = summary.get("action_items")
+        if isinstance(raw_action, str):
+            try:
+                raw_action = json.loads(raw_action)
+            except json.JSONDecodeError:
+                raw_action = []
+        if isinstance(raw_action, list):
+            for row in raw_action:
+                if not isinstance(row, dict):
+                    continue
+                title = str(row.get("title") or row.get("task") or "").strip()
+                if not title:
+                    continue
+                items.append({
+                    "title": title,
+                    "due_date": row.get("due_date"),
+                    "description": str(row.get("description") or "").strip(),
+                })
+        if items:
+            return items
+
+        text = ""
+        inner = summary.get("summary")
+        if isinstance(inner, dict):
+            text = str(inner.get("summary") or "")
+        elif isinstance(inner, str):
+            text = inner
+        if not text:
+            text = str(summary.get("summary_text") or summary.get("text") or "")
+
+        for raw_line in text.splitlines():
+            line = raw_line.strip()
+            for prefix in ("- ", "• ", "* "):
+                if line.startswith(prefix):
+                    line = line[len(prefix):].strip()
+                    break
+            else:
+                continue
+            if not line:
+                continue
+            full = line.rstrip(".")
+            words = full.split()
+            title = full
+            description = ""
+            if len(words) > 18:
+                title = " ".join(words[:8])
+                description = full
+            items.append({
+                "title": title,
+                "due_date": None,
+                "description": description,
+            })
+        return items
+
+    async def _persist_note_tasks_from_summary(self, meeting_id: str, summary: dict) -> None:
+        mode = str(
+            (summary or {}).get("recording_mode") or self.current_recording_mode or ""
+        ).strip().lower()
+        if mode != "note":
+            return
+        if meeting_id in self._note_tasks_persisted:
+            return
+
+        candidates = self._note_todo_candidates(summary or {})
+        if not candidates:
+            return
+
+        created: list[dict] = []
+        skipped: list[dict] = []
+        for item in candidates:
+            title = str(item.get("title") or "").strip()
+            if not title:
+                continue
+            res = await self.backend.create_commitment(
+                title=title,
+                due_date=item.get("due_date"),
+                description=item.get("description") or None,
+                confirm_duplicate=True,
+                source="note",
+            )
+            if res.get("error"):
+                skipped.append({"title": title, "error": res.get("error")})
+            elif res.get("id"):
+                created.append({"id": res.get("id"), "title": title})
+
+        self._note_tasks_persisted.add(meeting_id)
+        if isinstance(summary, dict):
+            summary["created_tasks"] = created
+            summary["skipped_tasks"] = skipped
 
     @classmethod
     def _summary_payload_ready_for_review(cls, summary: dict) -> bool:
@@ -2225,12 +2381,30 @@ class MeetingBoxApp(App):
     # RECORDING ACTIONS
     # ==================================================================
 
-    def start_recording(self):
+    def start_recording(self, recording_mode: str = "meeting"):
+        mode = (recording_mode or "meeting").strip().lower()
+        if mode not in {"meeting", "note"}:
+            mode = "meeting"
+        self.current_recording_mode = mode
+        # region agent log
+        _agent_debug_log(
+            "pre-fix",
+            "C,D",
+            "main.py:start_recording:entry",
+            "start_recording called",
+            {
+                "requested_recording_mode": recording_mode,
+                "normalized_mode": mode,
+                "current_screen": getattr(self.screen_manager, "current", None),
+                "recording_active": bool(self.recording_state.get("active")),
+            },
+        )
+        # endregion
+        self._suspend_voice_assistant_for_recording()
+
         async def _start():
             last_exc: BaseException | None = None
             max_attempts = 3
-            Clock.schedule_once(lambda _: self._suspend_voice_assistant_for_recording(), 0)
-            await asyncio.sleep(0.35)
             for attempt in range(max_attempts):
                 if attempt > 0:
                     delay = 2.0 * attempt
@@ -2242,14 +2416,28 @@ class MeetingBoxApp(App):
                     )
                     await asyncio.sleep(delay)
                 try:
-                    result = await self.backend.start_recording()
+                    result = await self.backend.start_recording(mode)
                     self.current_session_id = result['session_id']
-                    self.recording_state.update(active=True, paused=False, elapsed=0)
-                    self._voice_start_in_flight = False
-                    self._reset_recording_elapsed_clock()
-                    Clock.schedule_once(lambda _: self._suspend_voice_assistant_for_recording(), 0)
-                    Clock.schedule_once(
-                        lambda _: self.goto_screen('recording', 'fade'), 0)
+                    self.current_recording_mode = (
+                        result.get('recording_mode') or mode
+                    )
+                    # region agent log
+                    _agent_debug_log(
+                        "pre-fix",
+                        "D",
+                        "main.py:start_recording:backend_result",
+                        "backend start_recording returned",
+                        {
+                            "requested_mode": mode,
+                            "session_id": self.current_session_id,
+                            "result_recording_mode": result.get("recording_mode"),
+                            "resolved_mode": self.current_recording_mode,
+                        },
+                    )
+                    # endregion
+                    # The backend only confirms that the start command was sent.
+                    # The recording screen opens from on_recording_started, which
+                    # is emitted by audio_capture.py after the mic stream is open.
                     return
                 except Exception as e:
                     last_exc = e
@@ -2869,13 +3057,13 @@ class MeetingBoxApp(App):
             except Exception:
                 pass
 
-    def _realtime_handle_start_recording(self) -> None:
-        """Called when the realtime agent asks to start a meeting recording."""
+    def _realtime_handle_start_recording(self, recording_mode: str = "meeting") -> None:
+        """Called when the realtime agent asks to start a recording."""
         if self.recording_state.get("active"):
             logger.info("Realtime start_recording: already recording, ignoring.")
             return
         try:
-            self.start_recording()
+            self.start_recording(recording_mode)
         except Exception:
             logger.exception("Realtime start_recording callback failed")
 
@@ -4246,7 +4434,8 @@ class MeetingBoxApp(App):
         if not self._voice_start_confirmation_pending:
             return
         self._voice_start_confirmation_pending = False
-        self._voice_reply(self.voice_confirmation_text, state="speaking", duration=3.0)
+        msg = "Notes started" if self.current_recording_mode == "note" else self.voice_confirmation_text
+        self._voice_reply(msg, state="speaking", duration=3.0)
 
     def _handle_voice_intent(self, intent: VoiceIntent) -> None:
         Clock.schedule_once(lambda _dt, iv=intent: self._process_voice_intent(iv), 0)
@@ -4257,7 +4446,7 @@ class MeetingBoxApp(App):
         # single Result(), which fires this intent callback in parallel
         # with the Realtime mint. Without this guard the device plays
         # an espeak reply ("Opening inbox.") on top of Realtime's audio.
-        if (
+        realtime_suppresses_local = (
             getattr(self, "voice_realtime_assistant", False)
             and REALTIME_VOICE_IMPLEMENTED
             and bool(get_device_auth_token().strip())
@@ -4265,7 +4454,24 @@ class MeetingBoxApp(App):
             and not WAKE_LOCAL_VOICE_ONLY
             # confirm/cancel are answers to a local prompt, not new commands
             and intent.name not in ("confirm", "cancel")
-        ):
+        )
+        # region agent log
+        _agent_debug_log(
+            "pre-fix",
+            "A,B",
+            "main.py:_process_voice_intent",
+            "local voice intent reached app",
+            {
+                "intent_name": intent.name,
+                "intent_phrase": intent.phrase,
+                "realtime_suppresses_local": realtime_suppresses_local,
+                "voice_realtime_assistant": bool(getattr(self, "voice_realtime_assistant", False)),
+                "wake_local_voice_only": bool(WAKE_LOCAL_VOICE_ONLY),
+                "current_screen": getattr(self.screen_manager, "current", None),
+            },
+        )
+        # endregion
+        if realtime_suppresses_local:
             return
 
         if intent.name == "confirm":
@@ -4652,6 +4858,22 @@ class MeetingBoxApp(App):
         run_async(_run())
 
     def _execute_voice_intent(self, intent: VoiceIntent) -> None:
+        if intent.name in {"start_meeting", "start_note"}:
+            # region agent log
+            _agent_debug_log(
+                "pre-fix",
+                "A,B",
+                "main.py:_execute_voice_intent",
+                "executing local start intent",
+                {
+                    "intent_name": intent.name,
+                    "intent_phrase": intent.phrase,
+                    "will_request_mode": "note" if intent.name == "start_note" else "meeting",
+                    "recording_active": bool(self.recording_state.get("active")),
+                    "current_screen": getattr(self.screen_manager, "current", None),
+                },
+            )
+            # endregion
         if intent.name == "start_meeting":
             if self.recording_state.get("active"):
                 self._voice_reply("A meeting is already recording.", duration=3.0)
@@ -4663,6 +4885,19 @@ class MeetingBoxApp(App):
             self._sync_voice_assistant_state()
             self._set_voice_indicator_override("starting", "Starting meeting", 4.0)
             self.start_recording()
+            return
+
+        if intent.name == "start_note":
+            if self.recording_state.get("active"):
+                self._voice_reply("A recording is already running.", duration=3.0)
+                return
+            logger.info('Voice trigger accepted ("hey buddy" -> "start note")')
+            self._voice_start_in_flight = True
+            self._voice_start_confirmation_pending = True
+            self._reset_idle_timer()
+            self._sync_voice_assistant_state()
+            self._set_voice_indicator_override("starting", "Starting notes", 4.0)
+            self.start_recording("note")
             return
 
         if intent.name == "stop_meeting":

@@ -403,6 +403,57 @@ class _VoiceStatePill(FloatLayout):
         self._waveform.update_bars(t, amp)
 
 
+class _SummaryPopupPill(FloatLayout):
+    """Rounded summary-ready notification container."""
+
+    def __init__(self, **kw):
+        super().__init__(**kw)
+        with self.canvas.before:
+            Color(*_SHADOW)
+            self._shadow = RoundedRectangle(pos=(0, 0), size=(1, 1), radius=[30])
+            Color(1.0, 1.0, 1.0, 0.96)
+            self._bg = RoundedRectangle(pos=(0, 0), size=(1, 1), radius=[28])
+            Color(1.0, 1.0, 1.0, 0.72)
+            self._border = Line(rounded_rectangle=(0, 0, 0, 0, 28), width=1.4)
+        self.bind(pos=self._draw, size=self._draw)
+
+    def _draw(self, *_):
+        x, y = self.pos
+        w, h = self.size
+        if w <= 0 or h <= 0:
+            return
+        r = min(w, h) / 2
+        self._shadow.pos = (x + 2, y - 8)
+        self._shadow.size = (w, h + 8)
+        self._shadow.radius = [r]
+        self._bg.pos = (x, y)
+        self._bg.size = (w, h)
+        self._bg.radius = [r]
+        self._border.rounded_rectangle = (x + 1, y + 1, w - 2, h - 2, max(2, r - 1))
+
+
+class _PopupButton(ButtonBehavior, FloatLayout):
+    """Small rounded button used inside the summary-ready popup."""
+
+    def __init__(self, fill, **kw):
+        super().__init__(**kw)
+        self._fill = fill
+        with self.canvas.before:
+            self._color = Color(*fill)
+            self._bg = RoundedRectangle(pos=(0, 0), size=(1, 1), radius=[22])
+        self.bind(pos=self._draw, size=self._draw)
+
+    def _draw(self, *_):
+        x, y = self.pos
+        w, h = self.size
+        if w <= 0 or h <= 0:
+            return
+        self._color.rgba = self._fill
+        self._bg.pos = (x, y)
+        self._bg.size = (w, h)
+        self._bg.radius = [min(w, h) / 2]
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # HomeScreen
 # ─────────────────────────────────────────────────────────────────────────────
@@ -417,20 +468,25 @@ class HomeScreen(BaseScreen):
         self._clock_ev:          object | None = None
         self._status_ev:         object | None = None
         self._voice_tick_ev:     object | None = None
+        self._summary_poll_ev:   object | None = None
         self._listening_active:  bool          = False
         self._current_amplitude: float         = 0.0
+        self._shown_summary_ids: set[str] = set()
         # Mutable widget refs (set in _build_ui)
+        self._root:       FloatLayout     | None = None
         self._battery:    _BatteryWidget  | None = None
         self._voice_pill: _VoiceStatePill | None = None
         self._mic_btn:    _MicButton      | None = None
         self._time_lbl:   Label           | None = None
         self._date_lbl:   Label           | None = None
+        self._summary_ready_popup: _SummaryPopupPill | None = None
         self._build_ui()
 
     # ── Build ─────────────────────────────────────────────────────────────────
 
     def _build_ui(self) -> None:
         root = FloatLayout()
+        self._root = root
 
         # 1 · Full-bleed background image  (0, 0)  1260 × 800 ──────────────
         bg_src = _fp("new_home_bg.png")
@@ -560,6 +616,12 @@ class HomeScreen(BaseScreen):
         Clock.schedule_once(lambda _dt: self._refresh_status(), 1.5)
         self._status_ev = Clock.schedule_interval(lambda _dt: self._refresh_status(), 30.0)
 
+        # Poll the app-level processing cache for newly completed summaries.
+        self._check_summary_ready()
+        if self._summary_poll_ev:
+            self._summary_poll_ev.cancel()
+        self._summary_poll_ev = Clock.schedule_interval(self._check_summary_ready, 1.5)
+
     def on_leave(self):
         self._listening_active  = False
         self._current_amplitude = 0.0
@@ -576,6 +638,142 @@ class HomeScreen(BaseScreen):
         if self._status_ev:
             self._status_ev.cancel()
             self._status_ev = None
+        if self._summary_poll_ev:
+            self._summary_poll_ev.cancel()
+            self._summary_poll_ev = None
+
+    # ── Summary-ready popup ──────────────────────────────────────────────────
+
+    def _check_summary_ready(self, *_):
+        if self._summary_ready_popup is not None:
+            return
+        cache = getattr(self.app, "_processing_summary_cache", None)
+        if not isinstance(cache, dict) or not cache:
+            return
+        for meeting_id, entry in list(cache.items()):
+            if not isinstance(entry, dict) or not entry.get("ok"):
+                continue
+            if meeting_id in self._shown_summary_ids:
+                continue
+            self._show_summary_ready_popup(meeting_id, entry.get("summary") or {})
+            break
+
+    def _show_summary_ready_popup(self, meeting_id: str, summary: dict) -> None:
+        self._dismiss_summary_popup()
+        title = "Your meeting"
+        mode = "meeting"
+        if isinstance(summary, dict):
+            mode = str(summary.get("recording_mode") or summary.get("content_type") or "meeting").strip().lower()
+            for key in ("title", "report_title", "meeting_title", "name"):
+                value = str(summary.get(key) or "").strip()
+                if value:
+                    title = value
+                    break
+        is_note = mode in {"note", "notes"}
+        if is_note and title == "Your meeting":
+            title = "Notes"
+
+        popup = _SummaryPopupPill(
+            size_hint=(_sw(760), _sh(88)),
+            pos_hint={"x": _x((_FW - 760) / 2), "y": _y(96, 88)},
+        )
+
+        headline = Label(
+            text="Notes are ready" if is_note else "Meeting summary is ready",
+            font_name=_FONT_SB,
+            font_size=_ff(22),
+            color=_TEXT,
+            halign="left",
+            valign="middle",
+            size_hint=(0.56, 0.34),
+            pos_hint={"x": 0.045, "center_y": 0.63},
+        )
+        headline.bind(size=headline.setter("text_size"))
+        popup.add_widget(headline)
+
+        subtitle = Label(
+            text=title,
+            font_name=_FONT_SB,
+            font_size=_ff(17),
+            color=(0.45, 0.45, 0.50, 1.0),
+            halign="left",
+            valign="middle",
+            shorten=True,
+            shorten_from="right",
+            max_lines=1,
+            size_hint=(0.56, 0.30),
+            pos_hint={"x": 0.045, "center_y": 0.34},
+        )
+        subtitle.bind(size=subtitle.setter("text_size"))
+        popup.add_widget(subtitle)
+
+        view_btn = _PopupButton(
+            fill=_PURPLE,
+            size_hint=(0.1447, 0.59),
+            pos_hint={"x": 0.687, "center_y": 0.5},
+        )
+        view_label = Label(
+            text="View",
+            font_name=_FONT_SB,
+            font_size=_ff(20),
+            color=(1, 1, 1, 1),
+            halign="center",
+            valign="middle",
+            size_hint=(1, 1),
+            pos_hint={"x": 0, "y": 0},
+        )
+        view_label.bind(size=view_label.setter("text_size"))
+        view_btn.add_widget(view_label)
+        view_btn.bind(on_release=lambda *_a, mid=meeting_id, sm=summary: self._on_view_summary(mid, sm))
+        popup.add_widget(view_btn)
+
+        close_btn = _PopupButton(
+            fill=(0.93, 0.93, 0.95, 1.0),
+            size_hint=(0.126, 0.59),
+            pos_hint={"x": 0.847, "center_y": 0.5},
+        )
+        close_label = Label(
+            text="Close",
+            font_name=_FONT_SB,
+            font_size=_ff(18),
+            color=_TEXT,
+            halign="center",
+            valign="middle",
+            size_hint=(1, 1),
+            pos_hint={"x": 0, "y": 0},
+        )
+        close_label.bind(size=close_label.setter("text_size"))
+        close_btn.add_widget(close_label)
+        close_btn.bind(on_release=lambda *_a, mid=meeting_id: self._dismiss_summary_popup(mark=mid))
+        popup.add_widget(close_btn)
+
+        self._summary_ready_popup = popup
+        if self._root is not None:
+            self._root.add_widget(popup)
+
+    def _on_view_summary(self, meeting_id: str, summary: dict) -> None:
+        self._shown_summary_ids.add(meeting_id)
+        self._dismiss_summary_popup()
+        try:
+            screen = self.app.screen_manager.get_screen("summary_review")
+            if hasattr(screen, "set_meeting_data"):
+                screen.set_meeting_data(meeting_id, summary or {})
+        except Exception:
+            logger.exception("Failed to open summary_review from home popup")
+        self.app.goto_screen("summary_review", "fade")
+
+    def _dismiss_summary_popup(self, mark: str | None = None) -> None:
+        if mark:
+            self._shown_summary_ids.add(mark)
+        popup = self._summary_ready_popup
+        self._summary_ready_popup = None
+        if popup is None:
+            return
+        try:
+            if popup.parent is not None:
+                popup.parent.remove_widget(popup)
+        except Exception:
+            pass
 
     # ── Live clock ────────────────────────────────────────────────────────────
 

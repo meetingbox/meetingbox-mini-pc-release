@@ -56,6 +56,23 @@ from api_client import invoke_realtime_tool_sync
 
 logger = logging.getLogger(__name__)
 
+
+def _agent_debug_log(run_id: str, hypothesis_id: str, location: str, message: str, data: dict | None = None) -> None:
+    payload = {
+        "sessionId": "3c47bd",
+        "runId": run_id,
+        "hypothesisId": hypothesis_id,
+        "location": location,
+        "message": message,
+        "data": data or {},
+        "timestamp": int(time.time() * 1000),
+    }
+    try:
+        with open("debug-3c47bd.log", "a", encoding="utf-8") as fh:
+            fh.write(json.dumps(payload, default=str) + "\n")
+    except OSError:
+        pass
+
 try:
     import sounddevice as sd
 except ImportError:
@@ -227,12 +244,24 @@ START_RECORDING_TOOL: dict = {
     "type": "function",
     "name": "start_recording",
     "description": (
-        "Call this tool when the user asks to start recording a meeting. "
+        "Call this tool when the user asks to start recording. Use recording_mode='meeting' "
+        "for meeting recordings, and recording_mode='note' when the user asks to take notes, "
+        "record notes, make a todo list, or capture tasks. "
         "Always say a brief confirmation (e.g. 'Starting the recording now') "
         "BEFORE calling this tool. The voice session will close and recording "
         "will begin immediately."
     ),
-    "parameters": {"type": "object", "properties": {}, "required": []},
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "recording_mode": {
+                "type": "string",
+                "enum": ["meeting", "note"],
+                "description": "meeting for meeting summary flow; note for note/todo extraction flow.",
+            },
+        },
+        "required": [],
+    },
 }
 
 
@@ -1550,6 +1579,19 @@ class RealtimeVoiceSession:
                         spoken = ""
                     if spoken:
                         logger.info("User said: %r", spoken)
+                        # region agent log
+                        _agent_debug_log(
+                            "pre-fix",
+                            "B,C",
+                            "realtime_voice_session.py:user_transcript_completed",
+                            "realtime user transcript completed",
+                            {
+                                "spoken": spoken,
+                                "state": self._state,
+                                "user_ended": self._user_ended,
+                            },
+                        )
+                        # endregion
                         self._emit_user_transcript(spoken, is_final=True)
                         # Client-side farewell fallback: if the transcript is
                         # a clear goodbye phrase, close the session immediately
@@ -1807,6 +1849,7 @@ class RealtimeVoiceSession:
         pending: list[dict] = []
         end_session_requested = False
         start_recording_requested = False
+        start_recording_mode = "meeting"
         for item in outputs:
             if not isinstance(item, dict) or item.get("type") != "function_call":
                 continue
@@ -1835,11 +1878,34 @@ class RealtimeVoiceSession:
             # Don't HTTP-roundtrip it — close the session and trigger
             # start_recording() on the main thread.
             if name == "start_recording":
+                try:
+                    parsed_args = json.loads(args or "{}")
+                except (TypeError, ValueError):
+                    parsed_args = {}
+                mode = str((parsed_args or {}).get("recording_mode") or "meeting").strip().lower()
+                if mode not in {"meeting", "note"}:
+                    mode = "meeting"
                 logger.info(
-                    "Realtime: model called start_recording (call_id=%s) — starting recording.",
+                    "Realtime: model called start_recording (call_id=%s mode=%s) — starting recording.",
                     call_id,
+                    mode,
                 )
+                # region agent log
+                _agent_debug_log(
+                    "pre-fix",
+                    "C",
+                    "realtime_voice_session.py:_handle_response_done",
+                    "realtime start_recording tool call",
+                    {
+                        "call_id": call_id,
+                        "raw_arguments": args,
+                        "parsed_recording_mode": (parsed_args or {}).get("recording_mode"),
+                        "resolved_mode": mode,
+                    },
+                )
+                # endregion
                 start_recording_requested = True
+                start_recording_mode = mode
                 continue
 
             logger.info(
@@ -1919,7 +1985,7 @@ class RealtimeVoiceSession:
                 pass
             cb = self._on_start_recording_cb
             if cb:
-                Clock.schedule_once(lambda _dt: self._safe_call(cb), 0)
+                Clock.schedule_once(lambda _dt, m=start_recording_mode: self._safe_call(cb, m), 0)
 
     # ------------------------------------------------------------------
     # Misc helpers

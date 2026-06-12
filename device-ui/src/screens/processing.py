@@ -75,6 +75,11 @@ _DEFAULT_STAGES = (
     "Identifying action items...",
     "Structuring summary...",
 )
+_NOTE_STAGES = (
+    "Extracting points...",
+    "Finding tasks...",
+    "Creating your notes...",
+)
 
 
 class _StatusBar(Widget):
@@ -143,6 +148,7 @@ class ProcessingScreen(BaseScreen):
         self._meeting_id: Optional[str] = None
         self._meeting_title = "Meeting"
         self._meeting_duration_seconds = 0
+        self._recording_mode = "meeting"
         self._stage_index = 0
         self._countdown_event = None
         self._stage_event = None
@@ -234,11 +240,18 @@ class ProcessingScreen(BaseScreen):
         self._cancel_timers()
 
         self._meeting_id = getattr(self.app, "current_session_id", None)
+        self._recording_mode = (
+            getattr(self.app, "current_recording_mode", "meeting") or "meeting"
+        ).strip().lower()
+        if self._recording_mode not in {"meeting", "note"}:
+            self._recording_mode = "meeting"
         self.headline_status.text = "Recording Complete"
-        self.summarizing_label.text = "Summarizing your meeting..."
+        self.summarizing_label.text = (
+            "Creating your notes..." if self._recording_mode == "note" else "Summarizing your meeting..."
+        )
         self.subtitle_label.text = "This may take a few seconds"
         self._stage_index = 0
-        self.stage_label.text = _DEFAULT_STAGES[0]
+        self.stage_label.text = self._stages()[0]
         self.meta_label.text = self._meta_text()
 
         self._stage_event = Clock.schedule_interval(self._rotate_stage, 0.9)
@@ -276,8 +289,12 @@ class ProcessingScreen(BaseScreen):
         self._update_countdown_label()
 
     def _rotate_stage(self, _dt) -> None:
-        self._stage_index = (self._stage_index + 1) % len(_DEFAULT_STAGES)
-        self.stage_label.text = _DEFAULT_STAGES[self._stage_index]
+        stages = self._stages()
+        self._stage_index = (self._stage_index + 1) % len(stages)
+        self.stage_label.text = stages[self._stage_index]
+
+    def _stages(self) -> tuple[str, ...]:
+        return _NOTE_STAGES if self._recording_mode == "note" else _DEFAULT_STAGES
 
     # ------------------------------------------------------------------
     # Public API — called from main.py (kept compatible; the screen still
@@ -286,8 +303,14 @@ class ProcessingScreen(BaseScreen):
     def on_processing_started(self, data):
         title = str((data or {}).get("title") or self._meeting_title or "Meeting").strip() or "Meeting"
         duration = int((data or {}).get("duration") or 0)
+        mode = str((data or {}).get("recording_mode") or self._recording_mode or "meeting").strip().lower()
+        self._recording_mode = "note" if mode == "note" else "meeting"
         self._meeting_title = title
         self._meeting_duration_seconds = duration
+        if self._recording_mode == "note":
+            self.summarizing_label.text = "Creating your notes..."
+            if self.stage_label.text in _DEFAULT_STAGES:
+                self.stage_label.text = _NOTE_STAGES[0]
         self.meta_label.text = self._meta_text()
 
     def set_processing_status(self, text: str) -> None:
