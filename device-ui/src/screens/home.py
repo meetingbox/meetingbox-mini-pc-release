@@ -20,10 +20,12 @@ Public API preserved from previous home.py (called by main.py):
 """
 from __future__ import annotations
 
+import json
 import logging
 import math
 import threading
 import time
+from pathlib import Path
 
 from kivy.animation import Animation
 from kivy.clock import Clock
@@ -44,6 +46,33 @@ from config import ASSETS_DIR, DISPLAY_HEIGHT, DISPLAY_WIDTH, display_now
 from screens.base_screen import BaseScreen
 
 logger = logging.getLogger(__name__)
+
+
+def _agent_debug_log(run_id: str, hypothesis_id: str, location: str, message: str, data: dict | None = None) -> None:
+    # region agent log
+    payload = {
+        "sessionId": "3c47bd",
+        "runId": run_id,
+        "hypothesisId": hypothesis_id,
+        "location": location,
+        "message": message,
+        "data": data or {},
+        "timestamp": int(time.time() * 1000),
+    }
+    line = json.dumps(payload, default=str) + "\n"
+    here = Path(__file__).resolve()
+    for path in (
+        Path("/data/config/debug-3c47bd.log"),
+        here.parent.parent.parent.parent / "debug-3c47bd.log",
+        Path("debug-3c47bd.log"),
+    ):
+        try:
+            with open(path, "a", encoding="utf-8") as fh:
+                fh.write(line)
+            break
+        except OSError:
+            continue
+    # endregion
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Design constants  (Figma "System States_1"  node 1023:2026  1260 × 800 px)
@@ -655,6 +684,19 @@ class HomeScreen(BaseScreen):
                 continue
             if meeting_id in self._shown_summary_ids:
                 continue
+            # region agent log
+            _agent_debug_log(
+                "pre-fix",
+                "D,E",
+                "home.py:_check_summary_ready",
+                "summary cache entry found on home",
+                {
+                    "meeting_id": meeting_id,
+                    "cache_count": len(cache),
+                    "has_summary": bool(entry.get("summary")),
+                },
+            )
+            # endregion
             self._show_summary_ready_popup(meeting_id, entry.get("summary") or {})
             break
 
@@ -750,10 +792,36 @@ class HomeScreen(BaseScreen):
         self._summary_ready_popup = popup
         if self._root is not None:
             self._root.add_widget(popup)
+        # region agent log
+        _agent_debug_log(
+            "pre-fix",
+            "E",
+            "home.py:_show_summary_ready_popup",
+            "summary popup attached",
+            {
+                "meeting_id": meeting_id,
+                "mode": mode,
+                "is_note": is_note,
+                "root_exists": self._root is not None,
+            },
+        )
+        # endregion
 
     def _on_view_summary(self, meeting_id: str, summary: dict) -> None:
         self._shown_summary_ids.add(meeting_id)
         self._dismiss_summary_popup()
+        # region agent log
+        _agent_debug_log(
+            "pre-fix",
+            "E",
+            "home.py:_on_view_summary",
+            "view summary pressed",
+            {
+                "meeting_id": meeting_id,
+                "summary_keys": sorted(list((summary or {}).keys())) if isinstance(summary, dict) else [],
+            },
+        )
+        # endregion
         try:
             screen = self.app.screen_manager.get_screen("summary_review")
             if hasattr(screen, "set_meeting_data"):

@@ -26,6 +26,33 @@ except ImportError:
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(name)s] %(levelname)s: %(message)s")
 logger = logging.getLogger("meetingbox.audio")
 
+
+def _agent_debug_log(run_id: str, hypothesis_id: str, location: str, message: str, data: dict | None = None) -> None:
+  # region agent log
+  payload = {
+    "sessionId": "3c47bd",
+    "runId": run_id,
+    "hypothesisId": hypothesis_id,
+    "location": location,
+    "message": message,
+    "data": data or {},
+    "timestamp": int(time.time() * 1000),
+  }
+  line = json.dumps(payload, default=str) + "\n"
+  here = Path(__file__).resolve()
+  for path in (
+    Path("/data/config/debug-3c47bd.log"),
+    here.parent.parent.parent / "debug-3c47bd.log",
+    Path("debug-3c47bd.log"),
+  ):
+    try:
+      with open(path, "a", encoding="utf-8") as fh:
+        fh.write(line)
+      break
+    except OSError:
+      continue
+  # endregion
+
 DEVICE_AUTH_TOKEN_FILE = os.getenv("DEVICE_AUTH_TOKEN_FILE", "/data/config/device_auth_token").strip()
 # Device identity (multi-device scoping). Set via the ``DEVICE_ID`` env
 # var or resolved at startup from ``/api/device/pairing-status`` using
@@ -771,19 +798,61 @@ class AudioCaptureService:
       logger.exception("Failed to open WAV for session %s", session_id)
       return False
 
-    try:
-      mic_index = self.find_mic_device()
-      self.stream = self._open_input_stream(mic_index)
-      self._emit_mic_status("connected")
-    except Exception as exc:
-      self.stream = None
+    mic_wait_started_at = time.monotonic()
+    last_exc: Exception | None = None
+    while self.stream is None and time.monotonic() - mic_wait_started_at < 10.0:
+      try:
+        mic_index = self.find_mic_device()
+        self.stream = self._open_input_stream(mic_index)
+        self._emit_mic_status("connected")
+      except Exception as exc:
+        last_exc = exc
+        self.stream = None
+        self._emit_mic_status(
+          "waiting",
+          message="Waiting for the microphone to become available.",
+        )
+        time.sleep(0.25)
+
+    if self.stream is None:
+      self.is_recording = False
+      self.current_session_id = None
+      self._stop_close_stream()
+      if self._wav_writer is not None:
+        try:
+          self._wav_writer.close()
+        except Exception:
+          pass
+      self._wav_writer = None
+      self._output_path = None
       logger.warning(
-        "Recording session %s started without an available mic; will keep retrying: %s",
+        "Recording session %s could not acquire a microphone before start: %s",
         session_id,
-        exc,
-        exc_info=True,
+        last_exc,
       )
-      self._emit_mic_status("waiting", message="No microphone available yet. Recording will attach when a mic is connected.")
+      self._emit_event({
+        "type": "error",
+        "error_type": "Microphone unavailable",
+        "message": "Could not start recording because the microphone was not available.",
+      })
+      return False
+
+    # region agent log
+    _agent_debug_log(
+      "post-fix",
+      "A",
+      "audio_capture.py:start_recording",
+      "audio recording start acquired mic",
+      {
+        "session_id": session_id,
+        "mode": mode,
+        "capture_backend": self.capture_backend,
+        "stream_open": self.stream is not None,
+        "mic_status": self._mic_status,
+        "mic_wait_ms": int((time.monotonic() - mic_wait_started_at) * 1000),
+      },
+    )
+    # endregion
 
     self._emit_event({
       "type": "recording_started",
@@ -1079,11 +1148,25 @@ class AudioCaptureService:
     SILENT_REOPEN_S = 20.0
     SILENT_PEAK_THRESHOLD = 80
     last_reconnect_attempt_at = 0.0
+    debug_first_level_logged = False
+    debug_nonzero_level_logged = False
+    debug_no_stream_logged = False
 
     try:
       while self.is_recording:
         if self.stream is None:
           now = time.monotonic()
+          if not debug_no_stream_logged:
+            debug_no_stream_logged = True
+            # region agent log
+            _agent_debug_log(
+              "pre-fix",
+              "A",
+              "audio_capture.py:recording_loop",
+              "recording loop has no active stream",
+              {"session_id": self.current_session_id, "mic_status": self._mic_status},
+            )
+            # endregion
           if now - self._last_level_emit_at >= 1.0:
             self._emit_event({
               "type": "audio_level",
@@ -1148,6 +1231,28 @@ class AudioCaptureService:
           else:
             level = 0.0
             peak = 0
+          if not debug_first_level_logged:
+            debug_first_level_logged = True
+            # region agent log
+            _agent_debug_log(
+              "pre-fix",
+              "A",
+              "audio_capture.py:recording_loop",
+              "first captured audio level computed",
+              {"session_id": self.current_session_id, "level": level, "peak": peak},
+            )
+            # endregion
+          if level > 0.02 and not debug_nonzero_level_logged:
+            debug_nonzero_level_logged = True
+            # region agent log
+            _agent_debug_log(
+              "pre-fix",
+              "A",
+              "audio_capture.py:recording_loop",
+              "nonzero captured audio level computed",
+              {"session_id": self.current_session_id, "level": level, "peak": peak},
+            )
+            # endregion
           if peak <= SILENT_PEAK_THRESHOLD:
             if silent_audio_started_at is None:
               silent_audio_started_at = now
