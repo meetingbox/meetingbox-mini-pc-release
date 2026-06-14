@@ -3330,9 +3330,10 @@ class MeetingBoxApp(App):
         )
         # Always compact — the full-screen overlay mode is no longer used.
         overlay.set_compact(True)
-        if name in ('home', 'voice_session', 'email_draft', 'voice_task_creation'):
-            # Home + voice-session + email_draft + voice_task_creation all handle
-            # transcription natively; keep overlay hidden.
+        if name in ('home', 'voice_session', 'email_draft', 'voice_task_creation', 'tasks'):
+            # Home + voice-session + email_draft + voice_task_creation handle
+            # transcription natively; the tasks screen intentionally hides the
+            # bottom transcript strip. Keep the overlay hidden on all of these.
             overlay.suppress_auto_show = True
             overlay.hide()
         else:
@@ -3742,10 +3743,11 @@ class MeetingBoxApp(App):
                 if self._transcript_overlay is not None:
                     self._transcript_overlay.clear_session()
                     self._sync_transcript_overlay_mode()
-                    # Home and voice_session both handle transcription natively;
-                    # on all other screens show the compact overlay strip.
+                    # Home + voice_session handle transcription natively and the
+                    # tasks screen suppresses the strip; on all other screens show
+                    # the compact overlay strip.
                     if not (self.screen_manager
-                            and self.screen_manager.current in ('home', 'voice_session')):
+                            and self.screen_manager.current in ('home', 'voice_session', 'tasks')):
                         self._transcript_overlay.show()
                 # Reset home say bar for the new session
                 self._clear_home_say_bar()

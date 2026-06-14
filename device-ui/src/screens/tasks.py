@@ -764,41 +764,65 @@ class TasksScreen(BaseScreen):
     # ── List card  (Figma 29,263 1202×… white90 r[0,0,38,38]) ───────────────────
 
     def _build_list_area(self, root: FloatLayout) -> None:
-        # Card top is square, bottom rounded — drawn as rounded rect + a plain
-        # rect over the top `r` px to square the upper corners.
-        CARD_Y, CARD_H = 263.0, 800.0 - 263.0 - 21.0   # extend to near bottom
-        # FloatLayout (not bare Widget) so the ScrollView child honours size_hint.
-        card = FloatLayout(**_ph(29.0, CARD_Y, 1202.0, CARD_H))
+        # Two decoupled pieces avoid the ScrollView-resize bug:
+        #   1. A canvas-only white background widget that HUGS the active section's
+        #      content height (Figma: 143 px card for 2 tasks), top square / bottom
+        #      rounded, anchored at Figma y=263 and growing downward.
+        #   2. A FIXED full-height (transparent) ScrollView holding the task rows.
+        #      Resizing a ScrollView dynamically detaches its content to (0,0); a
+        #      fixed-size ScrollView keeps the rows pinned at the top correctly.
+        CARD_TOP_FY = 263.0
+        AVAIL_FH = FH - CARD_TOP_FY - 21.0
         r = _ff(38)
-        with card.canvas.before:
-            Color(*_CARD_BG)
-            self._card_round = RoundedRectangle(pos=card.pos, size=card.size, radius=[r])
-            self._card_top   = Rectangle()
 
-        def _sync_card(w, *_):
+        # 1 ── white background that hugs the content height ─────────────────────
+        card_bg = Widget(size_hint=(1202.0 / FW, None),
+                         pos_hint={"x": 29.0 / FW, "top": (FH - CARD_TOP_FY) / FH})
+        card_bg.height = _ff(150)
+        self._card = card_bg
+        # Single rounded rect with per-corner radius: square top, rounded bottom.
+        # (Order is [bottom-left, bottom-right, top-right, top-left].)
+        _crad = [r, r, 0, 0]
+        with card_bg.canvas.before:
+            Color(*_CARD_BG)
+            self._card_round = RoundedRectangle(pos=card_bg.pos, size=card_bg.size, radius=_crad)
+
+        def _sync_bg(w, *_):
             self._card_round.pos = w.pos
             self._card_round.size = w.size
-            self._card_round.radius = [r]
-            self._card_top.pos = (w.x, w.top - r)
-            self._card_top.size = (w.width, r)
+            self._card_round.radius = _crad
 
-        card.bind(pos=_sync_card, size=_sync_card)
-        Clock.schedule_once(lambda _dt: _sync_card(card), 0)
-        root.add_widget(card)
+        card_bg.bind(pos=_sync_bg, size=_sync_bg)
+        Clock.schedule_once(lambda _dt: _sync_bg(card_bg), 0)
+        root.add_widget(card_bg)
 
-        sv = ScrollView(size_hint=(1, 1), do_scroll_x=False, do_scroll_y=True,
+        # 2 ── fixed full-height scroll area with the task rows (on top of bg) ────
+        sv = ScrollView(do_scroll_x=False, do_scroll_y=True,
                         bar_width=_ff(5), bar_color=[*_ACTIVE[:3], 0.5],
                         bar_inactive_color=[*_ACTIVE[:3], 0.15],
-                        scroll_type=["bars", "content"])
+                        scroll_type=["bars", "content"],
+                        **_ph(29.0, CARD_TOP_FY, 1202.0, AVAIL_FH))
+        self._scroll = sv
         box = BoxLayout(orientation="vertical", size_hint_y=None,
                         padding=[0, 0, 0, _ff(14)], spacing=0)
         box.bind(minimum_height=box.setter("height"))
         self._list_box = box
+
+        # Background hugs content, clamped to the space below the tab bar.
+        def _fit_bg(*_):
+            ph = self.height or float(DISPLAY_HEIGHT)
+            max_h = max(_ff(80), ph * (AVAIL_FH / FH))
+            card_bg.height = max(_ff(80), min(box.minimum_height, max_h))
+        self._fit_card = _fit_bg
+        box.bind(minimum_height=_fit_bg)
+        self.bind(height=_fit_bg)
+
         sv.add_widget(box)
-        card.add_widget(sv)
+        root.add_widget(sv)
 
         box.add_widget(_lbl("Loading tasks…", _F_MED, _ff(26), _DUE_TXT,
                             ha="center", va="middle", size_hint=(1, None), height=_ff(120)))
+        Clock.schedule_once(lambda _dt: _fit_bg(), 0)
 
     # ── Top-right chrome: voice pill + wifi + battery ───────────────────────────
 
