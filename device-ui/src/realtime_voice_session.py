@@ -875,9 +875,16 @@ class RealtimeVoiceSession:
             data = json.loads(tool_output_json)
         except (json.JSONDecodeError, TypeError):
             return
-        if not isinstance(data, dict) or not data.get("device_calendar_event_dismiss"):
+        if not isinstance(data, dict):
             return
-        Clock.schedule_once(lambda _dt: self._safe_call(cb), 0)
+        dismiss = data.get("device_calendar_event_dismiss")
+        if not dismiss:
+            return
+        # New servers send a dict ({"created": bool, "date": "...", ...}); older
+        # ones sent a bare True. Normalise to a dict so the UI can decide whether
+        # to navigate to the calendar.
+        info = dismiss if isinstance(dismiss, dict) else {}
+        Clock.schedule_once(lambda _dt: self._safe_call(cb, info), 0)
 
     def _redact_calendar_event_dismiss_for_model(self, tool_output_json: str) -> str:
         """Strip the device-only dismiss flag before feeding back to the model."""

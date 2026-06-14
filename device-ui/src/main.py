@@ -3293,19 +3293,14 @@ class MeetingBoxApp(App):
             logger.exception("Failed to show calendar event creation screen")
 
     def _on_calendar_event_confirm_tapped(self) -> None:
-        """User tapped Confirm — ask the agent to create the calendar event,
-        then return to the voice transcription screen. The actual create runs
-        server-side via the agent's calendar tool (mirrors task creation)."""
+        """User tapped Confirm — ask the agent to create/update the calendar
+        event. The actual write runs server-side via the agent's calendar tool;
+        we stay on the create screen until the server's dismiss directive arrives
+        (it then sends us to the Calendar screen so the event is visible)."""
         self._send_voice_user_text(
             "[BUTTON:Confirm] — create the calendar event now with the details on screen.",
             interrupt=True,
         )
-        try:
-            sm = getattr(self, "screen_manager", None)
-            if sm is not None:
-                self.goto_screen("voice_session")
-        except Exception:
-            logger.debug("calendar event confirm: navigation failed", exc_info=True)
 
     def _on_calendar_event_discard_tapped(self) -> None:
         """User tapped Discard — cancel and return to voice session."""
@@ -3321,17 +3316,55 @@ class MeetingBoxApp(App):
         except Exception:
             logger.debug("calendar event discard: navigation failed", exc_info=True)
 
-    def _on_calendar_event_dismiss_directive(self) -> None:
-        """Voice confirm/discard — server already created (confirm) or cancelled
-        (discard) the event, so just clear pending state and return to the voice
-        transcription screen. The model speaks from the tool result."""
+    def _on_calendar_event_dismiss_directive(self, info: dict | None = None) -> None:
+        """Voice OR tap confirm/discard — the server already created/updated
+        (confirm) or cancelled (discard) the event. On a successful save, send
+        the user to the Calendar screen (on the event's day) so they can see the
+        event reflected; on cancel/failure, return to the voice transcript."""
+        info = info if isinstance(info, dict) else {}
+        created = bool(info.get("created"))
+        # Prefer the server-confirmed date, fall back to what was on screen.
+        date_str = str(info.get("date") or "").strip()
+        if not date_str:
+            date_str = str((getattr(self, "_pending_event_data", None) or {}).get("date") or "").strip()
         self._pending_event_data = {}
+
         try:
             sm = getattr(self, "screen_manager", None)
-            if sm is not None and sm.current == "calendar_event_creation":
+            if sm is None:
+                return
+
+            if created:
+                # Force the calendar to re-fetch so the new/updated event shows
+                # immediately instead of waiting for the cache to expire.
+                self.invalidate_calendar_cache()
+                target = None
+                try:
+                    if date_str:
+                        from datetime import date as _date
+                        y, m, d = (int(p) for p in date_str[:10].split("-"))
+                        target = _date(y, m, d)
+                except Exception:
+                    target = None
+                self._realtime_voice_navigate("calendar", target_date=target)
+                return
+
+            # Cancelled or failed save — go back to the voice transcript.
+            if sm.current == "calendar_event_creation":
                 self.goto_screen("voice_session")
         except Exception:
-            logger.debug("calendar event voice dismiss: navigation failed", exc_info=True)
+            logger.debug("calendar event dismiss: navigation failed", exc_info=True)
+
+    def invalidate_calendar_cache(self) -> None:
+        """Drop the freshness of every cached calendar week so the next load
+        re-fetches from the backend (used after creating/updating an event so it
+        reflects on the calendar instantly)."""
+        try:
+            for key in list(self._ui_data_cache_ts.keys()):
+                if str(key).startswith("calendar_week:"):
+                    self._ui_data_cache_ts.pop(key, None)
+        except Exception:
+            logger.debug("invalidate_calendar_cache failed", exc_info=True)
 
     def _on_recipient_picker_directive(self, query: str, candidates: list, field: str = "to") -> None:
         """Show the recipient confirmation overlay from a show_recipient_picker directive."""
