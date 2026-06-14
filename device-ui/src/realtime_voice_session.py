@@ -97,6 +97,35 @@ _BARGE_IN_SUPPRESS_AUDIO_S = 0.4
 # this many seconds. Matches the previous behavior.
 _SESSION_IDLE_CLOSE_S = 40.0
 
+# ── Device-driven morning-brief carousel walkthrough ───────────────────────
+# The Realtime model batches its navigate_device_ui calls (all three at once)
+# and then narrates everything in one breath, so the carousel races to the
+# last card before any speech. To keep the on-screen card in lockstep with the
+# spoken section, the device takes over: it advances the carousel one section
+# at a time and drives a separate, tool-less narration response per section,
+# each gated until the previous section's audio has finished playing.
+_BRIEF_SECTIONS = ("schedule", "tasks", "emails")
+_BRIEF_DIRECTIVES = {
+    "schedule": (
+        "[Morning briefing] The SCHEDULE card is now on screen. Using the briefing data already "
+        "in this conversation, speak ONLY today's meetings now — lead with the next upcoming "
+        "meeting (time and title), then the rest, in one or two short natural sentences. Do NOT "
+        "mention tasks or emails. If there are no meetings, say so in one short line. Speak now."
+    ),
+    "tasks": (
+        "[Morning briefing] The TASKS card is now on screen. Using the briefing data already in "
+        "this conversation, speak ONLY today's pending tasks now (what's due today first, then "
+        "upcoming), briefly. Do NOT mention meetings or emails. If there are no tasks, say so in "
+        "one short line. Speak now."
+    ),
+    "emails": (
+        "[Morning briefing] The EMAILS card is now on screen. Using the briefing data already in "
+        "this conversation, speak ONLY the latest unread emails now (sender and subject), briefly, "
+        "then give a one-line wrap-up of the whole briefing. Do NOT mention meetings or tasks. If "
+        "the inbox is clear, say so in one short line. Speak now."
+    ),
+}
+
 _REALTIME_OUTPUT_VOICE_FALLBACK = "marin"
 
 # When True, the device sends a small response.create right after the
@@ -447,6 +476,11 @@ class RealtimeVoiceSession:
         # Worker thread + asyncio loop
         self._thread: threading.Thread | None = None
         self._stop = threading.Event()
+
+        # Device-driven morning-brief walkthrough state.
+        self._brief_active = False
+        self._brief_idx = 0
+        self._brief_task = None  # asyncio.Task scheduling the next section
         self._loop: asyncio.AbstractEventLoop | None = None
         self._ws: Any = None
         self._connected_fired = False
@@ -582,6 +616,7 @@ class RealtimeVoiceSession:
     def stop(self) -> None:
         self._user_ended = True
         self._stop.set()
+        self._cancel_briefing()
         try:
             self._audio_q.put_nowait(None)
         except Exception:
@@ -760,6 +795,81 @@ class RealtimeVoiceSession:
         Clock.schedule_once(
             lambda _dt: self._safe_call(cb, screen.strip(), target_date, target_tab), 0
         )
+
+    # ── Device-driven morning-brief walkthrough ────────────────────────────
+
+    def _emit_brief_section(self, section: str) -> None:
+        """Swipe the on-screen morning-brief carousel to a given section."""
+        cb = self._on_device_navigate_cb
+        if not cb:
+            return
+        Clock.schedule_once(
+            lambda _dt: self._safe_call(cb, "morning_brief", None, section), 0
+        )
+
+    def _cancel_briefing(self) -> None:
+        """Stop driving the briefing (e.g. the user barged in / took over)."""
+        self._brief_active = False
+        task = self._brief_task
+        self._brief_task = None
+        if task is not None and not task.done():
+            try:
+                task.cancel()
+            except Exception:
+                pass
+
+    async def _send_brief_narration(self, ws, idx: int) -> None:
+        """Inject the per-section directive and request a tool-less narration."""
+        section = _BRIEF_SECTIONS[idx]
+        directive = _BRIEF_DIRECTIVES[section]
+        await ws.send(json.dumps({
+            "type": "conversation.item.create",
+            "item": {
+                "type": "message",
+                "role": "system",
+                "content": [{"type": "input_text", "text": directive}],
+            },
+        }))
+        # tool_choice="none" guarantees the model just speaks this one section
+        # and cannot batch-fire more navigate calls; the device drives the rest.
+        await ws.send(json.dumps({
+            "type": "response.create",
+            "response": {"tool_choice": "none"},
+        }))
+
+    def _schedule_brief_advance(self, ws) -> None:
+        """Queue advancing to the next section once this one's audio drains."""
+        if not self._brief_active:
+            return
+        if self._brief_task is not None and not self._brief_task.done():
+            return
+        try:
+            self._brief_task = asyncio.create_task(self._advance_briefing(ws))
+        except Exception:
+            logger.debug("could not schedule briefing advance", exc_info=True)
+
+    async def _advance_briefing(self, ws) -> None:
+        """Wait for the current section's audio to finish, then drive the next."""
+        try:
+            # Hold the swipe + next narration until the spoken audio for the
+            # section that just finished has actually played out of the speaker.
+            for _ in range(60):  # cap ~15 s
+                remaining = self.audio_playback_remaining_s()
+                if remaining <= 0.05 or not self._brief_active or self._stop.is_set():
+                    break
+                await asyncio.sleep(min(remaining, 0.25))
+            if not self._brief_active or self._stop.is_set():
+                return
+            self._brief_idx += 1
+            if self._brief_idx >= len(_BRIEF_SECTIONS):
+                self._brief_active = False
+                return
+            self._emit_brief_section(_BRIEF_SECTIONS[self._brief_idx])
+            await self._send_brief_narration(ws, self._brief_idx)
+        except asyncio.CancelledError:
+            pass
+        except Exception:
+            logger.exception("Realtime: briefing advance failed")
 
     def _emit_email_draft(self, tool_output_json: str) -> None:
         """Forward a show_email_draft directive payload to the UI."""
@@ -1552,6 +1662,10 @@ class RealtimeVoiceSession:
                 # ---- User speech --------------------------------------
                 elif t == "input_audio_buffer.speech_started":
                     self._touch()
+                    # The user is taking over — stop auto-driving the briefing so
+                    # we don't fight their request (e.g. "skip to my emails").
+                    if self._brief_active:
+                        self._cancel_briefing()
                     # Fresh utterance — clear the streaming transcript buffer
                     # so partial deltas don't append to the previous turn.
                     self._user_transcript_buf = ""
@@ -1906,6 +2020,7 @@ class RealtimeVoiceSession:
         end_session_requested = False
         start_recording_requested = False
         start_recording_mode = "meeting"
+        brief_started_now = False
         for item in outputs:
             if not isinstance(item, dict) or item.get("type") != "function_call":
                 continue
@@ -1965,7 +2080,28 @@ class RealtimeVoiceSession:
 
             model_out = out
             if name == "navigate_device_ui":
-                self._emit_device_navigation(out)
+                nav_screen = ""
+                try:
+                    _nav = json.loads(out)
+                    if isinstance(_nav, dict) and _nav.get("ok"):
+                        nav_screen = str(_nav.get("device_navigate") or "").strip()
+                except Exception:
+                    nav_screen = ""
+                if nav_screen == "morning_brief":
+                    # Take over the carousel: start the device-driven walkthrough
+                    # on the first morning-brief navigate and ignore any extra
+                    # (batched) ones so the cards don't race ahead of the speech.
+                    if not self._brief_active:
+                        self._brief_active = True
+                        self._brief_idx = 0
+                        self._emit_brief_section(_BRIEF_SECTIONS[0])
+                        brief_started_now = True
+                    # else: already driving — swallow the model's extra switch.
+                else:
+                    # Any non-brief navigation means we've left the walkthrough.
+                    if self._brief_active:
+                        self._cancel_briefing()
+                    self._emit_device_navigation(out)
             elif name == "show_email_draft":
                 self._emit_email_draft(out)
                 # The draft popup (incl. the full reply-all recipient list the
@@ -2008,9 +2144,18 @@ class RealtimeVoiceSession:
                 # must always send response.create after function call
                 # outputs to keep the conversation flowing.
                 if not end_session_requested and not start_recording_requested:
-                    await ws.send(json.dumps({"type": "response.create"}))
+                    if brief_started_now:
+                        # Drive the first (schedule) section ourselves with a
+                        # tool-less narration instead of the default open turn.
+                        await self._send_brief_narration(ws, self._brief_idx)
+                    else:
+                        await ws.send(json.dumps({"type": "response.create"}))
             except Exception:
                 logger.exception("Realtime: tool round-trip failed")
+        elif self._brief_active and not brief_started_now:
+            # A briefing narration response just finished (no tool calls) —
+            # advance to the next card once its audio drains.
+            self._schedule_brief_advance(ws)
 
         if end_session_requested:
             # The model has already spoken its goodbye in this response;
