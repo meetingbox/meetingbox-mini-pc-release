@@ -3090,7 +3090,23 @@ class MeetingBoxApp(App):
         if name == "morning_brief" and target_tab:
             try:
                 mb = self.screen_manager.get_screen("morning_brief")
-                mb.set_active_section(target_tab)
+                # Keep the carousel swipe in sync with the spoken narration: the
+                # model calls this tool the moment it finishes a section, but that
+                # section's audio is still draining from the speaker queue. Defer
+                # the swipe until the queued audio finishes so the card flips as
+                # the next section's narration begins.
+                sess = (getattr(self, "_realtime_voice_session", None)
+                        or getattr(self, "_warm_voice_session", None))
+                delay = 0.0
+                if sess is not None and hasattr(sess, "audio_playback_remaining_s"):
+                    try:
+                        delay = float(sess.audio_playback_remaining_s())
+                    except Exception:
+                        delay = 0.0
+                Clock.schedule_once(
+                    lambda _dt, _t=target_tab, _mb=mb: _mb.set_active_section(_t),
+                    delay,
+                )
             except Exception:
                 logger.exception("Failed to set morning_brief section")
 

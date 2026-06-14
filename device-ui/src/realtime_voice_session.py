@@ -1162,6 +1162,23 @@ class RealtimeVoiceSession:
             self._aplay_proc = None
             self._aplay_pid = None
 
+    def audio_playback_remaining_s(self) -> float:
+        """Approximate seconds of assistant speech still queued for the speaker.
+
+        Derived from the mic-mute window (which is extended to cover each audio
+        chunk plus a 0.6 s echo tail). Used to keep an on-screen action — e.g.
+        a morning-brief carousel swipe — in sync with the spoken audio so the
+        card flips as the current section's narration finishes. Capped for
+        safety so a stale value can never stall the UI for long.
+        """
+        try:
+            remaining = self._mute_mic_uplink_until - time.monotonic() - 0.6
+        except Exception:
+            return 0.0
+        if remaining <= 0.0:
+            return 0.0
+        return min(remaining, 12.0)
+
     def _play_delta(self, delta_b64: str) -> None:
         if not delta_b64:
             return
