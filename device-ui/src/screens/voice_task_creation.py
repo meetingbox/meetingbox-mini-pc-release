@@ -31,7 +31,9 @@ from __future__ import annotations
 import logging
 import time
 
+from kivy.animation import Animation
 from kivy.clock import Clock
+from kivy.core.window import Window
 from kivy.graphics import Color, Ellipse, Line, Rectangle, RoundedRectangle
 from kivy.uix.boxlayout import BoxLayout
 from kivy.uix.floatlayout import FloatLayout
@@ -510,6 +512,47 @@ class VoiceTaskCreationScreen(BaseScreen):
         if self._on_discard_cb:
             self._on_discard_cb()
 
+    # ── Genie action animation hooks (driven by main.py) ──────────────────────
+
+    def _action_btn(self, action: str):
+        # "send" == Confirm (create the task).
+        return {"send": self._confirm_btn, "discard": self._discard_btn}.get(action)
+
+    def flash_button(self, action: str) -> None:
+        btn = self._action_btn(action)
+        if btn is None:
+            return
+        Animation.cancel_all(btn, "opacity")
+        (Animation(opacity=0.45, duration=0.08, t="out_quad")
+         + Animation(opacity=1.0, duration=0.08, t="in_quad")).start(btn)
+
+    def prepare_genie(self, action: str) -> None:
+        if self._card is not None:
+            self._card.opacity = 0
+        keep = self._action_btn(action) if action == "discard" else None
+        for b in (self._confirm_btn, self._discard_btn):
+            if b is None or b is keep:
+                continue
+            Animation.cancel_all(b, "opacity")
+            Animation(opacity=0.0, duration=0.4, t="out_quad").start(b)
+
+    def restore_action_visuals(self) -> None:
+        if self._card is not None:
+            self._card.opacity = 1
+        for b in (self._confirm_btn, self._discard_btn):
+            if b is not None:
+                Animation.cancel_all(b, "opacity")
+                b.opacity = 1
+
+    def genie_target(self, action: str):
+        """Top-right corner for Confirm; the Discard CTA otherwise."""
+        if action == "send":
+            return (float(Window.width), float(Window.height))
+        btn = self._action_btn(action)
+        if btn is not None:
+            return tuple(btn.to_window(btn.center_x, btn.center_y))
+        return (float(Window.width), float(Window.height))
+
     # ── Lifecycle ─────────────────────────────────────────────────────────────
 
     def on_enter(self) -> None:
@@ -517,6 +560,7 @@ class VoiceTaskCreationScreen(BaseScreen):
         self._amplitude = 0.0
         # Fresh task review → allow the fly-away to play again.
         self._flyaway_committed = False
+        self.restore_action_visuals()
         if self._voice_pill:
             self._voice_pill.set_state_text("Listening")
             self._voice_pill.opacity = 1.0

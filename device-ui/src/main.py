@@ -1163,16 +1163,15 @@ class MeetingBoxApp(App):
         except Exception:
             logger.exception("EmailDraftScreen callback wiring failed")
 
-        # Action fly-away overlay — root-level transient layer that plays the
-        # send / save-as-draft / discard card animation over whatever screen we
-        # navigate to. Added first so the recipient + transcript overlays render
-        # above it.
+        # Genie action overlay — root-level transient layer that plays the
+        # send / save-as-draft / discard genie warp over the creation screen.
+        # Added first so the recipient + transcript overlays render above it.
         try:
-            from components.action_flyaway import ActionFlyAway
-            self._action_flyaway = ActionFlyAway()
+            from components.action_flyaway import GenieOverlay
+            self._action_flyaway = GenieOverlay()
             self.root_layout.add_widget(self._action_flyaway)
         except Exception:
-            logger.exception("ActionFlyAway failed to load")
+            logger.exception("GenieOverlay failed to load")
             self._action_flyaway = None
 
         # Recipient confirmation overlay — root-level floating popup (sits on top
@@ -3277,7 +3276,7 @@ class MeetingBoxApp(App):
         if screen is not None:
             screen._flyaway_committed = True
         if on_creation and screen is not None:
-            self._play_action_flyaway(screen, action, navigate)
+            self._run_genie(screen, action, navigate)
         elif callable(navigate):
             navigate()
 
@@ -3470,7 +3469,7 @@ class MeetingBoxApp(App):
         if screen is not None:
             screen._flyaway_committed = True
         if on_creation and screen is not None:
-            self._play_action_flyaway(screen, action, navigate)
+            self._run_genie(screen, action, navigate)
         elif callable(navigate):
             navigate()
 
@@ -3729,38 +3728,74 @@ class MeetingBoxApp(App):
 
     # ── Action fly-away animation (send / save / discard card flies off) ─────
 
-    def _play_action_flyaway(self, screen, action: str, navigate) -> None:
-        """Snapshot *screen*'s card, run *navigate* (a 0-arg callable that
-        switches screens), then fly the snapshot off over the destination.
+    # Genie timing (seconds): a brief button press, then the warp.
+    _GENIE_PRESS_DUR = 0.16
+    _GENIE_DUR = 1.0
 
-        The snapshot is taken while the card is still on screen; navigation and
-        the flourish then happen together so the user sees the transcription /
-        Tasks / Calendar page behind the flying card. Falls back to a plain
-        navigation if anything about the capture/overlay is unavailable.
-        """
+    def _run_genie(self, screen, action: str, navigate) -> None:
+        """Play the genie action animation on *screen*, then run *navigate*.
+
+        Sequence: flash the tapped button (so the press registers) → snapshot the
+        card → hide the real card + fade the buttons → warp the snapshot toward
+        the target (top-right corner for send/confirm, the CTA for save/discard)
+        → on completion switch screens and restore the creation screen's visuals
+        for next time. Degrades to a plain navigation if the overlay/capture is
+        unavailable."""
         overlay = getattr(self, "_action_flyaway", None)
-        captured = None
+
+        def _navigate_and_restore():
+            if callable(navigate):
+                try:
+                    navigate()
+                except Exception:
+                    logger.debug("genie navigate failed", exc_info=True)
+            try:
+                if screen is not None and hasattr(screen, "restore_action_visuals"):
+                    screen.restore_action_visuals()
+            except Exception:
+                logger.debug("genie restore failed", exc_info=True)
+
+        if overlay is None or screen is None:
+            _navigate_and_restore()
+            return
+
+        # 1) Press feedback so the user notices the button being pressed.
         try:
-            card = getattr(screen, "_card", None) if screen is not None else None
-            if overlay is not None and card is not None:
-                from components.action_flyaway import capture_card
-                captured = capture_card(screen, card)
+            if hasattr(screen, "flash_button"):
+                screen.flash_button(action)
         except Exception:
-            logger.debug("flyaway capture failed", exc_info=True)
+            logger.debug("genie flash_button failed", exc_info=True)
+
+        def _start(_dt):
+            # 2) Snapshot the card while it (and the buttons) are still visible.
             captured = None
-
-        if callable(navigate):
             try:
-                navigate()
+                from components.action_flyaway import capture_card
+                captured = capture_card(screen, getattr(screen, "_card", None))
             except Exception:
-                logger.debug("flyaway navigate failed", exc_info=True)
-
-        if overlay is not None and captured is not None:
+                logger.debug("genie capture failed", exc_info=True)
+            target = None
             try:
-                texture, rect = captured
-                overlay.play(texture, rect, action)
+                if hasattr(screen, "genie_target"):
+                    target = screen.genie_target(action)
             except Exception:
-                logger.debug("flyaway play failed", exc_info=True)
+                target = None
+            # 3) Hide the real card + fade the buttons (the snapshot stands in).
+            try:
+                if hasattr(screen, "prepare_genie"):
+                    screen.prepare_genie(action)
+            except Exception:
+                logger.debug("genie prepare failed", exc_info=True)
+            # 4) Warp the snapshot toward the target, then navigate + restore.
+            if captured is not None and target is not None:
+                texture, rect, uv = captured
+                overlay.play(texture, rect, uv, target,
+                             on_done=_navigate_and_restore,
+                             duration=self._GENIE_DUR)
+            else:
+                _navigate_and_restore()
+
+        Clock.schedule_once(_start, self._GENIE_PRESS_DUR)
 
     def _commit_email_action(self, action: str) -> None:
         """Fly the email card away (once) and land on the transcription page.
@@ -3790,7 +3825,7 @@ class MeetingBoxApp(App):
                 self.goto_screen(target, transition="none")
 
         if sm.current == "email_draft":
-            self._play_action_flyaway(screen, action, _nav)
+            self._run_genie(screen, action, _nav)
         else:
             _nav()
 

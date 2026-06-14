@@ -1,25 +1,22 @@
-"""Action fly-away overlay.
+"""Genie action animation.
 
-Reproduces the "send / save-as-draft / discard" card animations: when the user
-commits an action on the email-draft, calendar-event or task-creation card, a
-snapshot of the *real* card (so all of its content is preserved exactly) glides
-smoothly off toward a target while shrinking and dissolving — revealing the
-screen we navigate to behind it (the live transcription page for email/discard,
-or the Tasks / Calendar screen showing the freshly-added item).
+When the user commits an action on the email-draft / calendar-event / task card
+we play a macOS-style *genie* effect: a snapshot of the real card is mapped onto
+a deforming triangle mesh and "sucked" toward a target point (the top-right
+corner for Send/Confirm, or the relevant CTA button for Save / Discard) along a
+curved, phased funnel — the edge nearest the target leads, the body follows and
+tapers into a neck, then dissolves.
 
-The motion is deliberately macOS-like: a single ease-in-out glide (no rotation,
-no snapping), the card stays fully opaque while it travels and only dissolves at
-the very tail, so the eye can follow it the whole way.
+The motion is procedural (a snapshot warped on a ``Mesh``) so the card's content
+is preserved exactly and bends smoothly along the genie path with no jerks.
 
 Public API
 ----------
-capture_card(screen, card) -> (texture, (x, y, w, h)) | None
-    Snapshot the card region of *screen* in window coordinates. Call this while
-    the card is still visible (i.e. before navigating away).
+capture_card(screen, card) -> (texture, (x,y,w,h), (umin,vmin,umax,vmax)) | None
+    Snapshot *card* (rendered inside *screen*) while it is still visible.
 
-ActionFlyAway.play(texture, rect, action, on_done=None)
-    Glide the captured snapshot toward the target for *action*
-    ("send" | "save" | "discard").
+GenieOverlay.play(texture, rect, uv, target, on_done=None, duration=...)
+    Run the genie warp of the snapshot toward *target* (window coords).
 """
 
 from __future__ import annotations
@@ -27,22 +24,27 @@ from __future__ import annotations
 import logging
 
 from kivy.animation import Animation
-from kivy.core.window import Window
-from kivy.graphics import PopMatrix, PushMatrix, Scale
+from kivy.graphics import Color, Mesh
 from kivy.properties import NumericProperty
 from kivy.uix.floatlayout import FloatLayout
-from kivy.uix.image import Image
+from kivy.uix.widget import Widget
 
 logger = logging.getLogger(__name__)
 
+# Mesh resolution. More rows (NY, along the flow) → smoother funnel curve; a
+# handful of columns (NX, across) is enough for the side taper.
+_NX = 14
+_NY = 30
+# How much the rows lag behind one another (the "flow"). Higher = longer tail.
+_SPREAD = 0.6
+
 
 def capture_card(screen, card):
-    """Return ``(texture, (x, y, w, h))`` for *card* rendered inside *screen*.
+    """Return ``(texture, (x,y,w,h), (umin,vmin,umax,vmax))`` for *card*.
 
-    The rectangle is in window coordinates so the snapshot can be replayed by a
-    root-level overlay. Returns ``None`` if anything goes wrong (callers then
-    simply skip the flourish and navigate directly).
-    """
+    Geometry is in window coordinates; the uv bounds locate the card inside the
+    full-screen snapshot texture so the mesh can sample just the card. Returns
+    ``None`` on failure (caller then skips the flourish)."""
     if screen is None or card is None:
         return None
     try:
@@ -50,105 +52,143 @@ def capture_card(screen, card):
         tex = getattr(core_img, "texture", None)
         if tex is None:
             return None
+        tw, th = tex.size
+        if not tw or not th:
+            return None
         x, y = card.to_window(card.x, card.y)
-        w, h = int(round(card.width)), int(round(card.height))
+        w, h = float(card.width), float(card.height)
         if w <= 0 or h <= 0:
             return None
-        region = tex.get_region(int(round(x)), int(round(y)), w, h)
-        return region, (x, y, w, h)
+        umin = max(0.0, min(1.0, x / tw))
+        umax = max(0.0, min(1.0, (x + w) / tw))
+        vmin = max(0.0, min(1.0, y / th))
+        vmax = max(0.0, min(1.0, (y + h) / th))
+        return tex, (x, y, w, h), (umin, vmin, umax, vmax)
     except Exception:
         logger.debug("capture_card failed", exc_info=True)
         return None
 
 
-class _FlyCard(Image):
-    """An image of the captured card that scales about its centre via an
-    animatable property. No rotation — the card stays upright the whole time."""
+def _smoothstep(t: float) -> float:
+    if t <= 0.0:
+        return 0.0
+    if t >= 1.0:
+        return 1.0
+    return t * t * (3.0 - 2.0 * t)
 
-    fly_scale = NumericProperty(1.0)
 
-    def __init__(self, **kw):
+class _GenieMesh(Widget):
+    """A full-window widget that draws the card snapshot on a mesh and warps it
+    toward a target as ``progress`` animates 0 → 1."""
+
+    progress = NumericProperty(0.0)
+
+    def __init__(self, texture, rect, uv, target, **kw):
         super().__init__(**kw)
-        self.allow_stretch = True
-        self.keep_ratio = False
-        with self.canvas.before:
-            PushMatrix()
-            self._scale = Scale(x=1.0, y=1.0, z=1.0, origin=self.center)
-        with self.canvas.after:
-            PopMatrix()
-        self.bind(pos=self._apply_tx, size=self._apply_tx, fly_scale=self._apply_tx)
+        self._tex = texture
+        self._rect = rect            # (x, y, w, h) window coords
+        self._uv = uv                # (umin, vmin, umax, vmax)
+        self._target = target        # (tx, ty) window coords
+        x0, y0, w, h = rect
+        tx, ty = target
+        # Whichever edge of the card is nearest the target leads the genie.
+        self._target_above = ty >= (y0 + h / 2.0)
 
-    def _apply_tx(self, *_):
-        cx, cy = self.center
-        self._scale.origin = (cx, cy)
-        self._scale.x = self.fly_scale
-        self._scale.y = self.fly_scale
+        self._verts: list[float] = [0.0] * ((_NX + 1) * (_NY + 1) * 4)
+        self._indices: list[int] = []
+        self._mesh: Mesh | None = None
+        self._build()
+        self.bind(progress=lambda *_: self._update())
+
+    def _build(self) -> None:
+        umin, vmin, umax, vmax = self._uv
+        for j in range(_NY + 1):
+            v = j / _NY
+            for i in range(_NX + 1):
+                u = i / _NX
+                k = (j * (_NX + 1) + i) * 4
+                # texcoords are constant; positions are recomputed per frame
+                self._verts[k + 2] = umin + u * (umax - umin)
+                self._verts[k + 3] = vmin + v * (vmax - vmin)
+        for j in range(_NY):
+            for i in range(_NX):
+                a = j * (_NX + 1) + i
+                b = a + 1
+                c = a + (_NX + 1)
+                d = c + 1
+                self._indices += [a, b, c, b, d, c]
+        self._compute(0.0)
+        with self.canvas:
+            Color(1, 1, 1, 1)
+            self._mesh = Mesh(
+                vertices=self._verts,
+                indices=self._indices,
+                mode="triangles",
+                texture=self._tex,
+            )
+
+    def _compute(self, s: float) -> None:
+        x0, y0, w, h = self._rect
+        tx, ty = self._target
+        above = self._target_above
+        verts = self._verts
+        for j in range(_NY + 1):
+            v = j / _NY
+            lead = v if above else (1.0 - v)
+            oy = y0 + v * h
+            for i in range(_NX + 1):
+                u = i / _NX
+                ox = x0 + u * w
+                # Phased progress: rows near the target start (and finish) first,
+                # producing the flowing tail and the tapering neck.
+                t = s * (1.0 + _SPREAD) - (1.0 - lead) * _SPREAD
+                t = _smoothstep(t)
+                omt = 1.0 - t
+                # Quadratic Bézier with control point (ox, ty): the card first
+                # moves along its lead axis toward the target's row, then slides
+                # across to the target's column — the classic genie funnel curve.
+                px = ox * (1.0 - t * t) + tx * (t * t)
+                py = oy * omt * omt + ty * (1.0 - omt * omt)
+                k = (j * (_NX + 1) + i) * 4
+                verts[k] = px
+                verts[k + 1] = py
+        if self._mesh is not None:
+            self._mesh.vertices = verts
+
+    def _update(self) -> None:
+        s = self.progress
+        self._compute(s)
+        # Stay solid while it travels; dissolve only over the last fifth.
+        if s <= 0.8:
+            self.opacity = 1.0
+        else:
+            self.opacity = max(0.0, 1.0 - (s - 0.8) / 0.2)
 
 
-class ActionFlyAway(FloatLayout):
-    """Root-level transient overlay that plays the card fly-away animation.
-
-    Per action we glide the card's *centre* to a target point (expressed as a
-    fraction of the window) while shrinking it. ``send`` heads to the top-right
-    corner; ``save`` files down toward the bottom; ``discard`` collapses gently
-    in place.
-    """
-
-    _PARAMS = {
-        "send":    {"cx": 0.99, "cy": 0.97, "scale": 0.10, "dur": 1.30},
-        "save":    {"cx": 0.50, "cy": 0.02, "scale": 0.12, "dur": 1.35},
-        "discard": {"cx": 0.50, "cy": 0.46, "scale": 0.05, "dur": 1.20},
-    }
-    # Apple's default UIView curve is ease-in-out; in_out_cubic is the closest
-    # smooth, symmetric match and reads as calm/premium rather than snappy.
-    _EASE = "in_out_cubic"
+class GenieOverlay(FloatLayout):
+    """Root-level transient overlay that plays the genie warp."""
 
     def __init__(self, **kw):
         super().__init__(size_hint=(1, 1), **kw)
         self.opacity = 1.0
-        self._fly: _FlyCard | None = None
+        self._mesh_w: _GenieMesh | None = None
 
-    def play(self, texture, rect, action: str, on_done=None) -> None:
-        """Glide *texture* (captured at *rect*) toward the target for *action*."""
-        if texture is None or rect is None:
+    def play(self, texture, rect, uv, target, on_done=None, duration: float = 1.0) -> None:
+        if texture is None or rect is None or target is None:
             self._invoke(on_done)
             return
-        # A new animation supersedes any in-flight one.
         self._cleanup()
-        cfg = self._PARAMS.get(action, self._PARAMS["send"])
         try:
-            x, y, w, h = rect
-            fly = _FlyCard(texture=texture, size_hint=(None, None),
-                           size=(w, h), pos=(x, y))
-            self.add_widget(fly)
-            self._fly = fly
-
-            win_w = Window.width or 1
-            win_h = Window.height or 1
-            # Move the card's CENTRE to the target point; convert to bottom-left
-            # pos (size is fixed; the visual shrink happens via fly_scale about
-            # the centre, so the centre is what the eye tracks).
-            target_cx = cfg["cx"] * win_w
-            target_cy = cfg["cy"] * win_h
-            target_x = target_cx - w / 2.0
-            target_y = target_cy - h / 2.0
-            dur = cfg["dur"]
-
-            # Glide + shrink, perfectly synced on one ease-in-out curve.
-            glide = Animation(
-                x=target_x, y=target_y, fly_scale=cfg["scale"],
-                duration=dur, t=self._EASE,
-            )
-            glide.bind(on_complete=lambda *_: self._finish(on_done))
-            glide.start(fly)
-
-            # Stay fully opaque for most of the journey, then dissolve softly so
-            # the card never "blinks" out — the fade only covers the final ~35%.
-            fade = (Animation(opacity=1.0, duration=dur * 0.62)
-                    + Animation(opacity=0.0, duration=dur * 0.38, t="in_out_sine"))
-            fade.start(fly)
+            mesh = _GenieMesh(texture, rect, uv, target,
+                              size_hint=(None, None), pos=(0, 0))
+            self.add_widget(mesh)
+            self._mesh_w = mesh
+            # Ease-in-out so it starts gently, flows, and settles — no snap.
+            anim = Animation(progress=1.0, duration=duration, t="in_out_cubic")
+            anim.bind(on_complete=lambda *_: self._finish(on_done))
+            anim.start(mesh)
         except Exception:
-            logger.debug("ActionFlyAway.play failed", exc_info=True)
+            logger.debug("GenieOverlay.play failed", exc_info=True)
             self._finish(on_done)
 
     # ── internals ────────────────────────────────────────────────────────────
@@ -158,13 +198,13 @@ class ActionFlyAway(FloatLayout):
         self._invoke(on_done)
 
     def _cleanup(self) -> None:
-        if self._fly is not None:
+        if self._mesh_w is not None:
             try:
-                Animation.cancel_all(self._fly)
-                self.remove_widget(self._fly)
+                Animation.cancel_all(self._mesh_w)
+                self.remove_widget(self._mesh_w)
             except Exception:
                 pass
-        self._fly = None
+        self._mesh_w = None
 
     @staticmethod
     def _invoke(cb) -> None:
@@ -172,9 +212,9 @@ class ActionFlyAway(FloatLayout):
             try:
                 cb()
             except Exception:
-                logger.debug("flyaway on_done failed", exc_info=True)
+                logger.debug("genie on_done failed", exc_info=True)
 
-    # Transient visual only — never intercept touches meant for the screen below.
+    # Transient visual only — never intercept touches.
     def on_touch_down(self, touch):
         return False
 

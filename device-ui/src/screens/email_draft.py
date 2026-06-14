@@ -36,7 +36,9 @@ import logging
 import math
 import time
 
+from kivy.animation import Animation
 from kivy.clock import Clock
+from kivy.core.window import Window
 from kivy.graphics import Color, Ellipse, Line, Rectangle, RoundedRectangle
 from kivy.uix.boxlayout import BoxLayout
 from kivy.uix.floatlayout import FloatLayout
@@ -569,6 +571,7 @@ class EmailDraftScreen(BaseScreen):
     def on_enter(self) -> None:
         self._listening = False
         self._amplitude = 0.0
+        self.restore_action_visuals()
         if self._voice_pill:
             self._voice_pill.set_state_text("Listening")
             self._voice_pill.opacity = 1.0
@@ -617,6 +620,7 @@ class EmailDraftScreen(BaseScreen):
         self._flyaway_committed = False
         self._fields = {"to": [], "cc": [], "bcc": [], "subject": "", "body": ""}
         self._refresh_ui()
+        self.restore_action_visuals()
         if self._voice_pill:
             self._voice_pill.set_state_text("Listening")
         self._set_buttons_enabled(True)
@@ -711,6 +715,50 @@ class EmailDraftScreen(BaseScreen):
         for btn in (self._send_btn, self._save_btn, self._discard_btn):
             if btn:
                 btn.set_enabled(enabled)
+
+    # ── Genie action animation hooks (driven by main.py) ──────────────────────
+
+    def _action_btn(self, action: str):
+        return {"send": self._send_btn, "save": self._save_btn,
+                "discard": self._discard_btn}.get(action)
+
+    def flash_button(self, action: str) -> None:
+        """Quick press blink on the tapped button so the press is noticeable."""
+        btn = self._action_btn(action)
+        if btn is None:
+            return
+        Animation.cancel_all(btn, "opacity")
+        (Animation(opacity=0.45, duration=0.08, t="out_quad")
+         + Animation(opacity=1.0, duration=0.08, t="in_quad")).start(btn)
+
+    def prepare_genie(self, action: str) -> None:
+        """Hide the real card (the genie snapshot stands in for it) and fade the
+        buttons away. For save/discard the chosen CTA stays as the genie's sink."""
+        if self._card is not None:
+            self._card.opacity = 0
+        keep = self._action_btn(action) if action in ("save", "discard") else None
+        for b in (self._send_btn, self._save_btn, self._discard_btn):
+            if b is None or b is keep:
+                continue
+            Animation.cancel_all(b, "opacity")
+            Animation(opacity=0.0, duration=0.4, t="out_quad").start(b)
+
+    def restore_action_visuals(self) -> None:
+        if self._card is not None:
+            self._card.opacity = 1
+        for b in (self._send_btn, self._save_btn, self._discard_btn):
+            if b is not None:
+                Animation.cancel_all(b, "opacity")
+                b.opacity = 1
+
+    def genie_target(self, action: str):
+        """Window-coord sink point: top-right corner for Send, else the CTA."""
+        if action == "send":
+            return (float(Window.width), float(Window.height))
+        btn = self._action_btn(action)
+        if btn is not None:
+            return tuple(btn.to_window(btn.center_x, btn.center_y))
+        return (float(Window.width), float(Window.height))
 
     # ── Auto-return to home on terminal state ─────────────────────────────────
 
