@@ -3280,8 +3280,16 @@ class MeetingBoxApp(App):
             prev["date"] = date
         if time_str is not None:
             prev["time"] = time_str
-        if attendees is not None:
-            prev["attendees"] = [str(a).strip() for a in attendees if str(a).strip()]
+        # Attendees are confirmed on-device via the contact picker, so the model's
+        # directive must only ADD to them — never clear or replace. An empty/omitted
+        # attendee list from the model leaves the device-confirmed chips intact.
+        if attendees:
+            merged = list(prev.get("attendees", []))
+            for a in attendees:
+                a = str(a).strip()
+                if a and a not in merged:
+                    merged.append(a)
+            prev["attendees"] = merged
         self._pending_event_data = prev
 
         try:
@@ -3478,7 +3486,15 @@ class MeetingBoxApp(App):
         field = getattr(self, "_picker_current_field", "to")
         sm = getattr(self, "screen_manager", None)
         on_cal = sm is not None and sm.current == "calendar_event_creation"
-        if field == "attendee" or on_cal:
+        # Treat the pick as an attendee whenever we're in an active calendar-event
+        # flow — even if the model forgot to pass field="attendee" or the picker
+        # was shown before the event screen opened. _pending_event_data is only
+        # populated between show_calendar_event and the confirm/discard dismissal.
+        # An explicit email field (to/cc/bcc) still wins unless we're literally on
+        # the event screen, so email drafting is never misrouted.
+        in_event_flow = bool(getattr(self, "_pending_event_data", None))
+        explicit_email = field in ("to", "cc", "bcc")
+        if field == "attendee" or on_cal or (in_event_flow and not explicit_email):
             try:
                 if sm is not None and sm.current != "calendar_event_creation":
                     self.goto_screen("calendar_event_creation")
