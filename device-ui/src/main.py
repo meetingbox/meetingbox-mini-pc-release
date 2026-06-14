@@ -3087,6 +3087,13 @@ class MeetingBoxApp(App):
             except Exception:
                 logger.exception("Failed to set emails target_tab")
 
+        if name == "morning_brief" and target_tab:
+            try:
+                mb = self.screen_manager.get_screen("morning_brief")
+                mb.set_active_section(target_tab)
+            except Exception:
+                logger.exception("Failed to set morning_brief section")
+
         try:
             self.goto_screen(name, tr)
         except Exception:
@@ -3591,7 +3598,7 @@ class MeetingBoxApp(App):
         )
         # Always compact — the full-screen overlay mode is no longer used.
         overlay.set_compact(True)
-        if name in ('home', 'voice_session', 'email_draft', 'voice_task_creation', 'calendar_event_creation', 'tasks', 'calendar'):
+        if name in ('home', 'voice_session', 'email_draft', 'voice_task_creation', 'calendar_event_creation', 'tasks', 'calendar', 'morning_brief'):
             # Home + voice-session + email_draft + voice_task_creation handle
             # transcription natively; the tasks and calendar screens intentionally
             # hide the bottom transcript strip. Keep the overlay hidden on all of these.

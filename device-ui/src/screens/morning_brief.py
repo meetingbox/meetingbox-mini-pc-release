@@ -38,7 +38,6 @@ from kivy.uix.widget import Widget
 from async_helper import run_async
 from api_client import (
     _GMAIL_RECENT_DAYS,
-    _map_gmail_recent_row,
     summarize_gmail_feed_for_home,
 )
 from config import ASSETS_DIR, DISPLAY_HEIGHT, DISPLAY_WIDTH, display_now
@@ -146,40 +145,47 @@ class _Row(FloatLayout):
         self.height = _sz(ROW_H)
         self._show_divider = show_divider
         self._show_next = show_next
+        self._tab = None
+        self._brd = None
+        self._div = None
 
         # NEXT highlight tab fill — behind row content so the label sits on top.
-        if show_next:
-            with self.canvas.before:
-                self._tab_c = Color(*_HDR)
+        with self.canvas.before:
+            if show_next:
+                Color(*_HDR)
                 self._tab = RoundedRectangle(radius=[_sz(8)])
         with self.canvas.after:
-            self._div_c = Color(*_DIV[:3], 1.0 if show_divider else 0.0)
-            self._div = Rectangle()
-            self._brd_c = Color(*_HDR, 1.0 if show_next else 0.0)
-            self._brd = Line(width=_sz(2.0))
+            if show_divider:
+                Color(*_DIV)
+                self._div = Rectangle()
+            if show_next:
+                Color(*_HDR)
+                self._brd = Line(width=max(1.5, _sz(2.0)))
         if show_next:
             self._next_lbl = _lbl("NEXT", _F_MED, _ff(20.0), _WHITE,
                                   ha="center", va="middle",
                                   size_hint=(150 / CARD_W, 24 / ROW_H),
-                                  pos_hint={"x": 3 / CARD_W,
-                                            "top": 1 - (8 / ROW_H)})
+                                  pos_hint={"x": 6 / CARD_W,
+                                            "top": 1 - (7 / ROW_H)})
             self.add_widget(self._next_lbl)
         self.bind(pos=self._sync, size=self._sync)
+        Clock.schedule_once(self._sync, 0)
 
     def _sync(self, *_):
         w, h, x, y = self.width, self.height, self.x, self.y
-        # Bottom divider spans the content width (stops before the scrollbar).
-        dw = w * (987.51 / CARD_W)
-        self._div.pos = (x, y)
-        self._div.size = (dw, max(1.0, _sz(1.3)))
-        if self._show_next:
-            inset = _sz(2.0)
+        if self._div is not None:
+            # Bottom divider spans the content width (stops before the scrollbar).
+            dw = w * (987.51 / CARD_W)
+            self._div.pos = (x, y)
+            self._div.size = (dw, max(1.0, _sz(1.3)))
+        if self._show_next and self._brd is not None:
+            inset = max(1.5, _sz(2.0))
             bw = w * (983 / CARD_W)
             self._brd.rounded_rectangle = (
-                x + inset, y + inset, bw - inset, h - inset * 2, _sz(12))
+                x + inset, y + inset, bw, h - inset * 2, _sz(12))
             tab_w = w * (150 / CARD_W)
             tab_h = _sz(24)
-            self._tab.pos = (x + _sz(3), y + h - tab_h - _sz(8))
+            self._tab.pos = (x + _sz(3), y + h - tab_h - _sz(7))
             self._tab.size = (tab_w, tab_h)
 
 
@@ -245,6 +251,7 @@ class MorningBriefScreen(BaseScreen):
         self._hdr_subtitle = None
         self._cards: list[_Card] = []
         self._index = 0
+        self._pending_index: int | None = None
         self._sections: list[dict] = []   # per-card ctx (content box, count, scroll)
         self._build_ui()
         self.bind(slide=self._on_slide)
@@ -446,6 +453,50 @@ class MorningBriefScreen(BaseScreen):
     def prev_section(self) -> None:
         self._go_to(self._index - 1)
 
+    # ── Section control (voice agent / external) ───────────────────────────────
+
+    _SECTION_NAMES = ("schedule", "tasks", "emails")
+    _SECTION_ALIASES = {
+        "schedule": 0, "calendar": 0, "meetings": 0, "meeting": 0, "today": 0,
+        "tasks": 1, "task": 1, "todo": 1, "todos": 1, "to-do": 1,
+        "emails": 2, "email": 2, "inbox": 2, "mail": 2,
+    }
+
+    def _section_index(self, name: str) -> int | None:
+        n = (name or "").strip().lower()
+        if n in self._SECTION_ALIASES:
+            return self._SECTION_ALIASES[n]
+        if n in ("next", "forward", "right"):
+            return (self._index + 1) % len(self._cards)
+        if n in ("previous", "prev", "back", "left"):
+            return (self._index - 1) % len(self._cards)
+        return None
+
+    def set_active_section(self, name: str) -> None:
+        """Switch the carousel to a named section (used by the voice agent).
+
+        Applies immediately when this screen is already current; otherwise the
+        section is remembered and applied on the next ``on_enter``.
+        """
+        idx = self._section_index(name)
+        if idx is None:
+            return
+        self._pending_index = idx
+        if self.manager and self.manager.current == self.name:
+            self._apply_pending_section()
+
+    def current_section_name(self) -> str:
+        try:
+            return self._SECTION_NAMES[self._index]
+        except IndexError:
+            return "schedule"
+
+    def _apply_pending_section(self) -> None:
+        if self._pending_index is not None:
+            target = self._pending_index
+            self._pending_index = None
+            self._go_to(target)
+
     # ── Touch swipe (horizontal = carousel, vertical = list scroll) ────────────-
 
     _SWIPE_DX = max(40.0, DISPLAY_WIDTH * 0.06)
@@ -491,8 +542,8 @@ class MorningBriefScreen(BaseScreen):
         ctx["content"].add_widget(row)
 
     def _add_schedule_row(self, ctx: dict, time_s: str, title_s: str,
-                          dur_s: str, is_next: bool) -> _Row:
-        row = _Row(show_next=is_next)
+                          dur_s: str, is_next: bool, last: bool = False) -> _Row:
+        row = _Row(show_next=is_next, show_divider=not last)
         row.add_widget(_lbl(time_s, _F_SB, _ff(30.25), _BLACK,
                             **_rel(45.38, ROW_H / 2 - 18, 175, 36, CARD_W, ROW_H)))
         row.add_widget(_lbl(title_s, _F_SB, _ff(30.88), _SUBTLE,
@@ -502,8 +553,9 @@ class MorningBriefScreen(BaseScreen):
         ctx["content"].add_widget(row)
         return row
 
-    def _add_task_row(self, ctx: dict, label_s: str, title_s: str) -> None:
-        row = _Row()
+    def _add_task_row(self, ctx: dict, label_s: str, title_s: str,
+                      last: bool = False) -> None:
+        row = _Row(show_divider=not last)
         row.add_widget(_lbl(label_s, _F_SB, _ff(30.25), _BLACK,
                             **_rel(45.38, ROW_H / 2 - 18, 170, 36, CARD_W, ROW_H)))
         row.add_widget(_lbl(title_s, _F_SB, _ff(30.88), _SUBTLE,
@@ -511,8 +563,8 @@ class MorningBriefScreen(BaseScreen):
         ctx["content"].add_widget(row)
 
     def _add_email_row(self, ctx: dict, sender_s: str, subject_s: str,
-                       time_s: str) -> None:
-        row = _Row()
+                       time_s: str, last: bool = False) -> None:
+        row = _Row(show_divider=not last)
         row.add_widget(_lbl(sender_s, _F_SB, _ff(30.25), _BLACK,
                             **_rel(45.38, ROW_H / 2 - 18, 260, 36, CARD_W, ROW_H)))
         row.add_widget(_lbl(subject_s, _F_SB, _ff(30.88), _SUBTLE,
@@ -538,9 +590,16 @@ class MorningBriefScreen(BaseScreen):
         return f"{h12}:{m:02d} {am}"
 
     def on_enter(self) -> None:
-        self._index = 0
-        self.slide = 0.0
-        self._reposition()
+        if self._pending_index is None:
+            self._index = 0
+            self.slide = 0.0
+            self._reposition()
+        else:
+            # Land directly on the section the voice agent requested.
+            self._index = self._pending_index
+            self.slide = float(self._pending_index)
+            self._pending_index = None
+            self._reposition()
         self.app.ui_cache_subscribe("morning_brief_context", self._on_cached_briefing_context)
         self.app.ui_cache_subscribe("morning_brief_gmail", self._on_cached_briefing_gmail)
         cached_ctx = self.app.ui_cache_get("morning_brief_context")
@@ -680,8 +739,10 @@ class MorningBriefScreen(BaseScreen):
             self._empty(ctx, "No meetings today")
         else:
             next_row = None
+            n = len(parsed)
             for i, (t, ti, du, _up) in enumerate(parsed):
-                r = self._add_schedule_row(ctx, t, ti, du, is_next=(i == next_idx))
+                r = self._add_schedule_row(
+                    ctx, t, ti, du, is_next=(i == next_idx), last=(i == n - 1))
                 if i == next_idx:
                     next_row = r
             if next_row is not None:
@@ -722,26 +783,26 @@ class MorningBriefScreen(BaseScreen):
         if not items:
             self._empty(ctx, "No tasks")
         else:
-            for _k, label, title in items:
-                self._add_task_row(ctx, label, title)
+            n = len(items)
+            for i, (_k, label, title) in enumerate(items):
+                self._add_task_row(ctx, label, title, last=(i == n - 1))
         self._set_count(ctx, len(items))
 
     def _apply_emails(self, gfeed: dict) -> None:
         ctx = self._sections[2]
         summary = summarize_gmail_feed_for_home(gfeed or {})
         connected = bool(summary.get("connected"))
+        # fetch_gmail_recent() already returns device-mapped rows
+        # (sender / subject / time / is_read) — consume them directly.
         msgs = (gfeed or {}).get("messages") if isinstance(gfeed, dict) else None
         unread = []
         if isinstance(msgs, list):
             for m in msgs:
-                if not isinstance(m, dict) or not m.get("id"):
+                if not isinstance(m, dict):
                     continue
                 if m.get("is_read", True):
                     continue
-                try:
-                    unread.append(_map_gmail_recent_row(m))
-                except Exception:
-                    continue
+                unread.append(m)
 
         self._clear(ctx)
         if not connected:
@@ -751,12 +812,14 @@ class MorningBriefScreen(BaseScreen):
         if not unread:
             self._empty(ctx, "No unread emails")
         else:
-            for row in unread:
-                sender = (row.get("sender") or "Unknown").strip()
+            n = len(unread)
+            for i, m in enumerate(unread):
+                sender = (m.get("sender") or "Unknown").strip() or "Unknown"
                 self._add_email_row(
                     ctx,
                     f"{sender[:24]}:",
-                    (row.get("subject") or "(no subject)")[:32],
-                    (row.get("time") or "")[:12],
+                    (m.get("subject") or "(no subject)")[:32],
+                    (m.get("time") or "")[:12],
+                    last=(i == n - 1),
                 )
         self._set_count(ctx, len(unread))
