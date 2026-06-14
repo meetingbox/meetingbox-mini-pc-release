@@ -24,12 +24,114 @@ from __future__ import annotations
 import logging
 
 from kivy.animation import Animation
-from kivy.graphics import Color, Mesh
+from kivy.event import EventDispatcher
+from kivy.graphics import Color, Mesh, PopMatrix, PushMatrix, Scale
 from kivy.properties import NumericProperty
 from kivy.uix.floatlayout import FloatLayout
 from kivy.uix.widget import Widget
 
 logger = logging.getLogger(__name__)
+
+
+# ── Live-widget minimize ──────────────────────────────────────────────────────
+# Rather than snapshotting the card onto a mesh (which momentarily *replaces* the
+# live widget with a flat image — the jerky "pop" the user kept seeing), we scale
+# the real card widget itself toward the target point. The card keeps rendering
+# (crisp text, real shadow) and just shrinks smoothly into the corner / CTA, so
+# there is no snapshot hand-off and nothing ever visibly changes.
+
+
+class _MinimizeProxy(EventDispatcher):
+    """Animatable scalars driving the live-card scale + fade."""
+
+    s = NumericProperty(1.0)  # uniform scale, 1 → ~0
+    a = NumericProperty(1.0)  # card opacity, held then faded at the very end
+
+
+def _cleanup_minimize(card) -> None:
+    """Remove the transform instructions added by :func:`minimize_card`."""
+    instrs = getattr(card, "_minimize_instrs", None)
+    if not instrs:
+        return
+    push, scale, pop = instrs
+    for grp, ins in ((card.canvas.before, push), (card.canvas.before, scale),
+                     (card.canvas.after, pop)):
+        try:
+            grp.remove(ins)
+        except Exception:
+            pass
+    card._minimize_instrs = None
+
+
+def minimize_card(card, target, on_done=None, duration: float = 0.7) -> None:
+    """Shrink the *live* ``card`` widget toward ``target`` (window coords) while
+    fading it out at the end, then invoke ``on_done``.
+
+    The whole card subtree (shadow, fill and content) is wrapped in a
+    ``PushMatrix``/``Scale``/``PopMatrix`` so it scales as one piece about the
+    target pivot. At scale 1 this is the identity transform, so the first frame
+    is pixel-identical to the resting card — no pop, fully smooth."""
+    if card is None or target is None:
+        _invoke(on_done)
+        return
+    try:
+        tx, ty = float(target[0]), float(target[1])
+    except Exception:
+        _invoke(on_done)
+        return
+
+    _cleanup_minimize(card)  # idempotent — drop any stale transform first
+    try:
+        push = PushMatrix()
+        scale = Scale(1.0, 1.0, 1.0)
+        scale.origin = (tx, ty)
+        pop = PopMatrix()
+        # Wrap everything the card draws: insert push+scale at the head of
+        # canvas.before (ahead of the shadow/fill) and pop at the tail of after.
+        card.canvas.before.insert(0, scale)
+        card.canvas.before.insert(0, push)
+        card.canvas.after.add(pop)
+        card._minimize_instrs = (push, scale, pop)
+    except Exception:
+        logger.debug("minimize_card setup failed", exc_info=True)
+        _invoke(on_done)
+        return
+
+    proxy = _MinimizeProxy()
+
+    def _apply(*_):
+        scale.x = proxy.s
+        scale.y = proxy.s
+        scale.origin = (tx, ty)
+        card.opacity = proxy.a
+
+    proxy.bind(s=_apply, a=_apply)
+
+    def _done(*_):
+        _cleanup_minimize(card)
+        try:
+            card.opacity = 1.0
+        except Exception:
+            pass
+        _invoke(on_done)
+
+    # Scale eases in-out so it starts gently and settles — the macOS feel.
+    anim_s = Animation(s=0.04, duration=duration, t="in_out_cubic")
+    anim_s.bind(on_complete=_done)
+    # Hold full opacity for most of the travel, fade only over the last ~30%.
+    hold = duration * 0.7
+    anim_a = (Animation(a=1.0, duration=hold)
+              + Animation(a=0.0, duration=max(0.01, duration - hold), t="in_quad"))
+    anim_s.start(proxy)
+    anim_a.start(proxy)
+
+
+def _invoke(cb) -> None:
+    if cb:
+        try:
+            cb()
+        except Exception:
+            logger.debug("minimize on_done failed", exc_info=True)
 
 # Mesh resolution. More rows (NY, along the flow) → smoother funnel curve; a
 # handful of columns (NX, across) is enough for the side taper.

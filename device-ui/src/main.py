@@ -3741,8 +3741,6 @@ class MeetingBoxApp(App):
         → on completion switch screens and restore the creation screen's visuals
         for next time. Degrades to a plain navigation if the overlay/capture is
         unavailable."""
-        overlay = getattr(self, "_action_flyaway", None)
-
         def _navigate_and_restore():
             if callable(navigate):
                 try:
@@ -3755,7 +3753,7 @@ class MeetingBoxApp(App):
             except Exception:
                 logger.debug("genie restore failed", exc_info=True)
 
-        if overlay is None or screen is None:
+        if screen is None:
             _navigate_and_restore()
             return
 
@@ -3767,31 +3765,29 @@ class MeetingBoxApp(App):
             logger.debug("genie flash_button failed", exc_info=True)
 
         def _start(_dt):
-            # 2) Snapshot the card while it (and the buttons) are still visible.
-            captured = None
-            try:
-                from components.action_flyaway import capture_card
-                captured = capture_card(screen, getattr(screen, "_card", None))
-            except Exception:
-                logger.debug("genie capture failed", exc_info=True)
+            # 2) Resolve the sink point (top-right corner for send/confirm, the
+            #    chosen CTA for save/discard).
             target = None
             try:
                 if hasattr(screen, "genie_target"):
                     target = screen.genie_target(action)
             except Exception:
                 target = None
-            # 3) Hide the real card + fade the buttons (the snapshot stands in).
+            # 3) Fade the buttons away (the live card stays — it is what animates).
             try:
                 if hasattr(screen, "prepare_genie"):
                     screen.prepare_genie(action)
             except Exception:
                 logger.debug("genie prepare failed", exc_info=True)
-            # 4) Warp the snapshot toward the target, then navigate + restore.
-            if captured is not None and target is not None:
-                texture, rect, uv = captured
-                overlay.play(texture, rect, uv, target,
-                             on_done=_navigate_and_restore,
-                             duration=self._GENIE_DUR)
+            # 4) Shrink the *live* card toward the target, then navigate + restore.
+            #    Animating the real widget (no snapshot) means there is no pop —
+            #    the card simply scales away smoothly.
+            card = getattr(screen, "_card", None)
+            if card is not None and target is not None:
+                from components.action_flyaway import minimize_card
+                minimize_card(card, target,
+                              on_done=_navigate_and_restore,
+                              duration=self._GENIE_DUR)
             else:
                 _navigate_and_restore()
 

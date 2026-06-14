@@ -527,8 +527,6 @@ class VoiceTaskCreationScreen(BaseScreen):
          + Animation(opacity=1.0, duration=0.08, t="in_quad")).start(btn)
 
     def prepare_genie(self, action: str) -> None:
-        if self._card is not None:
-            self._card.opacity = 0
         keep = self._action_btn(action) if action == "discard" else None
         for b in (self._confirm_btn, self._discard_btn):
             if b is None or b is keep:
@@ -538,6 +536,11 @@ class VoiceTaskCreationScreen(BaseScreen):
 
     def restore_action_visuals(self) -> None:
         if self._card is not None:
+            try:
+                from components.action_flyaway import _cleanup_minimize
+                _cleanup_minimize(self._card)
+            except Exception:
+                pass
             self._card.opacity = 1
         for b in (self._confirm_btn, self._discard_btn):
             if b is not None:
