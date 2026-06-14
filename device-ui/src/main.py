@@ -323,6 +323,7 @@ from screens.emails import EmailsScreen
 from screens.tasks import TasksScreen
 from screens.email_draft import EmailDraftScreen
 from screens.voice_task_creation import VoiceTaskCreationScreen
+from screens.calendar_event_creation import CalendarEventCreationScreen
 from components.quick_panel import QuickPanel
 
 # ------------------------------------------------------------------
@@ -784,6 +785,9 @@ class MeetingBoxApp(App):
         # Holds task data (title/description/due_date) between show_task_creation
         # directive and the user tapping Confirm/Discard.
         self._pending_task_data: dict = {}
+        # Holds calendar-event data (name/date/time/attendees) between
+        # show_calendar_event directive and the user tapping Confirm/Discard.
+        self._pending_event_data: dict = {}
         # Limits cloud NL replies per wake/mic activation (local wake listening unaffected).
         self._voice_cloud_qa_budget = 0
         # Serialises TTS calls — overlapping replies are dropped, not stacked
@@ -1080,6 +1084,12 @@ class MeetingBoxApp(App):
             on_discard=self._on_task_creation_discard_tapped,
         )
         self.screen_manager.add_widget(_vtc)
+        _cec = CalendarEventCreationScreen(
+            name='calendar_event_creation',
+            on_confirm=self._on_calendar_event_confirm_tapped,
+            on_discard=self._on_calendar_event_discard_tapped,
+        )
+        self.screen_manager.add_widget(_cec)
         self.screen_manager.add_widget(RecordingScreen(name='recording'))
         self.screen_manager.add_widget(ProcessingScreen(name='processing'))
         self.screen_manager.add_widget(CompleteScreen(name='complete'))
@@ -3236,6 +3246,93 @@ class MeetingBoxApp(App):
         """Inject the task-creation outcome as a voice turn into the live session."""
         self._send_voice_user_text(message)
 
+    # ── Calendar event creation ──────────────────────────────────────────────
+
+    def _on_calendar_event_directive(self, event: dict) -> None:
+        """Navigate to the calendar event creation screen with pre-filled data.
+
+        Sits on top of the live voice-session transcript; fields fill
+        progressively as the agent collects them.
+        """
+        if not isinstance(event, dict):
+            return
+        name      = str(event.get("name") or event.get("title") or "").strip()
+        date      = str(event.get("date") or "").strip() or None
+        time_str  = str(event.get("time") or "").strip() or None
+        attendees = event.get("attendees")
+        if isinstance(attendees, str):
+            attendees = [attendees] if attendees.strip() else []
+        elif not isinstance(attendees, list):
+            attendees = None
+
+        # Progressive merge into pending state (missing keys keep prior value).
+        prev = getattr(self, "_pending_event_data", None) or {}
+        if name:
+            prev["name"] = name
+        if date is not None:
+            prev["date"] = date
+        if time_str is not None:
+            prev["time"] = time_str
+        if attendees is not None:
+            prev["attendees"] = [str(a).strip() for a in attendees if str(a).strip()]
+        self._pending_event_data = prev
+
+        try:
+            sm = getattr(self, "screen_manager", None)
+            if sm is not None and sm.current != "calendar_event_creation":
+                self.goto_screen("calendar_event_creation")
+            screen = sm.get_screen("calendar_event_creation") if sm else None
+            if screen is not None:
+                screen.set_event_data(
+                    name=prev.get("name"),
+                    date=prev.get("date"),
+                    time_str=prev.get("time"),
+                    attendees=prev.get("attendees"),
+                )
+        except Exception:
+            logger.exception("Failed to show calendar event creation screen")
+
+    def _on_calendar_event_confirm_tapped(self) -> None:
+        """User tapped Confirm — ask the agent to create the calendar event,
+        then return to the voice transcription screen. The actual create runs
+        server-side via the agent's calendar tool (mirrors task creation)."""
+        self._send_voice_user_text(
+            "[BUTTON:Confirm] — create the calendar event now with the details on screen.",
+            interrupt=True,
+        )
+        try:
+            sm = getattr(self, "screen_manager", None)
+            if sm is not None:
+                self.goto_screen("voice_session")
+        except Exception:
+            logger.debug("calendar event confirm: navigation failed", exc_info=True)
+
+    def _on_calendar_event_discard_tapped(self) -> None:
+        """User tapped Discard — cancel and return to voice session."""
+        self._pending_event_data = {}
+        self._send_voice_user_text(
+            "[BUTTON:Discard] — the user cancelled creating the calendar event. Acknowledge briefly.",
+            interrupt=True,
+        )
+        try:
+            sm = getattr(self, "screen_manager", None)
+            if sm is not None:
+                self.goto_screen("voice_session")
+        except Exception:
+            logger.debug("calendar event discard: navigation failed", exc_info=True)
+
+    def _on_calendar_event_dismiss_directive(self) -> None:
+        """Voice confirm/discard — server already created (confirm) or cancelled
+        (discard) the event, so just clear pending state and return to the voice
+        transcription screen. The model speaks from the tool result."""
+        self._pending_event_data = {}
+        try:
+            sm = getattr(self, "screen_manager", None)
+            if sm is not None and sm.current == "calendar_event_creation":
+                self.goto_screen("voice_session")
+        except Exception:
+            logger.debug("calendar event voice dismiss: navigation failed", exc_info=True)
+
     def _on_recipient_picker_directive(self, query: str, candidates: list, field: str = "to") -> None:
         """Show the recipient confirmation overlay from a show_recipient_picker directive."""
         overlay = getattr(self, "_recipient_overlay", None)
@@ -3243,7 +3340,7 @@ class MeetingBoxApp(App):
             return
         # Remember which email field this picker resolves — used by _on_recipient_selected
         # to decide whether the confirmed contact goes into "to", "cc", or "bcc".
-        self._picker_current_field = field if field in ("to", "cc", "bcc") else "to"
+        self._picker_current_field = field if field in ("to", "cc", "bcc", "attendee") else "to"
         try:
             overlay.show_candidates(query, candidates or [])
         except Exception:
@@ -3259,6 +3356,36 @@ class MeetingBoxApp(App):
         name = (contact or {}).get("name", "") or email
         if not email:
             return
+
+        # Calendar attendee selection reuses this same picker overlay. When the
+        # picker was opened for an attendee (or we're on the calendar event
+        # screen), add the chosen contact as an attendee chip and stay put —
+        # do NOT route into the email draft flow.
+        field = getattr(self, "_picker_current_field", "to")
+        sm = getattr(self, "screen_manager", None)
+        on_cal = sm is not None and sm.current == "calendar_event_creation"
+        if field == "attendee" or on_cal:
+            try:
+                if sm is not None and sm.current != "calendar_event_creation":
+                    self.goto_screen("calendar_event_creation")
+                screen = sm.get_screen("calendar_event_creation") if sm else None
+                if screen is not None and hasattr(screen, "add_attendee"):
+                    disp = f"{name} <{email}>" if (name and name != email) else email
+                    screen.add_attendee(disp)
+                    pend = getattr(self, "_pending_event_data", None) or {}
+                    att = list(pend.get("attendees", []))
+                    if disp not in att:
+                        att.append(disp)
+                    pend["attendees"] = att
+                    self._pending_event_data = pend
+            except Exception:
+                logger.debug("calendar attendee fill failed", exc_info=True)
+            self._send_voice_user_text(
+                f"I picked {name} ({email}) on screen — add that address as an attendee.",
+                interrupt=True,
+            )
+            return
+
         # After confirming a recipient, ensure we land on the email draft page
         # so "go back to email screen" always works (even before show_email_draft
         # has arrived).  The screen starts in blank/loading state; set_draft()
@@ -3330,10 +3457,10 @@ class MeetingBoxApp(App):
         )
         # Always compact — the full-screen overlay mode is no longer used.
         overlay.set_compact(True)
-        if name in ('home', 'voice_session', 'email_draft', 'voice_task_creation', 'tasks'):
+        if name in ('home', 'voice_session', 'email_draft', 'voice_task_creation', 'calendar_event_creation', 'tasks', 'calendar'):
             # Home + voice-session + email_draft + voice_task_creation handle
-            # transcription natively; the tasks screen intentionally hides the
-            # bottom transcript strip. Keep the overlay hidden on all of these.
+            # transcription natively; the tasks and calendar screens intentionally
+            # hide the bottom transcript strip. Keep the overlay hidden on all of these.
             overlay.suppress_auto_show = True
             overlay.hide()
         else:
@@ -3747,7 +3874,7 @@ class MeetingBoxApp(App):
                     # tasks screen suppresses the strip; on all other screens show
                     # the compact overlay strip.
                     if not (self.screen_manager
-                            and self.screen_manager.current in ('home', 'voice_session', 'tasks')):
+                            and self.screen_manager.current in ('home', 'voice_session', 'tasks', 'calendar')):
                         self._transcript_overlay.show()
                 # Reset home say bar for the new session
                 self._clear_home_say_bar()
@@ -3774,6 +3901,11 @@ class MeetingBoxApp(App):
                 elif current == 'voice_task_creation':
                     try:
                         self.screen_manager.get_screen('voice_task_creation').set_voice_session_state(state)
+                    except Exception:
+                        pass
+                elif current == 'calendar_event_creation':
+                    try:
+                        self.screen_manager.get_screen('calendar_event_creation').set_voice_session_state(state)
                     except Exception:
                         pass
 
@@ -3919,6 +4051,8 @@ class MeetingBoxApp(App):
                 on_recipient_picker=self._on_recipient_picker_directive,
                 on_task_creation=self._on_task_creation_directive,
                 on_task_dismiss=self._on_task_creation_dismiss_directive,
+                on_calendar_event=self._on_calendar_event_directive,
+                on_calendar_event_dismiss=self._on_calendar_event_dismiss_directive,
                 on_start_recording=self._realtime_handle_start_recording,
                 should_suppress_farewell=self._email_workflow_active,
                 prewarm=prewarm,

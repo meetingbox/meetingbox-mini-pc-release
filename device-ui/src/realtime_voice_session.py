@@ -388,6 +388,8 @@ class RealtimeVoiceSession:
         on_recipient_picker=None,
         on_task_creation=None,
         on_task_dismiss=None,
+        on_calendar_event=None,
+        on_calendar_event_dismiss=None,
         on_start_recording=None,
         should_suppress_farewell=None,
         prewarm: bool = False,
@@ -420,6 +422,8 @@ class RealtimeVoiceSession:
         self._on_recipient_picker_cb = on_recipient_picker
         self._on_task_creation_cb = on_task_creation
         self._on_task_dismiss_cb = on_task_dismiss
+        self._on_calendar_event_cb = on_calendar_event
+        self._on_calendar_event_dismiss_cb = on_calendar_event_dismiss
         self._on_start_recording_cb = on_start_recording
         # Optional predicate: when it returns True the aggressive keyword-based
         # client-side farewell close is skipped (e.g. while an email draft is
@@ -831,6 +835,64 @@ class RealtimeVoiceSession:
         except (TypeError, ValueError):
             return tool_output_json
 
+    def _emit_calendar_event(self, tool_output_json: str) -> None:
+        """Forward a show_calendar_event directive payload to the UI."""
+        cb = self._on_calendar_event_cb
+        if not cb:
+            return
+        try:
+            data = json.loads(tool_output_json)
+        except (json.JSONDecodeError, TypeError):
+            return
+        if not isinstance(data, dict) or not data.get("ok"):
+            return
+        event = data.get("device_calendar_event")
+        if not isinstance(event, dict):
+            return
+        Clock.schedule_once(lambda _dt: self._safe_call(cb, event), 0)
+
+    def _redact_calendar_event_for_model(self, tool_output_json: str) -> str:
+        """Strip the device-only calendar payload before feeding back to the model."""
+        try:
+            data = json.loads(tool_output_json)
+        except (json.JSONDecodeError, TypeError):
+            return tool_output_json
+        if not isinstance(data, dict) or "device_calendar_event" not in data:
+            return tool_output_json
+        slim = {k: v for k, v in data.items() if k != "device_calendar_event"}
+        try:
+            return json.dumps(slim)
+        except (TypeError, ValueError):
+            return tool_output_json
+
+    def _emit_calendar_event_dismiss(self, tool_output_json: str) -> None:
+        """Forward a confirm/discard_calendar_event directive that dismisses the
+        calendar-event screen (the actual create, if any, already happened server-side)."""
+        cb = self._on_calendar_event_dismiss_cb
+        if not cb:
+            return
+        try:
+            data = json.loads(tool_output_json)
+        except (json.JSONDecodeError, TypeError):
+            return
+        if not isinstance(data, dict) or not data.get("device_calendar_event_dismiss"):
+            return
+        Clock.schedule_once(lambda _dt: self._safe_call(cb), 0)
+
+    def _redact_calendar_event_dismiss_for_model(self, tool_output_json: str) -> str:
+        """Strip the device-only dismiss flag before feeding back to the model."""
+        try:
+            data = json.loads(tool_output_json)
+        except (json.JSONDecodeError, TypeError):
+            return tool_output_json
+        if not isinstance(data, dict) or "device_calendar_event_dismiss" not in data:
+            return tool_output_json
+        slim = {k: v for k, v in data.items() if k != "device_calendar_event_dismiss"}
+        try:
+            return json.dumps(slim)
+        except (TypeError, ValueError):
+            return tool_output_json
+
     def _redact_email_draft_for_model(self, tool_output_json: str) -> str:
         """Remove the device-only draft payload before the result is sent back to
         the model. The email draft popup (recipients / subject / body, including
@@ -872,7 +934,7 @@ class RealtimeVoiceSession:
         if not isinstance(candidates, list):
             candidates = []
         field = str(picker.get("field") or "to").strip().lower()
-        if field not in ("to", "cc", "bcc"):
+        if field not in ("to", "cc", "bcc", "attendee"):
             field = "to"
         Clock.schedule_once(
             lambda _dt: self._safe_call(cb, query, candidates, field), 0
@@ -1895,6 +1957,12 @@ class RealtimeVoiceSession:
             elif name in ("confirm_task_creation", "discard_task_creation"):
                 self._emit_task_dismiss(out)
                 model_out = self._redact_task_dismiss_for_model(out)
+            elif name == "show_calendar_event":
+                self._emit_calendar_event(out)
+                model_out = self._redact_calendar_event_for_model(out)
+            elif name in ("confirm_calendar_event", "discard_calendar_event"):
+                self._emit_calendar_event_dismiss(out)
+                model_out = self._redact_calendar_event_dismiss_for_model(out)
             elif name == "show_recipient_picker":
                 self._emit_recipient_picker(out)
 
