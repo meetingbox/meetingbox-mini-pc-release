@@ -386,6 +386,9 @@ class EmailDraftScreen(BaseScreen):
         self._auto_back_ev:  object | None = None
         # Lifecycle state of the current draft (drafting/ready/sending/sent/saved/discarded).
         self._state = "drafting"
+        # Card widget reference + guard so the send/save/discard fly-away plays once.
+        self._card = None
+        self._flyaway_committed = False
 
         # Draft state store — missing keys are preserved across updates
         self._fields: dict = {
@@ -514,6 +517,8 @@ class EmailDraftScreen(BaseScreen):
 
         card.add_widget(inner)
         root.add_widget(card)
+        # Reference kept so the action fly-away overlay can snapshot the card.
+        self._card = card
 
         # 4 · Action buttons below card  (y=688, h=60)
         btn_y = _y(688, 60)
@@ -609,6 +614,7 @@ class EmailDraftScreen(BaseScreen):
         """Clear all draft fields and return to blank state."""
         self._cancel_auto_back()
         self._state = "drafting"
+        self._flyaway_committed = False
         self._fields = {"to": [], "cc": [], "bcc": [], "subject": "", "body": ""}
         self._refresh_ui()
         if self._voice_pill:

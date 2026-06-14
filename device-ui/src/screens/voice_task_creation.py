@@ -194,6 +194,9 @@ class VoiceTaskCreationScreen(BaseScreen):
         self._listening:     bool  = False
         self._amplitude:     float = 0.0
         self._voice_tick_ev: object | None = None
+        # Card widget reference + guard so the confirm/discard fly-away plays once.
+        self._card = None
+        self._flyaway_committed = False
         super().__init__(**kw)
         self._build_ui()
 
@@ -241,6 +244,8 @@ class VoiceTaskCreationScreen(BaseScreen):
             size=lambda w, _: setattr(self._card_bg, "size", w.size),
         )
         root.add_widget(card)
+        # Reference kept so the action fly-away overlay can snapshot the card.
+        self._card = card
 
         # ── 4. Purple header bar  abs(27,82) 1206×87  #6D48CC ─────────────────
         # Rounded at the top (matches card radius), flat at the bottom.
@@ -510,6 +515,8 @@ class VoiceTaskCreationScreen(BaseScreen):
     def on_enter(self) -> None:
         self._listening = False
         self._amplitude = 0.0
+        # Fresh task review → allow the fly-away to play again.
+        self._flyaway_committed = False
         if self._voice_pill:
             self._voice_pill.set_state_text("Listening")
             self._voice_pill.opacity = 1.0

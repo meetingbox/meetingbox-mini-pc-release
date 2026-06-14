@@ -929,7 +929,11 @@ class RealtimeVoiceSession:
             return
         if not isinstance(data, dict) or not data.get("device_task_dismiss"):
             return
-        Clock.schedule_once(lambda _dt: self._safe_call(cb), 0)
+        # Forward the slim payload so the UI can tell a successful confirm (carries
+        # a "task" dict with its due date) from a discard/failure and route the
+        # device to the Tasks screen on the right tab accordingly.
+        info = {k: v for k, v in data.items() if k != "device_task_dismiss"}
+        Clock.schedule_once(lambda _dt: self._safe_call(cb, info), 0)
 
     def _redact_task_dismiss_for_model(self, tool_output_json: str) -> str:
         """Strip the device-only dismiss flag before feeding back to the model."""

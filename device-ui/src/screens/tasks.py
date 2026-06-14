@@ -648,6 +648,9 @@ class TasksScreen(BaseScreen):
         self._rows: dict[str, list] = {k: [] for k in _TAB_IDS}
         self._loading: bool = False
         self._refresh_ev = None
+        # Optimistically-added rows (e.g. a task the user just created by voice).
+        # Kept visible until the real row arrives from the backend fetch.
+        self._optimistic: list[dict] = []
 
         # runtime widget refs
         self._tab_cells:   dict[str, FloatLayout] = {}
@@ -1098,6 +1101,7 @@ class TasksScreen(BaseScreen):
 
             def _apply(_dt):
                 self._loading = False
+                self._merge_optimistic(bucketed)
                 self._rows = bucketed
                 self._update_counts()
                 self._rebuild_task_list(error_msg=error_msg)
@@ -1105,6 +1109,63 @@ class TasksScreen(BaseScreen):
             Clock.schedule_once(_apply, 0)
 
         run_async(_go())
+
+    def add_optimistic_task(self, title: str, due_date: str | None = None) -> str | None:
+        """Show a just-created task immediately, before the backend round-trips.
+
+        Returns the bucket id the task landed in (so callers can select the
+        matching tab), or ``None`` if nothing was added.
+        """
+        title = (title or "").strip()
+        if not title:
+            return None
+        import uuid
+        due_at = (due_date or "").strip() or None
+        row = {
+            "id": f"opt-{uuid.uuid4().hex[:8]}",
+            "title": title,
+            "due_at": due_at,
+            "status": "",
+            "_optimistic": True,
+        }
+        bucket = _categorize(row) or "unplanned"
+        # De-dupe against an identical pending optimistic row.
+        if not any(
+            (o.get("title") or "").strip().lower() == title.lower()
+            for o in self._optimistic
+        ):
+            self._optimistic.append(row)
+            self._rows.setdefault(bucket, []).append(row)
+            if bucket in _SHOW_DUE:
+                self._rows[bucket].sort(
+                    key=_due_sort_key, reverse=(bucket != "upcoming"))
+            self._update_counts()
+            self._rebuild_task_list()
+        return bucket
+
+    def _merge_optimistic(self, bucketed: dict[str, list]) -> None:
+        """Fold still-pending optimistic rows into a freshly-fetched bucket map.
+
+        An optimistic row is dropped once a real row with the same title shows
+        up in the fetch (the backend now owns it)."""
+        if not self._optimistic:
+            return
+        real_titles = {
+            (r.get("title") or "").strip().lower()
+            for rows in bucketed.values() for r in rows
+        }
+        still_pending: list[dict] = []
+        for opt in self._optimistic:
+            title = (opt.get("title") or "").strip().lower()
+            if title in real_titles:
+                continue
+            bucket = _categorize(opt) or "unplanned"
+            bucketed.setdefault(bucket, []).append(opt)
+            if bucket in _SHOW_DUE:
+                bucketed[bucket].sort(
+                    key=_due_sort_key, reverse=(bucket != "upcoming"))
+            still_pending.append(opt)
+        self._optimistic = still_pending
 
     # ── Voice state (live Listening pill) ───────────────────────────────────────
 

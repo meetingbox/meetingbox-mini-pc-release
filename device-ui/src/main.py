@@ -1163,6 +1163,18 @@ class MeetingBoxApp(App):
         except Exception:
             logger.exception("EmailDraftScreen callback wiring failed")
 
+        # Action fly-away overlay — root-level transient layer that plays the
+        # send / save-as-draft / discard card animation over whatever screen we
+        # navigate to. Added first so the recipient + transcript overlays render
+        # above it.
+        try:
+            from components.action_flyaway import ActionFlyAway
+            self._action_flyaway = ActionFlyAway()
+            self.root_layout.add_widget(self._action_flyaway)
+        except Exception:
+            logger.exception("ActionFlyAway failed to load")
+            self._action_flyaway = None
+
         # Recipient confirmation overlay — root-level floating popup (sits on top
         # of whatever screen is current, including email_draft). Added BEFORE the
         # transcript overlay so the transcript bar renders above it.
@@ -3168,16 +3180,33 @@ class MeetingBoxApp(App):
             recip.close()
         try:
             sm = getattr(self, "screen_manager", None)
+            screen = sm.get_screen("email_draft") if sm else None
+            state = str(draft.get("state") or "drafting").strip().lower()
+            _terminal = {"sent": "send", "saved": "save", "discarded": "discard"}
+            _action = _terminal.get(state)
+            # If a tap already committed the fly-away (and we've left the draft
+            # screen), this terminal echo from the model must NOT yank the user
+            # back to the draft page — the card has already flown off.
+            if (_action and screen is not None
+                    and getattr(screen, "_flyaway_committed", False)):
+                try:
+                    screen.set_draft(draft)
+                except Exception:
+                    pass
+                return
             if sm is not None and sm.current != "email_draft":
                 self.goto_screen("email_draft")
-            screen = sm.get_screen("email_draft") if sm else None
             if screen is not None:
                 # A new draft beginning after the previous one was sent/saved/
                 # discarded must start blank — don't merge into the old fields.
-                state = str(draft.get("state") or "drafting").strip().lower()
                 if state == "drafting" and getattr(screen, "draft_is_terminal", False):
                     screen.reset()
                 screen.set_draft(draft)
+                # Voice-initiated send/save/discard: the model reports the terminal
+                # state here (no button tap). Fly the card off toward the
+                # transcription page, matching the tap-driven animation.
+                if _action:
+                    self._commit_email_action(_action)
         except Exception:
             logger.exception("Failed to render email draft directive")
 
@@ -3201,8 +3230,59 @@ class MeetingBoxApp(App):
         except Exception:
             logger.exception("Failed to show voice task creation screen")
 
+    @staticmethod
+    def _task_tab_for_due(due_at: str | None) -> str:
+        """Map a task's due date to the Tasks screen tab that holds it
+        (today→Today, future→Upcoming, none/past→Unplanned/Unfinished). Reuses
+        the screen's own bucketing so the tab always matches where the row lands."""
+        try:
+            from screens.tasks import _categorize
+            return _categorize({"status": "", "due_at": (due_at or "").strip()}) or "unplanned"
+        except Exception:
+            return "unplanned"
+
+    def _navigate_to_tasks(self, tab: str | None, optimistic: tuple | None = None) -> None:
+        """Open the Tasks screen on *tab*, optionally showing a just-created task
+        immediately (``optimistic`` = (title, due_date))."""
+        sm = getattr(self, "screen_manager", None)
+        if sm is None:
+            return
+        try:
+            tsk = sm.get_screen("tasks")
+            if optimistic and hasattr(tsk, "add_optimistic_task"):
+                title, due = optimistic
+                landed = tsk.add_optimistic_task(title, due)
+                tab = tab or landed
+            if tab and hasattr(tsk, "set_active_tab"):
+                tsk.set_active_tab(tab)
+        except Exception:
+            logger.debug("tasks navigation prep failed", exc_info=True)
+        self.goto_screen("tasks", transition="slide_left")
+
+    def _commit_task_action(self, action: str, navigate) -> None:
+        """Fly the task card away (once), then run *navigate*."""
+        sm = getattr(self, "screen_manager", None)
+        if sm is None:
+            if callable(navigate):
+                navigate()
+            return
+        try:
+            screen = sm.get_screen("voice_task_creation")
+        except Exception:
+            screen = None
+        if screen is not None and getattr(screen, "_flyaway_committed", False):
+            return
+        on_creation = sm.current == "voice_task_creation"
+        if screen is not None:
+            screen._flyaway_committed = True
+        if on_creation and screen is not None:
+            self._play_action_flyaway(screen, action, navigate)
+        elif callable(navigate):
+            navigate()
+
     def _on_task_creation_confirm_tapped(self) -> None:
-        """User tapped Confirm — create the task and return to voice session."""
+        """User tapped Confirm — create the task and land on the Tasks screen
+        (on the tab that holds it) so they can see it appear."""
         task = getattr(self, "_pending_task_data", None) or {}
         title       = str(task.get("title")       or "").strip()
         description = str(task.get("description") or "").strip() or None
@@ -3210,6 +3290,7 @@ class MeetingBoxApp(App):
         self._pending_task_data = {}
 
         async def _create():
+            saved = False
             try:
                 result = await self.backend.create_commitment(
                     title=title,
@@ -3224,46 +3305,74 @@ class MeetingBoxApp(App):
                 else:
                     logger.info("Voice task created: %s", result.get("id"))
                     msg = "Task saved."
+                    saved = True
             except Exception:
                 logger.exception("voice task creation API call failed")
                 msg = "Sorry, I couldn't save the task."
-            Clock.schedule_once(lambda _dt: self._inject_task_result(msg), 0)
+
+            def _after(_dt):
+                self._inject_task_result(msg)
+                # Reconcile the optimistic row with the real backend data.
+                if saved:
+                    try:
+                        sm = getattr(self, "screen_manager", None)
+                        if sm is not None and sm.current == "tasks":
+                            sm.get_screen("tasks")._load_tasks()
+                    except Exception:
+                        logger.debug("tasks refresh after create failed", exc_info=True)
+            Clock.schedule_once(_after, 0)
 
         run_async(_create())
 
-        try:
-            sm = getattr(self, "screen_manager", None)
-            if sm is not None:
-                self.goto_screen("voice_session")
-        except Exception:
-            logger.debug("task creation confirm: navigation failed", exc_info=True)
+        tab = self._task_tab_for_due(due_date)
+
+        def _nav():
+            self._navigate_to_tasks(tab, optimistic=(title, due_date))
+
+        self._commit_task_action("send", _nav)
 
     def _on_task_creation_discard_tapped(self) -> None:
-        """User tapped Discard — cancel and return to voice session."""
+        """User tapped Discard — cancel and return to the transcription page."""
         self._pending_task_data = {}
         self._send_voice_user_text(
             "[BUTTON:Discard] — the user cancelled task creation. Acknowledge briefly.",
             interrupt=True,
         )
-        try:
-            sm = getattr(self, "screen_manager", None)
-            if sm is not None:
-                self.goto_screen("voice_session")
-        except Exception:
-            logger.debug("task creation discard: navigation failed", exc_info=True)
 
-    def _on_task_creation_dismiss_directive(self) -> None:
+        def _nav():
+            if getattr(self, "screen_manager", None) is not None:
+                self.goto_screen("voice_session")
+
+        self._commit_task_action("discard", _nav)
+
+    def _on_task_creation_dismiss_directive(self, info: dict | None = None) -> None:
         """Voice confirm/discard — server already saved (confirm) or cancelled
-        (discard) the task, so just clear pending state and return to the voice
-        transcription screen. No API call and no injected voice turn here: the
-        model speaks from the confirm_task_creation / discard_task_creation result."""
+        (discard) the task. On a successful save send the user to the Tasks
+        screen (on the tab holding it) so it's visible; on cancel/failure return
+        to the voice transcription page. The model still speaks from its own
+        confirm_task_creation / discard_task_creation result."""
+        info = info if isinstance(info, dict) else {}
         self._pending_task_data = {}
-        try:
+        task = info.get("task") if isinstance(info.get("task"), dict) else None
+        created = bool(info.get("ok", True)) and task is not None
+
+        if created:
+            tab = self._task_tab_for_due(str(task.get("due_at") or ""))
+
+            def _nav():
+                # Server already persisted it; a fresh fetch on the Tasks screen
+                # will surface the row, so no optimistic insert needed here.
+                self._navigate_to_tasks(tab)
+
+            self._commit_task_action("send", _nav)
+            return
+
+        def _nav_voice():
             sm = getattr(self, "screen_manager", None)
             if sm is not None and sm.current == "voice_task_creation":
                 self.goto_screen("voice_session")
-        except Exception:
-            logger.debug("task creation voice dismiss: navigation failed", exc_info=True)
+
+        self._commit_task_action("discard", _nav_voice)
 
     def _inject_task_result(self, message: str) -> None:
         """Inject the task-creation outcome as a voice turn into the live session."""
@@ -3340,6 +3449,30 @@ class MeetingBoxApp(App):
             interrupt=True,
         )
 
+    def _commit_calendar_action(self, action: str, navigate) -> None:
+        """Fly the calendar event card away (once), then run *navigate*.
+
+        ``action`` is "send" for a confirmed create and "discard" for a cancel.
+        Plays the flourish only while the create screen is still current."""
+        sm = getattr(self, "screen_manager", None)
+        if sm is None:
+            if callable(navigate):
+                navigate()
+            return
+        try:
+            screen = sm.get_screen("calendar_event_creation")
+        except Exception:
+            screen = None
+        if screen is not None and getattr(screen, "_flyaway_committed", False):
+            return
+        on_creation = sm.current == "calendar_event_creation"
+        if screen is not None:
+            screen._flyaway_committed = True
+        if on_creation and screen is not None:
+            self._play_action_flyaway(screen, action, navigate)
+        elif callable(navigate):
+            navigate()
+
     def _on_calendar_event_discard_tapped(self) -> None:
         """User tapped Discard — cancel and return to voice session."""
         self._pending_event_data = {}
@@ -3347,12 +3480,12 @@ class MeetingBoxApp(App):
             "[BUTTON:Discard] — the user cancelled creating the calendar event. Acknowledge briefly.",
             interrupt=True,
         )
-        try:
-            sm = getattr(self, "screen_manager", None)
-            if sm is not None:
+
+        def _nav():
+            if getattr(self, "screen_manager", None) is not None:
                 self.goto_screen("voice_session")
-        except Exception:
-            logger.debug("calendar event discard: navigation failed", exc_info=True)
+
+        self._commit_calendar_action("discard", _nav)
 
     def _on_calendar_event_dismiss_directive(self, info: dict | None = None) -> None:
         """Voice OR tap confirm/discard — the server already created/updated
@@ -3375,31 +3508,39 @@ class MeetingBoxApp(App):
                 return
 
             if created:
-                # Force the calendar to re-fetch so the latest data lands shortly.
-                self.invalidate_calendar_cache()
-                # Optimistically drop the just-created event into the calendar
-                # cache so it shows the instant the screen opens — the real
-                # fetch then reconciles it. Skip for edits (would duplicate the
-                # existing row).
-                if action != "updated":
-                    try:
-                        self._optimistic_add_calendar_event(date_str, pend)
-                    except Exception:
-                        logger.debug("optimistic calendar insert failed", exc_info=True)
-                target = None
-                try:
-                    if date_str:
-                        from datetime import date as _date
-                        y, m, d = (int(p) for p in date_str[:10].split("-"))
-                        target = _date(y, m, d)
-                except Exception:
+                def _nav_calendar():
+                    # Force the calendar to re-fetch so the latest data lands shortly.
+                    self.invalidate_calendar_cache()
+                    # Optimistically drop the just-created event into the calendar
+                    # cache so it shows the instant the screen opens — the real
+                    # fetch then reconciles it. Skip for edits (would duplicate the
+                    # existing row).
+                    if action != "updated":
+                        try:
+                            self._optimistic_add_calendar_event(date_str, pend)
+                        except Exception:
+                            logger.debug("optimistic calendar insert failed", exc_info=True)
                     target = None
-                self._realtime_voice_navigate("calendar", target_date=target)
+                    try:
+                        if date_str:
+                            from datetime import date as _date
+                            y, m, d = (int(p) for p in date_str[:10].split("-"))
+                            target = _date(y, m, d)
+                    except Exception:
+                        target = None
+                    self._realtime_voice_navigate("calendar", target_date=target)
+
+                # Fly the event card off toward the Calendar screen (where the
+                # freshly-added event is now visible).
+                self._commit_calendar_action("send", _nav_calendar)
                 return
 
             # Cancelled or failed save — go back to the voice transcript.
-            if sm.current == "calendar_event_creation":
-                self.goto_screen("voice_session")
+            def _nav_voice():
+                if sm.current == "calendar_event_creation":
+                    self.goto_screen("voice_session")
+
+            self._commit_calendar_action("discard", _nav_voice)
         except Exception:
             logger.debug("calendar event dismiss: navigation failed", exc_info=True)
 
@@ -3585,11 +3726,78 @@ class MeetingBoxApp(App):
         # overlay already closed by RecipientConfirmOverlay._on_row_tap
         self._send_voice_user_text("None of those.", interrupt=True)
 
+    # ── Action fly-away animation (send / save / discard card flies off) ─────
+
+    def _play_action_flyaway(self, screen, action: str, navigate) -> None:
+        """Snapshot *screen*'s card, run *navigate* (a 0-arg callable that
+        switches screens), then fly the snapshot off over the destination.
+
+        The snapshot is taken while the card is still on screen; navigation and
+        the flourish then happen together so the user sees the transcription /
+        Tasks / Calendar page behind the flying card. Falls back to a plain
+        navigation if anything about the capture/overlay is unavailable.
+        """
+        overlay = getattr(self, "_action_flyaway", None)
+        captured = None
+        try:
+            card = getattr(screen, "_card", None) if screen is not None else None
+            if overlay is not None and card is not None:
+                from components.action_flyaway import capture_card
+                captured = capture_card(screen, card)
+        except Exception:
+            logger.debug("flyaway capture failed", exc_info=True)
+            captured = None
+
+        if callable(navigate):
+            try:
+                navigate()
+            except Exception:
+                logger.debug("flyaway navigate failed", exc_info=True)
+
+        if overlay is not None and captured is not None:
+            try:
+                texture, rect = captured
+                overlay.play(texture, rect, action)
+            except Exception:
+                logger.debug("flyaway play failed", exc_info=True)
+
+    def _commit_email_action(self, action: str) -> None:
+        """Fly the email card away (once) and land on the transcription page.
+
+        Triggered both by a button tap (optimistic) and by the server's terminal
+        ``show_email_draft`` state (voice-initiated send/save/discard)."""
+        sm = getattr(self, "screen_manager", None)
+        if sm is None:
+            return
+        try:
+            screen = sm.get_screen("email_draft")
+        except Exception:
+            screen = None
+        if screen is None or getattr(screen, "_flyaway_committed", False):
+            return
+        screen._flyaway_committed = True
+        try:
+            screen._cancel_auto_back()
+        except Exception:
+            pass
+        target = "voice_session" if sm.has_screen("voice_session") else "home"
+
+        def _nav():
+            if sm.current == "email_draft":
+                self.goto_screen(target)
+
+        if sm.current == "email_draft":
+            self._play_action_flyaway(screen, action, _nav)
+        else:
+            _nav()
+
     def _on_email_draft_send_tapped(self) -> None:
         self._send_voice_user_text("Yes, send it.")
+        self._commit_email_action("send")
 
     def _on_email_draft_save_tapped(self) -> None:
         self._send_voice_user_text("Save it as a draft.")
+        self._commit_email_action("save")
 
     def _on_email_draft_discard_tapped(self) -> None:
         # Use an unambiguous signal so the model does NOT confuse this with a
@@ -3598,6 +3806,7 @@ class MeetingBoxApp(App):
         self._send_voice_user_text(
             "[BUTTON:Discard] — delete this draft immediately, do NOT save it to Gmail drafts."
         )
+        self._commit_email_action("discard")
 
     def _sync_transcript_overlay_mode(self, screen_name: str | None = None) -> None:
         """Sync the transcript overlay mode for the current screen.
