@@ -1,15 +1,15 @@
 """Action fly-away overlay.
 
-Reproduces the "send / save-as-draft / discard" card animations (see the
-reference GIFs): when the user commits an action on the email-draft,
-calendar-event or task-creation card, the card itself shrinks, tilts and flies
-off the bottom of the screen while fading out — revealing whatever screen we
-navigate to behind it (the live transcription page for email/discard, or the
-Tasks / Calendar screen showing the freshly-added item).
+Reproduces the "send / save-as-draft / discard" card animations: when the user
+commits an action on the email-draft, calendar-event or task-creation card, a
+snapshot of the *real* card (so all of its content is preserved exactly) glides
+smoothly off toward a target while shrinking and dissolving — revealing the
+screen we navigate to behind it (the live transcription page for email/discard,
+or the Tasks / Calendar screen showing the freshly-added item).
 
-The animation is reproduced procedurally on a snapshot of the *real* card
-(captured with ``export_as_image``) so it always shows the actual on-screen
-content rather than a canned recording.
+The motion is deliberately macOS-like: a single ease-in-out glide (no rotation,
+no snapping), the card stays fully opaque while it travels and only dissolves at
+the very tail, so the eye can follow it the whole way.
 
 Public API
 ----------
@@ -18,7 +18,7 @@ capture_card(screen, card) -> (texture, (x, y, w, h)) | None
     the card is still visible (i.e. before navigating away).
 
 ActionFlyAway.play(texture, rect, action, on_done=None)
-    Fly the captured snapshot off-screen with the motion for *action*
+    Glide the captured snapshot toward the target for *action*
     ("send" | "save" | "discard").
 """
 
@@ -28,7 +28,7 @@ import logging
 
 from kivy.animation import Animation
 from kivy.core.window import Window
-from kivy.graphics import PopMatrix, PushMatrix, Rotate, Scale
+from kivy.graphics import PopMatrix, PushMatrix, Scale
 from kivy.properties import NumericProperty
 from kivy.uix.floatlayout import FloatLayout
 from kivy.uix.image import Image
@@ -62,11 +62,10 @@ def capture_card(screen, card):
 
 
 class _FlyCard(Image):
-    """An image of the captured card that can be scaled + rotated about its
-    centre via animatable properties."""
+    """An image of the captured card that scales about its centre via an
+    animatable property. No rotation — the card stays upright the whole time."""
 
     fly_scale = NumericProperty(1.0)
-    fly_angle = NumericProperty(0.0)
 
     def __init__(self, **kw):
         super().__init__(**kw)
@@ -74,32 +73,35 @@ class _FlyCard(Image):
         self.keep_ratio = False
         with self.canvas.before:
             PushMatrix()
-            self._rot = Rotate(angle=0, origin=self.center)
             self._scale = Scale(x=1.0, y=1.0, z=1.0, origin=self.center)
         with self.canvas.after:
             PopMatrix()
-        self.bind(pos=self._apply_tx, size=self._apply_tx,
-                  fly_scale=self._apply_tx, fly_angle=self._apply_tx)
+        self.bind(pos=self._apply_tx, size=self._apply_tx, fly_scale=self._apply_tx)
 
     def _apply_tx(self, *_):
         cx, cy = self.center
-        self._rot.origin = (cx, cy)
-        self._rot.angle = self.fly_angle
         self._scale.origin = (cx, cy)
         self._scale.x = self.fly_scale
         self._scale.y = self.fly_scale
 
 
 class ActionFlyAway(FloatLayout):
-    """Root-level transient overlay that plays the card fly-away animation."""
+    """Root-level transient overlay that plays the card fly-away animation.
 
-    # dx/dy are fractions of the window size (the card flies down & off-screen);
-    # angle is the final tilt in degrees; scale is the final shrink factor.
+    Per action we glide the card's *centre* to a target point (expressed as a
+    fraction of the window) while shrinking it. ``send`` heads to the top-right
+    corner; ``save`` files down toward the bottom; ``discard`` collapses gently
+    in place.
+    """
+
     _PARAMS = {
-        "send":    {"dx":  0.18, "dy": -0.95, "angle": -15.0, "scale": 0.32, "dur": 0.62, "t": "in_cubic"},
-        "save":    {"dx":  0.00, "dy": -0.95, "angle":   5.0, "scale": 0.30, "dur": 0.66, "t": "in_cubic"},
-        "discard": {"dx": -0.16, "dy": -0.95, "angle":  18.0, "scale": 0.22, "dur": 0.56, "t": "in_cubic"},
+        "send":    {"cx": 0.99, "cy": 0.97, "scale": 0.10, "dur": 1.30},
+        "save":    {"cx": 0.50, "cy": 0.02, "scale": 0.12, "dur": 1.35},
+        "discard": {"cx": 0.50, "cy": 0.46, "scale": 0.05, "dur": 1.20},
     }
+    # Apple's default UIView curve is ease-in-out; in_out_cubic is the closest
+    # smooth, symmetric match and reads as calm/premium rather than snappy.
+    _EASE = "in_out_cubic"
 
     def __init__(self, **kw):
         super().__init__(size_hint=(1, 1), **kw)
@@ -107,13 +109,13 @@ class ActionFlyAway(FloatLayout):
         self._fly: _FlyCard | None = None
 
     def play(self, texture, rect, action: str, on_done=None) -> None:
-        """Fly *texture* (captured at *rect*) off-screen for *action*."""
+        """Glide *texture* (captured at *rect*) toward the target for *action*."""
         if texture is None or rect is None:
             self._invoke(on_done)
             return
         # A new animation supersedes any in-flight one.
         self._cleanup()
-        params = self._PARAMS.get(action, self._PARAMS["send"])
+        cfg = self._PARAMS.get(action, self._PARAMS["send"])
         try:
             x, y, w, h = rect
             fly = _FlyCard(texture=texture, size_hint=(None, None),
@@ -123,16 +125,28 @@ class ActionFlyAway(FloatLayout):
 
             win_w = Window.width or 1
             win_h = Window.height or 1
-            target_x = x + params["dx"] * win_w
-            target_y = y + params["dy"] * win_h
+            # Move the card's CENTRE to the target point; convert to bottom-left
+            # pos (size is fixed; the visual shrink happens via fly_scale about
+            # the centre, so the centre is what the eye tracks).
+            target_cx = cfg["cx"] * win_w
+            target_cy = cfg["cy"] * win_h
+            target_x = target_cx - w / 2.0
+            target_y = target_cy - h / 2.0
+            dur = cfg["dur"]
 
-            anim = Animation(
-                x=target_x, y=target_y,
-                fly_scale=params["scale"], fly_angle=params["angle"],
-                opacity=0.0, duration=params["dur"], t=params["t"],
+            # Glide + shrink, perfectly synced on one ease-in-out curve.
+            glide = Animation(
+                x=target_x, y=target_y, fly_scale=cfg["scale"],
+                duration=dur, t=self._EASE,
             )
-            anim.bind(on_complete=lambda *_: self._finish(on_done))
-            anim.start(fly)
+            glide.bind(on_complete=lambda *_: self._finish(on_done))
+            glide.start(fly)
+
+            # Stay fully opaque for most of the journey, then dissolve softly so
+            # the card never "blinks" out — the fade only covers the final ~35%.
+            fade = (Animation(opacity=1.0, duration=dur * 0.62)
+                    + Animation(opacity=0.0, duration=dur * 0.38, t="in_out_sine"))
+            fade.start(fly)
         except Exception:
             logger.debug("ActionFlyAway.play failed", exc_info=True)
             self._finish(on_done)

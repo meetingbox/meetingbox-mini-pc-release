@@ -3257,7 +3257,8 @@ class MeetingBoxApp(App):
                 tsk.set_active_tab(tab)
         except Exception:
             logger.debug("tasks navigation prep failed", exc_info=True)
-        self.goto_screen("tasks", transition="slide_left")
+        # Instant swap so the Tasks list is already behind the gliding card.
+        self.goto_screen("tasks", transition="none")
 
     def _commit_task_action(self, action: str, navigate) -> None:
         """Fly the task card away (once), then run *navigate*."""
@@ -3341,7 +3342,7 @@ class MeetingBoxApp(App):
 
         def _nav():
             if getattr(self, "screen_manager", None) is not None:
-                self.goto_screen("voice_session")
+                self.goto_screen("voice_session", transition="none")
 
         self._commit_task_action("discard", _nav)
 
@@ -3483,7 +3484,7 @@ class MeetingBoxApp(App):
 
         def _nav():
             if getattr(self, "screen_manager", None) is not None:
-                self.goto_screen("voice_session")
+                self.goto_screen("voice_session", transition="none")
 
         self._commit_calendar_action("discard", _nav)
 
@@ -3538,7 +3539,7 @@ class MeetingBoxApp(App):
             # Cancelled or failed save — go back to the voice transcript.
             def _nav_voice():
                 if sm.current == "calendar_event_creation":
-                    self.goto_screen("voice_session")
+                    self.goto_screen("voice_session", transition="none")
 
             self._commit_calendar_action("discard", _nav_voice)
         except Exception:
@@ -3784,7 +3785,9 @@ class MeetingBoxApp(App):
 
         def _nav():
             if sm.current == "email_draft":
-                self.goto_screen(target)
+                # Instant swap so the transcription page is simply *there* behind
+                # the card as it glides off — no competing cross-fade/ghosting.
+                self.goto_screen(target, transition="none")
 
         if sm.current == "email_draft":
             self._play_action_flyaway(screen, action, _nav)
