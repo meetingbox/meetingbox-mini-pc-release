@@ -3265,6 +3265,13 @@ class MeetingBoxApp(App):
         elif not isinstance(attendees, list):
             attendees = None
 
+        # If the contact picker is still open (e.g. just after an attendee was
+        # resolved), close it now that the model is updating the event card —
+        # mirrors the email-draft flow so the popup never lingers.
+        recip = getattr(self, "_recipient_overlay", None)
+        if recip is not None and recip.visible:
+            recip.close()
+
         # Progressive merge into pending state (missing keys keep prior value).
         prev = getattr(self, "_pending_event_data", None) or {}
         if name:
@@ -3323,10 +3330,12 @@ class MeetingBoxApp(App):
         event reflected; on cancel/failure, return to the voice transcript."""
         info = info if isinstance(info, dict) else {}
         created = bool(info.get("created"))
+        action = str(info.get("action") or "").strip().lower()
+        # Capture the on-screen details BEFORE clearing so we can optimistically
+        # show the event on the calendar immediately.
+        pend = dict(getattr(self, "_pending_event_data", None) or {})
         # Prefer the server-confirmed date, fall back to what was on screen.
-        date_str = str(info.get("date") or "").strip()
-        if not date_str:
-            date_str = str((getattr(self, "_pending_event_data", None) or {}).get("date") or "").strip()
+        date_str = str(info.get("date") or "").strip() or str(pend.get("date") or "").strip()
         self._pending_event_data = {}
 
         try:
@@ -3335,9 +3344,17 @@ class MeetingBoxApp(App):
                 return
 
             if created:
-                # Force the calendar to re-fetch so the new/updated event shows
-                # immediately instead of waiting for the cache to expire.
+                # Force the calendar to re-fetch so the latest data lands shortly.
                 self.invalidate_calendar_cache()
+                # Optimistically drop the just-created event into the calendar
+                # cache so it shows the instant the screen opens — the real
+                # fetch then reconciles it. Skip for edits (would duplicate the
+                # existing row).
+                if action != "updated":
+                    try:
+                        self._optimistic_add_calendar_event(date_str, pend)
+                    except Exception:
+                        logger.debug("optimistic calendar insert failed", exc_info=True)
                 target = None
                 try:
                     if date_str:
@@ -3365,6 +3382,70 @@ class MeetingBoxApp(App):
                     self._ui_data_cache_ts.pop(key, None)
         except Exception:
             logger.debug("invalidate_calendar_cache failed", exc_info=True)
+
+    def _optimistic_add_calendar_event(self, date_str: str, pend: dict) -> None:
+        """Inject a just-created event into the cached calendar week so it shows
+        immediately when the calendar screen opens. The background re-fetch
+        (cache freshness was just cleared) reconciles it with the real event."""
+        from datetime import date as _date, datetime as _dt, timedelta as _td
+
+        date_str = (date_str or "").strip()[:10]
+        if not date_str:
+            return
+        try:
+            y, m, d = (int(p) for p in date_str.split("-"))
+            ev_date = _date(y, m, d)
+        except Exception:
+            return
+
+        title = str(pend.get("name") or "").strip() or "New event"
+        time_str = str(pend.get("time") or "").strip()
+        hh, mm = 9, 0
+        if time_str:
+            try:
+                parts = time_str.replace(".", ":").split(":")
+                hh = max(0, min(23, int(parts[0])))
+                mm = max(0, min(59, int(parts[1]))) if len(parts) > 1 else 0
+            except Exception:
+                hh, mm = 9, 0
+        start = _dt(ev_date.year, ev_date.month, ev_date.day, hh, mm)
+        end = start + _td(minutes=30)
+
+        # Build attendee rows (count is what the tile renders).
+        attendees = []
+        for a in (pend.get("attendees") or []):
+            s = str(a or "").strip()
+            if not s:
+                continue
+            email = s[s.find("<") + 1:s.find(">")].strip() if ("<" in s and ">" in s) else s
+            attendees.append({"email": email})
+
+        meeting = {
+            "title": title,
+            "start": start.isoformat(),
+            "end": end.isoformat(),
+            "duration": 1800,
+            "attendees": attendees,
+            "_optimistic": True,
+        }
+
+        # Cache key uses the Monday of the event's week.
+        monday = ev_date - _td(days=ev_date.weekday())
+        key = f"calendar_week:{monday.isoformat()}"
+        week = self.ui_cache_get(key)
+        if not (isinstance(week, dict) and isinstance(week.get("days"), dict)):
+            week = {"days": {}}
+        days = week.setdefault("days", {})
+        day = days.setdefault(date_str, {})
+        meetings = day.setdefault("meetings", [])
+        if not any(
+            isinstance(mt, dict) and mt.get("title") == title and str(mt.get("start", ""))[:16] == start.isoformat()[:16]
+            for mt in meetings
+        ):
+            meetings.append(meeting)
+        # Write straight into the cache dict WITHOUT marking it fresh, so the
+        # calendar screen's _load_week still re-fetches and reconciles.
+        self._ui_data_cache[key] = week
 
     def _on_recipient_picker_directive(self, query: str, candidates: list, field: str = "to") -> None:
         """Show the recipient confirmation overlay from a show_recipient_picker directive."""
@@ -3413,8 +3494,12 @@ class MeetingBoxApp(App):
                     self._pending_event_data = pend
             except Exception:
                 logger.debug("calendar attendee fill failed", exc_info=True)
+            # The tapped card IS the confirmation and the chip is already on the
+            # invite — phrase this so the model records the address and does NOT
+            # re-open the contact picker (which would make the popup reappear).
             self._send_voice_user_text(
-                f"I picked {name} ({email}) on screen — add that address as an attendee.",
+                f"I selected {name} ({email}) as an attendee — they're confirmed and "
+                f"already added to the invite on screen. Do not look them up again.",
                 interrupt=True,
             )
             return
