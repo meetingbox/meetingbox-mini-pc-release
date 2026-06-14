@@ -100,16 +100,47 @@ class _GenieMesh(Widget):
         self._build()
         self.bind(progress=lambda *_: self._update())
 
+    def _tex_coords(self):
+        """The texture's 4 corner texcoords (BL, BR, TR, TL), each (u, v).
+
+        Falls back to an upright unit quad if the texture doesn't expose them."""
+        tc = getattr(self._tex, "tex_coords", None)
+        if tc is not None and len(tc) >= 8:
+            return ((tc[0], tc[1]), (tc[2], tc[3]), (tc[4], tc[5]), (tc[6], tc[7]))
+        return ((0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0))
+
+    @staticmethod
+    def _interp_uv(tc, gx: float, gy: float):
+        """Bilinearly interpolate the texcoord at screen fraction (gx, gy),
+        gy measured from the bottom. ``tc`` = corners (BL, BR, TR, TL)."""
+        (blu, blv), (bru, brv), (tru, trv), (tlu, tlv) = tc
+        bu = blu + (bru - blu) * gx
+        bv = blv + (brv - blv) * gx
+        tu = tlu + (tru - tlu) * gx
+        tv = tlv + (trv - tlv) * gx
+        return bu + (tu - bu) * gy, bv + (tv - bv) * gy
+
     def _build(self) -> None:
         umin, vmin, umax, vmax = self._uv
+        # A texture produced by ``export_as_image`` is rendered through an Fbo and
+        # is therefore vertically flipped relative to a plain texture. Its true
+        # orientation (plus any atlas offset) is baked into ``texture.tex_coords``;
+        # ignoring it and using a naive [0,1] bottom-up mapping paints the snapshot
+        # upside-down for the very first frame — the "widget replaced with
+        # something" pop. So we sample the actual tex_coords corners and bilinearly
+        # interpolate to get each vertex's true texcoord, which is flip-safe.
+        tc = self._tex_coords()
         for j in range(_NY + 1):
             v = j / _NY
+            gy = vmin + v * (vmax - vmin)
             for i in range(_NX + 1):
                 u = i / _NX
+                gx = umin + u * (umax - umin)
+                tu, tv = self._interp_uv(tc, gx, gy)
                 k = (j * (_NX + 1) + i) * 4
                 # texcoords are constant; positions are recomputed per frame
-                self._verts[k + 2] = umin + u * (umax - umin)
-                self._verts[k + 3] = vmin + v * (vmax - vmin)
+                self._verts[k + 2] = tu
+                self._verts[k + 3] = tv
         for j in range(_NY):
             for i in range(_NX):
                 a = j * (_NX + 1) + i
