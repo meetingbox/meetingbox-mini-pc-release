@@ -3754,6 +3754,12 @@ class MeetingBoxApp(App):
         if screen is None or getattr(screen, "_flyaway_committed", False):
             return
         screen._flyaway_committed = True
+        # Mark the draft terminal immediately so draft_is_terminal returns True
+        # on the next show_email_draft directive, ensuring reset() is called for
+        # the next fresh draft — regardless of whether the model echoes a terminal
+        # state back via show_email_draft.
+        _terminal_states = {"send": "sent", "save": "saved", "discard": "discarded"}
+        screen._state = _terminal_states.get(action, "discarded")
         try:
             screen._cancel_auto_back()
         except Exception:

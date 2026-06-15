@@ -665,8 +665,24 @@ def play_genie(app, screen, action: str, on_navigate, completion=None,
     # to the top-right corner, so nothing stays as a sink there.
     sink = None if action == "send" else btn
 
+    # Shared snapshot cache: filled during _lock (card still at full opacity),
+    # consumed by _warp.  This prevents the blocking export_as_image call from
+    # landing on the first animation frame and causing a visible stutter.
+    _snap_cache: list = [None]
+
     # ── 2 · Widget lock (disable CTAs, dim the card to 97%) ───────────────────
     def _lock(_dt):
+        # Pre-capture the snapshot NOW while the card is still at full opacity,
+        # so _warp never needs to call the expensive export_as_image on its
+        # first (and only synchronous) frame.
+        hook = getattr(screen, "genie_snapshot", None)
+        if callable(hook):
+            try:
+                _snap_cache[0] = hook()
+            except Exception:
+                logger.debug("genie_snapshot hook failed (in _lock)", exc_info=True)
+        if _snap_cache[0] is None:
+            _snap_cache[0] = _snapshot(card)
         try:
             if hasattr(screen, "_set_buttons_enabled"):
                 screen._set_buttons_enabled(False)
@@ -679,23 +695,22 @@ def play_genie(app, screen, action: str, on_navigate, completion=None,
     # ── 3 · Genie warp ────────────────────────────────────────────────────────
     def _warp(_dt):
         from kivy.animation import Animation
-        # Snapshot the card alone at full opacity (cancel the lock dim so the
-        # flying texture isn't captured faded).
+        # Restore the card to full opacity (cancel the lock dim so the mesh
+        # starts from a pixel-identical frame).
         Animation.cancel_all(card, "opacity")
         card.opacity = 1.0
-        # Screens whose visible content lives beside the card panel (calendar /
-        # task) supply their own cropped snapshot via ``genie_snapshot``; the
-        # email card contains its content so it falls back to a plain export.
-        snap = None
-        hook = getattr(screen, "genie_snapshot", None)
-        if callable(hook):
-            try:
-                snap = hook()
-            except Exception:
-                logger.debug("genie_snapshot hook failed", exc_info=True)
-                snap = None
+        # Use the snapshot pre-captured during _lock.  Fall back to a fresh
+        # export only if _lock somehow produced nothing (shouldn't happen).
+        snap = _snap_cache[0]
         if snap is None:
-            snap = _snapshot(card)
+            hook = getattr(screen, "genie_snapshot", None)
+            if callable(hook):
+                try:
+                    snap = hook()
+                except Exception:
+                    pass
+            if snap is None:
+                snap = _snapshot(card)
         # Fade every CTA except the sink (it stays as the card's destination).
         for b in _action_buttons(screen):
             if b is not sink:
