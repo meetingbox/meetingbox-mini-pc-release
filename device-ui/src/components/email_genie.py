@@ -310,11 +310,15 @@ def _button_ghost(btn, root):
             return None
         x, y = btn.to_window(btn.x, btn.y)
         w, h = float(btn.width), float(btn.height)
+        # ``export_as_image`` is FBO-backed and comes out upside-down when drawn
+        # raw on a Rectangle, so flip it vertically once to render upright.
+        try:
+            tex.flip_vertical()
+        except Exception:
+            pass
         ghost = Widget(size_hint=(None, None), pos=(x, y), size=(w, h))
         with ghost.canvas:
             Color(1, 1, 1, 1)
-            # A Rectangle honours the texture's own (flipped) tex_coords, so it
-            # renders upright with no manual flip needed.
             Rectangle(texture=tex, pos=(x, y), size=(w, h))
         root.add_widget(ghost)
         return ghost
