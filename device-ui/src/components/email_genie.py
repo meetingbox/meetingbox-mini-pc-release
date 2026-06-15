@@ -12,10 +12,10 @@ Interaction timeline (driven by :func:`play_email_genie`):
     1. CTA press feedback     spring scale → 0.94 → 1.0          (~210 ms)
     2. Widget lock            disable CTAs, compose opacity 0.97  (80 ms)
     3. Genie warp             3-stage mesh deformation toward the
-                              destination point                  (550 ms)
-         A · initial pull     120 ms   width 100→92 %, move begins
-         B · organic squeeze  220 ms   width 92→40 %, height →75 %
-         C · final funnel     210 ms   width 40→8 %, height →8 %, fade
+                              destination point                  (1100 ms)
+         A · initial pull     240 ms   width 100→92 %, move begins
+         B · organic squeeze  440 ms   width 92→40 %, height →75 %
+         C · final funnel     420 ms   width 40→8 %, height →8 %, fade
     4. Completion             natively-drawn confirmation         (~850 ms)
          SEND  → checkmark "Sent"      top-right
          SAVE  → "Draft Saved"         at the Save CTA
@@ -58,10 +58,10 @@ PRESS_IN   = 0.090     # CTA scales down
 PRESS_OUT  = 0.120     # CTA springs back
 LOCK_DUR   = 0.080     # widget lock handoff
 
-STAGE_A = 0.120        # initial pull
-STAGE_B = 0.220        # organic compression
-STAGE_C = 0.210        # final funnel
-WARP_DUR = STAGE_A + STAGE_B + STAGE_C   # 0.550
+STAGE_A = 0.240        # initial pull
+STAGE_B = 0.440        # organic compression
+STAGE_C = 0.420        # final funnel
+WARP_DUR = STAGE_A + STAGE_B + STAGE_C   # 1.100  (doubled per request)
 
 CONF_IN   = 0.150
 CONF_HOLD = 0.500
@@ -266,28 +266,24 @@ class _PressTransform:
 # ──────────────────────────────────────────────────────────────────────────────
 # Snapshot
 # ──────────────────────────────────────────────────────────────────────────────
-def _snapshot(screen, card):
-    """Return ``(texture, (x,y,w,h), (umin,vmin,umax,vmax))`` for *card* rendered
-    inside *screen*, or ``None`` on failure."""
-    if screen is None or card is None:
+def _snapshot(card):
+    """Return ``(texture, (x, y, w, h))`` for the *card widget exported alone*,
+    or ``None`` on failure."""
+    if card is None:
         return None
     try:
-        core = screen.export_as_image()
-        tex = getattr(core, "texture", None)
-        if tex is None:
-            return None
-        tw, th = tex.size
-        if not tw or not th:
-            return None
-        x, y = card.to_window(card.x, card.y)
         w, h = float(card.width), float(card.height)
         if w <= 0 or h <= 0:
             return None
-        umin = _clamp01(x / tw)
-        umax = _clamp01((x + w) / tw)
-        vmin = _clamp01(y / th)
-        vmax = _clamp01((y + h) / th)
-        return tex, (float(x), float(y), w, h), (umin, vmin, umax, vmax)
+        # Export the *card widget alone* — not the whole screen — so only the
+        # email widget flies and the mesh maps the card's own texture 1:1. This
+        # keeps the orientation correct (no whole-page sampling, no flip/mirror).
+        core = card.export_as_image()
+        tex = getattr(core, "texture", None)
+        if tex is None:
+            return None
+        x, y = card.to_window(card.x, card.y)
+        return tex, (float(x), float(y), w, h)
     except Exception:
         logger.debug("email genie snapshot failed", exc_info=True)
         return None
@@ -300,12 +296,11 @@ class _GenieWarp(Widget):
     """Draws the card snapshot on a triangle mesh and warps it toward *target*
     over the 3-stage spec timeline. Clock-driven for precise per-stage control."""
 
-    def __init__(self, texture, rect, uv, target, **kw):
+    def __init__(self, texture, rect, target, **kw):
         super().__init__(size_hint=(None, None),
                          pos=(0, 0), size=Window.size, **kw)
         self._tex = texture
         self._rect = rect
-        self._uv = uv
         self._target = (float(target[0]), float(target[1]))
         x0, y0, w, h = rect
         cx0, cy0 = x0 + w / 2.0, y0 + h / 2.0
@@ -338,15 +333,16 @@ class _GenieWarp(Widget):
         return bu + (tu - bu) * gy, bv + (tv - bv) * gy
 
     def _build(self) -> None:
-        umin, vmin, umax, vmax = self._uv
+        # The card was exported to its own texture, so the mesh maps the *full*
+        # texture 1:1. Sampling the texture's real corner tex_coords (which encode
+        # the Fbo's vertical flip) makes each vertex match how a Rectangle would
+        # draw the texture — i.e. upright, with no mirror or inversion.
         tc = self._tex_coords()
         for j in range(_NY + 1):
             v = j / _NY
-            gy = vmin + v * (vmax - vmin)
             for i in range(_NX + 1):
                 u = i / _NX
-                gx = umin + u * (umax - umin)
-                tu, tv = self._interp_uv(tc, gx, gy)
+                tu, tv = self._interp_uv(tc, u, v)
                 k = (j * (_NX + 1) + i) * 4
                 self._verts[k + 2] = tu
                 self._verts[k + 3] = tv
@@ -591,7 +587,12 @@ def play_email_genie(app, screen, action: str, on_navigate) -> None:
 
     # ── 3 · Genie warp ────────────────────────────────────────────────────────
     def _warp(_dt):
-        snap = _snapshot(screen, card)
+        from kivy.animation import Animation
+        # Snapshot the card alone at full opacity (cancel the lock dim so the
+        # flying texture isn't captured faded).
+        Animation.cancel_all(card, "opacity")
+        card.opacity = 1.0
+        snap = _snapshot(card)
         # Fade every CTA except the sink (save/discard collapse into their CTA).
         for b in (getattr(screen, "_send_btn", None),
                   getattr(screen, "_save_btn", None),
@@ -603,8 +604,8 @@ def play_email_genie(app, screen, action: str, on_navigate) -> None:
             card.opacity = 0.0
             _after_warp()
             return
-        tex, rect, uv = snap
-        warp = _GenieWarp(tex, rect, uv, target)
+        tex, rect = snap
+        warp = _GenieWarp(tex, rect, target)
         root.add_widget(warp)
         card.opacity = 0.0          # same frame as the (identical) mesh appears
         screen._genie_warp = warp
