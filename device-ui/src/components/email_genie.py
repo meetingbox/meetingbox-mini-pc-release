@@ -334,15 +334,16 @@ class _GenieWarp(Widget):
 
     def _build(self) -> None:
         # The card was exported to its own texture, so the mesh maps the *full*
-        # texture 1:1. Sampling the texture's real corner tex_coords (which encode
-        # the Fbo's vertical flip) makes each vertex match how a Rectangle would
-        # draw the texture — i.e. upright, with no mirror or inversion.
+        # texture 1:1. A Mesh samples texcoords raw (unlike a Rectangle it does
+        # NOT auto-apply the texture's flip), so we explicitly flip the vertical
+        # coordinate (v → 1-v) to undo the offscreen-buffer (Fbo) flip. Horizontal
+        # is left untouched — only one vertical flip is needed, no mirroring.
         tc = self._tex_coords()
         for j in range(_NY + 1):
             v = j / _NY
             for i in range(_NX + 1):
                 u = i / _NX
-                tu, tv = self._interp_uv(tc, u, v)
+                tu, tv = self._interp_uv(tc, u, 1.0 - v)
                 k = (j * (_NX + 1) + i) * 4
                 self._verts[k + 2] = tu
                 self._verts[k + 3] = tv
