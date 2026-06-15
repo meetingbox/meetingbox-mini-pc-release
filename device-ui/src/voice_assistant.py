@@ -204,19 +204,6 @@ def _build_intent_specs(start_commands: list[str]) -> tuple[_IntentSpec, ...]:
     _ACT = 0.68
     return (
         _IntentSpec("start_meeting", start_aliases, threshold=_ACT),
-        _IntentSpec("start_note", (
-            "start note taking",
-            "start taking notes",
-            "take notes",
-            "record notes",
-            "start notes",
-            "make a todo list",
-            "make to do list",
-            "start todo list",
-            "create task notice",
-            "record tasks",
-            "take a note",
-        ), threshold=_ACT),
         _IntentSpec("stop_meeting", (
             "stop meeting", "end meeting", "stop recording", "finish meeting",
             "end the meeting", "stop the meeting", "finish recording",
