@@ -1163,17 +1163,6 @@ class MeetingBoxApp(App):
         except Exception:
             logger.exception("EmailDraftScreen callback wiring failed")
 
-        # Genie action overlay — root-level transient layer that plays the
-        # send / save-as-draft / discard genie warp over the creation screen.
-        # Added first so the recipient + transcript overlays render above it.
-        try:
-            from components.action_flyaway import GenieOverlay
-            self._action_flyaway = GenieOverlay()
-            self.root_layout.add_widget(self._action_flyaway)
-        except Exception:
-            logger.exception("GenieOverlay failed to load")
-            self._action_flyaway = None
-
         # Recipient confirmation overlay — root-level floating popup (sits on top
         # of whatever screen is current, including email_draft). Added BEFORE the
         # transcript overlay so the transcript bar renders above it.
@@ -3276,7 +3265,16 @@ class MeetingBoxApp(App):
         if screen is not None:
             screen._flyaway_committed = True
         if on_creation and screen is not None:
-            self._run_genie(screen, action, navigate)
+            # Premium Apple-style genie (same engine as email draft).
+            try:
+                from components.email_genie import play_genie
+                play_genie(self, screen, action, navigate,
+                           completion={"send": ("Task Created", True),
+                                       "discard": ("Discarded", False)})
+            except Exception:
+                logger.exception("task genie failed; falling back to plain nav")
+                if callable(navigate):
+                    navigate()
         elif callable(navigate):
             navigate()
 
@@ -3469,7 +3467,16 @@ class MeetingBoxApp(App):
         if screen is not None:
             screen._flyaway_committed = True
         if on_creation and screen is not None:
-            self._run_genie(screen, action, navigate)
+            # Premium Apple-style genie (same engine as email draft).
+            try:
+                from components.email_genie import play_genie
+                play_genie(self, screen, action, navigate,
+                           completion={"send": ("Added to Calendar", True),
+                                       "discard": ("Discarded", False)})
+            except Exception:
+                logger.exception("calendar genie failed; falling back to plain nav")
+                if callable(navigate):
+                    navigate()
         elif callable(navigate):
             navigate()
 
@@ -3727,71 +3734,8 @@ class MeetingBoxApp(App):
         self._send_voice_user_text("None of those.", interrupt=True)
 
     # ── Action fly-away animation (send / save / discard card flies off) ─────
-
-    # Genie timing (seconds): a brief button press, then the warp.
-    _GENIE_PRESS_DUR = 0.16
-    _GENIE_DUR = 1.0
-
-    def _run_genie(self, screen, action: str, navigate) -> None:
-        """Play the genie action animation on *screen*, then run *navigate*.
-
-        Sequence: flash the tapped button (so the press registers) → snapshot the
-        card → hide the real card + fade the buttons → warp the snapshot toward
-        the target (top-right corner for send/confirm, the CTA for save/discard)
-        → on completion switch screens and restore the creation screen's visuals
-        for next time. Degrades to a plain navigation if the overlay/capture is
-        unavailable."""
-        def _navigate_and_restore():
-            if callable(navigate):
-                try:
-                    navigate()
-                except Exception:
-                    logger.debug("genie navigate failed", exc_info=True)
-            try:
-                if screen is not None and hasattr(screen, "restore_action_visuals"):
-                    screen.restore_action_visuals()
-            except Exception:
-                logger.debug("genie restore failed", exc_info=True)
-
-        if screen is None:
-            _navigate_and_restore()
-            return
-
-        # 1) Press feedback so the user notices the button being pressed.
-        try:
-            if hasattr(screen, "flash_button"):
-                screen.flash_button(action)
-        except Exception:
-            logger.debug("genie flash_button failed", exc_info=True)
-
-        def _start(_dt):
-            # 2) Resolve the sink point (top-right corner for send/confirm, the
-            #    chosen CTA for save/discard).
-            target = None
-            try:
-                if hasattr(screen, "genie_target"):
-                    target = screen.genie_target(action)
-            except Exception:
-                target = None
-            # 3) Fade the buttons away (the live card stays — it is what animates).
-            try:
-                if hasattr(screen, "prepare_genie"):
-                    screen.prepare_genie(action)
-            except Exception:
-                logger.debug("genie prepare failed", exc_info=True)
-            # 4) Shrink the *live* card toward the target, then navigate + restore.
-            #    Animating the real widget (no snapshot) means there is no pop —
-            #    the card simply scales away smoothly.
-            card = getattr(screen, "_card", None)
-            if card is not None and target is not None:
-                from components.action_flyaway import minimize_card
-                minimize_card(card, target,
-                              on_done=_navigate_and_restore,
-                              duration=self._GENIE_DUR)
-            else:
-                _navigate_and_restore()
-
-        Clock.schedule_once(_start, self._GENIE_PRESS_DUR)
+    # The premium genie lives in components/email_genie.py (play_genie); each
+    # creation screen's committer calls it directly.
 
     def _commit_email_action(self, action: str) -> None:
         """Fly the email card away (once) and land on the transcription page.
@@ -3821,7 +3765,7 @@ class MeetingBoxApp(App):
                 self.goto_screen(target, transition="none")
 
         if sm.current == "email_draft":
-            # Apple-style genie (email only). Calendar / task keep _run_genie.
+            # Premium Apple-style genie (shared engine; calendar/task use play_genie).
             try:
                 from components.email_genie import play_email_genie
                 play_email_genie(self, screen, action, _nav)

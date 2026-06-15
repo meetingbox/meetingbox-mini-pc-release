@@ -27,11 +27,16 @@ there is no snapshot "pop" — the hand-off is seamless.
 
 Public API
 ----------
+play_genie(app, screen, action, on_navigate, completion=None) -> None
+    Run the full press → lock → warp → completion sequence on any creation
+    screen (email-draft, calendar-event, task), calling ``on_navigate`` exactly
+    once when the card has funneled into its destination. ``completion`` maps
+    ``action -> (toast_text | None, show_check)``. Degrades to an immediate
+    ``on_navigate`` if anything is unavailable.
+
 play_email_genie(app, screen, action, on_navigate) -> None
-    Run the full press → lock → warp → completion sequence, calling
-    ``on_navigate`` exactly once when the card has funneled into its
-    destination. Degrades to an immediate ``on_navigate`` if anything is
-    unavailable.
+    Thin wrapper around :func:`play_genie` preset with the email completion
+    states ("Sent" / "Draft Saved" / no Discard toast).
 """
 
 from __future__ import annotations
@@ -517,10 +522,33 @@ class _ConfirmToast(Widget):
 # ──────────────────────────────────────────────────────────────────────────────
 # Orchestrator
 # ──────────────────────────────────────────────────────────────────────────────
-def _btn_for(screen, action):
-    return {"send": getattr(screen, "_send_btn", None),
-            "save": getattr(screen, "_save_btn", None),
-            "discard": getattr(screen, "_discard_btn", None)}.get(action)
+def _press_button(screen, action):
+    """The CTA being committed (used for the press feedback + sink), via the
+    screen's ``_action_btn`` map. Works for email, calendar and task screens."""
+    getter = getattr(screen, "_action_btn", None)
+    if callable(getter):
+        try:
+            return getter(action)
+        except Exception:
+            return None
+    return None
+
+
+def _action_buttons(screen):
+    """Every CTA widget on *screen*, discovered through ``_action_btn`` so the
+    engine never needs to know a screen's specific button attribute names."""
+    out = []
+    getter = getattr(screen, "_action_btn", None)
+    if not callable(getter):
+        return out
+    for a in ("send", "save", "discard"):
+        try:
+            b = getter(a)
+        except Exception:
+            b = None
+        if b is not None and b not in out:
+            out.append(b)
+    return out
 
 
 def _fade(widget, target, duration, after=None):
@@ -536,12 +564,31 @@ def _fade(widget, target, duration, after=None):
     anim.start(widget)
 
 
-def play_email_genie(app, screen, action: str, on_navigate) -> None:
-    """Run the full email-genie sequence then call ``on_navigate`` once.
+# Per-screen completion text: action -> (toast_text | None, show_check).
+EMAIL_COMPLETION = {"send": ("Sent", True),
+                    "save": ("Draft Saved", True),
+                    "discard": (None, False)}
 
-    *app* must expose ``root_layout``; *screen* is the ``EmailDraftScreen``.
-    Falls back to an immediate ``on_navigate`` if essentials are missing.
+
+def play_email_genie(app, screen, action: str, on_navigate) -> None:
+    """Email-draft entry point — premium genie with email completion states."""
+    play_genie(app, screen, action, on_navigate, completion=EMAIL_COMPLETION)
+
+
+def play_genie(app, screen, action: str, on_navigate, completion=None) -> None:
+    """Run the full premium genie sequence on *screen*, then call *on_navigate*.
+
+    Screen-agnostic: drives entirely off the screen's ``genie_target`` /
+    ``_action_btn`` / ``_card`` hooks, so the email-draft, calendar-event and
+    task-creation screens all share one engine. ``completion`` maps
+    ``action -> (toast_text | None, show_check)`` for the post-warp confirmation
+    (pass ``None`` / omit an action for no toast).
+
+    *app* must expose ``root_layout``. Falls back to an immediate ``on_navigate``
+    if essentials are missing.
     """
+    completion = completion or {}
+
     def _go():
         if callable(on_navigate):
             try:
@@ -564,18 +611,18 @@ def play_email_genie(app, screen, action: str, on_navigate) -> None:
         return
 
     # ── 1 · CTA press feedback (spring scale 1 → 0.94 → 1) ────────────────────
-    btn = _btn_for(screen, action)
+    btn = _press_button(screen, action)
     press = _PressTransform(btn) if btn is not None else None
-    spring = None
     if press is not None:
-        spring = _Spring(value=1.0, on_update=press.apply,
-                         on_rest=press.remove)
+        spring = _Spring(value=1.0, on_update=press.apply, on_rest=press.remove)
         spring.set_target(0.94)
         Clock.schedule_once(lambda _dt: spring.set_target(1.0), PRESS_IN)
 
-    sink = btn if action in ("save", "discard") else None  # CTA the card sinks into
+    # The card sinks into its CTA for button-bound actions; "send" always flies
+    # to the top-right corner, so nothing stays as a sink there.
+    sink = None if action == "send" else btn
 
-    # ── 2 · Widget lock (disable CTAs, dim compose to 97%) ────────────────────
+    # ── 2 · Widget lock (disable CTAs, dim the card to 97%) ───────────────────
     def _lock(_dt):
         try:
             if hasattr(screen, "_set_buttons_enabled"):
@@ -594,11 +641,9 @@ def play_email_genie(app, screen, action: str, on_navigate) -> None:
         Animation.cancel_all(card, "opacity")
         card.opacity = 1.0
         snap = _snapshot(card)
-        # Fade every CTA except the sink (save/discard collapse into their CTA).
-        for b in (getattr(screen, "_send_btn", None),
-                  getattr(screen, "_save_btn", None),
-                  getattr(screen, "_discard_btn", None)):
-            if b is not None and b is not sink:
+        # Fade every CTA except the sink (it stays as the card's destination).
+        for b in _action_buttons(screen):
+            if b is not sink:
                 _fade(b, 0.0, STAGE_A + STAGE_B)
         if snap is None:
             # No snapshot → skip the warp but keep the rest of the experience.
@@ -624,36 +669,43 @@ def play_email_genie(app, screen, action: str, on_navigate) -> None:
     def _after_warp():
         # Hand the screen back to the app (instant swap behind the overlay).
         _go()
-        # Restore the compose screen's visuals for its next use.
+        # Restore the creation screen's visuals for its next use.
         try:
             if hasattr(screen, "restore_action_visuals"):
                 screen.restore_action_visuals()
         except Exception:
             logger.debug("genie restore failed", exc_info=True)
-        _completion(app, action, target)
+        _completion(app, action, target, completion)
 
     Clock.schedule_once(_warp, PRESS_IN + PRESS_OUT + LOCK_DUR)
 
 
-def _completion(app, action: str, target) -> None:
-    """Natively-drawn completion state, layered on the root above everything."""
+def _completion(app, action: str, target, completion: dict) -> None:
+    """Natively-drawn completion state, layered on the root above everything.
+
+    Text + checkmark are taken from ``completion[action]``; absent / falsy → no
+    toast (e.g. email Discard)."""
     root = getattr(app, "root_layout", None)
     if root is None:
         return
-    if action == "discard":
-        return  # clean completion, no celebratory feedback
+    entry = completion.get(action)
+    if not entry:
+        return
+    text, show_check = entry
+    if not text:
+        return
 
     if action == "send":
-        # Top-right corner, where a sent message logically leaves the interface.
+        # Top-right corner, where a confirmed/sent item leaves the interface.
         point = (Window.width * 0.84, Window.height * 0.84)
-        toast = _ConfirmToast("Sent", point, show_check=True, accent=_C_SEND)
-    else:  # save
+    else:
+        # Near the CTA the card sank into.
         try:
             point = (float(target[0]), float(target[1]) + _fs(70))
         except Exception:
             point = (Window.width / 2.0, Window.height / 2.0)
-        toast = _ConfirmToast("Draft Saved", point, show_check=True, accent=_C_SEND)
 
+    toast = _ConfirmToast(text, point, show_check=bool(show_check), accent=_C_SEND)
     root.add_widget(toast)
 
     def _remove():
