@@ -10,6 +10,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -782,6 +783,9 @@ class MeetingBoxApp(App):
         self._realtime_reconnect_count = 0
         # Which email field the current recipient picker is resolving ("to"/"cc"/"bcc").
         self._picker_current_field = "to"
+        # Queue recipient-pickers so ambiguous contacts resolve strictly one-at-a-time.
+        self._recipient_picker_queue: list[dict] = []
+        self._recipient_picker_active: dict | None = None
         # Holds task data (title/description/due_date) between show_task_creation
         # directive and the user tapping Confirm/Discard.
         self._pending_task_data: dict = {}
@@ -3162,10 +3166,6 @@ class MeetingBoxApp(App):
         """Navigate to / update the email draft screen from a show_email_draft directive."""
         if not isinstance(draft, dict):
             return
-        # The recipient picker's job ends once we're drafting — close it.
-        recip = getattr(self, "_recipient_overlay", None)
-        if recip is not None and recip.visible:
-            recip.close()
         try:
             sm = getattr(self, "screen_manager", None)
             screen = sm.get_screen("email_draft") if sm else None
@@ -3195,6 +3195,9 @@ class MeetingBoxApp(App):
                 # transcription page, matching the tap-driven animation.
                 if _action:
                     self._commit_email_action(_action)
+            # If a prior contact was resolved via "None of these" + manual email,
+            # progress any queued ambiguous contacts only after this UI update.
+            self._drain_recipient_picker_queue()
         except Exception:
             logger.exception("Failed to render email draft directive")
 
@@ -3396,13 +3399,6 @@ class MeetingBoxApp(App):
         elif not isinstance(attendees, list):
             attendees = None
 
-        # If the contact picker is still open (e.g. just after an attendee was
-        # resolved), close it now that the model is updating the event card —
-        # mirrors the email-draft flow so the popup never lingers.
-        recip = getattr(self, "_recipient_overlay", None)
-        if recip is not None and recip.visible:
-            recip.close()
-
         # Progressive merge into pending state (missing keys keep prior value).
         prev = getattr(self, "_pending_event_data", None) or {}
         if name:
@@ -3435,6 +3431,8 @@ class MeetingBoxApp(App):
                     time_str=prev.get("time"),
                     attendees=prev.get("attendees"),
                 )
+            # Progress queued ambiguous contacts only after event UI is updated.
+            self._drain_recipient_picker_queue()
         except Exception:
             logger.exception("Failed to show calendar event creation screen")
 
@@ -3629,16 +3627,43 @@ class MeetingBoxApp(App):
         self._ui_data_cache[key] = week
 
     def _on_recipient_picker_directive(self, query: str, candidates: list, field: str = "to") -> None:
-        """Show the recipient confirmation overlay from a show_recipient_picker directive."""
+        """Queue and show recipient picker directives one-at-a-time."""
         overlay = getattr(self, "_recipient_overlay", None)
         if overlay is None:
             return
-        # Remember which email field this picker resolves — used by _on_recipient_selected
-        # to decide whether the confirmed contact goes into "to", "cc", or "bcc".
-        self._picker_current_field = field if field in ("to", "cc", "bcc", "attendee") else "to"
+        norm_field = field if field in ("to", "cc", "bcc", "attendee") else "to"
+        queue = getattr(self, "_recipient_picker_queue", None)
+        if not isinstance(queue, list):
+            queue = []
+            self._recipient_picker_queue = queue
+        queue.append({
+            "query": str(query or ""),
+            "candidates": list(candidates or []),
+            "field": norm_field,
+        })
+        self._drain_recipient_picker_queue()
+
+    def _drain_recipient_picker_queue(self) -> None:
+        """Render the next unresolved picker only when no picker is visible."""
+        overlay = getattr(self, "_recipient_overlay", None)
+        if overlay is None:
+            return
+        if overlay.visible:
+            return
+        active = getattr(self, "_recipient_picker_active", None)
+        if isinstance(active, dict):
+            # Wait for selection/dismiss to clear the current active picker.
+            return
+        queue = getattr(self, "_recipient_picker_queue", None)
+        if not isinstance(queue, list) or not queue:
+            return
+        nxt = queue.pop(0)
+        self._recipient_picker_active = nxt
+        self._picker_current_field = str(nxt.get("field") or "to")
         try:
-            overlay.show_candidates(query, candidates or [])
+            overlay.show_candidates(str(nxt.get("query") or ""), list(nxt.get("candidates") or []))
         except Exception:
+            self._recipient_picker_active = None
             logger.exception("Failed to render recipient picker directive")
 
     def _on_recipient_selected(self, index: int, contact: dict) -> None:
@@ -3647,9 +3672,11 @@ class MeetingBoxApp(App):
         overlay = getattr(self, "_recipient_overlay", None)
         if overlay is not None and overlay.visible:
             overlay.close()
+        self._recipient_picker_active = None
         email = (contact or {}).get("email", "")
         name = (contact or {}).get("name", "") or email
         if not email:
+            self._drain_recipient_picker_queue()
             return
 
         # Calendar attendee selection reuses this same picker overlay. When the
@@ -3691,6 +3718,7 @@ class MeetingBoxApp(App):
                 f"already added to the invite on screen. Do not look them up again.",
                 interrupt=True,
             )
+            self._drain_recipient_picker_queue()
             return
 
         # After confirming a recipient, ensure we land on the email draft page
@@ -3724,16 +3752,85 @@ class MeetingBoxApp(App):
             f"I picked {name} ({email}) on screen — use that address.",
             interrupt=True,
         )
+        self._drain_recipient_picker_queue()
 
     def _on_recipient_dismissed(self) -> None:
         overlay = getattr(self, "_recipient_overlay", None)
         if overlay is not None:
             overlay.close()
+        self._recipient_picker_active = None
 
     def _on_recipient_none(self) -> None:
         """User tapped 'None' in the recipient picker — inject voice turn."""
         # overlay already closed by RecipientConfirmOverlay._on_row_tap
-        self._send_voice_user_text("None of those.", interrupt=True)
+        self._recipient_picker_active = None
+        self._send_voice_user_text(
+            "I couldn't find the correct contact. Please provide the email address.",
+            interrupt=True,
+        )
+
+    @staticmethod
+    def _parse_recipient_voice_choice(text: str, max_index: int) -> int | None:
+        """Map spoken choice text to a 1-based picker index."""
+        s = str(text or "").strip().lower()
+        if not s or max_index <= 0:
+            return None
+
+        def _clamp(i: int) -> int | None:
+            return i if 1 <= i <= max_index else None
+
+        # Explicit "none" choice should always map to the final row.
+        if "none of these" in s or "none of those" in s:
+            return max_index
+
+        # Common ordinal/cardinal words used in speech.
+        word_to_idx = {
+            "first": 1, "one": 1, "1": 1,
+            "second": 2, "two": 2, "2": 2,
+            "third": 3, "three": 3, "3": 3,
+            "fourth": 4, "four": 4, "4": 4,
+            "fifth": 5, "five": 5, "5": 5,
+            "sixth": 6, "six": 6, "6": 6,
+            "seventh": 7, "seven": 7, "7": 7,
+            "eighth": 8, "eight": 8, "8": 8,
+            "ninth": 9, "nine": 9, "9": 9,
+            "tenth": 10, "ten": 10, "10": 10,
+        }
+        for token in re.findall(r"[a-z0-9]+", s):
+            idx = word_to_idx.get(token)
+            if idx is not None:
+                c = _clamp(idx)
+                if c is not None:
+                    return c
+
+        # Fallback for bare numerals in phrases.
+        m = re.search(r"\b(\d{1,2})\b", s)
+        if m:
+            try:
+                return _clamp(int(m.group(1)))
+            except Exception:
+                return None
+        return None
+
+    @staticmethod
+    def _match_recipient_voice_choice(text: str, candidates: list[dict]) -> int | None:
+        """Resolve voice choice by matching spoken name/email to candidates."""
+        s = str(text or "").strip().lower()
+        if not s:
+            return None
+        tokens = set(re.findall(r"[a-z0-9]+", s))
+        for i, c in enumerate(candidates or [], start=1):
+            email = str((c or {}).get("email") or "").strip().lower()
+            name = str((c or {}).get("name") or "").strip().lower()
+            if email and email in s:
+                return i
+            if name and name in s:
+                return i
+            if name:
+                ntoks = [t for t in re.findall(r"[a-z0-9]+", name) if len(t) >= 3]
+                if ntoks and all(t in tokens for t in ntoks[:2]):
+                    return i
+        return None
 
     # ── Action fly-away animation (send / save / discard card flies off) ─────
     # The premium genie lives in components/email_genie.py (play_genie); each
@@ -4334,6 +4431,25 @@ class MeetingBoxApp(App):
             # correction pass.
             if not is_final:
                 return
+            try:
+                recip = getattr(self, "_recipient_overlay", None)
+                active = getattr(self, "_recipient_picker_active", None)
+                if (
+                    isinstance(active, dict)
+                    and recip is not None
+                    and recip.visible
+                ):
+                    candidates = list(active.get("candidates") or [])
+                    # +1 for the final "None of these" row.
+                    max_index = len(candidates) + 1
+                    idx = self._parse_recipient_voice_choice(text, max_index)
+                    if idx is None:
+                        idx = self._match_recipient_voice_choice(text, candidates)
+                    if idx is not None and hasattr(recip, "select_index"):
+                        if recip.select_index(idx):
+                            return
+            except Exception:
+                logger.debug("voice recipient choice parsing failed", exc_info=True)
             if not text or len(text) < 4:
                 return
             _backend = BACKEND_URL
