@@ -149,12 +149,14 @@ class _PillButton(BoxLayout):
         _S = [(0, 0.09), (1, 0.07), (2, 0.05), (3, 0.04), (4, 0.03), (5, 0.02)]
         with self.canvas.before:
             self._shadow_layers = []
+            self._shadow_colors = []
             for _, alpha in _S:
-                Color(0, 0, 0, alpha)
+                self._shadow_colors.append(Color(0, 0, 0, alpha))
                 self._shadow_layers.append(RoundedRectangle(radius=[self._pill_r]))
             Color(*bg_color)
             self._bg = RoundedRectangle(radius=[self._pill_r])
         self._shadow_spec = _S
+        self._press_depth = 0.0
         self.bind(pos=self._sync, size=self._sync)
         lbl = Label(
             text=text,
@@ -169,11 +171,21 @@ class _PillButton(BoxLayout):
         self.add_widget(lbl)
 
     def _sync(self, *_) -> None:
+        # On press the shadow drops a touch further for the native "lift" cue.
+        extra = 2.0 * self._press_depth
         for layer, (half_e, _) in zip(self._shadow_layers, self._shadow_spec):
-            layer.pos  = (self.x - half_e, self.y - 4 - half_e)
+            layer.pos  = (self.x - half_e, self.y - 4 - extra - half_e)
             layer.size = (self.width + 2 * half_e, self.height + 2 * half_e)
         self._bg.pos  = self.pos
         self._bg.size = self.size
+
+    def set_press_shadow(self, depth: float) -> None:
+        """Slightly deepen the drop shadow during the genie press (depth 0→1)."""
+        depth = 0.0 if depth < 0.0 else 1.0 if depth > 1.0 else depth
+        self._press_depth = depth
+        for col, (_, base_alpha) in zip(self._shadow_colors, self._shadow_spec):
+            col.a = base_alpha * (1.0 + 0.6 * depth)
+        self._sync()
 
     def on_touch_down(self, touch):
         if self.collide_point(*touch.pos):
