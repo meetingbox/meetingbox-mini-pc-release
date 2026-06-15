@@ -3821,7 +3821,13 @@ class MeetingBoxApp(App):
                 self.goto_screen(target, transition="none")
 
         if sm.current == "email_draft":
-            self._run_genie(screen, action, _nav)
+            # Apple-style genie (email only). Calendar / task keep _run_genie.
+            try:
+                from components.email_genie import play_email_genie
+                play_email_genie(self, screen, action, _nav)
+            except Exception:
+                logger.exception("email genie failed; falling back to plain nav")
+                _nav()
         else:
             _nav()
 

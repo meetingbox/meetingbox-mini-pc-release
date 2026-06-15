@@ -321,12 +321,14 @@ class _PillButton(BoxLayout):
         ]
         with self.canvas.before:
             self._shadow_layers = []
+            self._shadow_colors = []
             for _, alpha in _S:
-                Color(0, 0, 0, alpha)
+                self._shadow_colors.append(Color(0, 0, 0, alpha))
                 self._shadow_layers.append(RoundedRectangle(radius=[self._pill_r]))
             Color(*bg_color)
             self._bg = RoundedRectangle(radius=[self._pill_r])
         self._shadow_spec = _S
+        self._press_depth = 0.0
         self.bind(pos=self._sync, size=self._sync)
         lbl = Label(
             text=text,
@@ -342,11 +344,21 @@ class _PillButton(BoxLayout):
 
     def _sync(self, *_):
         # Fixed 4px y-offset (Figma spec); half_e in raw pixels (no _ff — avoids min-6 clamp).
+        # On press the shadow drops a touch further for the native "lift" cue.
+        extra = 2.0 * self._press_depth
         for layer, (half_e, _) in zip(self._shadow_layers, self._shadow_spec):
-            layer.pos  = (self.x - half_e, self.y - 4 - half_e)
+            layer.pos  = (self.x - half_e, self.y - 4 - extra - half_e)
             layer.size = (self.width + 2 * half_e, self.height + 2 * half_e)
         self._bg.pos  = self.pos
         self._bg.size = self.size
+
+    def set_press_shadow(self, depth: float) -> None:
+        """Slightly deepen the drop shadow during the press (depth 0→1)."""
+        depth = 0.0 if depth < 0.0 else 1.0 if depth > 1.0 else depth
+        self._press_depth = depth
+        for col, (_, base_alpha) in zip(self._shadow_colors, self._shadow_spec):
+            col.a = base_alpha * (1.0 + 0.6 * depth)
+        self._sync()
 
     def set_enabled(self, enabled: bool):
         self._enabled = enabled
@@ -753,6 +765,12 @@ class EmailDraftScreen(BaseScreen):
             if b is not None:
                 Animation.cancel_all(b, "opacity")
                 b.opacity = 1
+                # Clear any residual press-shadow lift from the genie animation.
+                if hasattr(b, "set_press_shadow"):
+                    try:
+                        b.set_press_shadow(0.0)
+                    except Exception:
+                        pass
 
     def genie_target(self, action: str):
         """Window-coord sink point: top-right corner for Send, else the CTA."""
