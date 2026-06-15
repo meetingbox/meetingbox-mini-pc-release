@@ -660,7 +660,12 @@ class CalendarEventCreationScreen(BaseScreen):
             if full is None:
                 return None
             x, y = card.to_window(card.x, card.y)
-            region = full.get_region(int(round(x)), int(round(y)),
+            # ``export_as_image`` is FBO-backed (top-left origin) while
+            # ``to_window`` yields bottom-left window coords, so flip Y to crop
+            # the right rows — otherwise the crop slides down into the button
+            # row and clips the header off the top.
+            ty = full.height - y - h
+            region = full.get_region(int(round(x)), int(round(ty)),
                                      int(round(w)), int(round(h)))
             return region, (float(x), float(y), w, h)
         except Exception:

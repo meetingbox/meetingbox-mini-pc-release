@@ -47,7 +47,7 @@ from kivy.clock import Clock
 from kivy.core.window import Window
 from kivy.event import EventDispatcher
 from kivy.graphics import (Color, Ellipse, Line, Mesh, PopMatrix, PushMatrix,
-                           RoundedRectangle, Scale)
+                           Rectangle, RoundedRectangle, Scale)
 from kivy.uix.label import Label
 from kivy.uix.widget import Widget
 
@@ -291,6 +291,35 @@ def _snapshot(card):
         return tex, (float(x), float(y), w, h)
     except Exception:
         logger.debug("email genie snapshot failed", exc_info=True)
+        return None
+
+
+def _button_ghost(btn, root):
+    """Pin a static snapshot of *btn* onto *root* at its current window position.
+
+    Used with ``reveal_under``: the card should funnel into a *visible*
+    destination button, but the live button belongs to the screen we navigate
+    away from, so we float a snapshot of it over the revealed screen instead.
+    Returns the overlay widget (caller removes it when done) or ``None``."""
+    if btn is None:
+        return None
+    try:
+        core = btn.export_as_image()
+        tex = getattr(core, "texture", None)
+        if tex is None:
+            return None
+        x, y = btn.to_window(btn.x, btn.y)
+        w, h = float(btn.width), float(btn.height)
+        ghost = Widget(size_hint=(None, None), pos=(x, y), size=(w, h))
+        with ghost.canvas:
+            Color(1, 1, 1, 1)
+            # A Rectangle honours the texture's own (flipped) tex_coords, so it
+            # renders upright with no manual flip needed.
+            Rectangle(texture=tex, pos=(x, y), size=(w, h))
+        root.add_widget(ghost)
+        return ghost
+    except Exception:
+        logger.debug("genie button ghost failed", exc_info=True)
         return None
 
 
@@ -675,6 +704,10 @@ def play_genie(app, screen, action: str, on_navigate, completion=None,
             _after_warp()
             return
         tex, rect = snap
+        # When the previous screen is revealed underneath, the live sink button
+        # is on the screen we're about to leave — pin a snapshot of it so the
+        # card still funnels into a visible destination button.
+        ghost = _button_ghost(sink, root) if (reveal_under and sink is not None) else None
         warp = _GenieWarp(tex, rect, target)
         root.add_widget(warp)
         card.opacity = 0.0          # same frame as the (identical) mesh appears
@@ -684,10 +717,12 @@ def play_genie(app, screen, action: str, on_navigate, completion=None,
         screen._genie_warp = warp
 
         def _done():
-            try:
-                root.remove_widget(warp)
-            except Exception:
-                pass
+            for w in (warp, ghost):
+                if w is not None:
+                    try:
+                        root.remove_widget(w)
+                    except Exception:
+                        pass
             screen._genie_warp = None
             _after_warp()
 
