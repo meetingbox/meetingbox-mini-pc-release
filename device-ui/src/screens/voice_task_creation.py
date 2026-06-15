@@ -559,6 +559,34 @@ class VoiceTaskCreationScreen(BaseScreen):
                 Animation.cancel_all(b, "opacity")
                 b.opacity = 1
 
+    def genie_snapshot(self):
+        """Texture + window-rect for the genie to fly.
+
+        The card's visible content (header, fields, text) lives as *siblings* of
+        the white card panel rather than as its children, so exporting the panel
+        alone yields a blank block. Instead export the whole screen and crop the
+        texture to the card's rectangle, giving the exact pixels the user sees.
+        Returns ``(texture, (x, y, w, h))`` or ``None`` on failure.
+        """
+        card = self._card
+        if card is None:
+            return None
+        try:
+            w, h = float(card.width), float(card.height)
+            if w <= 0 or h <= 0:
+                return None
+            core = self.export_as_image()
+            full = getattr(core, "texture", None)
+            if full is None:
+                return None
+            x, y = card.to_window(card.x, card.y)
+            region = full.get_region(int(round(x)), int(round(y)),
+                                     int(round(w)), int(round(h)))
+            return region, (float(x), float(y), w, h)
+        except Exception:
+            logger.debug("task genie_snapshot failed", exc_info=True)
+            return None
+
     def genie_target(self, action: str):
         """Top-right corner for Confirm; the Discard CTA otherwise."""
         if action == "send":

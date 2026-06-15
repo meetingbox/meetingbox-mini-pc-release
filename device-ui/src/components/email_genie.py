@@ -575,21 +575,31 @@ def play_email_genie(app, screen, action: str, on_navigate) -> None:
     play_genie(app, screen, action, on_navigate, completion=EMAIL_COMPLETION)
 
 
-def play_genie(app, screen, action: str, on_navigate, completion=None) -> None:
+def play_genie(app, screen, action: str, on_navigate, completion=None,
+               reveal_under: bool = False) -> None:
     """Run the full premium genie sequence on *screen*, then call *on_navigate*.
 
     Screen-agnostic: drives entirely off the screen's ``genie_target`` /
-    ``_action_btn`` / ``_card`` hooks, so the email-draft, calendar-event and
-    task-creation screens all share one engine. ``completion`` maps
-    ``action -> (toast_text | None, show_check)`` for the post-warp confirmation
-    (pass ``None`` / omit an action for no toast).
+    ``_action_btn`` / ``_card`` hooks (and an optional ``genie_snapshot``), so the
+    email-draft, calendar-event and task-creation screens all share one engine.
+    ``completion`` maps ``action -> (toast_text | None, show_check)`` for the
+    post-warp confirmation (pass ``None`` / omit an action for no toast).
+
+    ``reveal_under`` swaps to the destination screen the moment the flying card
+    snapshot appears (instead of after the warp), so the screen the card came
+    from is revealed *behind* it as it genies away — used by the calendar/task
+    creation screens whose card sits over the voice/transcription page.
 
     *app* must expose ``root_layout``. Falls back to an immediate ``on_navigate``
     if essentials are missing.
     """
     completion = completion or {}
+    _navigated = {"done": False}
 
     def _go():
+        if _navigated["done"]:
+            return
+        _navigated["done"] = True
         if callable(on_navigate):
             try:
                 on_navigate()
@@ -640,7 +650,19 @@ def play_genie(app, screen, action: str, on_navigate, completion=None) -> None:
         # flying texture isn't captured faded).
         Animation.cancel_all(card, "opacity")
         card.opacity = 1.0
-        snap = _snapshot(card)
+        # Screens whose visible content lives beside the card panel (calendar /
+        # task) supply their own cropped snapshot via ``genie_snapshot``; the
+        # email card contains its content so it falls back to a plain export.
+        snap = None
+        hook = getattr(screen, "genie_snapshot", None)
+        if callable(hook):
+            try:
+                snap = hook()
+            except Exception:
+                logger.debug("genie_snapshot hook failed", exc_info=True)
+                snap = None
+        if snap is None:
+            snap = _snapshot(card)
         # Fade every CTA except the sink (it stays as the card's destination).
         for b in _action_buttons(screen):
             if b is not sink:
@@ -648,12 +670,17 @@ def play_genie(app, screen, action: str, on_navigate, completion=None) -> None:
         if snap is None:
             # No snapshot → skip the warp but keep the rest of the experience.
             card.opacity = 0.0
+            if reveal_under:
+                _go()
             _after_warp()
             return
         tex, rect = snap
         warp = _GenieWarp(tex, rect, target)
         root.add_widget(warp)
         card.opacity = 0.0          # same frame as the (identical) mesh appears
+        if reveal_under:
+            # Reveal the destination screen behind the flying card right away.
+            _go()
         screen._genie_warp = warp
 
         def _done():

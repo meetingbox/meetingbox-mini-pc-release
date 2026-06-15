@@ -3270,7 +3270,8 @@ class MeetingBoxApp(App):
                 from components.email_genie import play_genie
                 play_genie(self, screen, action, navigate,
                            completion={"send": ("Task Created", True),
-                                       "discard": ("Discarded", False)})
+                                       "discard": ("Discarded", False)},
+                           reveal_under=True)
             except Exception:
                 logger.exception("task genie failed; falling back to plain nav")
                 if callable(navigate):
@@ -3472,7 +3473,8 @@ class MeetingBoxApp(App):
                 from components.email_genie import play_genie
                 play_genie(self, screen, action, navigate,
                            completion={"send": ("Added to Calendar", True),
-                                       "discard": ("Discarded", False)})
+                                       "discard": ("Discarded", False)},
+                           reveal_under=True)
             except Exception:
                 logger.exception("calendar genie failed; falling back to plain nav")
                 if callable(navigate):
