@@ -3461,6 +3461,14 @@ class MeetingBoxApp(App):
             if screen is not None:
                 if is_new_open and hasattr(screen, "reset"):
                     screen.reset()
+                    # Fresh open can happen while already on the same screen, so
+                    # on_enter() may not run; reset action-commit state here.
+                    try:
+                        screen._flyaway_committed = False
+                        if hasattr(screen, "restore_action_visuals"):
+                            screen.restore_action_visuals()
+                    except Exception:
+                        logger.debug("calendar fresh-flow visual reset skipped", exc_info=True)
                 screen.set_event_data(
                     name=prev.get("name"),
                     date=prev.get("date"),
@@ -3499,6 +3507,9 @@ class MeetingBoxApp(App):
         except Exception:
             screen = None
         if screen is not None and getattr(screen, "_flyaway_committed", False):
+            # A duplicated dismiss/commit should still complete navigation.
+            if callable(navigate):
+                navigate()
             return
         on_creation = sm.current == "calendar_event_creation"
         if screen is not None:
@@ -3883,6 +3894,29 @@ class MeetingBoxApp(App):
                 if ntoks and all(t in tokens for t in ntoks[:2]):
                     return i
         return None
+
+    def _try_apply_active_picker_voice_choice(self, text: str) -> bool:
+        """Apply a voice selection to the currently-visible picker if possible."""
+        try:
+            recip = getattr(self, "_recipient_overlay", None)
+            active = getattr(self, "_recipient_picker_active", None)
+            if not (
+                isinstance(active, dict)
+                and recip is not None
+                and recip.visible
+            ):
+                return False
+            candidates = list(active.get("candidates") or [])
+            max_index = len(candidates) + 1
+            idx = self._parse_recipient_voice_choice(text, max_index)
+            if idx is None:
+                idx = self._match_recipient_voice_choice(text, candidates)
+            if idx is None:
+                return False
+            return bool(hasattr(recip, "select_index") and recip.select_index(idx))
+        except Exception:
+            logger.debug("voice recipient choice parsing failed", exc_info=True)
+            return False
 
     @staticmethod
     def _looks_like_picker_correction(text: str) -> bool:
@@ -4513,6 +4547,11 @@ class MeetingBoxApp(App):
                         pass
             Clock.schedule_once(_say_bar_user, 0)
 
+            # Parse picker choices on partials too; final ASR can be clipped
+            # ("The") while a prior partial already contained "first one".
+            if self._try_apply_active_picker_voice_choice(text):
+                return
+
             # Grammar correction — run only on the FINAL transcript so we
             # don't fire an API call (and flicker the bubble) for every
             # streaming partial. Partials are display-only; the .completed
@@ -4601,26 +4640,6 @@ class MeetingBoxApp(App):
                             return
             except Exception:
                 logger.debug("calendar attendee dot edit failed", exc_info=True)
-
-            try:
-                recip = getattr(self, "_recipient_overlay", None)
-                active = getattr(self, "_recipient_picker_active", None)
-                if (
-                    isinstance(active, dict)
-                    and recip is not None
-                    and recip.visible
-                ):
-                    candidates = list(active.get("candidates") or [])
-                    # +1 for the final "None of these" row.
-                    max_index = len(candidates) + 1
-                    idx = self._parse_recipient_voice_choice(text, max_index)
-                    if idx is None:
-                        idx = self._match_recipient_voice_choice(text, candidates)
-                    if idx is not None and hasattr(recip, "select_index"):
-                        if recip.select_index(idx):
-                            return
-            except Exception:
-                logger.debug("voice recipient choice parsing failed", exc_info=True)
             if not text or len(text) < 4:
                 return
             _backend = BACKEND_URL
