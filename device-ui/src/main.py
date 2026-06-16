@@ -3412,10 +3412,12 @@ class MeetingBoxApp(App):
             attendees = None
 
         prev = getattr(self, "_pending_event_data", None) or {}
+        prev_event_id = str(prev.get("event_id") or "").strip() or None
         # Fresh invite workflow: whenever the model opens the invite screen
         # without an event_id, start from a clean state and never reuse stale
         # discarded/completed draft fields from an older invite.
         is_new_open = (event_id is None) and bool(event.get("reset", True))
+        is_switch_existing_event = bool(event_id and event_id != prev_event_id)
         if is_new_open:
             prev = {}
             try:
@@ -3426,6 +3428,10 @@ class MeetingBoxApp(App):
                     overlay.close()
             except Exception:
                 logger.debug("calendar fresh-flow recipient reset skipped", exc_info=True)
+        elif is_switch_existing_event:
+            # Opening a different existing event must not carry over attendee chips
+            # from a previous draft/edit card.
+            prev = {}
 
         if event_id:
             prev["event_id"] = event_id
@@ -3450,6 +3456,8 @@ class MeetingBoxApp(App):
                 prev["attendees"] = clean
         elif is_new_open:
             prev["attendees"] = []
+        elif is_switch_existing_event:
+            prev["attendees"] = []
 
         self._pending_event_data = prev
 
@@ -3459,10 +3467,11 @@ class MeetingBoxApp(App):
                 self.goto_screen("calendar_event_creation")
             screen = sm.get_screen("calendar_event_creation") if sm else None
             if screen is not None:
-                if is_new_open and hasattr(screen, "reset"):
+                if (is_new_open or is_switch_existing_event) and hasattr(screen, "reset"):
                     screen.reset()
-                    # Fresh open can happen while already on the same screen, so
-                    # on_enter() may not run; reset action-commit state here.
+                    # Fresh open (or switching to a different existing event) can
+                    # happen while already on the same screen, so on_enter() may not
+                    # run; reset action-commit state here.
                     try:
                         screen._flyaway_committed = False
                         if hasattr(screen, "restore_action_visuals"):
