@@ -14,7 +14,7 @@ Layout (Figma 1260 × 800 baseline):
       │  [calendar icon]  Create Event       [purple #6D48CC]     │ 87 px
       ├──────────────────────────────────────────────────────────┤
       │  [ Event Name ] ← grey pill   Marketing review            │
-      │  [ Date ] grey pill   <value>     [ Time ] grey pill <val>│
+      │  [ Date ] grey pill <value> [ Time ] grey pill <val> [ Duration ] <val>│
       │  ┌──────────────────────────────────────────────────────┐│
       │  │ [ Attendees ] grey pill   [chip] [chip] [chip] …      ││  scroll
       │  └──────────────────────────────────────────────────────┘│
@@ -23,9 +23,11 @@ Layout (Figma 1260 × 800 baseline):
   • Confirm (661,702) 236×66  #10C76D  radius=50
 
 Public API (called by main.py):
-    set_event_data(name, date, time, attendees)  – progressive merge fill
+    set_event_data(name, date, time, duration, attendees) – progressive merge fill
     add_attendee(label)                           – append one attendee chip
+    remove_attendee(label)                        – remove one attendee chip
     set_attendees(labels)                         – replace attendee chips
+    reset()                                       – clear to a fresh blank draft
     show_listening_state()                        – forward voice state → pill
     set_voice_session_state(state)                – forward state → pill
     update_amplitude(amp)                         – forward amplitude → pill waveform
@@ -250,6 +252,7 @@ class CalendarEventCreationScreen(BaseScreen):
         self._name_lbl:      Label | None = None
         self._date_lbl:      Label | None = None
         self._time_lbl:      Label | None = None
+        self._duration_lbl:  Label | None = None
         self._att_stack:     StackLayout | None = None
         self._att_spacer:    Widget | None = None
         self._attendees:     list[str] = []
@@ -390,8 +393,8 @@ class CalendarEventCreationScreen(BaseScreen):
         self._date_lbl.bind(size=self._date_lbl.setter("text_size"))
         root.add_widget(self._date_lbl)
 
-        # ── 8. Time field  abs(550,268) 428×56  #ECECEC  radius=27 ────────────
-        self._add_field_box(root, 550, 268, 428, 56)
+        # ── 8. Time field  abs(550,268) 258×56  #ECECEC  radius=27 ────────────
+        self._add_field_box(root, 550, 268, 258, 56)
         self._add_label_pill(root, 550, 268, 124, 56, "Time")
         self._time_lbl = Label(
             text="",
@@ -400,13 +403,31 @@ class CalendarEventCreationScreen(BaseScreen):
             color=_TEXT_VALUE,
             halign="left",
             valign="middle",
-            size_hint=(_sw(290), _sh(56)),
+            size_hint=(_sw(120), _sh(56)),
             pos_hint={"x": _x(688), "y": _y(268, 56)},
             shorten=True,
             shorten_from="right",
         )
         self._time_lbl.bind(size=self._time_lbl.setter("text_size"))
         root.add_widget(self._time_lbl)
+
+        # ── 8b. Duration field  abs(840,268) 366×56  #ECECEC  radius=27 ───────
+        self._add_field_box(root, 840, 268, 366, 56)
+        self._add_label_pill(root, 840, 268, 184, 56, "Duration")
+        self._duration_lbl = Label(
+            text="",
+            font_name=_FONT_SB,
+            font_size=_ff(32),
+            color=_TEXT_VALUE,
+            halign="left",
+            valign="middle",
+            size_hint=(_sw(160), _sh(56)),
+            pos_hint={"x": _x(1038), "y": _y(268, 56)},
+            shorten=True,
+            shorten_from="right",
+        )
+        self._duration_lbl.bind(size=self._duration_lbl.setter("text_size"))
+        root.add_widget(self._duration_lbl)
 
         # ── 9. Attendees container  abs(55,349) 1140×295  #ECECEC  radius=27 ──
         self._add_field_box(root, 55, 349, 1140, 295)
@@ -540,7 +561,9 @@ class CalendarEventCreationScreen(BaseScreen):
         name: str | None = None,
         date: str | None = None,
         time_str: str | None = None,
+        duration_minutes: int | str | None = None,
         attendees: list | None = None,
+        attendees_mode: str = "replace",
     ) -> None:
         """Progressive merge update from a ``show_calendar_event`` directive.
 
@@ -555,8 +578,15 @@ class CalendarEventCreationScreen(BaseScreen):
         if time_str is not None and self._time_lbl is not None:
             self._time_lbl.text = (time_str or "").strip()
 
+        if duration_minutes is not None and self._duration_lbl is not None:
+            self._duration_lbl.text = self._fmt_duration(duration_minutes)
+
         if attendees is not None:
-            self.set_attendees(attendees)
+            if str(attendees_mode or "replace").strip().lower() == "append":
+                for item in attendees:
+                    self.add_attendee(str(item))
+            else:
+                self.set_attendees(attendees)
 
     def add_attendee(self, label: str) -> None:
         """Append a single attendee chip (e.g. after contact selection)."""
@@ -565,6 +595,18 @@ class CalendarEventCreationScreen(BaseScreen):
             return
         self._attendees.append(label)
         self._render_attendees()
+
+    def remove_attendee(self, label: str) -> bool:
+        """Remove a single attendee chip if present."""
+        key = (label or "").strip().lower()
+        if not key:
+            return False
+        for idx, item in enumerate(list(self._attendees)):
+            if item.strip().lower() == key:
+                self._attendees.pop(idx)
+                self._render_attendees()
+                return True
+        return False
 
     def set_attendees(self, labels: list) -> None:
         """Replace the attendee chip list."""
@@ -585,6 +627,19 @@ class CalendarEventCreationScreen(BaseScreen):
         except ValueError:
             return s
 
+    @staticmethod
+    def _fmt_duration(duration_minutes: int | str | None) -> str:
+        raw = str(duration_minutes or "").strip()
+        if not raw:
+            return ""
+        try:
+            mins = max(0, int(raw))
+            if mins <= 0:
+                return ""
+            return f"{mins} min"
+        except ValueError:
+            return raw
+
     def _render_attendees(self) -> None:
         if self._att_stack is None:
             return
@@ -593,6 +648,19 @@ class CalendarEventCreationScreen(BaseScreen):
             self._att_stack.add_widget(self._att_spacer)
         for label in self._attendees:
             self._att_stack.add_widget(_AttendeeChip(label))
+
+    def reset(self) -> None:
+        """Reset to a blank event draft (fresh workflow)."""
+        if self._name_lbl is not None:
+            self._name_lbl.text = ""
+        if self._date_lbl is not None:
+            self._date_lbl.text = ""
+        if self._time_lbl is not None:
+            self._time_lbl.text = ""
+        if self._duration_lbl is not None:
+            self._duration_lbl.text = ""
+        self._attendees = []
+        self._render_attendees()
 
     # ── Button handlers ───────────────────────────────────────────────────────
 

@@ -792,6 +792,9 @@ class MeetingBoxApp(App):
         # Holds calendar-event data (name/date/time/attendees) between
         # show_calendar_event directive and the user tapping Confirm/Discard.
         self._pending_event_data: dict = {}
+        # Last explicitly selected attendee candidate for immediate correction
+        # phrases like "No, I meant the first one."
+        self._last_attendee_selection: dict = {}
         # Limits cloud NL replies per wake/mic activation (local wake listening unaffected).
         self._voice_cloud_qa_budget = 0
         # Serialises TTS calls — overlapping replies are dropped, not stacked
@@ -3390,33 +3393,64 @@ class MeetingBoxApp(App):
         """
         if not isinstance(event, dict):
             return
+        event_id  = str(event.get("event_id") or "").strip() or None
         name      = str(event.get("name") or event.get("title") or "").strip()
         date      = str(event.get("date") or "").strip() or None
         time_str  = str(event.get("time") or "").strip() or None
+        raw_dur   = event.get("duration_minutes")
+        try:
+            duration_minutes = int(raw_dur) if raw_dur not in (None, "", 0) else None
+        except (TypeError, ValueError):
+            duration_minutes = None
+        attendees_mode = str(event.get("attendees_mode") or "replace").strip().lower()
+        if attendees_mode not in ("replace", "append"):
+            attendees_mode = "replace"
         attendees = event.get("attendees")
         if isinstance(attendees, str):
             attendees = [attendees] if attendees.strip() else []
         elif not isinstance(attendees, list):
             attendees = None
 
-        # Progressive merge into pending state (missing keys keep prior value).
         prev = getattr(self, "_pending_event_data", None) or {}
+        # Fresh invite workflow: whenever the model opens the invite screen
+        # without an event_id, start from a clean state and never reuse stale
+        # discarded/completed draft fields from an older invite.
+        is_new_open = (event_id is None) and bool(event.get("reset", True))
+        if is_new_open:
+            prev = {}
+            try:
+                self._recipient_picker_queue = []
+                self._recipient_picker_active = None
+                overlay = getattr(self, "_recipient_overlay", None)
+                if overlay is not None and overlay.visible:
+                    overlay.close()
+            except Exception:
+                logger.debug("calendar fresh-flow recipient reset skipped", exc_info=True)
+
+        if event_id:
+            prev["event_id"] = event_id
         if name:
             prev["name"] = name
         if date is not None:
             prev["date"] = date
         if time_str is not None:
             prev["time"] = time_str
-        # Attendees are confirmed on-device via the contact picker, so the model's
-        # directive must only ADD to them — never clear or replace. An empty/omitted
-        # attendee list from the model leaves the device-confirmed chips intact.
-        if attendees:
-            merged = list(prev.get("attendees", []))
-            for a in attendees:
-                a = str(a).strip()
-                if a and a not in merged:
-                    merged.append(a)
-            prev["attendees"] = merged
+        if duration_minutes is not None:
+            prev["duration_minutes"] = duration_minutes
+
+        if attendees is not None:
+            clean = [str(a).strip() for a in attendees if str(a).strip()]
+            if attendees_mode == "append":
+                merged = list(prev.get("attendees", []))
+                for a in clean:
+                    if a not in merged:
+                        merged.append(a)
+                prev["attendees"] = merged
+            else:
+                prev["attendees"] = clean
+        elif is_new_open:
+            prev["attendees"] = []
+
         self._pending_event_data = prev
 
         try:
@@ -3425,11 +3459,15 @@ class MeetingBoxApp(App):
                 self.goto_screen("calendar_event_creation")
             screen = sm.get_screen("calendar_event_creation") if sm else None
             if screen is not None:
+                if is_new_open and hasattr(screen, "reset"):
+                    screen.reset()
                 screen.set_event_data(
                     name=prev.get("name"),
                     date=prev.get("date"),
                     time_str=prev.get("time"),
+                    duration_minutes=prev.get("duration_minutes"),
                     attendees=prev.get("attendees"),
+                    attendees_mode="replace",
                 )
             # Progress queued ambiguous contacts only after event UI is updated.
             self._drain_recipient_picker_queue()
@@ -3483,6 +3521,7 @@ class MeetingBoxApp(App):
     def _on_calendar_event_discard_tapped(self) -> None:
         """User tapped Discard — cancel and return to voice session."""
         self._pending_event_data = {}
+        self._last_attendee_selection = {}
         self._send_voice_user_text(
             "[BUTTON:Discard] — the user cancelled creating the calendar event. Acknowledge briefly.",
             interrupt=True,
@@ -3508,6 +3547,7 @@ class MeetingBoxApp(App):
         # Prefer the server-confirmed date, fall back to what was on screen.
         date_str = str(info.get("date") or "").strip() or str(pend.get("date") or "").strip()
         self._pending_event_data = {}
+        self._last_attendee_selection = {}
 
         try:
             sm = getattr(self, "screen_manager", None)
@@ -3669,6 +3709,11 @@ class MeetingBoxApp(App):
     def _on_recipient_selected(self, index: int, contact: dict) -> None:
         # overlay.close() is already called by RecipientConfirmOverlay._on_row_tap
         # (after the 400 ms highlight), but guard anyway.
+        active_picker = (
+            dict(getattr(self, "_recipient_picker_active", {}) or {})
+            if isinstance(getattr(self, "_recipient_picker_active", None), dict)
+            else {}
+        )
         overlay = getattr(self, "_recipient_overlay", None)
         if overlay is not None and overlay.visible:
             overlay.close()
@@ -3708,6 +3753,13 @@ class MeetingBoxApp(App):
                         att.append(disp)
                     pend["attendees"] = att
                     self._pending_event_data = pend
+                    self._last_attendee_selection = {
+                        "name": name,
+                        "email": email,
+                        "display": disp,
+                        "query": str(active_picker.get("query") or name or email),
+                        "candidates": list(active_picker.get("candidates") or []),
+                    }
             except Exception:
                 logger.debug("calendar attendee fill failed", exc_info=True)
             # The tapped card IS the confirmation and the chip is already on the
@@ -3831,6 +3883,43 @@ class MeetingBoxApp(App):
                 if ntoks and all(t in tokens for t in ntoks[:2]):
                     return i
         return None
+
+    @staticmethod
+    def _looks_like_picker_correction(text: str) -> bool:
+        s = str(text or "").strip().lower()
+        if not s:
+            return False
+        correction_cues = (
+            "no i meant",
+            "i meant",
+            "not that one",
+            "wrong one",
+            "wrong contact",
+            "wrong email",
+            "the first one",
+            "the second one",
+            "the third one",
+            "the fourth one",
+            "the fifth one",
+            "first one",
+            "second one",
+            "third one",
+            "fourth one",
+            "fifth one",
+        )
+        return any(c in s for c in correction_cues)
+
+    @staticmethod
+    def _remove_one_local_dot(email: str) -> str:
+        s = str(email or "").strip()
+        if "@" not in s:
+            return s
+        local, domain = s.split("@", 1)
+        if "." not in local:
+            return s
+        idx = local.find(".")
+        local = local[:idx] + local[idx + 1:]
+        return f"{local}@{domain}"
 
     # ── Action fly-away animation (send / save / discard card flies off) ─────
     # The premium genie lives in components/email_genie.py (play_genie); each
@@ -4431,6 +4520,88 @@ class MeetingBoxApp(App):
             # correction pass.
             if not is_final:
                 return
+            try:
+                # Immediate mistake recovery while editing invite attendees:
+                # after a wrong picker choice, let "No, I meant first/second"
+                # reopen and resolve the same contact without restarting flow.
+                if self._looks_like_picker_correction(text):
+                    last = getattr(self, "_last_attendee_selection", None) or {}
+                    if isinstance(last, dict) and last.get("email"):
+                        max_index = len(list(last.get("candidates") or [])) + 1
+                        idx = self._parse_recipient_voice_choice(text, max_index)
+                        if idx is None:
+                            idx = self._match_recipient_voice_choice(
+                                text, list(last.get("candidates") or [])
+                            )
+                        if idx is not None and max_index > 1:
+                            sm = getattr(self, "screen_manager", None)
+                            screen = sm.get_screen("calendar_event_creation") if sm else None
+                            old_disp = str(last.get("display") or "").strip()
+                            old_name = str(last.get("name") or "").strip() or str(last.get("email") or "").strip()
+                            if screen is not None and old_disp and hasattr(screen, "remove_attendee"):
+                                screen.remove_attendee(old_disp)
+                            pend = getattr(self, "_pending_event_data", None) or {}
+                            old_list = list(pend.get("attendees", []))
+                            pend["attendees"] = [a for a in old_list if str(a).strip() != old_disp]
+                            self._pending_event_data = pend
+                            self._recipient_picker_queue.insert(0, {
+                                "query": str(last.get("query") or old_name),
+                                "candidates": list(last.get("candidates") or []),
+                                "field": "attendee",
+                            })
+                            self._send_voice_user_text(
+                                f"I removed {old_name} and reopened choices. Please select again.",
+                                interrupt=True,
+                            )
+                            self._last_attendee_selection = {}
+                            self._drain_recipient_picker_queue()
+                            return
+            except Exception:
+                logger.debug("calendar attendee correction recovery failed", exc_info=True)
+
+            try:
+                # In-draft attendee email cleanup ("remove dot from Vivek's email").
+                txt = str(text or "").strip().lower()
+                if "remove dot" in txt and "email" in txt:
+                    pend = getattr(self, "_pending_event_data", None) or {}
+                    att = list(pend.get("attendees", []))
+                    if att:
+                        target_idx = None
+                        for i, item in enumerate(att):
+                            raw = str(item or "").strip()
+                            em = raw[raw.find("<") + 1:raw.find(">")].strip() if ("<" in raw and ">" in raw) else raw
+                            nm = raw.split("<", 1)[0].strip().lower() if "<" in raw else em.split("@", 1)[0].lower()
+                            if nm and nm in txt:
+                                target_idx = i
+                                break
+                        if target_idx is None:
+                            target_idx = len(att) - 1
+                        raw = str(att[target_idx] or "").strip()
+                        if "<" in raw and ">" in raw:
+                            disp_name = raw.split("<", 1)[0].strip()
+                            em_old = raw[raw.find("<") + 1:raw.find(">")].strip()
+                            em_new = self._remove_one_local_dot(em_old)
+                            updated = f"{disp_name} <{em_new}>" if disp_name else em_new
+                        else:
+                            em_old = raw
+                            em_new = self._remove_one_local_dot(em_old)
+                            updated = em_new
+                        if updated != raw:
+                            att[target_idx] = updated
+                            pend["attendees"] = att
+                            self._pending_event_data = pend
+                            sm = getattr(self, "screen_manager", None)
+                            screen = sm.get_screen("calendar_event_creation") if sm else None
+                            if screen is not None and hasattr(screen, "set_attendees"):
+                                screen.set_attendees(att)
+                            self._send_voice_user_text(
+                                f"Updated that attendee email to {em_new}.",
+                                interrupt=True,
+                            )
+                            return
+            except Exception:
+                logger.debug("calendar attendee dot edit failed", exc_info=True)
+
             try:
                 recip = getattr(self, "_recipient_overlay", None)
                 active = getattr(self, "_recipient_picker_active", None)
