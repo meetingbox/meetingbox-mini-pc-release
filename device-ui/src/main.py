@@ -3703,6 +3703,39 @@ class MeetingBoxApp(App):
         })
         self._drain_recipient_picker_queue()
 
+    @staticmethod
+    def _recipient_picker_signature(payload: dict | None) -> tuple:
+        """Stable signature for duplicate picker suppression."""
+        if not isinstance(payload, dict):
+            return ("", (), "to")
+        query = str(payload.get("query") or "").strip().lower()
+        field = str(payload.get("field") or "to").strip().lower()
+        raw_candidates = payload.get("candidates")
+        candidates = raw_candidates if isinstance(raw_candidates, list) else []
+        emails: list[str] = []
+        for c in candidates:
+            if not isinstance(c, dict):
+                continue
+            em = str(c.get("email") or "").strip().lower()
+            if em:
+                emails.append(em)
+        return (query, tuple(emails), field)
+
+    def _drop_duplicate_picker_queue_entries(self, reference_picker: dict | None) -> None:
+        """Remove queued duplicates of an already-resolved picker."""
+        queue = getattr(self, "_recipient_picker_queue", None)
+        if not isinstance(queue, list) or not queue:
+            return
+        ref_sig = self._recipient_picker_signature(reference_picker)
+        filtered: list[dict] = []
+        for item in queue:
+            if not isinstance(item, dict):
+                continue
+            if self._recipient_picker_signature(item) == ref_sig:
+                continue
+            filtered.append(item)
+        self._recipient_picker_queue = filtered
+
     def _drain_recipient_picker_queue(self) -> None:
         """Render the next unresolved picker only when no picker is visible."""
         overlay = getattr(self, "_recipient_overlay", None)
@@ -3738,6 +3771,9 @@ class MeetingBoxApp(App):
         if overlay is not None and overlay.visible:
             overlay.close()
         self._recipient_picker_active = None
+        # If the model queued the same picker multiple times while it was visible,
+        # drop those duplicates so the popup does not "stick" after a valid tap.
+        self._drop_duplicate_picker_queue_entries(active_picker)
         email = (contact or {}).get("email", "")
         name = (contact or {}).get("name", "") or email
         if not email:
