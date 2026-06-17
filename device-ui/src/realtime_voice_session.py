@@ -899,6 +899,44 @@ class RealtimeVoiceSession:
             lambda _dt: self._safe_call(cb, "morning_brief", None, section), 0
         )
 
+    async def _inject_brief_interruption_directive(self, ws) -> None:
+        """Give the model the context to decide, by intent, whether the user is
+        done with the morning brief.
+
+        The carousel walkthrough is device-driven, so the model otherwise has no
+        idea a briefing was even on screen. When the user barges in mid-brief we
+        hand the model that missing context plus the means to act (its
+        navigate_device_ui tool), then let its own language understanding — not
+        keyword matching — decide whether to return to the transcription screen.
+        """
+        directive = (
+            "[Briefing interrupted] You were delivering the morning briefing on a "
+            "temporary briefing screen and the user just spoke over it. The briefing "
+            "is a temporary overlay on top of the audio transcription screen, not a "
+            "place to stay. Judge what the user wants from the MEANING of what they "
+            "say, not from specific words:\n"
+            "- If they clearly want more of the briefing (asking about a part of it, "
+            "asking you to continue, repeat, or go deeper into schedule/tasks/emails), "
+            "respond naturally and stay with the briefing.\n"
+            "- Otherwise — if they acknowledge it, brush it off, change the subject, "
+            "ask something unrelated, or in any way signal they are done hearing it — "
+            "give a brief, natural reply to what they said and then call "
+            "navigate_device_ui(screen=\"voice_session\") to take them back to the "
+            "audio transcription screen. When unsure, prefer returning them. "
+            "Decide from intent, not exact phrases."
+        )
+        try:
+            await ws.send(json.dumps({
+                "type": "conversation.item.create",
+                "item": {
+                    "type": "message",
+                    "role": "system",
+                    "content": [{"type": "input_text", "text": directive}],
+                },
+            }))
+        except Exception:
+            logger.debug("brief interruption directive send failed", exc_info=True)
+
     def _cancel_briefing(self) -> None:
         """Stop driving the briefing (e.g. the user barged in / took over)."""
         self._brief_active = False
@@ -1849,8 +1887,12 @@ class RealtimeVoiceSession:
                     self._touch()
                     # The user is taking over — stop auto-driving the briefing so
                     # we don't fight their request (e.g. "skip to my emails").
+                    # Hand the model the context it lacks (the briefing was on a
+                    # temporary screen) so it can decide, by intent, whether to
+                    # return to the transcription screen once it answers them.
                     if self._brief_active:
                         self._cancel_briefing()
+                        await self._inject_brief_interruption_directive(ws)
                     # Fresh utterance — clear the streaming transcript buffer
                     # so partial deltas don't append to the previous turn.
                     self._user_transcript_buf = ""
