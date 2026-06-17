@@ -115,9 +115,9 @@ _BRIEF_DIRECTIVES = {
     ),
     "tasks": (
         "[Morning briefing] The TASKS card is now on screen. Using the briefing data already in "
-        "this conversation, speak ONLY today's pending tasks now (what's due today first, then "
-        "upcoming), briefly. Do NOT mention meetings or emails. If there are no tasks, say so in "
-        "one short line. Speak now."
+        "this conversation, speak ONLY tasks due today now. Do NOT mention overdue, upcoming, "
+        "or unplanned tasks. Do NOT mention meetings or emails. If there are no tasks due today, "
+        "say so in one short line. Speak now."
     ),
     "emails": (
         "[Morning briefing] The EMAILS card is now on screen. Using the briefing data already in "

@@ -771,16 +771,15 @@ class MorningBriefScreen(BaseScreen):
                     dpart = date.fromisoformat(da[:10])
             except Exception:
                 continue
-            if dpart <= today_d:
-                label, sort_key = "Today", (0, da)
-            else:
-                label, sort_key = "Upcoming", (1, da)
+            if dpart != today_d:
+                continue
+            label, sort_key = "Today", (0, da)
             items.append((sort_key, label, (r.get("title") or "Task")[:46]))
 
         items.sort(key=lambda x: x[0])
         self._clear(ctx)
         if not items:
-            self._empty(ctx, "No dated tasks")
+            self._empty(ctx, "No tasks due today")
         else:
             n = len(items)
             for i, (_k, label, title) in enumerate(items):
