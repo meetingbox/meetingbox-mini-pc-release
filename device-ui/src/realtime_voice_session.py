@@ -105,6 +105,7 @@ _SESSION_IDLE_CLOSE_S = 40.0
 # at a time and drives a separate, tool-less narration response per section,
 # each gated until the previous section's audio has finished playing.
 _BRIEF_SECTIONS = ("schedule", "tasks", "emails")
+_BRIEF_SECTION_INDEX = {name: idx for idx, name in enumerate(_BRIEF_SECTIONS)}
 _BRIEF_DIRECTIVES = {
     "schedule": (
         "[Morning briefing] The SCHEDULE card is now on screen. Using the briefing data already "
@@ -125,6 +126,16 @@ _BRIEF_DIRECTIVES = {
         "the inbox is clear, say so in one short line. Speak now."
     ),
 }
+
+
+def _brief_target_index(target_tab: str | None, current_idx: int) -> int:
+    """Resolve a model/user morning-brief section request into a carousel index."""
+    target = (target_tab or "").strip().lower()
+    if target in ("next", "forward", "right"):
+        return (current_idx + 1) % len(_BRIEF_SECTIONS)
+    if target in ("previous", "prev", "back", "left"):
+        return (current_idx - 1) % len(_BRIEF_SECTIONS)
+    return _BRIEF_SECTION_INDEX.get(target, 0)
 
 _REALTIME_OUTPUT_VOICE_FALLBACK = "marin"
 
@@ -2098,20 +2109,25 @@ class RealtimeVoiceSession:
                     model_out = self._redact_email_draft_for_model(out)
             if name == "navigate_device_ui":
                 nav_screen = ""
+                nav_target_tab = None
                 try:
                     _nav = json.loads(out)
                     if isinstance(_nav, dict) and _nav.get("ok"):
                         nav_screen = str(_nav.get("device_navigate") or "").strip()
+                        nav_target_tab = _nav.get("target_tab") or None
                 except Exception:
                     nav_screen = ""
+                    nav_target_tab = None
                 if nav_screen == "morning_brief":
                     # Take over the carousel: start the device-driven walkthrough
-                    # on the first morning-brief navigate and ignore any extra
-                    # (batched) ones so the cards don't race ahead of the speech.
+                    # on the first morning-brief navigate. Preserve the requested
+                    # section so "show tasks" / "next" / "go back" don't reset to
+                    # schedule after a user interruption; ignore any extra batched
+                    # calls so the cards don't race ahead of the speech.
                     if not self._brief_active:
                         self._brief_active = True
-                        self._brief_idx = 0
-                        self._emit_brief_section(_BRIEF_SECTIONS[0])
+                        self._brief_idx = _brief_target_index(nav_target_tab, self._brief_idx)
+                        self._emit_brief_section(_BRIEF_SECTIONS[self._brief_idx])
                         brief_started_now = True
                     # else: already driving — swallow the model's extra switch.
                 else:
