@@ -512,8 +512,12 @@ class RealtimeVoiceSession:
             max_workers=1, thread_name_prefix="rtv-aplay"
         )
         self._suppress_audio_until = 0.0
-        # Fallback mic-mute window — only used if AEC is unavailable. With
-        # speex AEC active we leave the mic open so the user can interrupt.
+        # Playback clock. Realtime audio deltas often arrive faster than aplay
+        # can speak them, so timing UI transitions from the last chunk alone is
+        # too early. Track the cumulative queued audio end instead.
+        self._playback_clock_lock = threading.Lock()
+        self._assistant_audio_play_until = 0.0
+        # Mic-mute window while assistant audio is still playing / echoing.
         self._mute_mic_uplink_until = 0.0
 
         # Acoustic echo canceller. The bytes we hand to aplay are also
@@ -864,7 +868,7 @@ class RealtimeVoiceSession:
         try:
             # Hold the swipe + next narration until the spoken audio for the
             # section that just finished has actually played out of the speaker.
-            for _ in range(60):  # cap ~15 s
+            for _ in range(180):  # cap ~45 s for longer schedule sections
                 remaining = self.audio_playback_remaining_s()
                 if remaining <= 0.05 or not self._brief_active or self._stop.is_set():
                     break
@@ -1290,19 +1294,18 @@ class RealtimeVoiceSession:
     def audio_playback_remaining_s(self) -> float:
         """Approximate seconds of assistant speech still queued for the speaker.
 
-        Derived from the mic-mute window (which is extended to cover each audio
-        chunk plus a 0.6 s echo tail). Used to keep an on-screen action — e.g.
-        a morning-brief carousel swipe — in sync with the spoken audio so the
-        card flips as the current section's narration finishes. Capped for
-        safety so a stale value can never stall the UI for long.
+        Realtime may deliver audio faster than it plays. `_play_delta()` extends
+        a cumulative play-until clock for each PCM chunk so UI transitions can
+        wait for the whole queued utterance, not just the final websocket delta.
         """
         try:
-            remaining = self._mute_mic_uplink_until - time.monotonic() - 0.6
+            with self._playback_clock_lock:
+                remaining = self._assistant_audio_play_until - time.monotonic()
         except Exception:
             return 0.0
         if remaining <= 0.0:
             return 0.0
-        return min(remaining, 12.0)
+        return min(remaining, 45.0)
 
     def _play_delta(self, delta_b64: str) -> None:
         if not delta_b64:
@@ -1325,15 +1328,19 @@ class RealtimeVoiceSession:
                 excess = len(self._aec_far_buf) - max_bytes
                 if excess > 0:
                     del self._aec_far_buf[:excess]
-        # Extend the mic-mute window for the duration of this audio chunk plus
-        # a 600 ms tail for room echo to decay.  Speex AEC cannot reliably cancel
-        # echo without an exact acoustic delay measurement, so we always mute the
-        # uplink while the speaker is active regardless of whether AEC is running.
+        # Extend the cumulative playback clock by this chunk duration. Chunks can
+        # arrive back-to-back before the speaker has played earlier chunks; using
+        # max(previous_until, now) keeps a true queued-audio end time.
         chunk_s = len(raw) / (_REALTIME_RATE * 2)   # PCM16 mono bytes → seconds
-        self._mute_mic_uplink_until = max(
-            self._mute_mic_uplink_until,
-            time.monotonic() + chunk_s + 0.6,
-        )
+        now = time.monotonic()
+        with self._playback_clock_lock:
+            start_at = max(self._assistant_audio_play_until, now)
+            self._assistant_audio_play_until = start_at + chunk_s
+            # Add a 600 ms tail for room echo to decay before opening the mic.
+            self._mute_mic_uplink_until = max(
+                self._mute_mic_uplink_until,
+                self._assistant_audio_play_until + 0.6,
+            )
         self._ensure_aplay()
         proc = self._aplay_proc
         if proc is None or proc.stdin is None:
@@ -1360,6 +1367,9 @@ class RealtimeVoiceSession:
 
     def _abort_aplay(self) -> None:
         """Hard-kill the playback subprocess immediately."""
+        with self._playback_clock_lock:
+            self._assistant_audio_play_until = 0.0
+            self._mute_mic_uplink_until = 0.0
         proc = self._aplay_proc
         self._aplay_proc = None
         self._aplay_pid = None
