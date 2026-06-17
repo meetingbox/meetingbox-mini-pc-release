@@ -3444,6 +3444,7 @@ class MeetingBoxApp(App):
         if duration_minutes is not None:
             prev["duration_minutes"] = duration_minutes
 
+        attendees_before = len(prev.get("attendees", []))
         if attendees is not None:
             clean = [str(a).strip() for a in attendees if str(a).strip()]
             if attendees_mode == "append":
@@ -3460,6 +3461,21 @@ class MeetingBoxApp(App):
             prev["attendees"] = []
 
         self._pending_event_data = prev
+
+        # Voice-driven attendee selection: when the model records a picked contact
+        # by appending it here (e.g. the user said "the first one" instead of
+        # tapping), the on-screen recipient picker for that person is no longer
+        # needed — close it and surface the next queued picker so the flow does not
+        # desync. (A tap already closes its own picker in _on_recipient_selected.)
+        if len(prev.get("attendees", [])) > attendees_before:
+            try:
+                overlay = getattr(self, "_recipient_overlay", None)
+                if overlay is not None and overlay.visible:
+                    overlay.close()
+                self._recipient_picker_active = None
+                self._drain_recipient_picker_queue()
+            except Exception:
+                logger.debug("voice attendee picker-close skipped", exc_info=True)
 
         try:
             sm = getattr(self, "screen_manager", None)
