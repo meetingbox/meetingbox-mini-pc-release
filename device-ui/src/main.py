@@ -3469,11 +3469,16 @@ class MeetingBoxApp(App):
         # desync. (A tap already closes its own picker in _on_recipient_selected.)
         if len(prev.get("attendees", [])) > attendees_before:
             try:
-                overlay = getattr(self, "_recipient_overlay", None)
-                if overlay is not None and overlay.visible:
-                    overlay.close()
-                self._recipient_picker_active = None
-                self._drain_recipient_picker_queue()
+                active_picker = (
+                    dict(getattr(self, "_recipient_picker_active", {}) or {})
+                    if isinstance(getattr(self, "_recipient_picker_active", None), dict)
+                    else {}
+                )
+                self._close_active_recipient_picker(
+                    active_picker,
+                    advance=True,
+                    cancel_pending=False,
+                )
             except Exception:
                 logger.debug("voice attendee picker-close skipped", exc_info=True)
 
@@ -3752,6 +3757,45 @@ class MeetingBoxApp(App):
             filtered.append(item)
         self._recipient_picker_queue = filtered
 
+    def _clear_recipient_picker_queue(self) -> None:
+        """Cancel all queued pickers for the current unresolved contact flow."""
+        self._recipient_picker_queue = []
+
+    def _close_active_recipient_picker(
+        self,
+        active_picker: dict | None = None,
+        *,
+        advance: bool,
+        cancel_pending: bool,
+    ) -> None:
+        """Finish the active picker lifecycle exactly once.
+
+        ``advance=True`` means a valid selection resolved the current person, so
+        the next queued person may appear after the close animation. ``advance``
+        is false for outside dismiss / "None" because the current person is not
+        resolved and queued future pickers would feel random or persistent.
+        """
+        overlay = getattr(self, "_recipient_overlay", None)
+        if overlay is not None and overlay.visible:
+            try:
+                overlay.close(cancel_pending=cancel_pending)
+            except TypeError:
+                overlay.close()
+        self._recipient_picker_active = None
+        if active_picker:
+            self._drop_duplicate_picker_queue_entries(active_picker)
+        if not advance:
+            self._clear_recipient_picker_queue()
+            return
+        self._schedule_recipient_picker_drain()
+
+    def _schedule_recipient_picker_drain(self, delay: float = 0.22) -> None:
+        """Show the next queued picker after the current one has visually closed."""
+        try:
+            Clock.schedule_once(lambda _dt: self._drain_recipient_picker_queue(), delay)
+        except Exception:
+            self._drain_recipient_picker_queue()
+
     def _drain_recipient_picker_queue(self) -> None:
         """Render the next unresolved picker only when no picker is visible."""
         overlay = getattr(self, "_recipient_overlay", None)
@@ -3759,6 +3803,11 @@ class MeetingBoxApp(App):
             return
         if overlay.visible:
             return
+        try:
+            if float(getattr(overlay, "opacity", 0.0) or 0.0) > 0.05:
+                return
+        except Exception:
+            pass
         active = getattr(self, "_recipient_picker_active", None)
         if isinstance(active, dict):
             # Wait for selection/dismiss to clear the current active picker.
@@ -3784,16 +3833,15 @@ class MeetingBoxApp(App):
             else {}
         )
         overlay = getattr(self, "_recipient_overlay", None)
-        if overlay is not None and overlay.visible:
-            overlay.close()
-        self._recipient_picker_active = None
-        # If the model queued the same picker multiple times while it was visible,
-        # drop those duplicates so the popup does not "stick" after a valid tap.
-        self._drop_duplicate_picker_queue_entries(active_picker)
+        self._close_active_recipient_picker(
+            active_picker,
+            advance=True,
+            cancel_pending=False,
+        )
         email = (contact or {}).get("email", "")
         name = (contact or {}).get("name", "") or email
         if not email:
-            self._drain_recipient_picker_queue()
+            self._schedule_recipient_picker_drain()
             return
 
         # Calendar attendee selection reuses this same picker overlay. When the
@@ -3842,7 +3890,6 @@ class MeetingBoxApp(App):
                 f"already added to the invite on screen. Do not look them up again.",
                 interrupt=True,
             )
-            self._drain_recipient_picker_queue()
             return
 
         # After confirming a recipient, ensure we land on the email draft page
@@ -3876,18 +3923,32 @@ class MeetingBoxApp(App):
             f"I picked {name} ({email}) on screen — use that address.",
             interrupt=True,
         )
-        self._drain_recipient_picker_queue()
 
     def _on_recipient_dismissed(self) -> None:
-        overlay = getattr(self, "_recipient_overlay", None)
-        if overlay is not None:
-            overlay.close()
-        self._recipient_picker_active = None
+        active_picker = (
+            dict(getattr(self, "_recipient_picker_active", {}) or {})
+            if isinstance(getattr(self, "_recipient_picker_active", None), dict)
+            else {}
+        )
+        self._close_active_recipient_picker(
+            active_picker,
+            advance=False,
+            cancel_pending=True,
+        )
 
     def _on_recipient_none(self) -> None:
         """User tapped 'None' in the recipient picker — inject voice turn."""
         # overlay already closed by RecipientConfirmOverlay._on_row_tap
-        self._recipient_picker_active = None
+        active_picker = (
+            dict(getattr(self, "_recipient_picker_active", {}) or {})
+            if isinstance(getattr(self, "_recipient_picker_active", None), dict)
+            else {}
+        )
+        self._close_active_recipient_picker(
+            active_picker,
+            advance=False,
+            cancel_pending=False,
+        )
         self._send_voice_user_text(
             "I couldn't find the correct contact. Please provide the email address.",
             interrupt=True,

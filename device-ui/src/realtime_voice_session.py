@@ -2083,6 +2083,19 @@ class RealtimeVoiceSession:
             logger.info("Realtime tool result: name=%s out_len=%d", name, len(out or ""))
 
             model_out = out
+            if name != "show_email_draft":
+                try:
+                    _generic_data = json.loads(out or "{}")
+                except (TypeError, ValueError):
+                    _generic_data = {}
+                if isinstance(_generic_data, dict) and "device_email_draft" in _generic_data:
+                    # Some committing tools (notably approve_pending_action) now
+                    # emit the terminal email draft state themselves once the write
+                    # succeeds. This makes the send/save animation deterministic
+                    # instead of depending on the model to call show_email_draft
+                    # again after the write.
+                    self._emit_email_draft(out)
+                    model_out = self._redact_email_draft_for_model(out)
             if name == "navigate_device_ui":
                 nav_screen = ""
                 try:

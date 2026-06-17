@@ -214,6 +214,7 @@ class RecipientConfirmOverlay(FloatLayout):
         self._visible     = False
         self._candidates: list[dict] = []
         self._rows_by_index: dict[int, _ContactRow] = {}
+        self._selection_completed = False
         self.opacity = 0.0
         self._build_ui()
 
@@ -335,6 +336,7 @@ class RecipientConfirmOverlay(FloatLayout):
         """Build and reveal the picker from a list of candidate contacts."""
         self._candidates = [c for c in (candidates or []) if c.get("email")]
         self._rows_by_index = {}
+        self._selection_completed = False
         self._rows_box.clear_widgets()
 
         n = len(self._candidates)
@@ -386,9 +388,11 @@ class RecipientConfirmOverlay(FloatLayout):
         Animation.cancel_all(self)
         Animation(opacity=1, duration=0.18, t="out_quad").start(self)
 
-    def close(self) -> None:
+    def close(self, cancel_pending: bool = True) -> None:
         if not self._visible:
             return
+        if cancel_pending:
+            self._selection_completed = True
         self._visible = False
         Animation.cancel_all(self)
         Animation(opacity=0, duration=0.15, t="in_quad").start(self)
@@ -396,7 +400,7 @@ class RecipientConfirmOverlay(FloatLayout):
     def select_index(self, index: int) -> bool:
         """Programmatically select a row (used for voice choices)."""
         row = self._rows_by_index.get(int(index))
-        if row is None or not self._visible:
+        if row is None or not self._visible or self._selection_completed:
             return False
         row.flash_and_tap()
         return True
@@ -409,7 +413,10 @@ class RecipientConfirmOverlay(FloatLayout):
 
     def _on_row_tap(self, index: int, is_none: bool) -> None:
         """Called by _ContactRow.flash_and_tap() after the 400 ms highlight."""
-        self.close()
+        if self._selection_completed:
+            return
+        self._selection_completed = True
+        self.close(cancel_pending=False)
         if is_none:
             if self.on_none:
                 self.on_none()
@@ -438,6 +445,7 @@ class RecipientConfirmOverlay(FloatLayout):
             return False
         # Dismiss if touch is outside the card
         if self._card and not self._card.collide_point(*touch.pos):
+            self._selection_completed = True
             if self.on_dismiss:
                 self.on_dismiss()
             else:
