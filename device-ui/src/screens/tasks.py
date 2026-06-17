@@ -323,7 +323,7 @@ def _categorize(row: dict) -> str | None:
     status = (row.get("status") or "").lower()
     if status in ("completed", "cancelled", "canceled"):
         return None
-    raw = (row.get("due_at") or row.get("remind_at") or "").strip()
+    raw = (row.get("due_at") or "").strip()
     if not raw:
         return "unplanned"
     d = _parse_dt(raw)

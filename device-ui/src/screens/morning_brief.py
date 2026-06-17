@@ -761,27 +761,26 @@ class MorningBriefScreen(BaseScreen):
         for r in rows:
             if (r.get("status") or "") not in ("active", "snoozed"):
                 continue
-            da = (r.get("due_at") or r.get("remind_at") or "").strip()
-            label = "Anytime"
-            sort_key = (2, "")
-            if da:
-                try:
-                    if "T" in da:
-                        dpart = datetime.fromisoformat(da.replace("Z", "+00:00")).date()
-                    else:
-                        dpart = date.fromisoformat(da[:10])
-                    if dpart <= today_d:
-                        label, sort_key = "Today", (0, da)
-                    else:
-                        label, sort_key = "Upcoming", (1, da)
-                except Exception:
-                    label, sort_key = "Anytime", (2, "")
+            da = (r.get("due_at") or "").strip()
+            if not da:
+                continue
+            try:
+                if "T" in da:
+                    dpart = datetime.fromisoformat(da.replace("Z", "+00:00")).date()
+                else:
+                    dpart = date.fromisoformat(da[:10])
+            except Exception:
+                continue
+            if dpart <= today_d:
+                label, sort_key = "Today", (0, da)
+            else:
+                label, sort_key = "Upcoming", (1, da)
             items.append((sort_key, label, (r.get("title") or "Task")[:46]))
 
         items.sort(key=lambda x: x[0])
         self._clear(ctx)
         if not items:
-            self._empty(ctx, "No tasks")
+            self._empty(ctx, "No dated tasks")
         else:
             n = len(items)
             for i, (_k, label, title) in enumerate(items):
