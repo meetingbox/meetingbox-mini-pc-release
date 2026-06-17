@@ -315,10 +315,15 @@ START_RECORDING_TOOL: dict = {
     "type": "function",
     "name": "start_recording",
     "description": (
-        "Call this tool when the user asks to start recording. Use recording_mode='meeting' "
-        "for meeting recordings, and recording_mode='note' when the user asks to take notes, "
-        "record notes, make a todo list, or capture tasks. "
-        "Always say a brief confirmation (e.g. 'Starting the recording now') "
+        "Call this tool when the user asks to start recording or taking notes. "
+        "Choosing recording_mode is critical:\n"
+        "- Use recording_mode='meeting' for 'start recording', 'start a recording', 'record', "
+        "'start meeting', 'start a meeting', 'record a meeting', 'begin recording'. "
+        "The word 'record'/'recording' on its own ALWAYS means a meeting recording.\n"
+        "- Use recording_mode='note' ONLY when the user explicitly says to take/make notes, e.g. "
+        "'take a note', 'take notes', 'start taking notes', 'note this down', 'jot this down', "
+        "'make a note'. \n"
+        "When unsure, use 'meeting'. Always say a brief confirmation (e.g. 'Starting the recording now') "
         "BEFORE calling this tool. The voice session will close and recording "
         "will begin immediately."
     ),
@@ -328,7 +333,10 @@ START_RECORDING_TOOL: dict = {
             "recording_mode": {
                 "type": "string",
                 "enum": ["meeting", "note"],
-                "description": "meeting for meeting summary flow; note for note/todo extraction flow.",
+                "description": (
+                    "'meeting' for any 'record'/'recording'/'meeting' request (this is the default); "
+                    "'note' ONLY for explicit 'take notes'/'take a note' requests."
+                ),
             },
         },
         "required": [],
