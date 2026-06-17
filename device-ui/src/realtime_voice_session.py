@@ -175,7 +175,7 @@ _DEFAULT_INPUT_TRANSCRIPTION_MODEL = (
     or "gpt-4o-mini-transcribe"
 )
 # Deliberately neutral — see server/web/routes/voice.py for the rationale.
-_INPUT_TRANSCRIPTION_PROMPT = "Conversational English."
+_INPUT_TRANSCRIPTION_PROMPT = ""
 
 
 def _is_prompt_echo(text: str) -> bool:
@@ -197,6 +197,9 @@ def _is_prompt_echo(text: str) -> bool:
     if "###" in t:
         return True
     if "context:" in t and "conversational english" in t:
+        return True
+    norm = " ".join(t.translate(str.maketrans({c: " " for c in string.punctuation})).split())
+    if norm in ("conversational", "conversational english"):
         return True
     # A bare echo of just the prompt text (no real words around it).
     prompt = _INPUT_TRANSCRIPTION_PROMPT.strip().lower().rstrip(".")
@@ -1516,13 +1519,6 @@ class RealtimeVoiceSession:
                         act_task.cancel()
                         return
 
-                # Warm session just woken: fire the spoken "I'm listening"
-                # greeting NOW, before the ALSA mic handoff, so its ~1 s
-                # generation on the already-warm connection overlaps with mic
-                # setup. (Cold sessions greet from the session.updated handler.)
-                if self._prewarm:
-                    await self._send_wake_greeting(ws)
-
                 # Active path: let the UI close any local mic (e.g. Vosk wake
                 # word) before we open ALSA for the Realtime session.
                 if self._on_before_open_mic_cb is not None:
@@ -1549,6 +1545,13 @@ class RealtimeVoiceSession:
 
                 pump_task = asyncio.create_task(self._pump_mic())
                 idle_task = asyncio.create_task(self._idle_watchdog())
+
+                # Warm session just woken: greet only after the local wake-word
+                # mic has been released and the Realtime mic is open. Speaking
+                # before this point can feel like a delayed wake and can leak
+                # assistant/prompt audio into the transcript path.
+                if self._prewarm:
+                    await self._send_wake_greeting(ws)
 
                 try:
                     await recv_task
@@ -2079,12 +2082,14 @@ class RealtimeVoiceSession:
           - tools — server tools + end_session.
         """
         merged_tools = list(self._server_tools) + [END_SESSION_TOOL, START_RECORDING_TOOL]
+        transcription_cfg = {
+            "model": _DEFAULT_INPUT_TRANSCRIPTION_MODEL,
+            "language": "en",
+        }
+        if _INPUT_TRANSCRIPTION_PROMPT.strip():
+            transcription_cfg["prompt"] = _INPUT_TRANSCRIPTION_PROMPT
         audio_input: dict = {
-            "transcription": {
-                "model": _DEFAULT_INPUT_TRANSCRIPTION_MODEL,
-                "language": "en",
-                "prompt": _INPUT_TRANSCRIPTION_PROMPT,
-            },
+            "transcription": transcription_cfg,
         }
         # "auto" means: leave the server's turn_detection untouched.
         if _REALTIME_VAD_EAGERNESS and _REALTIME_VAD_EAGERNESS != "auto":

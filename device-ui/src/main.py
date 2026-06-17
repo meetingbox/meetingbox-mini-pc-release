@@ -1543,7 +1543,7 @@ class MeetingBoxApp(App):
                 # device is authed, pre-warm a Realtime standby session so the
                 # first wake word activates instantly.
                 try:
-                    self._schedule_voice_prewarm(delay=1.5)
+                    self._schedule_voice_prewarm(delay=0.2)
                 except Exception:
                     logger.debug("voice prewarm schedule (settings) failed", exc_info=True)
             except Exception as e:
@@ -4504,7 +4504,7 @@ class MeetingBoxApp(App):
                     if self._warm_voice_session is _s:
                         self._warm_voice_session = None
                     self._warm_voice_pending = False
-                    self._schedule_voice_prewarm(delay=1.0)
+                    self._schedule_voice_prewarm(delay=0.2)
                 Clock.schedule_once(_after_warm_end, 0)
                 return
 
@@ -4536,12 +4536,12 @@ class MeetingBoxApp(App):
                             "Realtime session ended unexpectedly after reconnect attempt; "
                             "returning to wake listening."
                         )
-                        self._schedule_voice_prewarm(delay=1.0)
+                        self._schedule_voice_prewarm(delay=0.2)
                 else:
                     # Clean end of a conversation — re-arm a warm standby
                     # session so the NEXT wake word is instant again.
                     self._realtime_reconnect_count = 0
-                    self._schedule_voice_prewarm(delay=1.0)
+                    self._schedule_voice_prewarm(delay=0.2)
 
             Clock.schedule_once(_after_end, 0)
 
