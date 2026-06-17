@@ -325,6 +325,28 @@ def _is_farewell(text: str) -> bool:
     return any(t.endswith(end) for end in _FAREWELL_END_MARKERS)
 
 
+_MORNING_BRIEF_MARKERS = (
+    "morning brief",
+    "morning briefing",
+    "borning brief",
+    "daily brief",
+    "daily briefing",
+    "todays briefing",
+    "today briefing",
+    "start of day",
+    "morning update",
+    "daily update",
+    "what does my day look like",
+)
+
+
+def _is_morning_brief_request(text: str) -> bool:
+    t = _normalize_words(text)
+    if not t:
+        return False
+    return any(marker in t for marker in _MORNING_BRIEF_MARKERS)
+
+
 # Server-side errors that are common during normal flow races and must
 # NEVER terminate the session — only protocol/auth failures will close
 # the underlying WebSocket and bubble up through the async exception
@@ -492,6 +514,9 @@ class RealtimeVoiceSession:
         self._brief_active = False
         self._brief_idx = 0
         self._brief_task = None  # asyncio.Task scheduling the next section
+        self._brief_start_task = None  # asyncio.Task starting after auto-response cancel
+        self._brief_start_pending = False
+        self._brief_narration_audio_seen = False
         self._loop: asyncio.AbstractEventLoop | None = None
         self._ws: Any = None
         self._connected_fired = False
@@ -825,6 +850,7 @@ class RealtimeVoiceSession:
     def _cancel_briefing(self) -> None:
         """Stop driving the briefing (e.g. the user barged in / took over)."""
         self._brief_active = False
+        self._brief_start_pending = False
         task = self._brief_task
         self._brief_task = None
         if task is not None and not task.done():
@@ -832,11 +858,19 @@ class RealtimeVoiceSession:
                 task.cancel()
             except Exception:
                 pass
+        start_task = self._brief_start_task
+        self._brief_start_task = None
+        if start_task is not None and not start_task.done():
+            try:
+                start_task.cancel()
+            except Exception:
+                pass
 
     async def _send_brief_narration(self, ws, idx: int) -> None:
         """Inject the per-section directive and request a tool-less narration."""
         section = _BRIEF_SECTIONS[idx]
         directive = _BRIEF_DIRECTIVES[section]
+        self._brief_narration_audio_seen = False
         await ws.send(json.dumps({
             "type": "conversation.item.create",
             "item": {
@@ -851,6 +885,43 @@ class RealtimeVoiceSession:
             "type": "response.create",
             "response": {"tool_choice": "none"},
         }))
+
+    async def _start_briefing_from_user_request(self, ws) -> None:
+        """Start the visual morning briefing without relying on model tool use."""
+        if self._brief_active:
+            return
+        self._cancel_briefing()
+        self._abort_aplay()
+        self._brief_active = True
+        self._brief_idx = 0
+        self._emit_brief_section(_BRIEF_SECTIONS[self._brief_idx])
+        try:
+            # Semantic VAD may have already started a generic response from the
+            # preloaded briefing snapshot. Cancel it so we don't get a full
+            # unsynchronised narration over the visual walkthrough.
+            await ws.send(json.dumps({"type": "response.cancel"}))
+        except Exception:
+            logger.debug("Realtime: morning brief response.cancel failed", exc_info=True)
+        self._brief_start_pending = True
+        try:
+            self._brief_start_task = asyncio.create_task(
+                self._send_pending_brief_start_after_delay(ws)
+            )
+        except Exception:
+            logger.debug("Realtime: could not schedule pending morning brief start", exc_info=True)
+
+    async def _send_pending_brief_start_after_delay(self, ws) -> None:
+        """Fallback start if response.cancel does not produce a response.done."""
+        try:
+            await asyncio.sleep(0.5)
+            if not self._brief_active or not self._brief_start_pending or self._stop.is_set():
+                return
+            self._brief_start_pending = False
+            await self._send_brief_narration(ws, self._brief_idx)
+        except asyncio.CancelledError:
+            pass
+        except Exception:
+            logger.exception("Realtime: pending morning brief start failed")
 
     def _schedule_brief_advance(self, ws) -> None:
         """Queue advancing to the next section once this one's audio drains."""
@@ -1811,6 +1882,12 @@ class RealtimeVoiceSession:
                             except Exception:
                                 pass
                             break
+                        if _is_morning_brief_request(spoken):
+                            logger.info(
+                                "Realtime: client-side morning brief detected %r — starting visual briefing.",
+                                spoken,
+                            )
+                            await self._start_briefing_from_user_request(ws)
 
                 # ---- AI audio transcript (text of what assistant said) ----
                 # OpenAI renamed these events in newer API versions, mirroring
@@ -1889,6 +1966,8 @@ class RealtimeVoiceSession:
                     self._touch()
                     self._response_in_progress = True
                     self._emit_state("speaking")
+                    if self._brief_active:
+                        self._brief_narration_audio_seen = True
                     self._play_delta(self._extract_audio_delta(msg))
 
                 elif t in ("response.output_audio.done", "response.audio.done"):
@@ -2195,9 +2274,23 @@ class RealtimeVoiceSession:
                         await ws.send(json.dumps({"type": "response.create"}))
             except Exception:
                 logger.exception("Realtime: tool round-trip failed")
-        elif self._brief_active and not brief_started_now:
+        elif self._brief_active and self._brief_start_pending:
+            # The generic auto-response we canceled has finished. Start the
+            # visual, section-scoped narration now that the API is ready for a
+            # fresh response.create.
+            self._brief_start_pending = False
+            start_task = self._brief_start_task
+            self._brief_start_task = None
+            if start_task is not None and not start_task.done():
+                try:
+                    start_task.cancel()
+                except Exception:
+                    pass
+            await self._send_brief_narration(ws, self._brief_idx)
+        elif self._brief_active and not brief_started_now and self._brief_narration_audio_seen:
             # A briefing narration response just finished (no tool calls) —
             # advance to the next card once its audio drains.
+            self._brief_narration_audio_seen = False
             self._schedule_brief_advance(ws)
 
         if end_session_requested:
