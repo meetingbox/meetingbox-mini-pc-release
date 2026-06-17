@@ -3039,6 +3039,23 @@ class MeetingBoxApp(App):
         except Exception:
             logger.exception("Realtime start_recording callback failed")
 
+    def _voice_brief_facts(self) -> dict:
+        """Return the morning-brief facts the screen is currently rendering.
+
+        The Realtime voice session injects these into its per-section narration
+        directive so the spoken briefing always matches the on-screen cards.
+        Returns an empty dict when the screen hasn't rendered real data yet
+        (still loading), in which case the session keeps its existing behaviour.
+        """
+        try:
+            mb = self.screen_manager.get_screen("morning_brief")
+            facts = mb.voice_brief_facts()
+            if isinstance(facts, dict) and facts.get("ready"):
+                return facts
+        except Exception:
+            logger.debug("voice brief facts unavailable", exc_info=True)
+        return {}
+
     def _realtime_voice_navigate(self, screen: str, target_date=None, target_tab=None) -> None:
         """Open a main UI screen when the cloud Realtime model calls navigate_device_ui."""
         s = (screen or "").strip()
@@ -4856,6 +4873,7 @@ class MeetingBoxApp(App):
                 on_calendar_event_dismiss=self._on_calendar_event_dismiss_directive,
                 on_start_recording=self._realtime_handle_start_recording,
                 should_suppress_farewell=self._email_workflow_active,
+                brief_data_provider=self._voice_brief_facts,
                 prewarm=prewarm,
             )
             if prewarm:

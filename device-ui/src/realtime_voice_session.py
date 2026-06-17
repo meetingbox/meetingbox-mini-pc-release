@@ -147,8 +147,12 @@ _BRIEF_DIRECTIVE_TEMPLATES = {
 }
 
 
-def _build_brief_directive(section: str) -> str:
-    """Return the section directive with the current local time substituted in."""
+def _build_brief_directive(section: str, facts: str | None = None) -> str:
+    """Return the section directive with current time + on-screen facts injected.
+
+    When ``facts`` is provided it is the authoritative data the UI is showing for
+    this section; the model must narrate exactly those facts so speech matches UI.
+    """
     template = _BRIEF_DIRECTIVE_TEMPLATES.get(section, "")
     try:
         from config import display_now as _display_now
@@ -158,7 +162,15 @@ def _build_brief_directive(section: str) -> str:
         current_time = f"{h12}:{now.minute:02d} {am}"
     except Exception:
         current_time = "unknown"
-    return template.format(current_time=current_time)
+    directive = template.format(current_time=current_time)
+    facts_clean = (facts or "").strip()
+    if facts_clean:
+        directive = (
+            f"AUTHORITATIVE ON-SCREEN DATA for this section (narrate EXACTLY this, "
+            f"do not invent, omit, or add anything): {facts_clean}\n\n"
+            f"{directive}"
+        )
+    return directive
 
 
 def _brief_target_index(target_tab: str | None, current_idx: int) -> int:
@@ -490,6 +502,7 @@ class RealtimeVoiceSession:
         on_calendar_event_dismiss=None,
         on_start_recording=None,
         should_suppress_farewell=None,
+        brief_data_provider=None,
         prewarm: bool = False,
         vosk_model=None,
     ):
@@ -527,6 +540,9 @@ class RealtimeVoiceSession:
         # client-side farewell close is skipped (e.g. while an email draft is
         # on screen) and we defer to the model's contextual end_session tool.
         self._should_suppress_farewell_cb = should_suppress_farewell
+        # Optional provider returning the morning-brief facts currently rendered
+        # on screen, so the per-section narration speaks the exact same data.
+        self._brief_data_provider = brief_data_provider
         self._output_voice = (
             (output_voice or "").strip().lower()
             or _REALTIME_OUTPUT_VOICE_FALLBACK
@@ -905,7 +921,15 @@ class RealtimeVoiceSession:
     async def _send_brief_narration(self, ws, idx: int) -> None:
         """Inject the per-section directive and request a tool-less narration."""
         section = _BRIEF_SECTIONS[idx]
-        directive = _build_brief_directive(section)
+        facts = None
+        provider = self._brief_data_provider
+        if provider is not None:
+            try:
+                data = provider() or {}
+                facts = data.get(section)
+            except Exception:
+                logger.debug("brief_data_provider failed", exc_info=True)
+        directive = _build_brief_directive(section, facts)
         self._brief_narration_audio_seen = False
         await ws.send(json.dumps({
             "type": "conversation.item.create",

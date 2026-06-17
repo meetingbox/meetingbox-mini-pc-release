@@ -255,8 +255,21 @@ class MorningBriefScreen(BaseScreen):
         self._sections: list[dict] = []   # per-card ctx (content box, count, scroll)
         self._loading: bool = False        # True while skeletons are shown
         self._render_event = None          # pending debounced-render Clock event
+        # Factual narration text for the voice agent, kept in lock-step with the
+        # rendered cards so the spoken briefing always matches the on-screen data.
+        self._voice_facts: dict[str, str] = {
+            "schedule": "", "tasks": "", "emails": "", "ready": "",
+        }
         self._build_ui()
         self.bind(slide=self._on_slide)
+
+    def voice_brief_facts(self) -> dict:
+        """Return the per-section facts currently rendered on the cards.
+
+        Consumed by the Realtime voice session so the spoken briefing reads the
+        exact same schedule / tasks / emails the user sees on screen.
+        """
+        return dict(self._voice_facts)
 
     # ── Top-level build ──────────────────────────────────────────────────────--
 
@@ -598,6 +611,7 @@ class MorningBriefScreen(BaseScreen):
     def _show_loading_state(self) -> None:
         """Fill every card with 3 skeleton rows and a '–' badge while fetching."""
         self._loading = True
+        self._voice_facts["ready"] = ""
         for ctx in self._sections:
             self._clear(ctx)
             for i in range(3):
@@ -720,6 +734,7 @@ class MorningBriefScreen(BaseScreen):
             self._apply_schedule(data, today_s)
             self._apply_tasks(data, today_s)
             self._apply_emails(gfeed or {})
+            self._voice_facts["ready"] = "1"
         except Exception:
             logger.debug("apply briefing data failed", exc_info=True)
 
@@ -800,6 +815,23 @@ class MorningBriefScreen(BaseScreen):
                 Clock.schedule_once(lambda _dt, w=next_row: ctx["scroll"].scroll_to(w, padding=10), 0)
         self._set_count(ctx, pending_count)
 
+        # Build the voice fact for this section from the SAME rendered data.
+        if not parsed:
+            self._voice_facts["schedule"] = "There are no meetings scheduled today."
+        else:
+            pend = [(t, ti) for (_sk, t, ti, _du, ip) in parsed if ip]
+            if not pend:
+                self._voice_facts["schedule"] = (
+                    "All of today's meetings are already completed; none are pending."
+                )
+            else:
+                listing = "; ".join(f"{ti} at {t}" for t, ti in pend)
+                self._voice_facts["schedule"] = (
+                    f"Pending meetings remaining today: {len(pend)}. "
+                    f"Next upcoming meeting: {pend[0][1]} at {pend[0][0]}. "
+                    f"All pending meetings in order: {listing}."
+                )
+
     def _apply_tasks(self, data: dict, today_s: str) -> None:
         ctx = self._sections[1]
         rows = data.get("commitments") or []
@@ -838,6 +870,15 @@ class MorningBriefScreen(BaseScreen):
                 self._add_task_row(ctx, label, title, last=(i == n - 1))
         self._set_count(ctx, len(items))
 
+        # Build the voice fact for this section from the SAME rendered data.
+        if not items:
+            self._voice_facts["tasks"] = "There are no pending tasks due today."
+        else:
+            listing = "; ".join(title for (_k, _l, title) in items)
+            self._voice_facts["tasks"] = (
+                f"Pending tasks due today: {len(items)}. They are: {listing}."
+            )
+
     def _apply_emails(self, gfeed: dict) -> None:
         ctx = self._sections[2]
         summary = summarize_gmail_feed_for_home(gfeed or {})
@@ -859,6 +900,9 @@ class MorningBriefScreen(BaseScreen):
         if not connected:
             self._empty(ctx, "Connect Gmail in settings")
             self._set_count(ctx, 0)
+            self._voice_facts["emails"] = (
+                "Gmail is not connected, so there are no emails to report."
+            )
             return
         if not unread:
             self._empty(ctx, "No unread emails")
@@ -874,3 +918,16 @@ class MorningBriefScreen(BaseScreen):
                     last=(i == n - 1),
                 )
         self._set_count(ctx, len(unread))
+
+        # Build the voice fact for this section from the SAME rendered data.
+        if not unread:
+            self._voice_facts["emails"] = "There are no unread emails."
+        else:
+            listing = "; ".join(
+                f"{(m.get('sender') or 'Unknown').strip() or 'Unknown'} "
+                f"about {(m.get('subject') or '(no subject)').strip() or '(no subject)'}"
+                for m in unread
+            )
+            self._voice_facts["emails"] = (
+                f"Unread emails: {len(unread)}. They are: {listing}."
+            )
