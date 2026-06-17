@@ -40,7 +40,7 @@ from api_client import (
     _GMAIL_RECENT_DAYS,
     summarize_gmail_feed_for_home,
 )
-from config import ASSETS_DIR, DISPLAY_HEIGHT, DISPLAY_WIDTH, display_now
+from config import ASSETS_DIR, DISPLAY_HEIGHT, DISPLAY_WIDTH, display_now, to_display_local
 from screens.base_screen import BaseScreen
 
 logger = logging.getLogger(__name__)
@@ -253,6 +253,8 @@ class MorningBriefScreen(BaseScreen):
         self._index = 0
         self._pending_index: int | None = None
         self._sections: list[dict] = []   # per-card ctx (content box, count, scroll)
+        self._loading: bool = False        # True while skeletons are shown
+        self._render_event = None          # pending debounced-render Clock event
         self._build_ui()
         self.bind(slide=self._on_slide)
 
@@ -573,6 +575,35 @@ class MorningBriefScreen(BaseScreen):
                             **_rel(791, ROW_H / 2 - 18, 160, 36, CARD_W, ROW_H)))
         ctx["content"].add_widget(row)
 
+    # ── Skeleton loading rows ─────────────────────────────────────────────────
+
+    def _add_skeleton_row(self, ctx: dict, last: bool = False) -> None:
+        """One grey-bar placeholder row shown while real data is loading."""
+        row = _Row(show_divider=not last)
+        for fx, fw in ((45.38, 140), (231.28, 360)):
+            bar = Widget(
+                size_hint=(fw / CARD_W, 14 / ROW_H),
+                pos_hint={"x": fx / CARD_W, "center_y": 0.5},
+            )
+            with bar.canvas:
+                Color(0.84, 0.84, 0.86, 1.0)
+                br = RoundedRectangle(radius=[_sz(4)])
+            bar.bind(
+                pos=lambda w, _v, _r=br: setattr(_r, "pos", w.pos),
+                size=lambda w, _v, _r=br: setattr(_r, "size", w.size),
+            )
+            row.add_widget(bar)
+        ctx["content"].add_widget(row)
+
+    def _show_loading_state(self) -> None:
+        """Fill every card with 3 skeleton rows and a '–' badge while fetching."""
+        self._loading = True
+        for ctx in self._sections:
+            self._clear(ctx)
+            for i in range(3):
+                self._add_skeleton_row(ctx, last=(i == 2))
+            ctx["badge_lbl"].text = "–"
+
     # ── Lifecycle ──────────────────────────────────────────────────────────────
 
     @staticmethod
@@ -595,20 +626,29 @@ class MorningBriefScreen(BaseScreen):
             self.slide = 0.0
             self._reposition()
         else:
-            # Land directly on the section the voice agent requested.
             self._index = self._pending_index
             self.slide = float(self._pending_index)
             self._pending_index = None
             self._reposition()
-        self.app.ui_cache_subscribe("morning_brief_context", self._on_cached_briefing_context)
-        self.app.ui_cache_subscribe("morning_brief_gmail", self._on_cached_briefing_gmail)
-        cached_ctx = self.app.ui_cache_get("morning_brief_context")
+
+        self.app.ui_cache_subscribe("morning_brief_context", self._on_cache_update)
+        self.app.ui_cache_subscribe("morning_brief_gmail", self._on_cache_update)
+
+        cached_ctx   = self.app.ui_cache_get("morning_brief_context")
         cached_gmail = self.app.ui_cache_get("morning_brief_gmail")
-        if isinstance(cached_ctx, dict) or isinstance(cached_gmail, dict):
+        has_data     = isinstance(cached_ctx, dict) or isinstance(cached_gmail, dict)
+
+        if has_data:
+            # Render cached data immediately — may be stale but prevents blank flash.
             self._apply_briefing_data(
-                cached_ctx if isinstance(cached_ctx, dict) else {},
+                cached_ctx  if isinstance(cached_ctx,   dict) else {},
                 cached_gmail if isinstance(cached_gmail, dict) else {},
             )
+        else:
+            # No cached data at all (e.g. first boot, or cache cleared after account
+            # switch) — show skeleton rows so the user sees "loading" not blank cards.
+            self._show_loading_state()
+
         if (
             not self.app.ui_cache_is_fresh("morning_brief_context")
             or not self.app.ui_cache_is_fresh("morning_brief_gmail")
@@ -616,22 +656,31 @@ class MorningBriefScreen(BaseScreen):
             Clock.schedule_once(lambda _dt: self._load_briefing_backend(), 0)
 
     def on_leave(self) -> None:
-        self.app.ui_cache_unsubscribe("morning_brief_context", self._on_cached_briefing_context)
-        self.app.ui_cache_unsubscribe("morning_brief_gmail", self._on_cached_briefing_gmail)
+        self.app.ui_cache_unsubscribe("morning_brief_context", self._on_cache_update)
+        self.app.ui_cache_unsubscribe("morning_brief_gmail", self._on_cache_update)
+        if self._render_event is not None:
+            self._render_event.cancel()
+            self._render_event = None
 
-    def _on_cached_briefing_context(self, payload: dict) -> None:
-        def _apply(_dt):
-            if self.manager and self.manager.current != self.name:
-                return
-            self._apply_briefing_data(payload or {}, self.app.ui_cache_get("morning_brief_gmail") or {})
-        Clock.schedule_once(_apply, 0)
+    def _on_cache_update(self, _payload) -> None:
+        """Any cache key update → debounced render so both keys are consumed together."""
+        if self.manager and self.manager.current != self.name:
+            return
+        self._schedule_render()
 
-    def _on_cached_briefing_gmail(self, payload: dict) -> None:
-        def _apply(_dt):
-            if self.manager and self.manager.current != self.name:
-                return
-            self._apply_briefing_data(self.app.ui_cache_get("morning_brief_context") or {}, payload or {})
-        Clock.schedule_once(_apply, 0)
+    def _schedule_render(self) -> None:
+        """Cancel any in-flight render and schedule a new one 50 ms out."""
+        if self._render_event is not None:
+            self._render_event.cancel()
+        self._render_event = Clock.schedule_once(self._do_render, 0.05)
+
+    def _do_render(self, _dt) -> None:
+        self._render_event = None
+        if self.manager and self.manager.current != self.name:
+            return
+        ctx   = self.app.ui_cache_get("morning_brief_context") or {}
+        gmail = self.app.ui_cache_get("morning_brief_gmail")    or {}
+        self._apply_briefing_data(ctx, gmail)
 
     def _load_briefing_backend(self) -> None:
         async def _go():
@@ -647,25 +696,18 @@ class MorningBriefScreen(BaseScreen):
             results = await asyncio.gather(_briefing(), _gmail(), return_exceptions=True)
             data  = results[0] if not isinstance(results[0], BaseException) else {}
             gfeed = results[1] if not isinstance(results[1], BaseException) else {}
-            if (
-                self.app.ui_cache_is_fresh("morning_brief_context")
-                and self.app.ui_cache_is_fresh("morning_brief_gmail")
-            ):
-                Clock.schedule_once(
-                    lambda dt: self._apply_briefing_data(
-                        self.app.ui_cache_get("morning_brief_context") or {},
-                        self.app.ui_cache_get("morning_brief_gmail") or {},
-                    ),
-                    0,
-                )
-                return
+
+            # Always write both keys atomically before notifying the UI, so the
+            # debounced renderer sees a consistent snapshot of both when it fires.
             if isinstance(data, dict):
                 self.app.ui_cache_set("morning_brief_context", dict(data))
             if isinstance(gfeed, dict):
                 self.app.ui_cache_set("morning_brief_gmail", dict(gfeed))
+            # The cache-set calls above trigger _on_cache_update → _schedule_render,
+            # but schedule one explicit render too in case neither value changed.
             Clock.schedule_once(
-                lambda dt: self._apply_briefing_data(data or {}, gfeed),
-                0,
+                lambda _dt: self._do_render(None),
+                0.06,
             )
         run_async(_go())
 
@@ -698,56 +740,65 @@ class MorningBriefScreen(BaseScreen):
             self._hdr_subtitle.text = f"Here's your overview for today, {nice}"
 
     def _apply_schedule(self, data: dict, today_s: str) -> None:
+        from datetime import timezone as _tz
         ctx = self._sections[0]
         meetings = ((data.get("days") or {}).get(today_s) or {}).get("meetings") or []
-        now = display_now()
-        try:
-            now_naive = now.replace(tzinfo=None)
-        except Exception:
-            now_naive = now
+        now = display_now()   # timezone-aware in configured display TZ
 
-        parsed = []
-        next_idx = None
+        parsed = []   # (sort_key_dt, time_txt, title_txt, dur_txt, is_pending, sdt_local)
         for ev in meetings:
             start_s = ev.get("start") or ev.get("start_time") or ""
-            sdt = None
+            sdt_local = None
             try:
-                sdt = datetime.fromisoformat(start_s.replace("Z", "+00:00"))
+                raw = datetime.fromisoformat(start_s.replace("Z", "+00:00"))
+                if raw.tzinfo is None:
+                    raw = raw.replace(tzinfo=_tz.utc)
+                sdt_local = to_display_local(raw)
             except Exception:
-                sdt = None
-            time_txt = self._fmt_ampm(sdt) if sdt else "—"
-            title_txt = (ev.get("title") or "Untitled")[:48]
-            dur = int(ev.get("duration") or 0)
-            dur_txt = f"{max(1, dur // 60)} min" if dur > 0 else "—"
-            is_upcoming = False
-            if sdt is not None:
-                try:
-                    cmp_dt = sdt.replace(tzinfo=None) if sdt.tzinfo else sdt
-                    is_upcoming = cmp_dt >= now_naive
-                except Exception:
-                    is_upcoming = False
-            parsed.append((time_txt, title_txt, dur_txt, is_upcoming))
+                sdt_local = None
 
-        upcoming = sum(1 for p in parsed if p[3])
+            time_txt  = self._fmt_ampm(sdt_local) if sdt_local else "—"
+            title_txt = (ev.get("title") or "Untitled")[:48]
+            dur       = int(ev.get("duration") or 0)
+            dur_txt   = f"{max(1, dur // 60)} min" if dur > 0 else "—"
+
+            is_pending = False
+            if sdt_local is not None:
+                try:
+                    is_pending = sdt_local >= now
+                except Exception:
+                    is_pending = False
+
+            sort_key = sdt_local if sdt_local is not None else datetime.min.replace(tzinfo=_tz.utc)
+            parsed.append((sort_key, time_txt, title_txt, dur_txt, is_pending))
+
+        # Always render meetings in chronological order.
+        parsed.sort(key=lambda x: x[0])
+
+        # First pending meeting gets the purple NEXT highlight.
+        next_idx = None
         for i, p in enumerate(parsed):
-            if p[3]:
+            if p[4]:   # is_pending
                 next_idx = i
                 break
 
+        pending_count = sum(1 for p in parsed if p[4])
+
         self._clear(ctx)
+        self._loading = False
         if not parsed:
             self._empty(ctx, "No meetings today")
         else:
             next_row = None
             n = len(parsed)
-            for i, (t, ti, du, _up) in enumerate(parsed):
+            for i, (_sk, t, ti, du, _pend) in enumerate(parsed):
                 r = self._add_schedule_row(
                     ctx, t, ti, du, is_next=(i == next_idx), last=(i == n - 1))
                 if i == next_idx:
                     next_row = r
             if next_row is not None:
                 Clock.schedule_once(lambda _dt, w=next_row: ctx["scroll"].scroll_to(w, padding=10), 0)
-        self._set_count(ctx, upcoming)
+        self._set_count(ctx, pending_count)
 
     def _apply_tasks(self, data: dict, today_s: str) -> None:
         ctx = self._sections[1]
@@ -778,6 +829,7 @@ class MorningBriefScreen(BaseScreen):
 
         items.sort(key=lambda x: x[0])
         self._clear(ctx)
+        self._loading = False
         if not items:
             self._empty(ctx, "No tasks due today")
         else:
@@ -803,6 +855,7 @@ class MorningBriefScreen(BaseScreen):
                 unread.append(m)
 
         self._clear(ctx)
+        self._loading = False
         if not connected:
             self._empty(ctx, "Connect Gmail in settings")
             self._set_count(ctx, 0)

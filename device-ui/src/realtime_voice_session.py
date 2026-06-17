@@ -106,26 +106,59 @@ _SESSION_IDLE_CLOSE_S = 40.0
 # each gated until the previous section's audio has finished playing.
 _BRIEF_SECTIONS = ("schedule", "tasks", "emails")
 _BRIEF_SECTION_INDEX = {name: idx for idx, name in enumerate(_BRIEF_SECTIONS)}
-_BRIEF_DIRECTIVES = {
+_BRIEF_DIRECTIVE_TEMPLATES = {
     "schedule": (
-        "[Morning briefing] The SCHEDULE card is now on screen. Using the briefing data already "
-        "in this conversation, speak ONLY today's meetings now — lead with the next upcoming "
-        "meeting (time and title), then the rest, in one or two short natural sentences. Do NOT "
-        "mention tasks or emails. If there are no meetings, say so in one short line. Speak now."
+        "[Morning briefing — SCHEDULE] The schedule card is now visible. "
+        "The current local time is {current_time}.\n"
+        "Using ONLY the briefing data already in this conversation:\n"
+        "1. Count ONLY meetings whose start time is STRICTLY AFTER {current_time} — these are "
+        "PENDING meetings. Any meeting that has already started or finished is NOT pending.\n"
+        "2. If there are pending meetings: say exactly 'You have N meeting(s) remaining today.' "
+        "(use the real count N). Then name the next upcoming meeting — its title and start time "
+        "— as the highlighted meeting. Then briefly mention any further pending meetings.\n"
+        "3. If ALL meetings today have already passed: say exactly "
+        "'You are done with all meetings for today.'\n"
+        "4. If there are NO meetings at all today: say exactly "
+        "'There are no meetings planned for today.'\n"
+        "Do NOT mention tasks or emails. One or two sentences total. Speak now."
     ),
     "tasks": (
-        "[Morning briefing] The TASKS card is now on screen. Using the briefing data already in "
-        "this conversation, speak ONLY tasks due today now. Do NOT mention overdue, upcoming, "
-        "or unplanned tasks. Do NOT mention meetings or emails. If there are no tasks due today, "
-        "say so in one short line. Speak now."
+        "[Morning briefing — TASKS] The tasks card is now visible. "
+        "Using ONLY the briefing data already in this conversation:\n"
+        "1. Count ONLY tasks that are: (a) due TODAY, and (b) still pending (not completed).\n"
+        "2. If there are tasks: say exactly 'You have N task(s) planned today:' then list each "
+        "task title naturally in one sentence.\n"
+        "3. If there are no pending tasks due today: say exactly "
+        "'There are no tasks planned for today.'\n"
+        "Do NOT mention overdue tasks, future tasks, completed tasks, meetings, or emails. "
+        "One or two sentences total. Speak now."
     ),
     "emails": (
-        "[Morning briefing] The EMAILS card is now on screen. Using the briefing data already in "
-        "this conversation, speak ONLY the latest unread emails now (sender and subject), briefly, "
-        "then give a one-line wrap-up of the whole briefing. Do NOT mention meetings or tasks. If "
-        "the inbox is clear, say so in one short line. Speak now."
+        "[Morning briefing — EMAILS] The emails card is now visible. "
+        "Using ONLY the briefing data already in this conversation:\n"
+        "1. Count ONLY unread emails (not archived, not already read).\n"
+        "2. If there are unread emails: say exactly 'You have N unread email(s).' then briefly "
+        "name each sender and their subject in one natural sentence.\n"
+        "3. If there are no unread emails: say exactly "
+        "'You have no unread emails. You are all caught up.'\n"
+        "Do NOT mention meetings or tasks. After the email summary, deliver exactly one short "
+        "closing sentence that wraps up the whole morning briefing naturally. Speak now."
     ),
 }
+
+
+def _build_brief_directive(section: str) -> str:
+    """Return the section directive with the current local time substituted in."""
+    template = _BRIEF_DIRECTIVE_TEMPLATES.get(section, "")
+    try:
+        from config import display_now as _display_now
+        now = _display_now()
+        h12 = now.hour % 12 or 12
+        am = "AM" if now.hour < 12 else "PM"
+        current_time = f"{h12}:{now.minute:02d} {am}"
+    except Exception:
+        current_time = "unknown"
+    return template.format(current_time=current_time)
 
 
 def _brief_target_index(target_tab: str | None, current_idx: int) -> int:
@@ -872,7 +905,7 @@ class RealtimeVoiceSession:
     async def _send_brief_narration(self, ws, idx: int) -> None:
         """Inject the per-section directive and request a tool-less narration."""
         section = _BRIEF_SECTIONS[idx]
-        directive = _BRIEF_DIRECTIVES[section]
+        directive = _build_brief_directive(section)
         self._brief_narration_audio_seen = False
         await ws.send(json.dumps({
             "type": "conversation.item.create",
@@ -951,7 +984,11 @@ class RealtimeVoiceSession:
                 return
             self._brief_idx += 1
             if self._brief_idx >= len(_BRIEF_SECTIONS):
+                # All three sections narrated — mark the briefing complete and
+                # navigate back to the voice session screen after a short pause
+                # so the closing sentence has time to finish playing.
                 self._brief_active = False
+                await self._navigate_after_brief()
                 return
             self._emit_brief_section(_BRIEF_SECTIONS[self._brief_idx])
             await self._send_brief_narration(ws, self._brief_idx)
@@ -959,6 +996,31 @@ class RealtimeVoiceSession:
             pass
         except Exception:
             logger.exception("Realtime: briefing advance failed")
+
+    async def _navigate_after_brief(self) -> None:
+        """Wait for the final email section's audio to drain, then return to voice_session."""
+        try:
+            # Wait for any remaining playback (the closing sentence) to finish.
+            for _ in range(120):  # up to 30 s guard
+                remaining = self.audio_playback_remaining_s()
+                if remaining <= 0.05 or self._stop.is_set():
+                    break
+                await asyncio.sleep(min(remaining, 0.25))
+            if self._stop.is_set():
+                return
+            # An extra 1.5 s breathing room before the screen changes.
+            await asyncio.sleep(1.5)
+            if self._stop.is_set():
+                return
+            cb = self._on_device_navigate_cb
+            if cb:
+                Clock.schedule_once(
+                    lambda _dt: self._safe_call(cb, "voice_session", None, None), 0
+                )
+        except asyncio.CancelledError:
+            pass
+        except Exception:
+            logger.debug("Realtime: post-brief navigate failed", exc_info=True)
 
     def _emit_email_draft(self, tool_output_json: str) -> None:
         """Forward a show_email_draft directive payload to the UI."""

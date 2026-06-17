@@ -1287,6 +1287,20 @@ class MeetingBoxApp(App):
             clear_active_profile_selection()
         except Exception as e:
             logger.debug("clear_active_profile_selection: %s", e)
+        # Purge all account-specific UI cache keys so that after pairing a new
+        # account the morning brief (and other screens) never briefly show stale
+        # data from the previous account before the fresh fetch completes.
+        for _stale_key in (
+            "morning_brief_context",
+            "morning_brief_gmail",
+            "emails_inbox",
+        ):
+            self._ui_data_cache.pop(_stale_key, None)
+            self._ui_data_cache_ts.pop(_stale_key, None)
+        self._ui_cache_inflight.discard("morning_brief_context")
+        self._ui_cache_inflight.discard("morning_brief_gmail")
+        self._ui_cache_inflight.discard("emails_inbox")
+        self._ui_cache_persist_to_disk()
         self._nav_stack.clear()
         self.goto_screen('pair_device', 'fade')
 
@@ -3030,6 +3044,7 @@ class MeetingBoxApp(App):
         s = (screen or "").strip()
         routes = {
             "home": ("home", "fade"),
+            "voice_session": ("voice_session", "slide_right"),
             "calendar": ("calendar", "slide_left"),
             "emails": ("emails", "slide_left"),
             "meetings": ("meetings", "slide_left"),
