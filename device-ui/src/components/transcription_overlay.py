@@ -334,11 +334,12 @@ class TranscriptionOverlay(FloatLayout):
     # ── Public API ────────────────────────────────────────────────────────────
 
     def show(self):
-        if self._visible:
-            return
-        self._visible = True
-        Animation.cancel_all(self)
-        Animation(opacity=1, duration=0.25, t='out_quad').start(self)
+        # The bottom transcript strip was part of the old UI and has been
+        # retired — it must never appear on any screen. The overlay stays
+        # mounted (its message callbacks still feed the home/voice-session
+        # say-bar), but it is kept permanently invisible. Intentionally a
+        # no-op so no display path can reveal the strip.
+        return
 
     def hide(self):
         if not self._visible:

@@ -4816,16 +4816,11 @@ class MeetingBoxApp(App):
                     duration=None,
                 )
                 self._sync_voice_assistant_state()
-                # Clear previous session's transcript and show overlay
+                # Clear the previous session's transcript history. The bottom
+                # transcript strip itself is retired (old UI) and never shown;
+                # home/voice-session transcription is handled by the say bar.
                 if self._transcript_overlay is not None:
                     self._transcript_overlay.clear_session()
-                    self._sync_transcript_overlay_mode()
-                    # Home + voice_session handle transcription natively and the
-                    # tasks screen suppresses the strip; on all other screens show
-                    # the compact overlay strip.
-                    if not (self.screen_manager
-                            and self.screen_manager.current in ('home', 'voice_session', 'tasks', 'calendar', 'summary_review')):
-                        self._transcript_overlay.show()
                 # Reset home say bar for the new session
                 self._clear_home_say_bar()
 
