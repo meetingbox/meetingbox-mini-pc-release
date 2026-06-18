@@ -463,6 +463,22 @@ def _post_tts_wake_guard_seconds() -> float:
     return max(0.0, min(4.0, v))
 
 
+def _post_realtime_session_wake_guard_seconds() -> float:
+    """After a Realtime session ENDS (e.g. the user said goodbye), suppress the
+    wake word for this long. The end-of-conversation tail + room echo, plus the
+    warm-standby reconnect window, would otherwise be misheard by Vosk as the
+    wake phrase and instantly re-open a session. This is intentionally longer
+    than the mid-conversation TTS-tail guard above."""
+    raw = (os.getenv("MEETINGBOX_POST_REALTIME_WAKE_GUARD_SEC") or "").strip()
+    if not raw:
+        return 2.5
+    try:
+        v = float(raw)
+    except ValueError:
+        return 2.5
+    return max(0.0, min(8.0, v))
+
+
 def _tts_aplay_device_argv() -> list[str]:
     """
     Extra aplay argv for ALSA playback device (speaker). Prefer default card unless
@@ -2768,11 +2784,19 @@ class MeetingBoxApp(App):
         self._refresh_voice_indicator()
 
     def _voice_mark_post_realtime_wake_suppression(self) -> None:
-        """Realtime PCM uses aplay, not _speak_text_blocking — apply same tail/guard timeline."""
+        """Suppress the wake word for a beat after a Realtime session ends.
+
+        Realtime PCM uses aplay (not _speak_text_blocking), so apply at least the
+        same TTS tail/guard timeline; but at the end of a whole conversation the
+        residual audio (the user's own goodbye tail, room echo, and the
+        warm-standby reconnect handshake) lingers longer, so honour a dedicated,
+        longer end-of-session guard to stop a false re-wake (the "says bye →
+        instantly re-opens a session" loop)."""
         import time as _time
 
-        deadline = _time.monotonic() + (
-            _tts_tail_silence_seconds() + _post_tts_wake_guard_seconds()
+        deadline = _time.monotonic() + max(
+            _tts_tail_silence_seconds() + _post_tts_wake_guard_seconds(),
+            _post_realtime_session_wake_guard_seconds(),
         )
         prev = float(getattr(self, "_wake_suppress_until_monotonic", 0.0) or 0.0)
         self._wake_suppress_until_monotonic = max(prev, deadline)
@@ -4433,6 +4457,15 @@ class MeetingBoxApp(App):
             pass
 
     def _end_realtime_voice_session(self) -> None:
+        # Capture connection/start state BEFORE resetting it below. The
+        # post-session wake suppression and the short-failed local fallback both
+        # depend on whether the session actually connected. Reading these after
+        # the reset (the previous behaviour) made `connected` always False, so
+        # the wake suppression never armed — the conversation tail / room echo
+        # was instantly misheard as the wake phrase and re-opened a session
+        # right after the user said goodbye.
+        started = getattr(self, "_realtime_session_start_monotonic", None)
+        connected = getattr(self, "_realtime_connected_ok", False)
         self._realtime_mic_acquired = False
         self._realtime_connected_ok = False
         self._pending_user_msg_id = None
@@ -4465,8 +4498,6 @@ class MeetingBoxApp(App):
             pass
         Clock.schedule_once(lambda _dt: self._clear_home_say_bar(), 0)
         sess = self._realtime_voice_session
-        started = getattr(self, "_realtime_session_start_monotonic", None)
-        connected = getattr(self, "_realtime_connected_ok", False)
         if sess is not None:
             try:
                 sess.stop()
