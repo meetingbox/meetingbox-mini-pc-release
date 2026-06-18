@@ -794,6 +794,11 @@ class MeetingBoxApp(App):
         self.assistant_speech_volume = 85
         # Realtime may only start when _handle_voice_wake_phrase sets this True (one-shot).
         self._realtime_launch_permitted = False
+        # Active summary context session (user viewing a meeting/note summary).
+        # _pending_summary_context is consumed at session start; the *_meeting_id
+        # tracks which summary the voice agent is currently grounded on.
+        self._pending_summary_context: tuple[str, str] | None = None
+        self._active_summary_meeting_id: str | None = None
         # Number of consecutive auto-reconnects since the last user-triggered wake.
         # Capped at 1 so a runaway reconnect loop doesn't block the wake listener.
         self._realtime_reconnect_count = 0
@@ -3199,6 +3204,173 @@ class MeetingBoxApp(App):
         except Exception:
             logger.debug("send_user_text failed", exc_info=True)
 
+    # ──────────────────────────────────────────────────────────────────
+    # Active summary context session (voice agent grounded on open summary)
+    # ──────────────────────────────────────────────────────────────────
+    def _apply_pending_summary_context_to(self, sess) -> None:
+        """Hand any staged summary context to a session about to start/activate."""
+        pending = getattr(self, "_pending_summary_context", None)
+        if not pending or sess is None:
+            return
+        ctx, greeting = pending
+        self._pending_summary_context = None
+        try:
+            sess.apply_active_context(ctx, greeting)
+        except Exception:
+            logger.debug("apply_active_context on session failed", exc_info=True)
+
+    def start_summary_context_session(self, meeting_id: str, summary_data: dict) -> None:
+        """Auto-activate the voice agent and ground it on the open summary.
+
+        Called when a meeting/note summary screen opens. Builds a rich context
+        block from the summary, then either injects it into a live session or
+        stages it for the session that wake activation is about to start. No
+        wake word required.
+        """
+        if not meeting_id:
+            return
+        # Realtime assistant must be available for context grounding; the local
+        # Vosk fallback cannot use injected context, so skip silently otherwise.
+        if not (
+            getattr(self, "voice_realtime_assistant", False)
+            and REALTIME_VOICE_IMPLEMENTED
+            and get_device_auth_token().strip()
+            and not USE_MOCK_BACKEND
+            and not WAKE_LOCAL_VOICE_ONLY
+        ):
+            return
+        if self.recording_state.get("active"):
+            return
+        # Already grounded on this summary (e.g. on_enter fired twice) — skip.
+        if self._active_summary_meeting_id == meeting_id:
+            return
+        ctx, greeting = self._build_summary_context(summary_data or {})
+        if not ctx:
+            return
+        self._active_summary_meeting_id = meeting_id
+        sess = getattr(self, "_realtime_voice_session", None)
+        if sess is not None and not getattr(self, "_realtime_session_pending", False):
+            # A session is already live — inject directly.
+            try:
+                sess.apply_active_context(ctx, greeting)
+            except Exception:
+                logger.debug("live apply_active_context failed", exc_info=True)
+            return
+        # Stage for the session that wake activation will start, then wake.
+        self._pending_summary_context = (ctx, greeting)
+        Clock.schedule_once(lambda _dt: self._handle_voice_wake_phrase(""), 0)
+
+    def update_summary_context(self, meeting_id: str, summary_data: dict) -> None:
+        """Refresh the grounded context with richer data (e.g. action items
+        loaded after the detail fetch). Does NOT re-speak the greeting."""
+        if not meeting_id or self._active_summary_meeting_id != meeting_id:
+            return
+        ctx, _greeting = self._build_summary_context(summary_data or {})
+        if not ctx:
+            return
+        if self._pending_summary_context is not None:
+            # Session not started yet — update the staged greeting's context.
+            self._pending_summary_context = (ctx, self._pending_summary_context[1])
+            return
+        sess = getattr(self, "_realtime_voice_session", None)
+        if sess is not None:
+            try:
+                sess.apply_active_context(ctx, None)
+            except Exception:
+                logger.debug("update_summary_context apply failed", exc_info=True)
+
+    def end_summary_context_session(self) -> None:
+        """Tear down the summary context when the user leaves the summary."""
+        self._pending_summary_context = None
+        if self._active_summary_meeting_id is None:
+            return
+        self._active_summary_meeting_id = None
+        sess = getattr(self, "_realtime_voice_session", None)
+        if sess is not None:
+            try:
+                sess.clear_active_context()
+            except Exception:
+                logger.debug("clear_active_context failed", exc_info=True)
+
+    def _build_summary_context(self, data: dict) -> tuple[str, str]:
+        """Build the (context_text, greeting_instructions) for an open summary."""
+        data = data or {}
+        mode = str(
+            data.get("recording_mode") or data.get("content_type") or ""
+        ).strip().lower()
+        is_note = mode in {"note", "notes"}
+        kind = "Note" if is_note else "Meeting"
+
+        summary = data.get("summary")
+        if isinstance(summary, dict):
+            summary_text = (summary.get("summary") or "").strip()
+            block = summary
+        else:
+            summary_text = (summary or "").strip()
+            block = data
+
+        title = (data.get("title") or block.get("title") or "").strip()
+        if is_note and not title:
+            title = "Notes"
+
+        def _norm_item(item) -> str:
+            if isinstance(item, dict):
+                return str(
+                    item.get("task") or item.get("description")
+                    or item.get("text") or item.get("title") or ""
+                ).strip()
+            return str(item or "").strip()
+
+        def _norm_list(value) -> list[str]:
+            if not isinstance(value, (list, tuple)):
+                return []
+            out = []
+            for it in value:
+                s = _norm_item(it)
+                if s:
+                    out.append(s)
+            return out
+
+        action_items = _norm_list(block.get("action_items") or block.get("actions"))
+        decisions = _norm_list(block.get("decisions"))
+        participants = _norm_list(
+            block.get("participants") or data.get("participants")
+            or data.get("attendees") or block.get("attendees")
+        )
+
+        if not (summary_text or action_items or decisions):
+            return "", ""
+
+        lines = [
+            "ACTIVE SUMMARY CONTEXT (the user is viewing this on the device screen RIGHT NOW):",
+            f"Type: {kind}",
+        ]
+        if title:
+            lines.append(f"Title: {title}")
+        if participants:
+            lines.append("Participants: " + ", ".join(participants))
+        if summary_text:
+            lines.append("Summary:\n" + summary_text)
+        if action_items:
+            lines.append("Action items:\n" + "\n".join(f"- {a}" for a in action_items))
+        if decisions:
+            lines.append("Decisions:\n" + "\n".join(f"- {d}" for d in decisions))
+        lines.append(
+            "Resolve 'this', 'it', 'this " + kind.lower() + "', 'these action items' to THIS item. "
+            "Answer questions about it directly from the content above without searching. "
+            "Use it as the source when the user asks to email it, create tasks from it, or schedule a follow-up."
+        )
+        context_text = "\n".join(lines)
+
+        what = "note" if is_note else "summary"
+        greeting = (
+            f"Say exactly one short, warm sentence telling the user their {what} is ready and "
+            "offering to act on it now — for example 'Your "
+            f"{what}'s ready — want me to email it, create tasks, or set a follow-up?'. "
+            "Then stop and wait for their request. Do not read the summary aloud."
+        )
+        return context_text, greeting
+
     def _email_workflow_active(self) -> bool:
         """True while the email draft screen or recipient picker is on screen.
 
@@ -4354,6 +4526,7 @@ class MeetingBoxApp(App):
         self._realtime_connected_ok = False
         self._realtime_session_start_monotonic = time.monotonic()
         self._sync_voice_assistant_state()
+        self._apply_pending_summary_context_to(sess)
         try:
             sess.activate()
         except Exception:
@@ -4627,7 +4800,7 @@ class MeetingBoxApp(App):
                     # tasks screen suppresses the strip; on all other screens show
                     # the compact overlay strip.
                     if not (self.screen_manager
-                            and self.screen_manager.current in ('home', 'voice_session', 'tasks', 'calendar')):
+                            and self.screen_manager.current in ('home', 'voice_session', 'tasks', 'calendar', 'summary_review')):
                         self._transcript_overlay.show()
                 # Reset home say bar for the new session
                 self._clear_home_say_bar()
@@ -4659,6 +4832,11 @@ class MeetingBoxApp(App):
                 elif current == 'calendar_event_creation':
                     try:
                         self.screen_manager.get_screen('calendar_event_creation').set_voice_session_state(state)
+                    except Exception:
+                        pass
+                elif current == 'summary_review':
+                    try:
+                        self.screen_manager.get_screen('summary_review').set_voice_session_state(state)
                     except Exception:
                         pass
 
@@ -4906,6 +5084,7 @@ class MeetingBoxApp(App):
             else:
                 self._realtime_voice_session = sess
                 self._sync_voice_assistant_state()
+                self._apply_pending_summary_context_to(sess)
                 sess.start()
         except Exception:
             logger.exception("Realtime voice session failed to start")

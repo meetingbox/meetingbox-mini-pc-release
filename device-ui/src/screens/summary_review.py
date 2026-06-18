@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import logging
 import re
+import time
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
@@ -41,6 +42,7 @@ from async_helper import run_async
 from components.device_status_bar import DeviceStatusBar
 from config import ASSETS_DIR
 from screens.base_screen import BaseScreen
+from screens.home import _VoiceStatePill  # noqa: PLC2701
 from summary_layout import (
     AI_BODY_FS_RATIO,
     AI_HEADER,
@@ -314,6 +316,11 @@ class SummaryReviewScreen(BaseScreen):
         self._summary_data: dict = {}
         self._meeting_title = "Meeting"
         self._scaled_labels: list[tuple[Label, float]] = []
+        # Voice-agent listening pill (auto-activated when the summary opens).
+        self._voice_pill: Optional[_VoiceStatePill] = None
+        self._listening = False
+        self._amplitude = 0.0
+        self._voice_tick_ev = None
         self._build_ui()
 
     # ------------------------------------------------------------------ UI
@@ -367,6 +374,14 @@ class SummaryReviewScreen(BaseScreen):
         )
         self._scaled_labels.append((self.summary_scroll._label, AI_BODY_FS_RATIO))  # noqa: SLF001
         self._canvas.add_widget(self.summary_scroll)
+
+        # Voice-state pill — bottom-centre, shown while the agent is listening.
+        self._voice_pill = _VoiceStatePill(
+            size_hint=(222 / 1280, 47 / 720),
+            pos_hint={"center_x": 0.5, "y": 0.04},
+        )
+        self._voice_pill.opacity = 0.0
+        self._root.add_widget(self._voice_pill)
 
         self.add_widget(self._root)
         Clock.schedule_once(lambda _dt: self._on_root_resize(self._root, self._root.size), 0)
@@ -444,9 +459,65 @@ class SummaryReviewScreen(BaseScreen):
         self._apply_local_data()
         Clock.schedule_once(lambda _dt: self._on_root_resize(self._root, self._root.size), 0)
         Clock.schedule_once(lambda _dt: self._on_root_resize(self._root, self._root.size), 0.05)
+        # Auto-activate the voice agent grounded on this summary (no wake word).
+        if self.meeting_id:
+            self.show_listening_state()
+            try:
+                self.app.start_summary_context_session(self.meeting_id, self._summary_data)
+            except Exception:
+                logger.debug("start_summary_context_session failed", exc_info=True)
 
     def on_leave(self):
-        pass
+        # Tear down the summary context session and listening UI.
+        self.hide_listening_state()
+        try:
+            self.app.end_summary_context_session()
+        except Exception:
+            logger.debug("end_summary_context_session failed", exc_info=True)
+
+    # ------------------------------------------------------- voice listening UI
+    def show_listening_state(self) -> None:
+        self._listening = True
+        self._amplitude = 0.0
+        if self._voice_pill:
+            self._voice_pill.set_state_text("Listening")
+            self._voice_pill.opacity = 1.0
+        self._start_voice_tick()
+
+    def hide_listening_state(self) -> None:
+        self._listening = False
+        self._stop_voice_tick()
+        if self._voice_pill:
+            self._voice_pill.opacity = 0.0
+
+    def set_voice_session_state(self, state: str) -> None:
+        lbl = {"listening": "Listening", "thinking": "Thinking", "speaking": "Talking"}.get(state)
+        if lbl and self._voice_pill:
+            self._voice_pill.set_state_text(lbl)
+            self._voice_pill.opacity = 1.0
+        if state == "listening":
+            self._listening = True
+            self._start_voice_tick()
+        else:
+            self._listening = False
+            self._stop_voice_tick()
+
+    def update_amplitude(self, amp: float) -> None:
+        if self._listening:
+            self._amplitude = amp
+
+    def _start_voice_tick(self) -> None:
+        if self._voice_tick_ev is None:
+            self._voice_tick_ev = Clock.schedule_interval(self._voice_tick, 1 / 30)
+
+    def _stop_voice_tick(self) -> None:
+        if self._voice_tick_ev:
+            self._voice_tick_ev.cancel()
+            self._voice_tick_ev = None
+
+    def _voice_tick(self, _dt: float) -> None:
+        if self._voice_pill:
+            self._voice_pill.update_bars(time.monotonic(), self._amplitude)
 
     # --------------------------------------------------------------- data
     def _apply_local_data(self):
@@ -503,8 +574,19 @@ class SummaryReviewScreen(BaseScreen):
                     merged[k] = detail[k]
             self._summary_data = merged
             Clock.schedule_once(lambda _dt: self._apply_local_data(), 0)
+            # Enrich the voice agent's grounded context with the fuller detail
+            # (action items / decisions) now that it has loaded.
+            Clock.schedule_once(lambda _dt: self._refresh_voice_context(), 0)
 
         run_async(_run())
+
+    def _refresh_voice_context(self) -> None:
+        if not self.meeting_id:
+            return
+        try:
+            self.app.update_summary_context(self.meeting_id, self._summary_data)
+        except Exception:
+            logger.debug("update_summary_context failed", exc_info=True)
 
     # ----------------------------------------------------------- formatting
     @staticmethod

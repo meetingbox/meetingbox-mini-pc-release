@@ -720,6 +720,14 @@ class RealtimeVoiceSession:
         # for this session, so we never send it twice.
         self._wake_greeting_sent: bool = False
 
+        # Active summary context (the user is viewing a meeting/note summary on
+        # screen). When set before the wake greeting fires, the greeting path
+        # injects this as a system message and speaks a summary-specific opener
+        # instead of the generic "I'm listening" greeting. Applied via
+        # apply_active_context() and torn down via clear_active_context().
+        self._active_summary_context: str | None = None
+        self._active_summary_greeting: str | None = None
+
         # State exposed to the UI / idle watchdog
         self._state = "idle"            # idle | listening | thinking | speaking
         self._response_in_progress = False
@@ -2248,22 +2256,113 @@ class RealtimeVoiceSession:
         session. Interruptible (interrupt_response stays true), so a user
         already mid-sentence pre-empts it cleanly. For warm sessions this is
         fired on activate() so it comes back in ~1 s instead of after a cold
-        mint + connect + prefill."""
-        if not _REALTIME_WAKE_GREETING_ENABLED or self._wake_greeting_sent:
+        mint + connect + prefill.
+
+        When an active summary context is set (the user opened a meeting/note
+        summary), inject that context as a system message first and speak a
+        summary-specific opener instead of the generic greeting."""
+        if self._wake_greeting_sent:
             return
         self._wake_greeting_sent = True
+        ctx = self._active_summary_context
+        greeting = self._active_summary_greeting or _REALTIME_WAKE_GREETING_INSTRUCTIONS
         try:
+            if ctx:
+                await self._inject_system_message(ws, ctx)
+            if not _REALTIME_WAKE_GREETING_ENABLED and not ctx:
+                return
             await ws.send(json.dumps({
                 "type": "response.create",
                 "response": {
-                    "instructions": _REALTIME_WAKE_GREETING_INSTRUCTIONS,
+                    "instructions": greeting,
                 },
             }))
-            logger.info("Realtime: wake-word greeting sent")
+            logger.info(
+                "Realtime: wake-word greeting sent (summary_context=%s)",
+                bool(ctx),
+            )
         except Exception:
             logger.warning(
                 "Realtime: wake-word greeting send failed", exc_info=True
             )
+
+    async def _inject_system_message(self, ws, text: str) -> None:
+        """Insert a system message into the conversation without forcing a
+        response. Used to hand the model live screen context (active summary)
+        or to tear it down."""
+        await ws.send(json.dumps({
+            "type": "conversation.item.create",
+            "item": {
+                "type": "message",
+                "role": "system",
+                "content": [{"type": "input_text", "text": text}],
+            },
+        }))
+
+    def apply_active_context(self, context_text: str, greeting: str | None = None) -> None:
+        """Set the active summary context for this session.
+
+        Safe to call from the Kivy main thread, before or after the session
+        connects. If the wake greeting has not fired yet, the greeting path
+        picks the context up automatically. If the session is already live and
+        greeted, the context (and an optional fresh opener) is injected now.
+        """
+        ctx = (context_text or "").strip() or None
+        self._active_summary_context = ctx
+        self._active_summary_greeting = (greeting or "").strip() or None
+        if not ctx:
+            return
+        loop, ws = self._loop, self._ws
+        if loop is None or ws is None or loop.is_closed():
+            return
+        if not self._wake_greeting_sent:
+            return  # greeting path will inject it
+
+        async def _go():
+            try:
+                await self._inject_system_message(ws, ctx)
+                if self._active_summary_greeting:
+                    await ws.send(json.dumps({
+                        "type": "response.create",
+                        "response": {"instructions": self._active_summary_greeting},
+                    }))
+            except Exception:
+                logger.debug("apply_active_context inject failed", exc_info=True)
+
+        try:
+            asyncio.run_coroutine_threadsafe(_go(), loop)
+        except Exception:
+            logger.debug("apply_active_context schedule failed", exc_info=True)
+
+    def clear_active_context(self) -> None:
+        """Tear down the active summary context (user closed the summary).
+
+        Injects a 'SUMMARY CONTEXT CLEARED' system message so the model stops
+        resolving 'this'/'it' to the closed summary. Safe to call from the
+        Kivy main thread."""
+        had_ctx = self._active_summary_context is not None
+        self._active_summary_context = None
+        self._active_summary_greeting = None
+        if not had_ctx:
+            return
+        loop, ws = self._loop, self._ws
+        if loop is None or ws is None or loop.is_closed():
+            return
+
+        async def _go():
+            try:
+                await self._inject_system_message(
+                    ws,
+                    "SUMMARY CONTEXT CLEARED: the user has closed the summary. "
+                    "Stop assuming 'this' or 'it' refers to it; resume normal behaviour.",
+                )
+            except Exception:
+                logger.debug("clear_active_context inject failed", exc_info=True)
+
+        try:
+            asyncio.run_coroutine_threadsafe(_go(), loop)
+        except Exception:
+            logger.debug("clear_active_context schedule failed", exc_info=True)
 
     async def _send_session_update(self, ws) -> None:
         """Override only what we need + register the client-side end_session tool.
