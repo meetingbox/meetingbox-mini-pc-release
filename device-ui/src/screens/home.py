@@ -566,7 +566,7 @@ class HomeScreen(BaseScreen):
         # 8 · Hey-Tony text  (Figma: x+54 inside pill, 549 × 38, centred) ─
         #     Figma: 32 px SemiBold, #3A3B3D, center
         hey_lbl = Label(
-            text="Say 'Hey Tony' to start a conversation",
+            text="Say 'Hey Pepper' to start a conversation",
             font_name=_FONT_SB,
             font_size=_ff(32),
             color=_TEXT,
