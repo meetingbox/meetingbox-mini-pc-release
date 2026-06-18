@@ -1682,6 +1682,9 @@ class MeetingBoxApp(App):
             self.goto_screen('home', transition='fade')
 
     def _set_transition(self, kind):
+        old = self.screen_manager.transition
+        if old is not None and getattr(old, 'is_active', False):
+            old.stop()
         dur = TRANSITION_DURATION.get('fade', 0.3)
         if kind == 'fade':
             self.screen_manager.transition = FadeTransition(duration=dur)
