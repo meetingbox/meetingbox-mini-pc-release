@@ -4752,7 +4752,18 @@ class MeetingBoxApp(App):
             unexpected = False
             try:
                 if sess is not None:
-                    activated = bool(getattr(sess, "_activate_requested", True))
+                    # "activated" must only be False for a warm-standby session
+                    # that dropped before it was ever woken — that is the lone
+                    # case we discard quietly. A cold session (minted directly on
+                    # wake when no warm standby was ready) never calls activate(),
+                    # so _activate_requested stays False; treating it as "not
+                    # activated" would skip _end_realtime_voice_session(), leaving
+                    # the mic held and the wake listener paused forever (the
+                    # second-wake-dead bug). Qualify on _prewarm so only true
+                    # warm-standby drops take the discard path.
+                    is_warm_standby = bool(getattr(sess, "_prewarm", False))
+                    requested = bool(getattr(sess, "_activate_requested", True))
+                    activated = requested or not is_warm_standby
                 if sess is not None and hasattr(sess, "ended_unexpectedly"):
                     unexpected = bool(sess.ended_unexpectedly())
             except Exception:
