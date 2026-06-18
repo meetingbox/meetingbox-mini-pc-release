@@ -1720,6 +1720,21 @@ class RealtimeVoiceSession:
                     self._emit_session_end()
                     return
 
+                # Suppress mic uplink briefly so the room echo of the wake
+                # phrase decays before audio reaches OpenAI.  Without this,
+                # the VAD fires on the garbled "Hey Tony" echo and the model
+                # responds with a confused phrase ("I can't catch on to that")
+                # before the proper wake greeting even plays.
+                _wake_echo_settle_s = float(
+                    os.environ.get("REALTIME_WAKE_ECHO_SETTLE_S", "0.5")
+                )
+                if _wake_echo_settle_s > 0:
+                    with self._playback_clock_lock:
+                        self._mute_mic_uplink_until = max(
+                            self._mute_mic_uplink_until,
+                            time.monotonic() + _wake_echo_settle_s,
+                        )
+
                 self._emit_state("listening")
                 # Signal the UI that the live session is ready. Moved here from
                 # the session.created handler so a warm-standby connect does NOT
