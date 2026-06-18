@@ -3299,17 +3299,29 @@ class MeetingBoxApp(App):
                 logger.debug("update_summary_context apply failed", exc_info=True)
 
     def end_summary_context_session(self) -> None:
-        """Tear down the summary context when the user leaves the summary."""
+        """Tear down the summary context when the user leaves the summary.
+
+        The realtime session was auto-started (no wake word) purely to ground
+        the agent on the open summary. Leaving the summary workflow must fully
+        end that session — not merely clear its injected context — otherwise it
+        keeps the mic open, so _voice_assistant_should_listen() stays False and
+        the wake-word listener never resumes (and its unexpected-end
+        auto-reconnect re-grabs the mic), leaving the device unresponsive to the
+        wake phrase. sess.stop() marks the end as user-initiated, so no reconnect
+        fires. Mirrors _suspend_voice_assistant_for_recording().
+        """
         self._pending_summary_context = None
         if self._active_summary_meeting_id is None:
             return
         self._active_summary_meeting_id = None
-        sess = getattr(self, "_realtime_voice_session", None)
-        if sess is not None:
+        if (
+            getattr(self, "_realtime_voice_session", None) is not None
+            or getattr(self, "_realtime_session_pending", False)
+        ):
             try:
-                sess.clear_active_context()
+                self._end_realtime_voice_session()
             except Exception:
-                logger.debug("clear_active_context failed", exc_info=True)
+                logger.debug("end summary realtime session failed", exc_info=True)
 
     def _build_summary_context(self, data: dict) -> tuple[str, str]:
         """Build the (context_text, greeting_instructions) for an open summary."""
