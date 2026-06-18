@@ -1596,9 +1596,27 @@ class MeetingBoxApp(App):
     # NAVIGATION (with history stack & transitions)
     # ==================================================================
 
+    # Screens that belong to the open-summary workflow. While the user moves
+    # between these (acting on the summary — emailing it, making tasks, etc.)
+    # the grounded summary context must stay alive. Leaving to any other screen
+    # tears it down.
+    _SUMMARY_CTX_SCREENS = frozenset({
+        "summary_review", "email_draft", "voice_task_creation",
+        "calendar_event_creation", "voice_session",
+    })
+
+    def _maybe_clear_summary_context(self, target: str) -> None:
+        """Drop the grounded summary context when leaving its workflow."""
+        if (
+            getattr(self, "_active_summary_meeting_id", None) is not None
+            and target not in self._SUMMARY_CTX_SCREENS
+        ):
+            self.end_summary_context_session()
+
     def goto_screen(self, screen_name: str, transition='fade'):
         """Navigate to *screen_name* with the specified transition."""
         logger.info(f"Nav → {screen_name} ({transition})")
+        self._maybe_clear_summary_context(screen_name)
 
         # Push current screen onto stack (avoid duplicates)
         current = self.screen_manager.current
@@ -1633,6 +1651,7 @@ class MeetingBoxApp(App):
             }
             while target in skip and self._nav_stack:
                 target = self._nav_stack.pop()
+            self._maybe_clear_summary_context(target)
             self._set_transition('slide_right')
             cur = self.screen_manager.current_screen
             if hasattr(cur, 'on_leave'):
@@ -4405,6 +4424,11 @@ class MeetingBoxApp(App):
         self._realtime_mic_acquired = False
         self._realtime_connected_ok = False
         self._pending_user_msg_id = None
+        # The grounded summary context lives only as long as this session; the
+        # injected context dies with the websocket, so just reset local tracking
+        # so the next session can re-ground on a freshly opened summary.
+        self._active_summary_meeting_id = None
+        self._pending_summary_context = None
         self._set_voice_runtime_state("idle")
         if self._transcript_overlay is not None:
             self._transcript_overlay.hide()

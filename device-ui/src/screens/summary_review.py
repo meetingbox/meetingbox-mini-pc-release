@@ -468,12 +468,12 @@ class SummaryReviewScreen(BaseScreen):
                 logger.debug("start_summary_context_session failed", exc_info=True)
 
     def on_leave(self):
-        # Tear down the summary context session and listening UI.
+        # Stop the listening-pill animation, but do NOT tear down the voice
+        # context here: opening the email-draft / task / calendar action screen
+        # navigates away from this screen as part of acting ON the summary. The
+        # app clears the context only when the user truly leaves the summary
+        # workflow (see MeetingBoxApp.goto_screen) or the session ends.
         self.hide_listening_state()
-        try:
-            self.app.end_summary_context_session()
-        except Exception:
-            logger.debug("end_summary_context_session failed", exc_info=True)
 
     # ------------------------------------------------------- voice listening UI
     def show_listening_state(self) -> None:
