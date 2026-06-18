@@ -372,6 +372,22 @@ _PAIRING_UNPAIR_DEFER_SCREENS = frozenset({
 })
 
 
+def _voice_phrase_context(intent) -> dict | None:
+    """Capture the spoken command phrase as pre-recording context metadata.
+
+    The offline Vosk path has limited context (just the command utterance), but
+    storing it still helps later retrieval. Returns None when nothing useful.
+    """
+    phrase = ""
+    try:
+        phrase = str(getattr(intent, "phrase", "") or "").strip()
+    except Exception:
+        phrase = ""
+    if not phrase:
+        return None
+    return {"pre_context": phrase}
+
+
 def _recording_start_transient_network(exc: BaseException) -> bool:
     """True when a short wait and retry may succeed (e.g. after Wi‑Fi handover)."""
     if isinstance(
@@ -2381,11 +2397,14 @@ class MeetingBoxApp(App):
     # RECORDING ACTIONS
     # ==================================================================
 
-    def start_recording(self, recording_mode: str = "meeting"):
+    def start_recording(self, recording_mode: str = "meeting", context: dict | None = None):
         mode = (recording_mode or "meeting").strip().lower()
         if mode not in {"meeting", "note"}:
             mode = "meeting"
         self.current_recording_mode = mode
+        # Pre-recording context (who/what/why) captured by the voice agent, to be
+        # stored as searchable metadata so the recording is findable later.
+        rec_context = context if isinstance(context, dict) else None
         self._suspend_voice_assistant_for_recording()
 
         async def _start():
@@ -2402,7 +2421,7 @@ class MeetingBoxApp(App):
                     )
                     await asyncio.sleep(delay)
                 try:
-                    result = await self.backend.start_recording(mode)
+                    result = await self.backend.start_recording(mode, context=rec_context)
                     self.current_session_id = result['session_id']
                     self.current_recording_mode = (
                         result.get('recording_mode') or mode
@@ -3029,13 +3048,15 @@ class MeetingBoxApp(App):
             except Exception:
                 pass
 
-    def _realtime_handle_start_recording(self, recording_mode: str = "meeting") -> None:
+    def _realtime_handle_start_recording(
+        self, recording_mode: str = "meeting", context: dict | None = None
+    ) -> None:
         """Called when the realtime agent asks to start a recording."""
         if self.recording_state.get("active"):
             logger.info("Realtime start_recording: already recording, ignoring.")
             return
         try:
-            self.start_recording(recording_mode)
+            self.start_recording(recording_mode, context=context)
         except Exception:
             logger.exception("Realtime start_recording callback failed")
 
@@ -5748,7 +5769,7 @@ class MeetingBoxApp(App):
             self._reset_idle_timer()
             self._sync_voice_assistant_state()
             self._set_voice_indicator_override("starting", "Starting meeting", 4.0)
-            self.start_recording()
+            self.start_recording(context=_voice_phrase_context(intent))
             return
 
         if intent.name == "start_note":
@@ -5761,7 +5782,7 @@ class MeetingBoxApp(App):
             self._reset_idle_timer()
             self._sync_voice_assistant_state()
             self._set_voice_indicator_override("starting", "Starting notes", 4.0)
-            self.start_recording("note")
+            self.start_recording("note", context=_voice_phrase_context(intent))
             return
 
         if intent.name == "stop_meeting":

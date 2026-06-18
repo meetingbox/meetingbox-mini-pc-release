@@ -316,13 +316,23 @@ START_RECORDING_TOOL: dict = {
     "name": "start_recording",
     "description": (
         "Call this tool when the user asks to start recording or taking notes. "
-        "Use recording_mode='meeting' for 'start recording', 'record', 'start meeting', "
-        "'record a meeting', or 'begin recording' -- the word 'record' or 'recording' alone "
-        "always means a meeting recording. Use recording_mode='note' only when the user "
-        "explicitly says to take or make notes, such as 'take a note', 'take notes', or "
-        "'note this down'. When unsure, use 'meeting'. Always say a brief confirmation "
-        "(e.g. 'Starting the recording now') BEFORE calling this tool. The voice session "
-        "will close and recording will begin immediately."
+        "Use recording_mode='meeting' for 'start recording', 'record', 'record this', "
+        "'start meeting', 'record a meeting', or 'begin recording' -- the word 'record' "
+        "or 'recording' alone always means a meeting recording. Use recording_mode='note' "
+        "ONLY when the user explicitly asks to take or make notes, such as 'take a note', "
+        "'take notes', 'note this down', 'capture thoughts', or 'make a todo list'. "
+        "When unsure, use 'meeting'. "
+        "CRITICAL: Capture the CONTEXT the user gave before recording — who they "
+        "are meeting, what it's about, the event/project/purpose — and pass it in "
+        "the context fields below, EVEN IF those details are not repeated once "
+        "recording starts. This is what makes the recording findable later. "
+        "Example: 'I'm meeting Vivek now, start recording' -> recording_mode='meeting', "
+        "referenced_people=['Vivek'], session_intent='meeting with Vivek'. "
+        "Example: 'take notes, this is for the board meeting' -> recording_mode='note', "
+        "referenced_events=['board meeting'], session_intent='notes for the board meeting'. "
+        "Always say a brief confirmation (e.g. 'Starting the recording now') "
+        "BEFORE calling this tool. The voice session will close and recording "
+        "will begin immediately."
     ),
     "parameters": {
         "type": "object",
@@ -332,10 +342,62 @@ START_RECORDING_TOOL: dict = {
                 "enum": ["meeting", "note"],
                 "description": "meeting for meeting summary flow; note for note/todo extraction flow.",
             },
+            "session_intent": {
+                "type": "string",
+                "description": "One sentence on what this recording is for, from what the user said before recording (e.g. 'meeting with Vivek', 'notes for the board meeting').",
+            },
+            "referenced_people": {
+                "type": "array", "items": {"type": "string"},
+                "description": "People the user mentioned (attendees / who the meeting or note is about), even if not spoken during the recording.",
+            },
+            "referenced_topics": {
+                "type": "array", "items": {"type": "string"},
+                "description": "Topics/subjects the user mentioned before recording.",
+            },
+            "referenced_projects": {
+                "type": "array", "items": {"type": "string"},
+                "description": "Named projects/initiatives mentioned (e.g. 'Project Atlas').",
+            },
+            "referenced_events": {
+                "type": "array", "items": {"type": "string"},
+                "description": "Events the recording relates to (e.g. 'board meeting', 'investor call', 'client review').",
+            },
+            "referenced_organizations": {
+                "type": "array", "items": {"type": "string"},
+                "description": "Companies/teams/organizations mentioned.",
+            },
         },
         "required": [],
     },
 }
+
+
+_START_CONTEXT_LIST_KEYS = (
+    "referenced_people",
+    "referenced_topics",
+    "referenced_projects",
+    "referenced_events",
+    "referenced_organizations",
+)
+
+
+def _extract_start_context(parsed_args: dict) -> dict:
+    """Pull the pre-recording context fields out of a start_recording tool call."""
+    if not isinstance(parsed_args, dict):
+        return {}
+    out: dict = {}
+    intent = str(parsed_args.get("session_intent") or "").strip()
+    if intent:
+        out["session_intent"] = intent[:500]
+    for key in _START_CONTEXT_LIST_KEYS:
+        val = parsed_args.get(key)
+        if isinstance(val, str):
+            val = [v.strip() for v in val.split(",")]
+        if isinstance(val, (list, tuple)):
+            cleaned = [str(v).strip() for v in val if str(v or "").strip()]
+            if cleaned:
+                out[key] = cleaned
+    return out
 
 
 _FAREWELL_EXACT = frozenset({
@@ -2259,6 +2321,7 @@ class RealtimeVoiceSession:
         end_session_requested = False
         start_recording_requested = False
         start_recording_mode = "meeting"
+        start_recording_context: dict = {}
         brief_started_now = False
         for item in outputs:
             if not isinstance(item, dict) or item.get("type") != "function_call":
@@ -2295,10 +2358,12 @@ class RealtimeVoiceSession:
                 mode = str((parsed_args or {}).get("recording_mode") or "meeting").strip().lower()
                 if mode not in {"meeting", "note"}:
                     mode = "meeting"
+                start_recording_context = _extract_start_context(parsed_args)
                 logger.info(
-                    "Realtime: model called start_recording (call_id=%s mode=%s) — starting recording.",
+                    "Realtime: model called start_recording (call_id=%s mode=%s ctx_keys=%s) — starting recording.",
                     call_id,
                     mode,
+                    list(start_recording_context.keys()),
                 )
                 start_recording_requested = True
                 start_recording_mode = mode
@@ -2449,7 +2514,10 @@ class RealtimeVoiceSession:
                 pass
             cb = self._on_start_recording_cb
             if cb:
-                Clock.schedule_once(lambda _dt, m=start_recording_mode: self._safe_call(cb, m), 0)
+                Clock.schedule_once(
+                    lambda _dt, m=start_recording_mode, c=start_recording_context: self._safe_call(cb, m, c),
+                    0,
+                )
 
     # ------------------------------------------------------------------
     # Misc helpers

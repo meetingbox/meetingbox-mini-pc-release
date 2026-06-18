@@ -419,18 +419,24 @@ class BackendClient:
     # MEETINGS API
     # ==================================================================
 
-    async def start_recording(self, recording_mode: str = "meeting") -> Dict:
+    async def start_recording(self, recording_mode: str = "meeting", context: Dict = None) -> Dict:
         """
         POST /api/meetings/start
         Returns: { session_id, status }
+
+        ``context`` carries pre-recording intent/people/topics captured by the
+        voice agent, stored server-side as searchable metadata.
         """
         try:
             mode = (recording_mode or "meeting").strip().lower()
             if mode not in {"meeting", "note"}:
                 mode = "meeting"
+            body = {"recording_mode": mode}
+            if isinstance(context, dict) and context:
+                body["context"] = context
             resp = await self.client.post(
                 f"{self.base_url}/api/meetings/start",
-                json={"recording_mode": mode},
+                json=body,
             )
             resp.raise_for_status()
             data = resp.json()

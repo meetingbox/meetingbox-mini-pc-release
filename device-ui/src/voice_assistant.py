@@ -199,10 +199,19 @@ def _build_intent_specs(start_commands: list[str]) -> tuple[_IntentSpec, ...]:
             ]
         )
     )
+    note_aliases = (
+        "take notes", "take a note", "start taking notes", "start a note",
+        "create a note", "make a note", "new note", "record a note",
+        "capture my thoughts", "capture a thought", "note this", "jot this down",
+        "start notes", "begin notes",
+    )
     # Lower threshold (0.68) for the high-frequency action commands so they
     # trigger reliably even when the Vosk small model drops a word or two.
     _ACT = 0.68
     return (
+        # Note intent is listed before start_meeting so an explicit "take notes"
+        # maps to note mode; plain "start recording" still falls to start_meeting.
+        _IntentSpec("start_note", note_aliases, threshold=_ACT),
         _IntentSpec("start_meeting", start_aliases, threshold=_ACT),
         _IntentSpec("stop_meeting", (
             "stop meeting", "end meeting", "stop recording", "finish meeting",
