@@ -1257,6 +1257,12 @@ class MeetingBoxApp(App):
             Clock.schedule_interval(self._log_fps, 1.0)
 
         Window.bind(on_touch_down=self._reset_idle_timer)
+        # Backup swipe detector: catches top-edge swipes that miss the
+        # _SwipeHandle widget (e.g. touch starts just below its zone).
+        self._panel_swipe_uid: Optional[int] = None
+        self._panel_swipe_start_y: float = 0.0
+        Window.bind(on_touch_down=self._panel_swipe_down)
+        Window.bind(on_touch_move=self._panel_swipe_move)
 
         # On Linux kiosk setups the window manager may intercept a top-edge
         # swipe (intended for our QuickPanel) and minimize the app instead.
@@ -1305,6 +1311,30 @@ class MeetingBoxApp(App):
                 qp.show()
 
         Clock.schedule_once(_restore, 0.05)
+
+    def _panel_swipe_down(self, _window, touch):
+        """Window-level backup: record a touch that starts in the top zone."""
+        zone = 80  # px from top of window
+        if Window.height > 0 and touch.y >= Window.height - zone:
+            self._panel_swipe_uid = touch.uid
+            self._panel_swipe_start_y = touch.y
+        else:
+            self._panel_swipe_uid = None
+
+    def _panel_swipe_move(self, _window, touch):
+        """Window-level backup: open QuickPanel if touch dragged down from top zone."""
+        if self._panel_swipe_uid is None:
+            return
+        if touch.uid != self._panel_swipe_uid:
+            return
+        # In Kivy y=0 is bottom, so dragging DOWN means y decreases.
+        # Support both normal and inverted Y-axis touchscreens.
+        moved = abs(self._panel_swipe_start_y - touch.y)
+        if moved >= 20:
+            self._panel_swipe_uid = None
+            qp = getattr(self, 'quick_panel', None)
+            if qp and not qp._visible:
+                qp.show()
 
     # ==================================================================
     # SETUP CHECK
@@ -6294,7 +6324,7 @@ class _SwipeHandle(Widget):
     the center of the bar so users can see where to interact.
     """
 
-    _HANDLE_H = 22      # widget height in px
+    _HANDLE_H = 64      # widget height in px  (≈10 % of a 600 px screen)
     _DRAG_THRESHOLD = 8  # px of downward drag that triggers the panel
 
     def __init__(self, app, **kwargs):
@@ -6306,17 +6336,18 @@ class _SwipeHandle(Widget):
         self._app = app
         self._start_y: float | None = None
 
-        # Subtle pill indicator so users know this area is interactive
+        # Visible pill indicator — centred near the bottom of the handle bar
         with self.canvas:
-            Color(1, 1, 1, 0.18)
+            Color(1, 1, 1, 0.30)
             self._pill = RoundedRectangle(radius=[3])
         self.bind(pos=self._draw, size=self._draw)
         self._draw()
 
     def _draw(self, *_):
-        pw, ph = 36, 4
-        self._pill.pos = (self.center_x - pw / 2,
-                          self.y + (self.height - ph) / 2)
+        pw, ph = 48, 5
+        # Position the pill near the bottom edge of the handle so it sits
+        # at the visible top of the screen content (not hidden in a corner).
+        self._pill.pos = (self.center_x - pw / 2, self.y + 6)
         self._pill.size = (pw, ph)
 
     # ------------------------------------------------------------------
