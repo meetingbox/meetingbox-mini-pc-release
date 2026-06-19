@@ -326,6 +326,7 @@ from screens.email_draft import EmailDraftScreen
 from screens.voice_task_creation import VoiceTaskCreationScreen
 from screens.calendar_event_creation import CalendarEventCreationScreen
 from components.quick_panel import QuickPanel
+from components.voice_control_bar import VoiceControlBar
 
 # ------------------------------------------------------------------
 # Logging
@@ -1234,6 +1235,18 @@ class MeetingBoxApp(App):
             )
         except Exception:
             logger.exception("TranscriptionOverlay failed to load")
+
+        # Voice control bar — visible only during active voice sessions.
+        # Added BEFORE QuickPanel so the panel slides on top of the pills.
+        try:
+            self._voice_control_bar = VoiceControlBar(app=self)
+            self.root_layout.add_widget(self._voice_control_bar)
+            self.screen_manager.bind(
+                current=lambda _sm, name: self._voice_control_bar.notify_screen(name)
+            )
+        except Exception:
+            logger.exception("VoiceControlBar failed to load")
+            self._voice_control_bar = None
 
         # Quick pull-down panel — floats above everything, hidden by default.
         try:
@@ -2854,6 +2867,9 @@ class MeetingBoxApp(App):
     def _set_voice_runtime_state(self, state: str) -> None:
         self._voice_runtime_state = (state or "idle").strip().lower()
         self._refresh_voice_indicator()
+        vcb = getattr(self, "_voice_control_bar", None)
+        if vcb is not None:
+            Clock.schedule_once(lambda _dt, s=self._voice_runtime_state: vcb.notify_state(s), 0)
 
     def _voice_mark_post_realtime_wake_suppression(self) -> None:
         """Suppress the wake word for a beat after a Realtime session ends.
@@ -3167,6 +3183,9 @@ class MeetingBoxApp(App):
                 self.screen_manager.get_screen('email_draft').update_amplitude(amplitude)
             except Exception:
                 pass
+        vcb = getattr(self, "_voice_control_bar", None)
+        if vcb is not None:
+            vcb.update_amplitude(amplitude)
 
     def _realtime_handle_start_recording(
         self, recording_mode: str = "meeting", context: dict | None = None
