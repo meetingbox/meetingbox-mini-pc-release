@@ -910,10 +910,7 @@ class QuickPanel(FloatLayout):
         if net.get("security", "open") != "open":
             self._ask_wifi_password(ssid)
         else:
-            threading.Thread(
-                target=lambda: wifi_nmcli_local.connect_wifi_network(ssid, None),
-                daemon=True,
-            ).start()
+            self._connect_wifi(ssid, None)
 
     def _ask_wifi_password(self, ssid: str):
         try:
@@ -922,10 +919,11 @@ class QuickPanel(FloatLayout):
             return
 
         def _connect(pwd: str):
-            threading.Thread(
-                target=lambda: wifi_nmcli_local.connect_wifi_network(ssid, pwd or None),
-                daemon=True,
-            ).start()
+            clean_pwd = (pwd or "").strip()
+            if not clean_pwd:
+                self._show_wifi_error("Password required", "Enter the Wi-Fi password and try again.")
+                return
+            self._connect_wifi(ssid, clean_pwd)
 
         dlg = TextInputDialog(
             title=f"Connect: {ssid}",
@@ -933,6 +931,55 @@ class QuickPanel(FloatLayout):
             placeholder="Password",
             confirm_text="CONNECT",
             on_confirm=_connect,
+        )
+        parent = (self.app.root_layout
+                  if self.app and hasattr(self.app, "root_layout") else self.parent)
+        if parent:
+            parent.add_widget(dlg)
+
+    def _connect_wifi(self, ssid: str, password: Optional[str]):
+        ssid = (ssid or "").strip()
+        if not ssid:
+            return
+        self._network_lbl.text = f"Wi-Fi: Connecting {ssid}..."
+        logger.info("QuickPanel Wi-Fi connect requested: ssid=%s", ssid)
+
+        def _run():
+            try:
+                result = wifi_nmcli_local.connect_wifi_network(ssid, password)
+            except Exception as e:
+                logger.warning("QuickPanel Wi-Fi connect failed: %s", e)
+                result = {"status": "failed", "message": str(e)}
+
+            def _apply(_dt):
+                if result.get("status") == "connected":
+                    self._network_lbl.text = f"Wi-Fi: Connected {ssid}"
+                    self._expand_wifi_section(rescan=False)
+                    Clock.schedule_once(lambda _x: self._refresh(), 0.10)
+                    return
+
+                msg = (result.get("message") or "").strip() or (
+                    "Could not connect. Check password and Wi-Fi adapter state."
+                )
+                self._network_lbl.text = "Wi-Fi: Connection failed"
+                self._show_wifi_error("Could not connect", msg[:400])
+                self._expand_wifi_section(rescan=True)
+
+            Clock.schedule_once(_apply, 0)
+
+        threading.Thread(target=_run, daemon=True).start()
+
+    def _show_wifi_error(self, title: str, message: str):
+        try:
+            from components.modal_dialog import ModalDialog
+        except ImportError:
+            logger.warning("%s: %s", title, message)
+            return
+        dlg = ModalDialog(
+            title=title,
+            message=message,
+            confirm_text="OK",
+            cancel_text="",
         )
         parent = (self.app.root_layout
                   if self.app and hasattr(self.app, "root_layout") else self.parent)

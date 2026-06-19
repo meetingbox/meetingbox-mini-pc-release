@@ -283,10 +283,23 @@ def _is_connected_to(ssid: str) -> bool:
 
 
 def connect_wifi_network(ssid: str, password: Optional[str]) -> dict:
+    ssid = (ssid or "").strip()
+    if not ssid:
+        return {"status": "failed", "message": "SSID is required"}
+
+    # QuickPanel can call connect immediately after enabling Wi-Fi.
+    # Ensure radio is ON before join attempts.
+    radio = get_wifi_radio_enabled()
+    if radio is False:
+        set_wifi_radio(True)
+        time.sleep(0.8)
+
     iface = detect_wifi_iface()
-    args = ["device", "wifi", "connect", ssid]
+    args_base = ["device", "wifi", "connect", ssid]
     if password:
-        args += ["password", password]
+        args_base += ["password", password]
+
+    args = list(args_base)
     if iface:
         args += ["ifname", iface]
     res = nmcli_run(args, timeout=30)
@@ -294,6 +307,48 @@ def connect_wifi_network(ssid: str, password: Optional[str]) -> dict:
     stderr = (res.stderr or "").strip()
     stdout = (res.stdout or "").strip()
     combined = (stderr + " " + stdout).lower()
+
+    # Some appliances report a wifi device mismatch when ifname is supplied.
+    # Retry once without ifname.
+    if res.returncode != 0 and iface:
+        if any(
+            s in combined
+            for s in (
+                "no suitable device found",
+                "device not found",
+                "no wi-fi device",
+                "not a wi-fi device",
+                "unmanaged",
+                "wifi device",
+            )
+        ):
+            logger.info("connect_wifi_network retrying without ifname for SSID %s", ssid)
+            res = nmcli_run(args_base, timeout=30)
+            stderr = (res.stderr or "").strip()
+            stdout = (res.stdout or "").strip()
+            combined = (stderr + " " + stdout).lower()
+
+    # If scan cache was stale, do one rescan + retry.
+    if res.returncode != 0 and any(
+        s in combined
+        for s in (
+            "no network with ssid",
+            "network not found",
+            "ssid not found",
+        )
+    ):
+        try:
+            nmcli_run(["device", "wifi", "rescan"], timeout=10)
+            time.sleep(1.0)
+        except Exception:
+            pass
+        retry_args = list(args_base)
+        if iface:
+            retry_args += ["ifname", iface]
+        res = nmcli_run(retry_args, timeout=30)
+        stderr = (res.stderr or "").strip()
+        stdout = (res.stdout or "").strip()
+        combined = (stderr + " " + stdout).lower()
 
     # Immediate success
     if res.returncode == 0:
