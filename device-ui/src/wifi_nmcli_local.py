@@ -7,7 +7,9 @@ remote server (the API cannot see the mini-PC's wlan0).
 
 from __future__ import annotations
 
+import json
 import logging
+import os
 import shutil
 import subprocess
 import time
@@ -282,6 +284,55 @@ def _is_connected_to(ssid: str) -> bool:
     return False
 
 
+def _is_nm_version_skew_property_error(text: str) -> bool:
+    """True for the nmcli(new)/NetworkManager(old) 'unknown property' rejection.
+
+    Debian-13 nmcli (1.52+) serialises properties such as
+    ``802-11-wireless.mac-address-denylist`` that an older host daemon (e.g.
+    1.46) does not recognise, so every profile creation fails. The D-Bus join
+    helper avoids this by sending only properties the daemon understands.
+    """
+    s = (text or "").lower()
+    return "unknown property" in s or "mac-address-denylist" in s
+
+
+def _connect_via_dbus_helper(iface: Optional[str], ssid: str,
+                             password: Optional[str]) -> Optional[dict]:
+    """Join Wi-Fi via the privileged gdbus helper (version-skew workaround).
+
+    Returns a result dict, or None if the helper is unavailable so the caller
+    can fall back to the normal error path.
+    """
+    helper = "/usr/local/bin/meetingbox-wifi-connect"
+    if not (shutil.which("sudo") and os.path.exists(helper)):
+        return None
+    use_iface = iface or detect_wifi_iface() or "wlan0"
+    keymgmt = "wpa-psk" if password else "open"
+    argv = ["sudo", "-n", helper, use_iface, ssid, keymgmt]
+    if password:
+        argv.append(password)
+    try:
+        res = subprocess.run(argv, capture_output=True, text=True, timeout=40)
+    except Exception as e:  # noqa: BLE001
+        return {"status": "failed", "message": str(e)[:300]}
+
+    out = (res.stdout or "").strip()
+    # Helper prints a single JSON line; tolerate extra log noise.
+    for line in reversed(out.splitlines()):
+        line = line.strip()
+        if line.startswith("{") and line.endswith("}"):
+            try:
+                data = json.loads(line)
+                if isinstance(data, dict) and data.get("status"):
+                    return data
+            except Exception:  # noqa: BLE001
+                continue
+    if res.returncode == 0:
+        return {"status": "connected", "message": f"Connected to {ssid}"}
+    err = (res.stderr or out or "Connection failed").strip()
+    return {"status": "failed", "message": err[:300]}
+
+
 def connect_wifi_network(ssid: str, password: Optional[str]) -> dict:
     ssid = (ssid or "").strip()
     if not ssid:
@@ -307,6 +358,19 @@ def connect_wifi_network(ssid: str, password: Optional[str]) -> dict:
     stderr = (res.stderr or "").strip()
     stdout = (res.stdout or "").strip()
     combined = (stderr + " " + stdout).lower()
+
+    # nmcli(new)/NetworkManager(old) version skew: the client serialises a
+    # property the daemon rejects ("unknown property"). No nmcli retry can fix
+    # this, so build the connection via the D-Bus helper instead.
+    if res.returncode != 0 and _is_nm_version_skew_property_error(combined):
+        logger.info(
+            "connect_wifi_network: nmcli version-skew property error; "
+            "using D-Bus helper for SSID %s",
+            ssid,
+        )
+        helper_result = _connect_via_dbus_helper(iface, ssid, password)
+        if helper_result is not None:
+            return helper_result
 
     # Some appliances report a wifi device mismatch when ifname is supplied.
     # Retry once without ifname.
