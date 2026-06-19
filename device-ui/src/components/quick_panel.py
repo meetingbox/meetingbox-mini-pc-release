@@ -475,6 +475,7 @@ class QuickPanel(FloatLayout):
         self._bt_expanded = False
         self._vol_debounce = None
         self._bri_debounce = None
+        self._mic_debounce = None
         self.app: Optional[object] = None
 
         self._build_ui()
@@ -597,6 +598,13 @@ class QuickPanel(FloatLayout):
         )
         inner.add_widget(self._bri_row)
 
+        self._mic_row = _SliderRow(
+            "mic", "Mic", initial=75,
+            on_change=self._on_mic_change,
+            size_hint_y=None, height=_sv(40),
+        )
+        inner.add_widget(self._mic_row)
+
         # 2×2 tile grid
         tile_grid = BoxLayout(
             orientation="vertical", size_hint_y=None,
@@ -619,15 +627,15 @@ class QuickPanel(FloatLayout):
 
         row2 = BoxLayout(orientation="horizontal", size_hint_y=None,
                          height=_sv(90), spacing=_sh(8))
-        self._airplane_tile = _QuickTile(
-            "airplane", "Airplane", active=False, mode="toggle",
-            on_change=self._on_airplane_toggle,
+        self._dnd_tile = _QuickTile(
+            "dnd", "Do Not Disturb", active=False, mode="toggle",
+            on_change=self._on_dnd_toggle,
         )
         settings_tile = _QuickTile(
             "settings", "Settings", active=False, mode="action",
         )
         settings_tile.bind(on_release=lambda *_: self._on_settings_tap())
-        row2.add_widget(self._airplane_tile)
+        row2.add_widget(self._dnd_tile)
         row2.add_widget(settings_tile)
         tile_grid.add_widget(row2)
         inner.add_widget(tile_grid)
@@ -735,6 +743,8 @@ class QuickPanel(FloatLayout):
         bt_on   = _safe(bluetooth_local.get_power_state,         None)
         vol     = _safe(hardware.get_sink_volume_pct,             None)
         bri     = _safe(hardware.get_brightness_pct,             None)
+        mic     = _safe(hardware.get_source_volume_pct,          None)
+        dnd     = _safe(hardware.get_dnd,                        False)
 
         def _apply(_dt):
             pct = batt.get("percent")
@@ -755,11 +765,14 @@ class QuickPanel(FloatLayout):
             self._status_dots.set_states(bool(wifi_on), bool(bt_on))
             self._wifi_tile.set_active(bool(wifi_on))
             self._bt_tile.set_active(bool(bt_on))
+            self._dnd_tile.set_active(bool(dnd))
 
             if vol is not None:
                 self._vol_row.set_value(vol)
             if bri is not None:
                 self._bri_row.set_value(bri)
+            if mic is not None:
+                self._mic_row.set_value(min(100, mic))
 
         Clock.schedule_once(_apply, 0)
 
@@ -775,6 +788,11 @@ class QuickPanel(FloatLayout):
     def _on_bri_change(self, val: int):
         threading.Thread(
             target=lambda: hardware.set_brightness_pct(val), daemon=True
+        ).start()
+
+    def _on_mic_change(self, val: int):
+        threading.Thread(
+            target=lambda: hardware.set_source_volume_pct(val), daemon=True
         ).start()
 
     # ------------------------------------------------------------------
@@ -793,13 +811,8 @@ class QuickPanel(FloatLayout):
         ).start()
         self._status_dots.set_bt(state)
 
-    def _on_airplane_toggle(self, state: bool):
-        cmd = "off" if state else "on"
-        threading.Thread(target=lambda: _run_nmcli_radio(cmd), daemon=True).start()
-        if state:
-            self._wifi_tile.set_active(False)
-            self._bt_tile.set_active(False)
-            self._status_dots.set_states(False, False)
+    def _on_dnd_toggle(self, state: bool):
+        threading.Thread(target=lambda: hardware.set_dnd(state), daemon=True).start()
 
     def _on_settings_tap(self):
         self.hide()
@@ -1028,15 +1041,3 @@ def _safe(fn: Callable, default):
         return default
 
 
-def _run_nmcli_radio(state: str):
-    import shutil as _sh, subprocess as _sp
-    exe = _sh.which("nmcli")
-    if not exe:
-        return
-    try:
-        r = _sp.run(["nmcli", "radio", "all", state], capture_output=True, timeout=8)
-        if r.returncode != 0 and _sh.which("sudo"):
-            _sp.run(["sudo", "-n", "/usr/bin/nmcli", "radio", "all", state],
-                    capture_output=True, timeout=8)
-    except Exception:
-        pass

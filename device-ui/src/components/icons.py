@@ -14,6 +14,8 @@ Available icons (set via `kind` kwarg):
   'settings'   – circle + 6 gear teeth
   'lock'       – padlock body + shackle arc
   'power'      – broken circle + center line
+  'mic'        – capsule body + stand arc + base line
+  'dnd'        – crescent moon (Do Not Disturb)
 
 Usage:
     icon = Icon(kind='wifi', size=(24, 24), color=(1, 1, 1, 0.9))
@@ -95,6 +97,8 @@ class Icon(Widget):
                 "settings":   self._settings,
                 "lock":       self._lock,
                 "power":      self._power,
+                "mic":        self._mic,
+                "dnd":        self._dnd,
             }.get(self._kind)
             if fn:
                 fn(cx, cy, m, lw)
@@ -242,3 +246,66 @@ class Icon(Widget):
         Line(ellipse=(cx - r, cy - r, r * 2, r * 2, 210, 510), width=lw * 1.3)
         # Vertical line from center to top
         Line(points=[cx, cy, cx, cy + r * 1.05], width=lw * 1.5)
+
+    def _mic(self, cx, cy, m, lw):
+        """Microphone: rounded capsule body + stand arc + base line."""
+        bw = m * 0.28
+        bh = m * 0.46
+        br = bw / 2
+        bx = cx - br
+        by = cy - m * 0.10
+        # Capsule body (rounded rectangle approximated by a tall ellipse outline)
+        Line(
+            rounded_rectangle=(bx, by, bw, bh, br),
+            width=lw,
+        )
+        # Stand arc below the capsule
+        stand_r = m * 0.30
+        stand_cy = by
+        Line(
+            ellipse=(cx - stand_r, stand_cy - stand_r, stand_r * 2, stand_r * 2, 0, 180),
+            width=lw,
+        )
+        # Vertical stem connecting stand to base
+        Line(points=[cx, stand_cy - stand_r, cx, cy - m * 0.44], width=lw)
+        # Horizontal base
+        base_hw = m * 0.20
+        Line(points=[cx - base_hw, cy - m * 0.44, cx + base_hw, cy - m * 0.44], width=lw)
+
+    def _dnd(self, cx, cy, m, lw):
+        """Do Not Disturb: crescent moon shape."""
+        # Outer full circle (clip by drawing the inner offset circle over it)
+        r_out = m * 0.40
+        # Draw the outer circle arc that forms the lit side of the crescent
+        # Crescent: outer circle minus an overlapping inner circle shifted right
+        # Approximate with a thick arc on the left side + fill using two ellipses
+        # Simpler approach: draw arc from ~120° to 300° (left-facing crescent)
+        Line(
+            ellipse=(cx - r_out, cy - r_out, r_out * 2, r_out * 2, 105, 345),
+            width=lw,
+        )
+        # Inner cutout edge (smaller arc on the right)
+        r_in = r_out * 0.65
+        offset_x = r_out * 0.35
+        Line(
+            ellipse=(
+                cx + offset_x - r_in,
+                cy - r_in,
+                r_in * 2,
+                r_in * 2,
+                105,
+                345,
+            ),
+            width=lw,
+        )
+        # Connect the two arc endpoints at top and bottom to close the crescent
+        ang_top = math.radians(105)
+        ang_bot = math.radians(345)
+        Line(points=[
+            cx + math.cos(ang_top) * r_out, cy + math.sin(ang_top) * r_out,
+            cx + offset_x + math.cos(ang_top) * r_in, cy + math.sin(ang_top) * r_in,
+        ], width=lw)
+        Line(points=[
+            cx + math.cos(ang_bot) * r_out, cy + math.sin(ang_bot) * r_out,
+            cx + offset_x + math.cos(ang_bot) * r_in, cy + math.sin(ang_bot) * r_in,
+        ], width=lw)

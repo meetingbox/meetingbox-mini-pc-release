@@ -1258,6 +1258,12 @@ class MeetingBoxApp(App):
 
         Window.bind(on_touch_down=self._reset_idle_timer)
 
+        # On Linux kiosk setups the window manager may intercept a top-edge
+        # swipe (intended for our QuickPanel) and minimize the app instead.
+        # Catch that event, restore immediately, and open the panel so the
+        # gesture still produces the expected result.
+        Window.bind(on_minimize=self._on_window_minimized)
+
         # Ensure the SDL window is mapped and on top (some WMs / SSH DISPLAY
         # combinations leave it hidden until raised).
         Clock.schedule_once(lambda *_: self._ensure_window_visible(), 0)
@@ -1274,6 +1280,31 @@ class MeetingBoxApp(App):
                 Window.raise_window()
         except Exception as e:
             logger.debug('ensure_window_visible: %s', e)
+
+    def _on_window_minimized(self, *_args):
+        """Fired when the OS/WM minimizes the app window.
+
+        On a Linux kiosk the window manager can intercept a top-edge swipe
+        and minimize the window before Kivy's _SwipeHandle widget sees it.
+        We immediately restore the window and open the QuickPanel so the
+        gesture still produces the expected result for the user.
+        """
+        def _restore(_dt):
+            try:
+                if hasattr(Window, 'restore'):
+                    Window.restore()
+            except Exception:
+                pass
+            try:
+                if hasattr(Window, 'raise_window'):
+                    Window.raise_window()
+            except Exception:
+                pass
+            qp = getattr(self, 'quick_panel', None)
+            if qp and not qp._visible:
+                qp.show()
+
+        Clock.schedule_once(_restore, 0.05)
 
     # ==================================================================
     # SETUP CHECK
@@ -1618,7 +1649,7 @@ class MeetingBoxApp(App):
     # tears it down.
     _SUMMARY_CTX_SCREENS = frozenset({
         "summary_review", "email_draft", "voice_task_creation",
-        "calendar_event_creation", "voice_session",
+        "calendar_event_creation", "voice_session", "calendar",
     })
 
     def _maybe_clear_summary_context(self, target: str) -> None:
