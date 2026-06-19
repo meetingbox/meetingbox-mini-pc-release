@@ -52,6 +52,8 @@ from kivy.uix.widget import Widget
 import hardware
 import wifi_nmcli_local
 import bluetooth_local
+import local_network
+from network_util import linux_ethernet_ready
 from config import COLORS, DISPLAY_HEIGHT, DISPLAY_WIDTH
 from components.toggle_switch import ToggleSwitch
 from components.icons import Icon
@@ -99,8 +101,16 @@ def _lbl(text: str, fs: int, color, halign: str = "left",
 # _QuickTile — a Control-Center-style icon tile with toggle or action
 # ---------------------------------------------------------------------------
 
-_TILE_ACTIVE_BG   = (0.08, 0.30, 0.72, 0.95)   # blue when on
-_TILE_INACTIVE_BG = (0.16, 0.18, 0.22, 0.95)   # dark when off
+_PANEL_BG = (0.95, 0.96, 0.98, 0.98)
+_PANEL_LINE = (0.84, 0.86, 0.90, 1.0)
+_TEXT_PRIMARY = (0.15, 0.17, 0.22, 1.0)
+_TEXT_SECONDARY = (0.36, 0.39, 0.46, 1.0)
+_TEXT_MUTED = (0.48, 0.50, 0.58, 1.0)
+_ROW_BG = (1.0, 1.0, 1.0, 0.96)
+_ROW_PRESS_BG = (0.90, 0.92, 0.96, 1.0)
+
+_TILE_ACTIVE_BG = (0.82, 0.89, 1.00, 1.0)      # blue-tinted active tile
+_TILE_INACTIVE_BG = (0.92, 0.94, 0.97, 1.0)    # neutral light tile
 
 
 class _QuickTile(ButtonBehavior, FloatLayout):
@@ -129,7 +139,7 @@ class _QuickTile(ButtonBehavior, FloatLayout):
         self.bind(pos=self._sync_bg, size=self._sync_bg)
 
         # Icon (top-left)
-        icon_col = (1.0, 1.0, 1.0, 0.95) if active else (0.65, 0.65, 0.70, 0.9)
+        icon_col = (0.16, 0.36, 0.72, 1.0) if active else _TEXT_SECONDARY
         self._icon = Icon(
             kind=kind,
             color=icon_col,
@@ -143,7 +153,7 @@ class _QuickTile(ButtonBehavior, FloatLayout):
 
         # Label (bottom-left)
         self._lbl = _lbl(
-            label, _sf(11), (1.0, 1.0, 1.0, 0.9) if active else (0.65, 0.65, 0.70, 0.85),
+            label, _sf(11), _TEXT_PRIMARY if active else _TEXT_SECONDARY,
             halign="left",
             size_hint=(None, None),
             size=(_sh(80), _sv(18)),
@@ -164,7 +174,7 @@ class _QuickTile(ButtonBehavior, FloatLayout):
             self.bind(on_press=lambda *_: self._tap_toggle())
         else:
             arrow = _lbl(
-                "->", _sf(12), COLORS["gray_500"],
+                "->", _sf(12), _TEXT_MUTED,
                 halign="right",
                 size_hint=(None, None),
                 size=(_sh(28), _sv(18)),
@@ -227,9 +237,9 @@ class _QuickTile(ButtonBehavior, FloatLayout):
 
     def _update_visuals(self):
         self._bg_col.rgba = _TILE_ACTIVE_BG if self._active else _TILE_INACTIVE_BG
-        icon_col = (1.0, 1.0, 1.0, 0.95) if self._active else (0.65, 0.65, 0.70, 0.90)
+        icon_col = (0.16, 0.36, 0.72, 1.0) if self._active else _TEXT_SECONDARY
         self._icon.set_color(icon_col)
-        txt_col = (1.0, 1.0, 1.0, 0.9) if self._active else (0.65, 0.65, 0.70, 0.85)
+        txt_col = _TEXT_PRIMARY if self._active else _TEXT_SECONDARY
         self._lbl.color = txt_col
 
 
@@ -252,7 +262,7 @@ class _SliderRow(BoxLayout):
         icon_sz = _sv(20)
         self._icon = Icon(
             kind=kind,
-            color=(0.80, 0.80, 0.85, 0.9),
+            color=_TEXT_SECONDARY,
             size_hint=(None, None),
             size=(icon_sz, icon_sz),
             pos_hint={"center_y": 0.5},
@@ -260,7 +270,7 @@ class _SliderRow(BoxLayout):
         self.add_widget(self._icon)
 
         self.add_widget(_lbl(
-            label, _sf(11), COLORS["gray_300"],
+            label, _sf(11), _TEXT_SECONDARY,
             halign="left",
             size_hint=(None, 1),
             width=_sh(68),
@@ -271,7 +281,7 @@ class _SliderRow(BoxLayout):
         self.add_widget(self._slider)
 
         self._val_lbl = _lbl(
-            f"{int(initial)}%", _sf(11), COLORS["gray_400"],
+            f"{int(initial)}%", _sf(11), _TEXT_MUTED,
             halign="right",
             size_hint=(None, 1),
             width=_sh(34),
@@ -315,15 +325,15 @@ class _NetRow(ButtonBehavior, BoxLayout):
 
         lock_sfx = " [L]" if secured else ""
         conn_sfx = "  Connected" if connected else ""
-        col = COLORS["blue"] if connected else COLORS["white"]
+        col = COLORS["blue"] if connected else _TEXT_PRIMARY
         self.add_widget(_lbl(f"{ssid}{lock_sfx}{conn_sfx}", _sf(11), col, size_hint=(1, 1)))
 
         with self.canvas.before:
-            self._bgc = Color(*COLORS["surface"])
+            self._bgc = Color(*_ROW_BG)
             self._bgr = RoundedRectangle(pos=self.pos, size=self.size, radius=[_sv(6)])
         self.bind(pos=self._sb, size=self._sb)
-        self.bind(on_press=lambda *_: setattr(self._bgc, "rgba", COLORS["gray_700"]))
-        self.bind(on_release=lambda *_: setattr(self._bgc, "rgba", COLORS["surface"]))
+        self.bind(on_press=lambda *_: setattr(self._bgc, "rgba", _ROW_PRESS_BG))
+        self.bind(on_release=lambda *_: setattr(self._bgc, "rgba", _ROW_BG))
 
     def _sb(self, *_):
         self._bgr.pos = self.pos; self._bgr.size = self.size
@@ -343,17 +353,17 @@ class _BtRow(ButtonBehavior, BoxLayout):
                        size_hint=(None, 1), width=_sh(16))
         self.add_widget(bt_icon)
 
-        self.add_widget(_lbl(name or mac, _sf(11), COLORS["white"], size_hint=(1, 1)))
+        self.add_widget(_lbl(name or mac, _sf(11), _TEXT_PRIMARY, size_hint=(1, 1)))
         action = "REMOVE" if paired else "PAIR"
         self.add_widget(_lbl(action, _sf(10), COLORS["blue"], halign="right",
                              size_hint=(None, 1), width=_sh(50)))
 
         with self.canvas.before:
-            self._bgc = Color(*COLORS["surface"])
+            self._bgc = Color(*_ROW_BG)
             self._bgr = RoundedRectangle(pos=self.pos, size=self.size, radius=[_sv(6)])
         self.bind(pos=self._sb, size=self._sb)
-        self.bind(on_press=lambda *_: setattr(self._bgc, "rgba", COLORS["gray_700"]))
-        self.bind(on_release=lambda *_: setattr(self._bgc, "rgba", COLORS["surface"]))
+        self.bind(on_press=lambda *_: setattr(self._bgc, "rgba", _ROW_PRESS_BG))
+        self.bind(on_release=lambda *_: setattr(self._bgc, "rgba", _ROW_BG))
 
     def _sb(self, *_):
         self._bgr.pos = self.pos; self._bgr.size = self.size
@@ -368,15 +378,15 @@ class _SectionHeader(ButtonBehavior, BoxLayout):
         kwargs.setdefault("spacing", _sh(4))
         super().__init__(**kwargs)
 
-        lbl = _lbl(title, _sf(11), COLORS["gray_400"], halign="left",
+        lbl = _lbl(title, _sf(11), _TEXT_SECONDARY, halign="left",
                    bold=True, size_hint=(1, 1))
         self.add_widget(lbl)
-        self._arrow = _lbl("+", _sf(13), COLORS["gray_500"], halign="right",
+        self._arrow = _lbl("+", _sf(13), _TEXT_MUTED, halign="right",
                            size_hint=(None, 1), width=_sh(22))
         self.add_widget(self._arrow)
 
         with self.canvas.before:
-            Color(*COLORS["gray_800"])
+            Color(*_PANEL_LINE)
             self._line = Rectangle(pos=(self.x, self.y + 1), size=(self.width, 1))
         self.bind(pos=self._sl, size=self._sl)
 
@@ -430,24 +440,24 @@ class _FooterBtn(ButtonBehavior, BoxLayout):
         kwargs.setdefault("spacing", _sv(3))
         super().__init__(**kwargs)
 
-        icon_col = (1.0, 0.35, 0.30, 0.95) if danger else (0.85, 0.85, 0.88, 0.9)
+        icon_col = (1.0, 0.35, 0.30, 0.95) if danger else _TEXT_SECONDARY
         icon_sz = _sv(20)
         self._icon = Icon(kind=kind, color=icon_col,
                           size_hint=(None, None), size=(icon_sz, icon_sz),
                           pos_hint={"center_x": 0.5})
         self.add_widget(self._icon)
 
-        txt_col = (1.0, 0.35, 0.30, 1.0) if danger else COLORS["white"]
+        txt_col = (1.0, 0.35, 0.30, 1.0) if danger else _TEXT_PRIMARY
         lbl = _lbl(label, _sf(11), txt_col, halign="center")
         lbl.bold = True
         self.add_widget(lbl)
 
         with self.canvas.before:
-            self._bgc = Color(*COLORS["surface_light"])
+            self._bgc = Color(*_ROW_BG)
             self._bgr = RoundedRectangle(pos=self.pos, size=self.size, radius=[_sv(8)])
         self.bind(pos=self._sb, size=self._sb)
-        self.bind(on_press=lambda *_: setattr(self._bgc, "rgba", COLORS["gray_700"]))
-        self.bind(on_release=lambda *_: setattr(self._bgc, "rgba", COLORS["surface_light"]))
+        self.bind(on_press=lambda *_: setattr(self._bgc, "rgba", _ROW_PRESS_BG))
+        self.bind(on_release=lambda *_: setattr(self._bgc, "rgba", _ROW_BG))
 
     def _sb(self, *_):
         self._bgr.pos = self.pos; self._bgr.size = self.size
@@ -496,7 +506,7 @@ class QuickPanel(FloatLayout):
             height=PANEL_H,
         )
         with self._card.canvas.before:
-            Color(0.09, 0.09, 0.11, 0.97)
+            Color(*_PANEL_BG)
             self._card_bg = RoundedRectangle(
                 pos=self._card.pos, size=self._card.size,
                 radius=[0, 0, _sv(16), _sv(16)],
@@ -532,23 +542,29 @@ class QuickPanel(FloatLayout):
         bat_box = BoxLayout(orientation="horizontal",
                             size_hint=(None, 1), width=_sh(80), spacing=_sh(4))
         self._header_bat_icon = Icon(
-            "battery", color=(0.75, 0.75, 0.78, 0.9),
+            "battery", color=_TEXT_SECONDARY,
             size_hint=(None, None), size=(_sh(24), _sv(12)),
             pos_hint={"center_y": 0.5},
         )
         bat_box.add_widget(self._header_bat_icon)
-        self._battery_lbl = _lbl("  --%", _sf(11), COLORS["gray_300"],
+        self._battery_lbl = _lbl("  --%", _sf(11), _TEXT_SECONDARY,
                                   halign="left", size_hint=(1, 1))
         bat_box.add_widget(self._battery_lbl)
         row.add_widget(bat_box)
 
         # WiFi + BT status dots
-        self._status_dots = _StatusDots(size_hint=(None, 1), width=_sh(30))
+        self._status_dots = _StatusDots(size_hint=(None, 1), width=_sh(48))
         row.add_widget(self._status_dots)
+
+        self._network_lbl = _lbl(
+            "LAN: --", _sf(10), _TEXT_MUTED,
+            halign="left", size_hint=(None, 1), width=_sh(150),
+        )
+        row.add_widget(self._network_lbl)
 
         # Time (center)
         self._time_lbl = _lbl(
-            self._now_str(), _sf(14), COLORS["white"],
+            self._now_str(), _sf(14), _TEXT_PRIMARY,
             halign="center", bold=True, size_hint=(1, 1),
         )
         row.add_widget(self._time_lbl)
@@ -556,14 +572,14 @@ class QuickPanel(FloatLayout):
         # Close — icon + label
         close_box = ButtonBehavior.__new__(ButtonBehavior)
         # Use a simple Label styled as a close button
-        close_lbl = _lbl("[ X ]", _sf(11), COLORS["gray_400"],
+        close_lbl = _lbl("[ X ]", _sf(11), _TEXT_MUTED,
                           halign="right", size_hint=(None, 1), width=_sh(40))
         close_lbl.bind(on_touch_down=lambda w, t: (self.hide(), True)
                        if w.collide_point(*t.pos) else None)
         row.add_widget(close_lbl)
 
         with row.canvas.after:
-            Color(*COLORS["gray_800"])
+            Color(*_PANEL_LINE)
             self._hdr_line = Rectangle(pos=(row.x, row.y), size=(row.width, 1))
         row.bind(pos=self._sl_hdr, size=self._sl_hdr)
         return row
@@ -667,7 +683,7 @@ class QuickPanel(FloatLayout):
             height=_sv(58), padding=[_sh(10), _sv(6)], spacing=_sh(8),
         )
         with row.canvas.before:
-            Color(*COLORS["gray_800"])
+            Color(*_PANEL_LINE)
             self._footer_sep = Rectangle(pos=(row.x, row.top - 1), size=(row.width, 1))
         row.bind(pos=self._sl_footer, size=self._sl_footer)
 
@@ -699,7 +715,7 @@ class QuickPanel(FloatLayout):
         self._visible = True
         self._time_lbl.text = self._now_str()
         self._card.pos = (0, Window.height)
-        Animation(a=0.55, d=0.20).start(self._scrim_col)
+        Animation(a=0.30, d=0.20).start(self._scrim_col)
         target_y = max(0, Window.height - PANEL_H)
         Animation(y=target_y, d=0.25, t="out_cubic").start(self._card)
         Clock.schedule_once(lambda _dt: self._refresh(), 0.12)
@@ -741,6 +757,8 @@ class QuickPanel(FloatLayout):
         batt    = _safe(hardware.get_battery_info,              {"percent": None, "charging": None})
         wifi_on = _safe(wifi_nmcli_local.get_wifi_radio_enabled, None)
         bt_on   = _safe(bluetooth_local.get_power_state,         None)
+        lan_on  = _safe(linux_ethernet_ready,                    False)
+        lan_ip  = _safe(local_network.get_primary_ipv4,          "—")
         vol     = _safe(hardware.get_sink_volume_pct,             None)
         bri     = _safe(hardware.get_brightness_pct,             None)
         mic     = _safe(hardware.get_source_volume_pct,          None)
@@ -762,10 +780,18 @@ class QuickPanel(FloatLayout):
             else:
                 self._battery_lbl.text = "  AC"
 
-            self._status_dots.set_states(bool(wifi_on), bool(bt_on))
+            self._status_dots.set_states(bool(wifi_on), bool(bt_on), bool(lan_on))
+            if lan_on:
+                self._network_lbl.text = f"LAN: {lan_ip}"
+            elif bool(wifi_on):
+                self._network_lbl.text = "LAN: Off  Wi-Fi: On"
+            else:
+                self._network_lbl.text = "LAN: Off  Wi-Fi: Off"
             self._wifi_tile.set_active(bool(wifi_on))
             self._bt_tile.set_active(bool(bt_on))
             self._dnd_tile.set_active(bool(dnd))
+            if bool(wifi_on) and not self._wifi_expanded:
+                Clock.schedule_once(lambda _x: self._expand_wifi_section(rescan=True), 0.05)
 
             if vol is not None:
                 self._vol_row.set_value(vol)
@@ -804,6 +830,8 @@ class QuickPanel(FloatLayout):
             target=lambda: wifi_nmcli_local.set_wifi_radio(state), daemon=True
         ).start()
         self._status_dots.set_wifi(state)
+        if state:
+            Clock.schedule_once(lambda _dt: self._expand_wifi_section(rescan=True), 0.45)
 
     def _on_bt_toggle(self, state: bool):
         threading.Thread(
@@ -824,21 +852,29 @@ class QuickPanel(FloatLayout):
     # ------------------------------------------------------------------
 
     def _toggle_wifi_section(self):
-        self._wifi_expanded = not self._wifi_expanded
-        self._wifi_sec_hdr.set_expanded(self._wifi_expanded)
         if self._wifi_expanded:
-            self._wifi_list.clear_widgets()
-            self._wifi_list.height = _sv(34)
-            self._wifi_list.add_widget(_lbl("Scanning...", _sf(11), COLORS["gray_500"],
-                                            size_hint_y=None, height=_sv(34)))
-            threading.Thread(target=self._load_wifi, daemon=True).start()
+            self._collapse_wifi_section()
         else:
-            self._wifi_list.clear_widgets()
-            self._wifi_list.height = 0
+            self._expand_wifi_section(rescan=True)
 
-    def _load_wifi(self):
+    def _collapse_wifi_section(self):
+        self._wifi_expanded = False
+        self._wifi_sec_hdr.set_expanded(False)
+        self._wifi_list.clear_widgets()
+        self._wifi_list.height = 0
+
+    def _expand_wifi_section(self, rescan: bool = False):
+        self._wifi_expanded = True
+        self._wifi_sec_hdr.set_expanded(True)
+        self._wifi_list.clear_widgets()
+        self._wifi_list.height = _sv(34)
+        self._wifi_list.add_widget(_lbl("Scanning...", _sf(11), _TEXT_MUTED,
+                                        size_hint_y=None, height=_sv(34)))
+        threading.Thread(target=lambda: self._load_wifi(rescan=rescan), daemon=True).start()
+
+    def _load_wifi(self, rescan: bool = False):
         try:
-            nets = wifi_nmcli_local.scan_wifi_networks(rescan=False)
+            nets = wifi_nmcli_local.scan_wifi_networks(rescan=rescan)
         except Exception:
             nets = []
 
@@ -847,10 +883,11 @@ class QuickPanel(FloatLayout):
                 return
             self._wifi_list.clear_widgets()
             if not nets:
-                self._wifi_list.height = _sv(34)
-                self._wifi_list.add_widget(_lbl("No networks found", _sf(11),
-                                                COLORS["gray_500"], size_hint_y=None,
-                                                height=_sv(34)))
+                hint = _safe(wifi_nmcli_local.empty_scan_hint, "No networks found")
+                self._wifi_list.height = _sv(56)
+                self._wifi_list.add_widget(_lbl(hint, _sf(10),
+                                                _TEXT_MUTED, size_hint_y=None,
+                                                height=_sv(56)))
                 return
             shown = nets[:5]
             for net in shown:
@@ -997,17 +1034,19 @@ class QuickPanel(FloatLayout):
 
 class _StatusDots(Widget):
     _ON  = COLORS["blue"]
-    _OFF = COLORS["gray_700"]
+    _OFF = _TEXT_MUTED
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         self._wifi = False
         self._bt = False
+        self._lan = False
         self.bind(pos=self._draw, size=self._draw)
 
-    def set_states(self, wifi: bool, bt: bool):
+    def set_states(self, wifi: bool, bt: bool, lan: bool = False):
         self._wifi = wifi
         self._bt = bt
+        self._lan = lan
         self._draw()
 
     def set_wifi(self, v: bool):
@@ -1018,16 +1057,22 @@ class _StatusDots(Widget):
         self._bt = v
         self._draw()
 
+    def set_lan(self, v: bool):
+        self._lan = v
+        self._draw()
+
     def _draw(self, *_):
         self.canvas.clear()
-        d = max(5, int(min(self.width / 2.6, self.height * 0.42)))
+        d = max(5, int(min(self.width / 3.8, self.height * 0.42)))
         cx, cy = self.center_x, self.center_y
-        gap = d + 3
+        gap = d + 2
         with self.canvas:
             Color(*(self._ON if self._wifi else self._OFF))
-            Ellipse(pos=(cx - gap, cy - d / 2), size=(d, d))
+            Ellipse(pos=(cx - (gap * 2), cy - d / 2), size=(d, d))
             Color(*(self._ON if self._bt else self._OFF))
-            Ellipse(pos=(cx + 2, cy - d / 2), size=(d, d))
+            Ellipse(pos=(cx - d / 2, cy - d / 2), size=(d, d))
+            Color(*((0.20, 0.74, 0.34, 1.0) if self._lan else self._OFF))
+            Ellipse(pos=(cx + gap, cy - d / 2), size=(d, d))
 
 
 # ---------------------------------------------------------------------------
