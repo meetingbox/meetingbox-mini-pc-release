@@ -1252,6 +1252,14 @@ class MeetingBoxApp(App):
             self.root_layout.add_widget(_handle)
         except Exception:
             logger.exception("SwipeHandle failed to load")
+        # Explicit top-edge shutter button as a guaranteed fallback trigger.
+        # Some kiosk window managers swallow top-edge swipe gestures before
+        # Kivy receives them; a visible tap target avoids that failure mode.
+        try:
+            _qp_btn = _QuickPanelButton(app=self)
+            self.root_layout.add_widget(_qp_btn)
+        except Exception:
+            logger.exception("QuickPanelButton failed to load")
 
         if SHOW_FPS:
             Clock.schedule_interval(self._log_fps, 1.0)
@@ -6389,6 +6397,47 @@ class _SwipeHandle(Widget):
         qp = getattr(self._app, "quick_panel", None)
         if qp and not qp._visible:
             qp.show()
+
+
+class _QuickPanelButton(Widget):
+    """Small top-edge button that always opens the QuickPanel."""
+
+    def __init__(self, app, **kwargs):
+        from kivy.graphics import Color, Line, RoundedRectangle
+
+        kwargs.setdefault("size_hint", (None, None))
+        kwargs.setdefault("size", (50, 26))
+        kwargs.setdefault("pos_hint", {"right": 0.985, "top": 0.995})
+        super().__init__(**kwargs)
+        self._app = app
+
+        with self.canvas:
+            Color(1, 1, 1, 0.18)
+            self._bg = RoundedRectangle(radius=[8])
+            Color(1, 1, 1, 0.85)
+            self._l1 = Line(width=1.2)
+            self._l2 = Line(width=1.2)
+            self._l3 = Line(width=1.2)
+        self.bind(pos=self._draw, size=self._draw)
+        self._draw()
+
+    def _draw(self, *_):
+        self._bg.pos = self.pos
+        self._bg.size = self.size
+        left = self.x + 13
+        right = self.right - 13
+        y_mid = self.center_y
+        self._l1.points = [left, y_mid + 5, right, y_mid + 5]
+        self._l2.points = [left, y_mid, right, y_mid]
+        self._l3.points = [left, y_mid - 5, right, y_mid - 5]
+
+    def on_touch_down(self, touch):
+        if not self.collide_point(*touch.pos):
+            return False
+        qp = getattr(self._app, "quick_panel", None)
+        if qp and not qp._visible:
+            qp.show()
+        return True
 
 
 # ==================================================================
