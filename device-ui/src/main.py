@@ -3172,6 +3172,11 @@ class MeetingBoxApp(App):
     def _apply_amplitude_to_home(self, amplitude: float) -> None:
         if self.screen_manager is None:
             return
+        if getattr(self, "_voice_control_bar", None) is not None:
+            # Global overlay owns waveform animation; avoid waking legacy per-screen
+            # voice pills that would visually duplicate the global pill.
+            self._voice_control_bar.update_amplitude(amplitude)
+            return
         current = self.screen_manager.current
         if current == 'home':
             try:
@@ -4973,6 +4978,9 @@ class MeetingBoxApp(App):
 
         def _on_rt_state(state: str) -> None:
             self._set_voice_runtime_state(state)
+            if getattr(self, "_voice_control_bar", None) is not None:
+                # Global overlay is the single source of truth for pill state.
+                return
 
             def _update_home(_dt):
                 if self.screen_manager is None:
@@ -6382,6 +6390,9 @@ class _SwipeHandle(Widget):
     # ------------------------------------------------------------------
 
     def on_touch_down(self, touch):
+        vcb = getattr(self._app, "_voice_control_bar", None)
+        if vcb is not None and vcb.is_touch_on_controls(*touch.pos):
+            return False
         if not self.collide_point(*touch.pos):
             return False
         self._start_y = touch.y
@@ -6451,6 +6462,9 @@ class _QuickPanelButton(Widget):
         self._l3.points = [left, y_mid - 5, right, y_mid - 5]
 
     def on_touch_down(self, touch):
+        vcb = getattr(self._app, "_voice_control_bar", None)
+        if vcb is not None and vcb.is_touch_on_controls(*touch.pos):
+            return False
         if not self.collide_point(*touch.pos):
             return False
         qp = getattr(self._app, "quick_panel", None)

@@ -295,8 +295,10 @@ class VoiceControlBar(FloatLayout):
         s = _scale()
 
         # ── Voice state pill ────────────────────────────────────────────────
-        voice_w = round(_PILL_W_FIG * s)
-        voice_h = round(_PILL_H_FIG * s)
+        # Keep both pills at the same rendered height.
+        common_h = round(_IMG_H * s)
+        voice_h = common_h
+        voice_w = round((_PILL_W_FIG / _PILL_H_FIG) * voice_h)
         self._voice_pill = _VoicePill(
             size_hint=(None, None),
             size=(voice_w, voice_h),
@@ -304,7 +306,7 @@ class VoiceControlBar(FloatLayout):
 
         # ── Exit image pill ─────────────────────────────────────────────────
         # Render the image at the same height as the voice pill, preserving aspect.
-        img_h  = voice_h
+        img_h  = common_h
         img_w  = round(img_h * (_IMG_W / _IMG_H))
         _src   = str(ASSETS_DIR / "frame22_exit.png")
         self._exit_pill = _ExitPill(
@@ -365,6 +367,7 @@ class VoiceControlBar(FloatLayout):
         """Called from main.py whenever the realtime voice runtime state changes."""
         self._state = (state or "idle").strip().lower()
         self._refresh()
+        self._suppress_current_screen_local_pill()
         if self._visible and self._state not in ("idle", ""):
             self._voice_pill.set_state(self._state)
 
@@ -372,6 +375,7 @@ class VoiceControlBar(FloatLayout):
         """Called from main.py whenever the ScreenManager switches screens."""
         self._screen = screen_name or ""
         self._refresh()
+        self._suppress_current_screen_local_pill()
 
     def update_amplitude(self, amp: float) -> None:
         """Receive audio amplitude (0.0–1.0) from the voice pipeline."""
@@ -426,3 +430,33 @@ class VoiceControlBar(FloatLayout):
             app.goto_screen("home")
         except Exception:
             logger.debug("VoiceControlBar: goto_screen error", exc_info=True)
+
+    # ── Public hit-test helper for top-edge controls ────────────────────────
+
+    def is_touch_on_controls(self, x: float, y: float) -> bool:
+        """Return True when a touch is directly on the visible pill row."""
+        return self._visible and self._row.collide_point(x, y)
+
+    # ── Local pill suppression (avoid double-render with legacy per-screen UI) ──
+
+    def _suppress_current_screen_local_pill(self) -> None:
+        """Hide any screen-local `_voice_pill` while this global bar is active."""
+        if not self._visible:
+            return
+        app = self._app
+        if app is None:
+            return
+        sm = getattr(app, "screen_manager", None)
+        if sm is None:
+            return
+        try:
+            scr = sm.get_screen(sm.current)
+        except Exception:
+            return
+        pill = getattr(scr, "_voice_pill", None)
+        if pill is None:
+            return
+        try:
+            pill.opacity = 0.0
+        except Exception:
+            logger.debug("VoiceControlBar: failed to hide local voice pill", exc_info=True)
