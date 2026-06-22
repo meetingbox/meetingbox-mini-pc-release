@@ -261,9 +261,10 @@ class EmailsScreen(BaseScreen):
         card.add_widget(arrow)
 
         # ── Time  x=1050  y=214  w=155  h=48  SemiBold 30  #4A525F ──────────
-        # Width extended to 155 px so full date strings ("Mon, Jun 22") fit.
+        # shorten=True prevents wrapping if a future format produces a longer string.
         self._lbl_time = _lbl(
             "", _F_SB, _ff(30), _C_TIME, ha="left",
+            shorten=True, shorten_from="right",
             **_rel(1050, 214, 155, 48))
         card.add_widget(self._lbl_time)
 
