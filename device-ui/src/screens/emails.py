@@ -8,7 +8,7 @@ Layout (all Figma absolute px on the 1260 × 800 design frame):
   BACKGROUND : full frame  assets/brief/v2/bg.png  + 45 % white overlay
   STATUS BAR : Listening pill x=851 y=17 w=222 h=47  |  WiFi  |  Battery
   EMAIL CARD : x=22  y=77  1216×682  rgba(255,255,255,0.9)  radius=38
-    SUBJECT  : x=45   y=36   w=464  h=48   SemiBold 40 px  #2F2F2F
+    SUBJECT  : x=45   y=36   w=1126 h=48   SemiBold 40 px  #2F2F2F  (shorten=right)
     DIVIDER  : y=118  x=45   w=1130              #9E9E9E
     AVATAR   : x=45   y=173  w=66   h=66   circle  #6D48CC
       INITIAL: centred in avatar   SemiBold 40 px  white
@@ -31,7 +31,7 @@ import logging
 import time
 
 from kivy.clock import Clock
-from kivy.graphics import Color, Ellipse, Line, Rectangle, RoundedRectangle
+from kivy.graphics import Color, Ellipse, Rectangle, RoundedRectangle
 from kivy.uix.floatlayout import FloatLayout
 from kivy.uix.gridlayout import GridLayout
 from kivy.uix.image import Image
@@ -203,12 +203,13 @@ class EmailsScreen(BaseScreen):
 
         card.bind(pos=_sync_card, size=_sync_card)
 
-        # ── Subject  x=45  y=36  w=1126  h=96  SemiBold 40  #2F2F2F ─────────
-        # Width extends to near the right edge of the card so long subjects
-        # wrap to a second line instead of being clipped.
+        # ── Subject  x=45  y=36  w=1126  h=48  SemiBold 40  #2F2F2F ─────────
+        # Single-line; shorten with ellipsis so long subjects never push into
+        # the divider at y=118.
         self._lbl_subject = _lbl(
-            "", _F_SB, _ff(40), _C_SUBJECT, ha="left", va="top",
-            **_rel(45, 36, 1126, 96))
+            "", _F_SB, _ff(40), _C_SUBJECT, ha="left", va="middle",
+            shorten=True, shorten_from="right",
+            **_rel(45, 36, 1126, 48))
         card.add_widget(self._lbl_subject)
 
         # ── Divider  y=118  x=45  w=1130  h≈1.5 ─────────────────────────────
@@ -239,10 +240,12 @@ class EmailsScreen(BaseScreen):
             **_rel(45, 173, 66, 66))
         card.add_widget(self._lbl_initial)
 
-        # ── Sender name  x=137  y=184  w=377  h=43  SemiBold 36  #3C3C3C ───
+        # ── Sender name  x=137  y=184  w=700  h=43  SemiBold 36  #3C3C3C ───
+        # Widened to 700 px (time label is at x=1050) so long names fit.
         self._lbl_sender = _lbl(
             "", _F_SB, _ff(36), _C_SENDER, ha="left",
-            **_rel(137, 184, 377, 43))
+            shorten=True, shorten_from="right",
+            **_rel(137, 184, 700, 43))
         card.add_widget(self._lbl_sender)
 
         # ── "to me"  x=137  y=239  w=83  h=38  SemiBold 32  #3C3C3C ─────────
@@ -271,11 +274,8 @@ class EmailsScreen(BaseScreen):
             pos_hint={"x": 0, "y": 0},
             do_scroll_x=False,
             do_scroll_y=True,
-            scroll_type=["bars", "content"],
-            bar_width=_sz(8),
-            bar_margin=_sz(2),
-            bar_color=[0.78, 0.78, 0.78, 1.0],
-            bar_inactive_color=[0.78, 0.78, 0.78, 0.4],
+            scroll_type=["content"],
+            bar_width=0,
         )
         body_container = GridLayout(
             cols=1,
