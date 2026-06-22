@@ -2556,7 +2556,7 @@ class RealtimeVoiceSession:
                     if self._brief_active:
                         self._cancel_briefing()
                     self._emit_device_navigation(out)
-            elif name == "show_email_view":
+            elif name in ("fetch_and_show_email", "show_email_view"):
                 self._emit_email_view(out)
             elif name == "show_email_draft":
                 self._emit_email_draft(out)
