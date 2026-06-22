@@ -344,7 +344,8 @@ class EmailsScreen(BaseScreen):
         if "recipient_label" in data:
             self._recipient_lbl = str(data.get("recipient_label") or "to me")
         if "body" in data:
-            self._body = str(data.get("body") or "")
+            raw = str(data.get("body") or "")
+            self._body = raw.replace("\r\n", "\n").replace("\r", "\n")
 
         # Derive initial from name when not supplied
         if not self._sender_initial and self._sender_name:
