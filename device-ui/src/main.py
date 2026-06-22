@@ -4644,10 +4644,10 @@ class MeetingBoxApp(App):
         recip = getattr(self, "_recipient_overlay", None)
         if recip is not None and recip.visible:
             recip.close()
-        # Navigate back to home if the user is still on the email draft screen.
+        # Navigate back to home if the user is still on a voice-driven screen.
         try:
             sm = getattr(self, "screen_manager", None)
-            if sm is not None and sm.current == "email_draft":
+            if sm is not None and sm.current in ("email_draft", "emails"):
                 self.goto_screen("home")
         except Exception:
             pass

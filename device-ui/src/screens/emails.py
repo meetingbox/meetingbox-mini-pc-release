@@ -202,10 +202,12 @@ class EmailsScreen(BaseScreen):
 
         card.bind(pos=_sync_card, size=_sync_card)
 
-        # ── Subject  x=45  y=36  w=464  h=48  SemiBold 40  #2F2F2F ─────────
+        # ── Subject  x=45  y=36  w=1126  h=96  SemiBold 40  #2F2F2F ─────────
+        # Width extends to near the right edge of the card so long subjects
+        # wrap to a second line instead of being clipped.
         self._lbl_subject = _lbl(
-            "", _F_SB, _ff(40), _C_SUBJECT, ha="left",
-            **_rel(45, 36, 464, 48))
+            "", _F_SB, _ff(40), _C_SUBJECT, ha="left", va="top",
+            **_rel(45, 36, 1126, 96))
         card.add_widget(self._lbl_subject)
 
         # ── Divider  y=118  x=45  w=1130  h≈1.5 ─────────────────────────────
@@ -254,10 +256,11 @@ class EmailsScreen(BaseScreen):
             **_rel(236, 250, 19, 19))
         card.add_widget(arrow)
 
-        # ── Time  x=1050  y=226  w=113  h=36  SemiBold 30  #4A525F ──────────
+        # ── Time  x=1050  y=214  w=155  h=48  SemiBold 30  #4A525F ──────────
+        # Width extended to 155 px so full date strings ("Mon, Jun 22") fit.
         self._lbl_time = _lbl(
             "", _F_SB, _ff(30), _C_TIME, ha="left",
-            **_rel(1050, 226, 113, 36))
+            **_rel(1050, 214, 155, 48))
         card.add_widget(self._lbl_time)
 
         # ── Scrollable body  card-relative top=290  h=392 ────────────────────
