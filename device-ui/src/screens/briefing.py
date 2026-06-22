@@ -77,7 +77,20 @@ class _AssistantOrb(FloatLayout):
             self._inner_color = Color(0.22, 0.53, 0.98, 0.82)
             self._inner = Ellipse(pos=self.pos, size=self.size)
         self.bind(pos=self._sync, size=self._sync)
-        self._event = Clock.schedule_interval(self._tick, 1 / 24)
+        # Animation runs only while the Briefing screen is on-screen (see
+        # BriefingScreen.on_enter / on_leave). Previously this 24 fps interval
+        # started at construction and was never cancelled, so it pulsed for the
+        # whole device lifetime even when Briefing was never opened.
+        self._event = None
+
+    def start(self):
+        if self._event is None:
+            self._event = Clock.schedule_interval(self._tick, 1 / 24)
+
+    def stop(self):
+        if self._event is not None:
+            self._event.cancel()
+            self._event = None
 
     def _sync(self, *_args):
         pad = min(self.width, self.height) * 0.22
@@ -114,8 +127,8 @@ class BriefingScreen(BaseScreen):
         self.make_dark_bg(root)
 
         header = BoxLayout(orientation="horizontal", size_hint=(1, None), height=sv(76), spacing=sv(12))
-        orb = _AssistantOrb(size=(sv(58), sv(58)))
-        header.add_widget(orb)
+        self._orb = _AssistantOrb(size=(sv(58), sv(58)))
+        header.add_widget(self._orb)
 
         title_col = BoxLayout(orientation="vertical", spacing=sv(2))
         self.kicker = Label(
@@ -238,6 +251,10 @@ class BriefingScreen(BaseScreen):
 
     def on_enter(self):
         self.title.text = f"Tony · {display_now().strftime('%A')}"
+        self._orb.start()
+
+    def on_leave(self):
+        self._orb.stop()
 
     def run_assistant(self, prompt: str, label: str):
         if self._loading:

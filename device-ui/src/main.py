@@ -857,12 +857,30 @@ class MeetingBoxApp(App):
     def ui_cache_set(self, key: str, value):
         self._ui_data_cache[key] = value
         self._ui_data_cache_ts[key] = time.time()
+        self._evict_calendar_week_cache()
         self._ui_cache_persist_to_disk()
         for cb in list(self._ui_cache_subscribers.get(key, [])):
             try:
                 cb(value)
             except Exception:
                 logger.debug("ui_cache subscriber failed for %s", key, exc_info=True)
+
+    def _evict_calendar_week_cache(self, max_weeks: int = 8) -> None:
+        """Keep only the most recently set calendar-week entries.
+
+        Each distinct week the user browses created a permanent
+        ``calendar_week:<monday>`` key that was never removed (only its
+        freshness timestamp was cleared on invalidate), so the cache — and the
+        JSON file it is persisted to on every write — grew without bound over a
+        long-running session. Cap it to the most recent weeks.
+        """
+        week_keys = [k for k in self._ui_data_cache if str(k).startswith("calendar_week:")]
+        if len(week_keys) <= max_weeks:
+            return
+        week_keys.sort(key=lambda k: self._ui_data_cache_ts.get(k, 0.0))
+        for stale in week_keys[: len(week_keys) - max_weeks]:
+            self._ui_data_cache.pop(stale, None)
+            self._ui_data_cache_ts.pop(stale, None)
 
     def ui_cache_is_fresh(self, key: str, ttl_s: float | None = None) -> bool:
         ts = self._ui_data_cache_ts.get(key)
@@ -1311,10 +1329,10 @@ class MeetingBoxApp(App):
     def _on_window_minimized(self, *_args):
         """Fired when the OS/WM minimizes the app window.
 
-        On a Linux kiosk the window manager can intercept a top-edge swipe
-        and minimize the window before Kivy's _SwipeHandle widget sees it.
-        We immediately restore the window and open the QuickPanel so the
-        gesture still produces the expected result for the user.
+        On a Linux kiosk the WM can intercept a top-edge gesture and
+        minimize the window. We immediately restore and raise the window
+        so the app stays full-screen. We do NOT auto-open the QuickPanel
+        here — the user can swipe down deliberately to open it.
         """
         def _restore(_dt):
             try:
@@ -1327,15 +1345,12 @@ class MeetingBoxApp(App):
                     Window.raise_window()
             except Exception:
                 pass
-            qp = getattr(self, 'quick_panel', None)
-            if qp and not qp._visible:
-                qp.show()
 
         Clock.schedule_once(_restore, 0.05)
 
     def _panel_swipe_down(self, _window, touch):
-        """Window-level backup: record a touch that starts in the top zone."""
-        zone = 80  # px from top of window
+        """Window-level: record a touch that starts in the top-edge zone."""
+        zone = 72  # px from top of screen — just above the pill handle
         if Window.height > 0 and touch.y >= Window.height - zone:
             self._panel_swipe_uid = touch.uid
             self._panel_swipe_start_y = touch.y
@@ -1343,16 +1358,21 @@ class MeetingBoxApp(App):
             self._panel_swipe_uid = None
 
     def _panel_swipe_move(self, _window, touch):
-        """Window-level backup: open QuickPanel if touch dragged down from top zone."""
+        """Window-level: open QuickPanel only on a clear downward drag from top zone.
+
+        A downward drag in Kivy coordinates means y decreases (y=0 is the
+        bottom of the screen). We require a 40 px downward delta so that
+        normal finger jitter on a button press (which sits near the top on
+        some screens) never accidentally opens the panel.
+        """
         if self._panel_swipe_uid is None:
             return
         if touch.uid != self._panel_swipe_uid:
             return
-        # In Kivy y=0 is bottom, so dragging DOWN means y decreases.
-        # Support both normal and inverted Y-axis touchscreens.
-        moved = abs(self._panel_swipe_start_y - touch.y)
-        if moved >= 20:
-            self._panel_swipe_uid = None
+        # Only open on a DOWNWARD drag (start_y > touch.y → moved down).
+        delta_down = self._panel_swipe_start_y - touch.y
+        if delta_down >= 40:
+            self._panel_swipe_uid = None  # consume — don't fire twice
             qp = getattr(self, 'quick_panel', None)
             if qp and not qp._visible:
                 qp.show()
@@ -4552,6 +4572,34 @@ class MeetingBoxApp(App):
         except Exception:
             pass
 
+    def _schedule_say_bar_update(self, speaker: str, text: str) -> None:
+        """Coalesce streaming say-bar updates into a single pending frame.
+
+        Transcript deltas/partials previously scheduled a fresh
+        ``Clock.schedule_once`` per token, so a long response could leave a
+        growing backlog of one-shots if the UI thread fell behind. Only the
+        latest text matters for the say bar, so keep just one pending callback
+        and let it read the most recent value. Callers run on the Kivy thread.
+        """
+        self._pending_say_bar = (speaker, text)
+        if getattr(self, "_say_bar_update_ev", None) is not None:
+            return
+
+        def _apply(_dt):
+            self._say_bar_update_ev = None
+            pending = getattr(self, "_pending_say_bar", None)
+            if not pending:
+                return
+            sp, tx = pending
+            if (self.screen_manager is not None
+                    and self.screen_manager.current in ('home', 'voice_session')):
+                try:
+                    self.screen_manager.get_screen('home').update_say_bar_transcription(sp, tx)
+                except Exception:
+                    pass
+
+        self._say_bar_update_ev = Clock.schedule_once(_apply, 0)
+
     def _end_realtime_voice_session(self) -> None:
         # Capture connection/start state BEFORE resetting it below. The
         # post-session wake suppression and the short-failed local fallback both
@@ -4573,6 +4621,11 @@ class MeetingBoxApp(App):
         self._set_voice_runtime_state("idle")
         if self._transcript_overlay is not None:
             self._transcript_overlay.hide()
+            # Drop this conversation's chat widgets now that the session ended.
+            # They were previously only cleared when the *next* session started,
+            # so every past conversation stayed laid out in memory and the UI
+            # got progressively heavier the longer the device ran.
+            self._transcript_overlay.clear_session()
         # Tear down the email workflow when the voice session ends.
         recip = getattr(self, "_recipient_overlay", None)
         if recip is not None and recip.visible:
@@ -5029,14 +5082,7 @@ class MeetingBoxApp(App):
             if not getattr(self, "_pending_user_msg_id", None):
                 self._pending_user_msg_id = overlay.add_user_message("…")
             # Update home say bar with a placeholder immediately
-            def _say_bar_placeholder(_dt):
-                if (self.screen_manager is not None
-                        and self.screen_manager.current in ('home', 'voice_session')):
-                    try:
-                        self.screen_manager.get_screen('home').update_say_bar_transcription("You", "…")
-                    except Exception:
-                        pass
-            Clock.schedule_once(_say_bar_placeholder, 0)
+            self._schedule_say_bar_update("You", "…")
 
         def _on_user_transcript(text: str, is_final: bool = True) -> None:
             overlay = self._transcript_overlay
@@ -5063,14 +5109,7 @@ class MeetingBoxApp(App):
                 self._current_user_msg_id = msg_id
 
             # Also update home say bar / voice-session transcript with user text
-            def _say_bar_user(_dt, _t=text):
-                if (self.screen_manager is not None
-                        and self.screen_manager.current in ('home', 'voice_session')):
-                    try:
-                        self.screen_manager.get_screen('home').update_say_bar_transcription("You", _t)
-                    except Exception:
-                        pass
-            Clock.schedule_once(_say_bar_user, 0)
+            self._schedule_say_bar_update("You", text)
 
             # Parse picker choices on partials too; final ASR can be clipped
             # ("The") while a prior partial already contained "first one".
@@ -5207,14 +5246,7 @@ class MeetingBoxApp(App):
                 return
             overlay.stream_ai_message(item_id, accumulated)
             # Also update home say bar / voice-session transcript with AI text
-            def _say_bar_ai(_dt, _t=accumulated):
-                if (self.screen_manager is not None
-                        and self.screen_manager.current in ('home', 'voice_session')):
-                    try:
-                        self.screen_manager.get_screen('home').update_say_bar_transcription("AI", _t)
-                    except Exception:
-                        pass
-            Clock.schedule_once(_say_bar_ai, 0)
+            self._schedule_say_bar_update("AI", accumulated)
 
         try:
             if not prewarm:
@@ -6348,19 +6380,17 @@ class MeetingBoxApp(App):
 # ==================================================================
 
 class _SwipeHandle(Widget):
-    """Invisible (but tappable) bar at the top of the screen.
+    """Visual-only pull-handle bar at the top of the screen.
 
-    A simple tap OR a short downward drag on this widget opens the
-    QuickPanel.  Using a real widget + touch.grab() is far more reliable
-    than Window-level coordinate math, which breaks when touchscreen
-    drivers use inverted or scaled Y axes.
-
-    Visual: a subtle white pill line (iOS-style pull handle) drawn in
-    the center of the bar so users can see where to interact.
+    This widget draws the visible pill indicator so users know there is a
+    swipe target, but it does NOT intercept or grab any touch events.
+    Swipe detection is handled entirely by the Window-level
+    ``_panel_swipe_down`` / ``_panel_swipe_move`` handlers in
+    ``MeetingBoxApp``, which avoids stealing touches from UI buttons that
+    sit near the top of the screen (e.g. the voice-session Back button).
     """
 
     _HANDLE_H = 64      # widget height in px  (≈10 % of a 600 px screen)
-    _DRAG_THRESHOLD = 8  # px of downward drag that triggers the panel
 
     def __init__(self, app, **kwargs):
         from kivy.graphics import Color, RoundedRectangle
@@ -6369,7 +6399,6 @@ class _SwipeHandle(Widget):
         kwargs.setdefault("pos_hint", {"top": 1})
         super().__init__(**kwargs)
         self._app = app
-        self._start_y: float | None = None
 
         # Visible pill indicator — centred near the bottom of the handle bar
         with self.canvas:
@@ -6380,53 +6409,8 @@ class _SwipeHandle(Widget):
 
     def _draw(self, *_):
         pw, ph = 48, 5
-        # Position the pill near the bottom edge of the handle so it sits
-        # at the visible top of the screen content (not hidden in a corner).
         self._pill.pos = (self.center_x - pw / 2, self.y + 6)
         self._pill.size = (pw, ph)
-
-    # ------------------------------------------------------------------
-    # Touch handling
-    # ------------------------------------------------------------------
-
-    def on_touch_down(self, touch):
-        vcb = getattr(self._app, "_voice_control_bar", None)
-        if vcb is not None and vcb.is_touch_on_controls(*touch.pos):
-            return False
-        if not self.collide_point(*touch.pos):
-            return False
-        self._start_y = touch.y
-        touch.grab(self)
-        return True     # consume the touch so it doesn't fall through
-
-    def on_touch_move(self, touch):
-        if touch.grab_current is not self:
-            return False
-        if self._start_y is None:
-            return True
-        # Downward drag (in Kivy y=0 is bottom, so "down" = y decreases)
-        moved_down = self._start_y - touch.y
-        # Also handle inverted-Y touchscreens (y increases when moving down)
-        moved_any = abs(self._start_y - touch.y)
-        if moved_any >= self._DRAG_THRESHOLD:
-            self._open_panel()
-        return True
-
-    def on_touch_up(self, touch):
-        if touch.grab_current is not self:
-            return False
-        # Tap (very little movement) also opens the panel
-        if self._start_y is not None:
-            if abs(self._start_y - touch.y) < self._DRAG_THRESHOLD:
-                self._open_panel()
-        touch.ungrab(self)
-        self._start_y = None
-        return True
-
-    def _open_panel(self):
-        qp = getattr(self._app, "quick_panel", None)
-        if qp and not qp._visible:
-            qp.show()
 
 
 class _QuickPanelButton(Widget):
