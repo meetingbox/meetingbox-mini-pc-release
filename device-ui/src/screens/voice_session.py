@@ -28,6 +28,7 @@ from kivy.uix.label import Label
 from kivy.uix.scrollview import ScrollView
 from kivy.uix.widget import Widget
 
+from components.live_wifi_icon import LiveWifiIcon as _WifiIcon
 from config import ASSETS_DIR, DISPLAY_HEIGHT, DISPLAY_WIDTH
 from screens.base_screen import BaseScreen
 # Re-use the shared pill and battery widget from the home screen.
@@ -72,46 +73,6 @@ def _fp(name: str) -> str:
     p = _FIGMA_DIR / name
     return str(p) if p.is_file() else ""
 
-
-# ──────────────────────────────────────────────────────────────────────────────
-# Programmatic WiFi icon  (Figma fill #000000, 29 × 20 px)
-# ──────────────────────────────────────────────────────────────────────────────
-class _WifiIcon(Widget):
-    """Three concentric arcs + centre dot drawn in canvas — true vector, no PNG."""
-
-    _COL = (0.0, 0.0, 0.0, 1.0)   # Figma fill: #000000
-
-    def __init__(self, **kw):
-        super().__init__(**kw)
-        with self.canvas:
-            self._c    = Color(*self._COL)
-            self._arc1 = Line(width=1.4)   # innermost (smallest)
-            self._arc2 = Line(width=1.4)
-            self._arc3 = Line(width=1.4)   # outermost
-            self._dotc = Color(*self._COL)
-            self._dot  = Ellipse()
-        self.bind(pos=self._redraw, size=self._redraw)
-        Clock.schedule_once(self._redraw, 0)
-
-    def _redraw(self, *_) -> None:
-        w, h = self.size
-        if w <= 1 or h <= 1:
-            return
-        # Arc pivot: bottom-centre of the icon
-        cx = self.x + w / 2
-        cy = self.y + h * 0.08
-
-        # Three arc radii as fractions of icon height
-        for arc, frac in [(self._arc1, 0.30), (self._arc2, 0.58), (self._arc3, 0.86)]:
-            r = h * frac
-            # Kivy arc angles: 0° = 3 o'clock, counterclockwise.
-            # 45°–135° gives an upward-opening fan.
-            arc.ellipse = (cx - r, cy - r, 2 * r, 2 * r, 45, 135)
-
-        # Dot
-        dr = h * 0.09
-        self._dot.pos  = (cx - dr, cy - dr)
-        self._dot.size = (dr * 2, dr * 2)
 
 
 # ──────────────────────────────────────────────────────────────────────────────

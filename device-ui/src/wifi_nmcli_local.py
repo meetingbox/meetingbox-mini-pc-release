@@ -454,6 +454,18 @@ def connect_wifi_network(ssid: str, password: Optional[str]) -> dict:
     return {"status": "failed", "message": msg}
 
 
+def get_current_wifi_signal() -> Optional[int]:
+    """Return signal strength 0–100 for the active WiFi connection, or None if not connected."""
+    try:
+        nets = scan_wifi_networks(rescan=False)
+        for n in nets:
+            if n.get("connected"):
+                return int(n.get("signal_strength") or 0)
+    except Exception:  # noqa: BLE001
+        pass
+    return None
+
+
 def list_saved_wifi_connection_names() -> list[str]:
     """Return NetworkManager connection profile names that are Wi‑Fi type."""
     if not has_nmcli():

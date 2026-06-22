@@ -1,19 +1,15 @@
 from __future__ import annotations
 
 import threading
-from pathlib import Path
 
 from kivy.clock import Clock
 from kivy.graphics import Color, RoundedRectangle
 from kivy.uix.floatlayout import FloatLayout
-from kivy.uix.image import Image
 from kivy.uix.widget import Widget
 
 import hardware
 import network_util
-from config import ASSETS_DIR
-
-_WIFI_ICON = str(ASSETS_DIR / "home" / "figma" / "new_wifi_icon.png")
+from components.live_wifi_icon import LiveWifiIcon
 
 
 class _BatteryIcon(Widget):
@@ -64,14 +60,15 @@ class _BatteryIcon(Widget):
 class DeviceStatusBar(FloatLayout):
     """Hardware-aware top-right status icons.
 
-    Shows the Figma wifi PNG only for wifi-only devices. Shows battery only
-    when the host reports a real battery through /sys/class/power_supply.
+    Shows a live WiFi icon (signal-strength aware) for wifi-only devices.
+    Shows battery only when the host reports a real battery through
+    /sys/class/power_supply.
     """
 
     def __init__(self, *, debug_location: str = "DeviceStatusBar", **kwargs):
         super().__init__(**kwargs)
         self._debug_location = debug_location
-        self._wifi_icon: Image | None = None
+        self._wifi_icon: LiveWifiIcon | None = None
         self._battery_icon: _BatteryIcon | None = None
         self._status_event = None
         Clock.schedule_once(lambda _dt: self.refresh(), 0)
@@ -96,17 +93,14 @@ class DeviceStatusBar(FloatLayout):
 
     def _apply_status(self, battery: dict, ethernet_ready: bool, wifi_radio: bool) -> None:
         has_battery = battery.get("percent") is not None
-        show_wifi = bool(wifi_radio and not ethernet_ready and Path(_WIFI_ICON).is_file())
+        show_wifi = bool(wifi_radio and not ethernet_ready)
         show_battery = bool(has_battery)
         self.clear_widgets()
 
         items = []
         if show_wifi:
-            wifi = Image(
-                source=_WIFI_ICON,
-                fit_mode="contain",
-                allow_stretch=True,
-                keep_ratio=True,
+            wifi = LiveWifiIcon(
+                color=(0.0, 0.0, 0.0, 1.0),
                 size_hint=(0.32, 0.72),
             )
             items.append(wifi)

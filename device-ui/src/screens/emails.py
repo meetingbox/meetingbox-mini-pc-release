@@ -39,6 +39,7 @@ from kivy.uix.label import Label
 from kivy.uix.scrollview import ScrollView
 from kivy.uix.widget import Widget
 
+from components.live_wifi_icon import LiveWifiIcon
 from config import ASSETS_DIR, DISPLAY_HEIGHT, DISPLAY_WIDTH
 from screens.base_screen import BaseScreen
 from screens.home import _VoiceStatePill  # noqa: PLC2701
@@ -311,13 +312,7 @@ class EmailsScreen(BaseScreen):
         self._voice_pill = pill
 
         # WiFi icon  x=1109  y=31  29×20
-        wifi_src = _asset("icon_wifi.png")
-        if wifi_src:
-            root.add_widget(Image(
-                source=wifi_src,
-                fit_mode="contain",
-                **_ph(1109, 31, 29, 20),
-            ))
+        root.add_widget(LiveWifiIcon(**_ph(1109, 31, 29, 20)))
 
         # Battery icon  x=1175  y=30  47×21
         batt_src = _asset("icon_battery.png")

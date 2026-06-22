@@ -39,6 +39,7 @@ from kivy.uix.image import Image
 from kivy.uix.label import Label
 from kivy.uix.widget import Widget
 
+from components.live_wifi_icon import LiveWifiIcon
 from components.modal_dialog import ModalDialog
 from config import ASSETS_DIR, DISPLAY_HEIGHT, DISPLAY_WIDTH, display_now
 from screens.base_screen import BaseScreen
@@ -501,16 +502,10 @@ class HomeScreen(BaseScreen):
             ))
 
         # 2 · WiFi icon  (1125, 31)  29 × 20 ─────────────────────────────
-        wifi_src = _fp("new_wifi_icon.png")
-        if wifi_src:
-            root.add_widget(Image(
-                source=wifi_src,
-                size_hint=(_sw(29), _sh(20)),
-                pos_hint={"x": _x(1125), "y": _y(31, 20)},
-                fit_mode="contain",
-                allow_stretch=True,
-                keep_ratio=True,
-            ))
+        root.add_widget(LiveWifiIcon(
+            size_hint=(_sw(29), _sh(20)),
+            pos_hint={"x": _x(1125), "y": _y(31, 20)},
+        ))
 
         # 3 · Battery indicator  (1191, 30)  47 × 21 ─────────────────────
         self._battery = _BatteryWidget(

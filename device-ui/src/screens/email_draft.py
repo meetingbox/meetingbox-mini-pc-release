@@ -47,6 +47,7 @@ from kivy.uix.label import Label
 from kivy.uix.scrollview import ScrollView
 from kivy.uix.widget import Widget
 
+from components.live_wifi_icon import LiveWifiIcon as _WifiIcon
 from config import ASSETS_DIR, DISPLAY_HEIGHT, DISPLAY_WIDTH
 from screens.base_screen import BaseScreen
 from screens.home import _BatteryWidget, _VoiceStatePill  # noqa: PLC2701
@@ -103,37 +104,6 @@ _C_BTN_SEND    = (0.063, 0.780, 0.427, 1.0)  # #10C76D
 _FONT_SB = "42dot-SB"
 _FONT_MD = "42dot-Med"
 
-
-# ──────────────────────────────────────────────────────────────────────────────
-# WiFi icon  (reused verbatim from voice_session.py)
-# ──────────────────────────────────────────────────────────────────────────────
-class _WifiIcon(Widget):
-    _COL = (0.0, 0.0, 0.0, 1.0)
-
-    def __init__(self, **kw):
-        super().__init__(**kw)
-        with self.canvas:
-            self._c    = Color(*self._COL)
-            self._arc1 = Line(width=1.4)
-            self._arc2 = Line(width=1.4)
-            self._arc3 = Line(width=1.4)
-            self._dotc = Color(*self._COL)
-            self._dot  = Ellipse()
-        self.bind(pos=self._redraw, size=self._redraw)
-        Clock.schedule_once(self._redraw, 0)
-
-    def _redraw(self, *_) -> None:
-        w, h = self.size
-        if w <= 1 or h <= 1:
-            return
-        cx = self.x + w / 2
-        cy = self.y + h * 0.08
-        for arc, frac in [(self._arc1, 0.30), (self._arc2, 0.58), (self._arc3, 0.86)]:
-            r = h * frac
-            arc.ellipse = (cx - r, cy - r, 2 * r, 2 * r, 45, 135)
-        dr = h * 0.09
-        self._dot.pos  = (cx - dr, cy - dr)
-        self._dot.size = (dr * 2, dr * 2)
 
 
 # ──────────────────────────────────────────────────────────────────────────────

@@ -40,6 +40,7 @@ from api_client import (
     _GMAIL_RECENT_DAYS,
     summarize_gmail_feed_for_home,
 )
+from components.live_wifi_icon import LiveWifiIcon
 from config import ASSETS_DIR, DISPLAY_HEIGHT, DISPLAY_WIDTH, display_now, to_display_local
 from screens.base_screen import BaseScreen
 
@@ -367,9 +368,10 @@ class MorningBriefScreen(BaseScreen):
         root.add_widget(pill)
         self._status_pill = pill
 
-        wifi_src = _asset("icon_wifi.png")
-        if wifi_src:
-            root.add_widget(_img(wifi_src, FW, FH, 1125, 31, 29, 20))
+        root.add_widget(LiveWifiIcon(
+            size_hint=(29 / FW, 20 / FH),
+            pos_hint={"x": 1125 / FW, "y": (FH - 31 - 20) / FH},
+        ))
         batt_src = _asset("icon_battery.png")
         if batt_src:
             root.add_widget(_img(batt_src, FW, FH, 1191, 30, 47, 21))
