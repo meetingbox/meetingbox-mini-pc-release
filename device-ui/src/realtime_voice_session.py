@@ -559,6 +559,7 @@ class RealtimeVoiceSession:
         on_user_speech_stopped=None,
         on_user_speech_started=None,
         on_email_draft=None,
+        on_email_view=None,
         on_recipient_picker=None,
         on_task_creation=None,
         on_task_dismiss=None,
@@ -594,6 +595,7 @@ class RealtimeVoiceSession:
         self._on_user_speech_stopped_cb = on_user_speech_stopped
         self._on_user_speech_started_cb = on_user_speech_started
         self._on_email_draft_cb = on_email_draft
+        self._on_email_view_cb  = on_email_view
         self._on_recipient_picker_cb = on_recipient_picker
         self._on_task_creation_cb = on_task_creation
         self._on_task_dismiss_cb = on_task_dismiss
@@ -1171,6 +1173,22 @@ class RealtimeVoiceSession:
         if not isinstance(draft, dict):
             return
         Clock.schedule_once(lambda _dt: self._safe_call(cb, draft), 0)
+
+    def _emit_email_view(self, tool_output_json: str) -> None:
+        """Forward a show_email_view directive payload to the UI."""
+        cb = self._on_email_view_cb
+        if not cb:
+            return
+        try:
+            data = json.loads(tool_output_json)
+        except (json.JSONDecodeError, TypeError):
+            return
+        if not isinstance(data, dict) or not data.get("ok"):
+            return
+        view = data.get("device_email_view")
+        if not isinstance(view, dict):
+            return
+        Clock.schedule_once(lambda _dt: self._safe_call(cb, view), 0)
 
     def _emit_task_creation(self, tool_output_json: str) -> None:
         """Forward a show_task_creation directive payload to the UI."""
@@ -2538,6 +2556,8 @@ class RealtimeVoiceSession:
                     if self._brief_active:
                         self._cancel_briefing()
                     self._emit_device_navigation(out)
+            elif name == "show_email_view":
+                self._emit_email_view(out)
             elif name == "show_email_draft":
                 self._emit_email_draft(out)
                 # The draft popup (incl. the full reply-all recipient list the

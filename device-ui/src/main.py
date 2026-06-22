@@ -3600,6 +3600,20 @@ class MeetingBoxApp(App):
         except Exception:
             logger.exception("Failed to render email draft directive")
 
+    def _on_email_view_directive(self, view: dict) -> None:
+        """Navigate to / update the email view screen from a show_email_view directive."""
+        if not isinstance(view, dict):
+            return
+        try:
+            sm = getattr(self, "screen_manager", None)
+            if sm is not None and sm.current != "emails":
+                self.goto_screen("emails")
+            screen = sm.get_screen("emails") if sm else None
+            if screen is not None:
+                screen.set_email(view)
+        except Exception:
+            logger.exception("Failed to render email view directive")
+
     def _on_task_creation_directive(self, task: dict) -> None:
         """Navigate to the voice task creation screen with pre-filled data."""
         if not isinstance(task, dict):
@@ -5049,6 +5063,11 @@ class MeetingBoxApp(App):
                         self.screen_manager.get_screen('email_draft').set_voice_session_state(state)
                     except Exception:
                         pass
+                elif current == 'emails':
+                    try:
+                        self.screen_manager.get_screen('emails').set_voice_session_state(state)
+                    except Exception:
+                        pass
                 elif current == 'voice_task_creation':
                     try:
                         self.screen_manager.get_screen('voice_task_creation').set_voice_session_state(state)
@@ -5269,6 +5288,7 @@ class MeetingBoxApp(App):
                 on_ai_transcript_delta=_on_ai_transcript_delta,
                 on_user_speech_stopped=_on_user_speech_stopped,
                 on_email_draft=self._on_email_draft_directive,
+                on_email_view=self._on_email_view_directive,
                 on_recipient_picker=self._on_recipient_picker_directive,
                 on_task_creation=self._on_task_creation_directive,
                 on_task_dismiss=self._on_task_creation_dismiss_directive,
