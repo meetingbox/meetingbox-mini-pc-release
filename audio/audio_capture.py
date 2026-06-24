@@ -471,6 +471,8 @@ class AudioCaptureService:
       usb_keywords = [
         "usb", "uac", "respeaker", "jabra", "samson", "blue", "yeti",
         "rode", "fifine", "tonor", "boya", "maono", "external", "webcam", "camera",
+        # Bluetooth devices — prioritized equally with USB external devices
+        "bluetooth", "bluez", "a2dp", "hsp", "hfp", "headset", "hands-free",
       ]
       builtin_keywords = ["hdmi", "built-in", "bcm", "broadcom", "headphone", "analog", "spdif", "iec958"]
       if is_generic_alias(name):
@@ -595,6 +597,8 @@ class AudioCaptureService:
       usb_keywords = (
         "usb", "uac", "respeaker", "jabra", "samson", "blue", "yeti",
         "rode", "fifine", "tonor", "boya", "maono", "external",
+        # Bluetooth devices — treated as external, preventing built-in mic fallback
+        "bluetooth", "bluez", "a2dp", "hsp", "hfp", "headset", "hands-free",
       )
       usb_candidates = [
         c for c in candidates

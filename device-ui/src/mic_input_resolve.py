@@ -30,6 +30,27 @@ def _usb_like_name(name: str) -> bool:
     return False
 
 
+def _bluetooth_like_name(name: str) -> bool:
+    low = (name or "").lower()
+    return any(k in low for k in (
+        "bluetooth", "bluez", "a2dp", "hsp", "hfp",
+        "headset", "hands-free", "hands free",
+    ))
+
+
+def _external_like_name(name: str) -> bool:
+    """True for any non-built-in device: USB/UAC or Bluetooth."""
+    return _usb_like_name(name) or _bluetooth_like_name(name)
+
+
+def _is_combined_device(dev: dict) -> bool:
+    """True when a PortAudio device exposes both input AND output channels (mic+speaker)."""
+    return (
+        int(dev.get("max_input_channels") or 0) > 0
+        and int(dev.get("max_output_channels") or 0) > 0
+    )
+
+
 def _built_in_like_name(name: str) -> bool:
     low = (name or "").lower()
     return any(
@@ -77,6 +98,54 @@ def _first_usb_like_capture(sd) -> int | None:
         logger.debug("No USB-like capture device found")
     except Exception:
         logger.exception("USB-like capture device search failed")
+    return None
+
+
+def _first_bluetooth_combined_capture(sd) -> int | None:
+    """Return the first Bluetooth device that has BOTH input and output channels (mic+speaker)."""
+    try:
+        all_devs = list(enumerate(sd.query_devices()))
+        for idx, dev in all_devs:
+            nm = dev.get("name") or ""
+            if _bluetooth_like_name(nm) and _is_combined_device(dev):
+                logger.info(
+                    "Auto-selected Bluetooth combined mic+speaker capture [%s]: %s", idx, nm
+                )
+                return idx
+        logger.debug("No Bluetooth combined mic+speaker capture device found")
+    except Exception:
+        logger.exception("Bluetooth combined capture device search failed")
+    return None
+
+
+def _first_usb_combined_capture(sd) -> int | None:
+    """Return the first USB device that has BOTH input and output channels (mic+speaker)."""
+    try:
+        all_devs = list(enumerate(sd.query_devices()))
+        for idx, dev in all_devs:
+            nm = dev.get("name") or ""
+            if _usb_like_name(nm) and _is_combined_device(dev):
+                logger.info(
+                    "Auto-selected USB combined mic+speaker capture [%s]: %s", idx, nm
+                )
+                return idx
+        logger.debug("No USB combined mic+speaker capture device found")
+    except Exception:
+        logger.exception("USB combined capture device search failed")
+    return None
+
+
+def _first_bluetooth_capture(sd) -> int | None:
+    """Return the first Bluetooth input-capable device."""
+    try:
+        for idx, dev in _capture_devices(sd):
+            nm = dev.get("name") or ""
+            if _bluetooth_like_name(nm):
+                logger.info("Auto-selected Bluetooth capture device [%s]: %s", idx, nm)
+                return idx
+        logger.debug("No Bluetooth capture device found")
+    except Exception:
+        logger.exception("Bluetooth capture device search failed")
     return None
 
 
@@ -155,14 +224,17 @@ def resolve_sounddevice_capture_device_index(sd) -> int | None:
     Return a PortAudio device index for input, or None to use the host default device.
 
     Precedence:
-    1. AUDIO_INPUT_DEVICE_INDEX (integer)
+    1. AUDIO_INPUT_DEVICE_INDEX (integer override)
     2. AUDIO_INPUT_DEVICE_NAME (substring match, case-insensitive)
-    3. If MEETINGBOX_AUTO_SELECT_USB_MIC is not disabled: first capture device whose
-       name suggests USB / UAC (see _usb_like_name)
+    3. If MEETINGBOX_AUTO_SELECT_USB_MIC is not disabled:
+       a. Bluetooth combined mic+speaker (highest — paired BT audio device)
+       b. USB/UAC combined mic+speaker (conference puck with built-in speaker)
+       c. Bluetooth mic-only
+       d. USB/UAC mic-only
     4. (Only if MEETINGBOX_USB_MIC_STRICT=0) first built-in-like capture device
     5. (Only if MEETINGBOX_USB_MIC_STRICT=0) first available capture device
-    6. None — PortAudio default (used when strict USB mode finds no USB device
-       OR when device enumeration failed)
+    6. None — PortAudio default (when strict mode finds no external device,
+       or device enumeration failed)
     """
     if sd is None:
         return None
@@ -178,18 +250,33 @@ def resolve_sounddevice_capture_device_index(sd) -> int | None:
     if _usb_autopick_disabled():
         return None
 
+    # 3a. Bluetooth combined mic+speaker — top priority when BT device is paired
+    bt_combined = _first_bluetooth_combined_capture(sd)
+    if bt_combined is not None:
+        return bt_combined
+
+    # 3b. USB/UAC combined mic+speaker (e.g. Jabra, Poly conference puck)
+    usb_combined = _first_usb_combined_capture(sd)
+    if usb_combined is not None:
+        return usb_combined
+
+    # 3c. Bluetooth mic-only (no output channels on this PortAudio entry)
+    bt_only = _first_bluetooth_capture(sd)
+    if bt_only is not None:
+        return bt_only
+
+    # 3d. USB/UAC mic-only
     usb = _first_usb_like_capture(sd)
     if usb is not None:
         return usb
 
-    # No USB mic visible. In strict mode (default) we deliberately do NOT
-    # fall back to the built-in/HDMI mic — the user explicitly wants the
-    # USB mic to drive the meeting. Returning None makes the mic-test path
-    # report "no USB mic" instead of silently capturing the wrong device.
+    # No external mic visible. In strict mode (default) do NOT fall back to
+    # the built-in/HDMI mic — return None so callers report "no external mic"
+    # instead of silently capturing the wrong device.
     if _strict_usb_enabled():
         logger.warning(
-            "MEETINGBOX_USB_MIC_STRICT=1 and no USB-class capture device found; "
-            "returning None so callers do not fall back to a built-in mic.",
+            "MEETINGBOX_USB_MIC_STRICT=1 and no external (USB/Bluetooth) capture "
+            "device found; returning None so callers do not fall back to a built-in mic.",
         )
         return None
 
