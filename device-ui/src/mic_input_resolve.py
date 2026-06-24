@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 import os
+import subprocess
 
 from config import AUDIO_INPUT_DEVICE_INDEX, AUDIO_INPUT_DEVICE_NAME
 
@@ -149,6 +150,67 @@ def _first_bluetooth_capture(sd) -> int | None:
     return None
 
 
+# ---------------------------------------------------------------------------
+# PulseAudio / PipeWire Bluetooth detection
+#
+# Bluetooth devices managed by PipeWire/PulseAudio do not reliably appear
+# in PortAudio's device list.  We detect them via 'pactl list sources short'
+# (name pattern: bluez_input.*) and then route capture through the 'pulse'
+# virtual ALSA device so PortAudio reaches the BT mic via PulseAudio.
+# ---------------------------------------------------------------------------
+
+_BT_PULSE_KEYWORDS = ("bluez", "bluetooth", "a2dp", "hsp", "hfp")
+
+
+def _pulse_bt_source_name() -> str | None:
+    """Return the first Bluetooth source name from PulseAudio/PipeWire, or None."""
+    try:
+        r = subprocess.run(
+            ["pactl", "list", "sources", "short"],
+            capture_output=True, text=True, timeout=5,
+        )
+        for line in r.stdout.splitlines():
+            parts = line.split("\t")
+            if len(parts) >= 2:
+                name = parts[1].strip()
+                low = name.lower()
+                if any(k in low for k in _BT_PULSE_KEYWORDS) and ".monitor" not in name:
+                    return name
+    except Exception:
+        logger.debug("pactl list sources failed in mic resolver", exc_info=True)
+    return None
+
+
+def _pulse_set_default_source(name: str) -> None:
+    try:
+        subprocess.run(
+            ["pactl", "set-default-source", name],
+            capture_output=True, timeout=4, check=False,
+        )
+    except Exception:
+        logger.debug("pactl set-default-source failed", exc_info=True)
+
+
+def _pulse_portaudio_device_index(sd) -> int | None:
+    """Find the 'pulse' PulseAudio virtual ALSA device in PortAudio's enumeration.
+
+    When PipeWire/PulseAudio is the audio server, PortAudio (ALSA backend)
+    exposes a virtual device named 'pulse' that routes to whatever
+    PulseAudio's current default source is.
+    """
+    try:
+        for idx, dev in enumerate(sd.query_devices()):
+            nm = (dev.get("name") or "").strip().lower()
+            if int(dev.get("max_input_channels") or 0) <= 0:
+                continue
+            if nm == "pulse" or nm.startswith("pulse ") or nm == "pipewire":
+                logger.debug("Found PulseAudio/PipeWire virtual device [%s]: %s", idx, dev.get("name"))
+                return idx
+    except Exception:
+        logger.debug("PulseAudio virtual device search failed", exc_info=True)
+    return None
+
+
 def _first_built_in_capture(sd) -> int | None:
     try:
         for idx, dev in _capture_devices(sd):
@@ -250,22 +312,44 @@ def resolve_sounddevice_capture_device_index(sd) -> int | None:
     if _usb_autopick_disabled():
         return None
 
-    # 3a. Bluetooth combined mic+speaker — top priority when BT device is paired
+    # 3a. Bluetooth via PulseAudio/PipeWire — must come before PortAudio enumeration
+    # because BT devices managed by PipeWire often do NOT appear in PortAudio's
+    # device list at all; they only appear as pactl sources (bluez_input.*).
+    bt_pulse_src = _pulse_bt_source_name()
+    if bt_pulse_src is not None:
+        _pulse_set_default_source(bt_pulse_src)
+        pulse_idx = _pulse_portaudio_device_index(sd)
+        if pulse_idx is not None:
+            logger.info(
+                "Auto-selected Bluetooth via PulseAudio: source=%s → PortAudio[%s] (pulse)",
+                bt_pulse_src, pulse_idx,
+            )
+            return pulse_idx
+        # 'pulse' virtual device not in PortAudio — return None so PortAudio
+        # uses its host default, which now routes to the BT mic via PulseAudio.
+        logger.info(
+            "Bluetooth PulseAudio source=%s set as default; no 'pulse' PortAudio "
+            "device found — using host default (PulseAudio will route to BT mic)",
+            bt_pulse_src,
+        )
+        return None
+
+    # 3b. Bluetooth combined mic+speaker visible in PortAudio enumeration
     bt_combined = _first_bluetooth_combined_capture(sd)
     if bt_combined is not None:
         return bt_combined
 
-    # 3b. USB/UAC combined mic+speaker (e.g. Jabra, Poly conference puck)
+    # 3c. USB/UAC combined mic+speaker (e.g. Jabra, Poly conference puck)
     usb_combined = _first_usb_combined_capture(sd)
     if usb_combined is not None:
         return usb_combined
 
-    # 3c. Bluetooth mic-only (no output channels on this PortAudio entry)
+    # 3d. Bluetooth mic-only visible in PortAudio enumeration
     bt_only = _first_bluetooth_capture(sd)
     if bt_only is not None:
         return bt_only
 
-    # 3d. USB/UAC mic-only
+    # 3e. USB/UAC mic-only
     usb = _first_usb_like_capture(sd)
     if usb is not None:
         return usb

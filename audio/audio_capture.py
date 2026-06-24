@@ -282,6 +282,15 @@ class AudioCaptureService:
     configured = (os.getenv("AUDIO_ALSA_INPUT_DEVICE") or "").strip()
     if configured:
       return configured
+    # Check PulseAudio/PipeWire for a Bluetooth source first.
+    # BT devices are not ALSA hardware cards — they only exist as pactl sources
+    # (bluez_input.*). When found, set it as PulseAudio default and use
+    # 'pulse' so arecord routes through PulseAudio to the BT mic.
+    bt_source = self._pulse_bt_source()
+    if bt_source:
+      self._pulse_set_default_source(bt_source)
+      logger.info("arecord: Bluetooth source=%s found via PulseAudio → using 'pulse' device", bt_source)
+      return "pulse"
     try:
       cards = Path("/proc/asound/cards").read_text(encoding="utf-8", errors="ignore")
     except OSError:
@@ -291,6 +300,34 @@ class AudioCaptureService:
     if "USB-Audio" in cards and "[Device" in cards:
       return "plughw:CARD=Device,DEV=0"
     return "default"
+
+  _BT_PULSE_KEYWORDS = ("bluez", "bluetooth", "a2dp", "hsp", "hfp")
+
+  def _pulse_bt_source(self) -> str | None:
+    """Return the first Bluetooth source from PulseAudio/PipeWire, or None."""
+    try:
+      import subprocess as _sp
+      r = _sp.run(
+        ["pactl", "list", "sources", "short"],
+        capture_output=True, text=True, timeout=5,
+      )
+      for line in r.stdout.splitlines():
+        parts = line.split("\t")
+        if len(parts) >= 2:
+          name = parts[1].strip()
+          low = name.lower()
+          if any(k in low for k in self._BT_PULSE_KEYWORDS) and ".monitor" not in name:
+            return name
+    except Exception:
+      pass
+    return None
+
+  def _pulse_set_default_source(self, name: str) -> None:
+    try:
+      import subprocess as _sp
+      _sp.run(["pactl", "set-default-source", name], capture_output=True, timeout=4, check=False)
+    except Exception:
+      pass
 
   def _open_input_stream(self, mic_index):
     if self._using_arecord():

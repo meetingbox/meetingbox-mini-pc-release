@@ -92,6 +92,84 @@ class AudioDevicePair:
 
 
 # ---------------------------------------------------------------------------
+# PulseAudio / PipeWire Bluetooth detection
+#
+# Bluetooth audio devices on Linux are managed by PipeWire/PulseAudio and
+# are NOT listed by `arecord -l` / `aplay -l`. They only appear as
+# PulseAudio sources (bluez_input.*) and sinks (bluez_output.*).
+# We query pactl directly to find them and set them as the PulseAudio
+# default before any ALSA-level resolution runs.
+# ---------------------------------------------------------------------------
+
+_BT_PULSE_KEYWORDS = ("bluez", "bluetooth", "a2dp", "hsp", "hfp")
+
+
+def _is_bt_pulse_name(name: str) -> bool:
+    low = name.lower()
+    return any(k in low for k in _BT_PULSE_KEYWORDS)
+
+
+def _pulse_bt_source_names() -> list[str]:
+    """Return Bluetooth source names from PulseAudio/PipeWire (e.g. bluez_input.*)."""
+    try:
+        r = subprocess.run(
+            ["pactl", "list", "sources", "short"],
+            capture_output=True, text=True, timeout=5,
+        )
+        names = []
+        for line in r.stdout.splitlines():
+            parts = line.split("\t")
+            if len(parts) >= 2:
+                name = parts[1].strip()
+                if _is_bt_pulse_name(name) and ".monitor" not in name:
+                    names.append(name)
+        return names
+    except Exception:
+        logger.debug("pactl list sources failed", exc_info=True)
+        return []
+
+
+def _pulse_bt_sink_names() -> list[str]:
+    """Return Bluetooth sink names from PulseAudio/PipeWire (e.g. bluez_output.*)."""
+    try:
+        r = subprocess.run(
+            ["pactl", "list", "sinks", "short"],
+            capture_output=True, text=True, timeout=5,
+        )
+        names = []
+        for line in r.stdout.splitlines():
+            parts = line.split("\t")
+            if len(parts) >= 2:
+                name = parts[1].strip()
+                if _is_bt_pulse_name(name):
+                    names.append(name)
+        return names
+    except Exception:
+        logger.debug("pactl list sinks failed", exc_info=True)
+        return []
+
+
+def _pulse_set_default_source(name: str) -> None:
+    try:
+        subprocess.run(
+            ["pactl", "set-default-source", name],
+            capture_output=True, timeout=4, check=False,
+        )
+    except Exception:
+        logger.debug("pactl set-default-source failed", exc_info=True)
+
+
+def _pulse_set_default_sink(name: str) -> None:
+    try:
+        subprocess.run(
+            ["pactl", "set-default-sink", name],
+            capture_output=True, timeout=4, check=False,
+        )
+    except Exception:
+        logger.debug("pactl set-default-sink failed", exc_info=True)
+
+
+# ---------------------------------------------------------------------------
 # ALSA list parsing
 # ---------------------------------------------------------------------------
 
@@ -164,6 +242,48 @@ def resolve_audio_pair(sd=None) -> AudioDevicePair:
     Call once at session startup. Pass the sounddevice module (or None).
     """
     pair = AudioDevicePair()
+
+    # Priority 0: Bluetooth via PulseAudio/PipeWire.
+    # BT devices are NOT listed by `arecord -l` — they only exist as
+    # PulseAudio sources/sinks.  When found, we set them as the PulseAudio
+    # defaults and route capture+playback through the 'pulse' ALSA PCM so
+    # that arecord/aplay reach the BT device transparently.
+    bt_sources = _pulse_bt_source_names()
+    bt_sinks = _pulse_bt_sink_names()
+    if bt_sources:
+        src = bt_sources[0]
+        _pulse_set_default_source(src)
+        pair.capture = "pulse"
+        pair.capture_name = f"(Bluetooth/PulseAudio) {src}"
+        if bt_sinks:
+            snk = bt_sinks[0]
+            _pulse_set_default_sink(snk)
+            pair.playback = "pulse"
+            pair.playback_name = f"(Bluetooth/PulseAudio) {snk}"
+            pair.is_combined = True
+            logger.info(
+                "AudioPair [Priority 0]: Bluetooth mic+speaker via PulseAudio — "
+                "source=%s sink=%s → capture=pulse playback=pulse",
+                src, snk,
+            )
+        else:
+            logger.info(
+                "AudioPair [Priority 0]: Bluetooth mic-only via PulseAudio — "
+                "source=%s → capture=pulse",
+                src,
+            )
+        # Skip ALSA scanning — BT via PulseAudio takes full priority.
+        # Still apply the env override for playback if set.
+        out_override = (os.getenv("AUDIO_OUTPUT_DEVICE_NAME") or "").strip()
+        if out_override:
+            pair.playback = out_override
+            pair.playback_name = f"(AUDIO_OUTPUT_DEVICE_NAME) {out_override}"
+            logger.info("AudioPair: AUDIO_OUTPUT_DEVICE_NAME override → %s", out_override)
+        if not pair.playback:
+            fallback = (os.getenv("AUDIO_OUTPUT_FALLBACK_DEVICE") or "plughw:0,0").strip()
+            pair.playback = fallback
+            pair.playback_name = f"(fallback) {fallback}"
+        return pair
 
     capture_cards = _parse_alsa_list(["arecord", "-l"])
     playback_cards = _parse_alsa_list(["aplay", "-l"])
