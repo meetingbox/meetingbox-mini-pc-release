@@ -280,8 +280,16 @@ def resolve_audio_pair(sd=None) -> AudioDevicePair:
     # PulseAudio sources/sinks.  When found, we set them as the PulseAudio
     # defaults and route capture+playback through the 'pulse' ALSA PCM so
     # that arecord/aplay reach the BT device transparently.
+    #
+    # Important: many BT speakerphones (e.g. AM-W45) only expose A2DP-sink
+    # over BT, not HFP/HSP — so there's a bluez_output.* sink but no
+    # bluez_input.* source.  We still route playback through PulseAudio so
+    # the BT speaker is used even when the mic side falls back to a USB
+    # or built-in device.
     bt_sources = _pulse_bt_source_names()
     bt_sinks = _pulse_bt_sink_names()
+    bt_speaker_routed = False
+
     if bt_sources:
         src = bt_sources[0]
         _pulse_set_default_source(src)
@@ -295,6 +303,7 @@ def resolve_audio_pair(sd=None) -> AudioDevicePair:
             pair.playback = playback_pcm
             pair.playback_name = f"(Bluetooth/PulseAudio via {playback_pcm}) {snk}"
             pair.is_combined = True
+            bt_speaker_routed = True
             logger.info(
                 "AudioPair [Priority 0]: Bluetooth mic+speaker via PulseAudio — "
                 "source=%s sink=%s → capture=%s playback=%s",
@@ -318,6 +327,23 @@ def resolve_audio_pair(sd=None) -> AudioDevicePair:
             pair.playback = fallback
             pair.playback_name = f"(fallback) {fallback}"
         return pair
+
+    # Sub-priority: BT speaker WITHOUT BT mic (A2DP-only device, e.g. AM-W45
+    # over Bluetooth).  We still want the BT speaker routed via PulseAudio
+    # even though the mic will fall through to the next priority tier (USB
+    # or built-in).  Capture resolution continues below.
+    if bt_sinks:
+        snk = bt_sinks[0]
+        _pulse_set_default_sink(snk)
+        playback_pcm = _pick_pulse_pcm("aplay")
+        pair.playback = playback_pcm
+        pair.playback_name = f"(Bluetooth speaker via {playback_pcm}, A2DP-only) {snk}"
+        bt_speaker_routed = True
+        logger.info(
+            "AudioPair [Priority 0b]: Bluetooth speaker-only via PulseAudio — "
+            "sink=%s → playback=%s (mic will use next priority tier)",
+            snk, playback_pcm,
+        )
 
     capture_cards = _parse_alsa_list(["arecord", "-l"])
     playback_cards = _parse_alsa_list(["aplay", "-l"])

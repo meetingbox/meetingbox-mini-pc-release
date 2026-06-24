@@ -280,6 +280,54 @@ class TestResolveAudioPair:
         assert pair.capture in PA_ROUTING_PCMS
         assert pair.is_combined is False  # no matching BT sink
 
+    def test_bluetooth_speaker_only_no_mic_a2dp_device(self, monkeypatch):
+        """BT sink but NO BT source (A2DP-only device like AM-W45) → speaker
+        routes via PulseAudio, mic falls through to next priority tier."""
+        plan = {
+            "pactl_sources": PACTL_NO_BT_SOURCE,
+            "pactl_sinks": PACTL_BT_SINK,
+            "arecord_l": ALSA_BUILTIN_ONLY_CAPTURE,
+            "aplay_l": ALSA_BUILTIN_ONLY_PLAYBACK,
+        }
+        monkeypatch.setattr(adr.subprocess, "run", make_subprocess_mock(plan))
+        monkeypatch.delenv("AUDIO_OUTPUT_DEVICE_NAME", raising=False)
+        monkeypatch.delenv("AUDIO_OUTPUT_FALLBACK_DEVICE", raising=False)
+
+        pair = adr.resolve_audio_pair(sd=None)
+
+        # BT speaker should be routed via PulseAudio even without a BT mic
+        assert pair.playback in PA_ROUTING_PCMS, (
+            f"BT speaker should route via PA PCM, got {pair.playback!r}"
+        )
+        assert "bluez" in (pair.playback_name or "").lower()
+        # Mic correctly remains unresolved (no external mic present)
+        assert pair.capture is None
+        assert pair.is_combined is False
+        # Verify PulseAudio default sink was set to the BT sink
+        switched = {tuple(c) for c in plan["set_default_calls"]}
+        assert ("set-default-sink", "bluez_output.AM_W45.headset-head-unit") in switched
+
+    def test_bluetooth_speaker_only_plus_usb_combined_prefers_usb_combined(self, monkeypatch):
+        """When a BT A2DP-only speaker AND a USB combined puck both exist,
+        the USB combined device wins for BOTH capture and playback.
+        Rationale: combined devices on the same ALSA card avoid the round-trip
+        echo and latency that comes from splitting mic/speaker across devices."""
+        plan = {
+            "pactl_sources": PACTL_NO_BT_SOURCE,
+            "pactl_sinks": PACTL_BT_SINK,
+            "arecord_l": ALSA_USB_COMBINED_CAPTURE,
+            "aplay_l": ALSA_USB_COMBINED_PLAYBACK,
+        }
+        monkeypatch.setattr(adr.subprocess, "run", make_subprocess_mock(plan))
+        monkeypatch.delenv("AUDIO_OUTPUT_DEVICE_NAME", raising=False)
+        monkeypatch.delenv("AUDIO_OUTPUT_FALLBACK_DEVICE", raising=False)
+
+        pair = adr.resolve_audio_pair(sd=None)
+
+        assert pair.is_combined is True
+        assert pair.capture == "plughw:1,0", "USB combined wins capture"
+        assert pair.playback == "plughw:1,0", "USB combined wins playback (single card avoids echo)"
+
     def test_falls_back_to_default_when_pipewire_pulse_missing(self, monkeypatch):
         """No pipewire/pulse PCM in arecord -L → resolver uses 'default' for BT routing."""
         plan = {
