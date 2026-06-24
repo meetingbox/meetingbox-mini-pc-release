@@ -192,20 +192,29 @@ def _pulse_set_default_source(name: str) -> None:
 
 
 def _pulse_portaudio_device_index(sd) -> int | None:
-    """Find the 'pulse' PulseAudio virtual ALSA device in PortAudio's enumeration.
+    """Find a virtual PortAudio device that routes through PulseAudio/PipeWire.
 
-    When PipeWire/PulseAudio is the audio server, PortAudio (ALSA backend)
-    exposes a virtual device named 'pulse' that routes to whatever
-    PulseAudio's current default source is.
+    PortAudio's ALSA backend exposes virtual devices for the configured ALSA
+    PCMs.  Preference order: 'pipewire' (needs pipewire-alsa), 'pulse'
+    (needs libasound2-plugins), 'default' (always present but only routes
+    through PA/PW when one of the plugin packages is installed).
     """
     try:
+        candidates: dict[str, int] = {}
         for idx, dev in enumerate(sd.query_devices()):
             nm = (dev.get("name") or "").strip().lower()
             if int(dev.get("max_input_channels") or 0) <= 0:
                 continue
-            if nm == "pulse" or nm.startswith("pulse ") or nm == "pipewire":
-                logger.debug("Found PulseAudio/PipeWire virtual device [%s]: %s", idx, dev.get("name"))
-                return idx
+            for key in ("pipewire", "pulse", "default"):
+                if nm == key or nm.startswith(f"{key} ") or nm.startswith(f"{key}:"):
+                    candidates.setdefault(key, idx)
+        for key in ("pipewire", "pulse", "default"):
+            if key in candidates:
+                logger.debug(
+                    "Found PA/PW-routing PortAudio device %r at index %s",
+                    key, candidates[key],
+                )
+                return candidates[key]
     except Exception:
         logger.debug("PulseAudio virtual device search failed", exc_info=True)
     return None

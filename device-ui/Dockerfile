@@ -75,6 +75,7 @@ RUN set -eux; \
             pipewire \
             pipewire-alsa \
             wireplumber \
+            libasound2-plugins \
         ; then \
             success=1; \
             break; \

@@ -169,6 +169,38 @@ def _pulse_set_default_sink(name: str) -> None:
         logger.debug("pactl set-default-sink failed", exc_info=True)
 
 
+def _pick_pulse_pcm(cmd: str) -> str:
+    """Return the best ALSA PCM name that routes through PulseAudio/PipeWire.
+
+    Probes ``arecord -L`` / ``aplay -L`` for which virtual device names
+    are actually registered with ALSA inside this environment.  This
+    matters because:
+
+      * ``pulse``    requires ``libasound2-plugins`` (alsa-plugins-pulse)
+      * ``pipewire`` requires ``pipewire-alsa``
+      * ``default``  is always present but only routes through PulseAudio
+                     when one of the two plugin packages above is installed
+
+    Order of preference: pipewire → pulse → default.
+    """
+    try:
+        r = subprocess.run([cmd, "-L"], capture_output=True, text=True, timeout=5)
+        pcms = {line.strip() for line in r.stdout.splitlines() if line and not line.startswith(" ")}
+    except Exception:
+        logger.debug("%s -L probe failed", cmd, exc_info=True)
+        pcms = set()
+    for name in ("pipewire", "pulse", "default"):
+        if name in pcms:
+            logger.info("Selected ALSA PCM %r for routing via PulseAudio/PipeWire (%s)", name, cmd)
+            return name
+    logger.warning(
+        "Neither 'pipewire', 'pulse' nor 'default' found in %s -L output; "
+        "falling back to 'default' (BT routing may not work — install "
+        "libasound2-plugins or pipewire-alsa).", cmd,
+    )
+    return "default"
+
+
 # ---------------------------------------------------------------------------
 # ALSA list parsing
 # ---------------------------------------------------------------------------
@@ -253,24 +285,26 @@ def resolve_audio_pair(sd=None) -> AudioDevicePair:
     if bt_sources:
         src = bt_sources[0]
         _pulse_set_default_source(src)
-        pair.capture = "pulse"
-        pair.capture_name = f"(Bluetooth/PulseAudio) {src}"
+        capture_pcm = _pick_pulse_pcm("arecord")
+        pair.capture = capture_pcm
+        pair.capture_name = f"(Bluetooth/PulseAudio via {capture_pcm}) {src}"
         if bt_sinks:
             snk = bt_sinks[0]
             _pulse_set_default_sink(snk)
-            pair.playback = "pulse"
-            pair.playback_name = f"(Bluetooth/PulseAudio) {snk}"
+            playback_pcm = _pick_pulse_pcm("aplay")
+            pair.playback = playback_pcm
+            pair.playback_name = f"(Bluetooth/PulseAudio via {playback_pcm}) {snk}"
             pair.is_combined = True
             logger.info(
                 "AudioPair [Priority 0]: Bluetooth mic+speaker via PulseAudio — "
-                "source=%s sink=%s → capture=pulse playback=pulse",
-                src, snk,
+                "source=%s sink=%s → capture=%s playback=%s",
+                src, snk, capture_pcm, playback_pcm,
             )
         else:
             logger.info(
                 "AudioPair [Priority 0]: Bluetooth mic-only via PulseAudio — "
-                "source=%s → capture=pulse",
-                src,
+                "source=%s → capture=%s",
+                src, capture_pcm,
             )
         # Skip ALSA scanning — BT via PulseAudio takes full priority.
         # Still apply the env override for playback if set.

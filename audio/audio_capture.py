@@ -283,14 +283,17 @@ class AudioCaptureService:
     if configured:
       return configured
     # Check PulseAudio/PipeWire for a Bluetooth source first.
-    # BT devices are not ALSA hardware cards — they only exist as pactl sources
-    # (bluez_input.*). When found, set it as PulseAudio default and use
-    # 'pulse' so arecord routes through PulseAudio to the BT mic.
+    # BT devices are not ALSA hardware cards — they only exist as pactl
+    # sources (bluez_input.*). When found, set it as PulseAudio default
+    # and probe ``arecord -L`` for the right virtual PCM that routes
+    # through PulseAudio/PipeWire (pipewire / pulse / default — depends
+    # on which ALSA plugin packages are installed in this container).
     bt_source = self._pulse_bt_source()
     if bt_source:
       self._pulse_set_default_source(bt_source)
-      logger.info("arecord: Bluetooth source=%s found via PulseAudio → using 'pulse' device", bt_source)
-      return "pulse"
+      pcm = self._pick_pulse_pcm()
+      logger.info("arecord: Bluetooth source=%s → using PCM %r", bt_source, pcm)
+      return pcm
     try:
       cards = Path("/proc/asound/cards").read_text(encoding="utf-8", errors="ignore")
     except OSError:
@@ -328,6 +331,24 @@ class AudioCaptureService:
       _sp.run(["pactl", "set-default-source", name], capture_output=True, timeout=4, check=False)
     except Exception:
       pass
+
+  def _pick_pulse_pcm(self) -> str:
+    """Return best ALSA PCM that routes through PulseAudio/PipeWire.
+
+    'pulse' needs libasound2-plugins; 'pipewire' needs pipewire-alsa;
+    'default' is always present but only forwards to PA/PW when one of
+    the above plugin packages is installed.  Order: pipewire > pulse > default.
+    """
+    try:
+      import subprocess as _sp
+      r = _sp.run(["arecord", "-L"], capture_output=True, text=True, timeout=5)
+      pcms = {line.strip() for line in r.stdout.splitlines() if line and not line.startswith(" ")}
+    except Exception:
+      pcms = set()
+    for name in ("pipewire", "pulse", "default"):
+      if name in pcms:
+        return name
+    return "default"
 
   def _open_input_stream(self, mic_index):
     if self._using_arecord():
