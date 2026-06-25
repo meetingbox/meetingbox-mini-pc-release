@@ -762,6 +762,11 @@ class RealtimeVoiceSession:
         """Promote a pre-warmed (held) session to active: open the mic and
         start streaming. Safe to call from the Kivy main thread."""
         self._activate_requested = True
+        # Reset the idle clock so the watchdog counts from the moment the
+        # user actually wakes the session, not from when the warm standby
+        # was first created (which could be 40+ seconds ago, causing the
+        # watchdog to fire immediately on its first tick).
+        self._last_activity_monotonic = time.monotonic()
         loop, ev = self._loop, self._activate_event
         if loop is not None and ev is not None and not loop.is_closed():
             try:
@@ -1773,6 +1778,10 @@ class RealtimeVoiceSession:
                 self._start_caption_worker()
 
                 pump_task = asyncio.create_task(self._pump_mic())
+                # Reset the idle clock from the moment the mic is live so
+                # any time spent connecting / in warm standby does not count
+                # against the idle budget (safety net for cold sessions).
+                self._touch()
                 idle_task = asyncio.create_task(self._idle_watchdog())
 
                 # Warm session just woken: greet only after the local wake-word
