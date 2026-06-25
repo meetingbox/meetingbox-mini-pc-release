@@ -26,9 +26,15 @@ Design:
 - On function-call output in response.done: invoke the backend tool via
   HTTP, post the result back, send response.create to continue.
 
-No acoustic echo cancellation, no transcript-based echo guard, no
-deferred barge-in. With an external mic+speaker, the previous
-self-interruption loop does not occur.
+Echo / self-hearing handling depends on the resolved audio hardware:
+- Echo-isolated combined external mic+speaker puck (AudioDevicePair
+  is_combined): full-duplex. Speex AEC + an energy-based barge-in gate
+  let the user talk over the assistant.
+- Built-in mic + speaker (chassis-coupled) or any non-combined pair:
+  half-duplex. While the assistant speaks (plus an echo-decay tail) ALL
+  mic frames are dropped so the device never hears its own voice and
+  loops; voice barge-in is off but screen-tap barge-in still works.
+Override with REALTIME_HALF_DUPLEX (auto|1|0).
 """
 
 from __future__ import annotations
@@ -261,6 +267,20 @@ def _is_prompt_echo(text: str) -> bool:
 # REALTIME_VAD_EAGERNESS (low|medium|high|auto).
 _REALTIME_VAD_EAGERNESS = (
     os.environ.get("REALTIME_VAD_EAGERNESS", "medium").strip().lower() or "medium"
+)
+
+# Half-duplex self-hearing guard. On a device whose mic and speaker share the
+# same chassis (built-in mic, no external puck) the speaker output couples
+# straight back into the mic, clears the energy-gate barge-in threshold, and
+# the assistant hears its own voice and loops. In half-duplex we drop ALL mic
+# frames while the assistant is speaking (plus a short echo-decay tail) instead
+# of energy-gating them, so no self-audio ever reaches OpenAI. Cost: voice
+# barge-in is disabled (the user can still interrupt by tapping the screen).
+#   REALTIME_HALF_DUPLEX: auto (default) | 1/on | 0/off
+#     auto → enabled UNLESS an echo-isolated combined external mic+speaker
+#            puck is in use (audio pair reports is_combined).
+_REALTIME_HALF_DUPLEX_ENV = (
+    os.environ.get("REALTIME_HALF_DUPLEX", "auto").strip().lower() or "auto"
 )
 
 # Live on-screen captions WHILE the user speaks. OpenAI's input transcription
@@ -623,6 +643,37 @@ class RealtimeVoiceSession:
             logger.exception("AudioPair: resolution failed — using system defaults")
             from audio_device_resolve import AudioDevicePair
             self._audio_pair = AudioDevicePair()
+
+        # Decide duplex mode from the resolved hardware (see
+        # _REALTIME_HALF_DUPLEX_ENV). Only an echo-isolated combined external
+        # mic+speaker puck (is_combined) is safe for full-duplex voice barge-in;
+        # everything else (built-in mic, or mic-only external + built-in
+        # speaker) is acoustically coupled and must run half-duplex.
+        if _REALTIME_HALF_DUPLEX_ENV in ("1", "true", "yes", "on"):
+            self._half_duplex = True
+        elif _REALTIME_HALF_DUPLEX_ENV in ("0", "false", "no", "off"):
+            self._half_duplex = False
+        else:
+            self._half_duplex = not bool(
+                getattr(self._audio_pair, "is_combined", False)
+            )
+        logger.info(
+            "Realtime duplex mode: %s (audio pair is_combined=%s)",
+            "half-duplex (voice barge-in off)" if self._half_duplex
+            else "full-duplex (voice barge-in on)",
+            getattr(self._audio_pair, "is_combined", False),
+        )
+
+        # Echo-decay tail: keep the mic muted this long AFTER the assistant's
+        # queued audio finishes, so residual room echo doesn't reopen the
+        # uplink. Longer in half-duplex (built-in mic) where coupling is worse.
+        _default_tail = 1.0 if self._half_duplex else 0.6
+        try:
+            self._mic_reopen_tail_s = float(
+                os.environ.get("REALTIME_MIC_TAIL_S", "") or _default_tail
+            )
+        except ValueError:
+            self._mic_reopen_tail_s = _default_tail
 
         # Worker thread + asyncio loop
         self._thread: threading.Thread | None = None
@@ -1629,10 +1680,11 @@ class RealtimeVoiceSession:
         with self._playback_clock_lock:
             start_at = max(self._assistant_audio_play_until, now)
             self._assistant_audio_play_until = start_at + chunk_s
-            # Add a 600 ms tail for room echo to decay before opening the mic.
+            # Keep the mic muted for an echo-decay tail after playback ends
+            # (longer in half-duplex; see self._mic_reopen_tail_s).
             self._mute_mic_uplink_until = max(
                 self._mute_mic_uplink_until,
-                self._assistant_audio_play_until + 0.6,
+                self._assistant_audio_play_until + self._mic_reopen_tail_s,
             )
         self._ensure_aplay()
         proc = self._aplay_proc
@@ -1895,6 +1947,18 @@ class RealtimeVoiceSession:
                 # Both conditions ensure we don't pass near-silence or mild
                 # echo while still allowing clear speech to interrupt.
                 if time.monotonic() < self._mute_mic_uplink_until:
+                    if self._half_duplex:
+                        # True half-duplex: never upload mic audio while the
+                        # assistant is speaking (or during the echo-decay tail).
+                        # Stops a chassis-coupled built-in mic from hearing the
+                        # device's own voice and looping. Voice barge-in is off;
+                        # screen-tap barge-in (cancel_current_response) clears
+                        # this window immediately via _abort_aplay.
+                        continue
+                    # Full-duplex (echo-isolated puck): energy-based barge-in
+                    # gate. Let a frame through only if the mic is clearly
+                    # louder than the expected echo — i.e. the user is talking
+                    # over the assistant.
                     mic_samples = np.frombuffer(resampled, dtype=np.int16).astype(np.float32)
                     mic_rms = float(np.sqrt(np.mean(mic_samples ** 2))) if len(mic_samples) else 0.0
                     with self._aec_buf_lock:
@@ -2424,13 +2488,28 @@ class RealtimeVoiceSession:
         audio_input: dict = {
             "transcription": transcription_cfg,
         }
-        # "auto" means: leave the server's turn_detection untouched.
+        # Half-duplex disables voice barge-in entirely (the mic is muted while
+        # the assistant speaks), so tell the server NOT to interrupt the
+        # in-flight response on detected speech — a stray echo frame at the tail
+        # boundary must never kill a reply. Full-duplex keeps interrupt_response
+        # on for true talk-over barge-in.
+        interrupt_response = not self._half_duplex
+        # "auto" means: leave the server's turn_detection eagerness untouched.
         if _REALTIME_VAD_EAGERNESS and _REALTIME_VAD_EAGERNESS != "auto":
             audio_input["turn_detection"] = {
                 "type": "semantic_vad",
                 "eagerness": _REALTIME_VAD_EAGERNESS,
                 "create_response": True,
-                "interrupt_response": True,
+                "interrupt_response": interrupt_response,
+            }
+        elif self._half_duplex:
+            # Even with eagerness left on "auto" we still must flip
+            # interrupt_response off for half-duplex; keep the server's
+            # conservative default eagerness by omitting the field.
+            audio_input["turn_detection"] = {
+                "type": "semantic_vad",
+                "create_response": True,
+                "interrupt_response": False,
             }
         try:
             await ws.send(json.dumps({
