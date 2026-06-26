@@ -3256,9 +3256,21 @@ class MeetingBoxApp(App):
             logger.debug("voice brief facts unavailable", exc_info=True)
         return {}
 
-    def _realtime_voice_navigate(self, screen: str, target_date=None, target_tab=None) -> None:
+    def _realtime_voice_navigate(self, screen: str, target_date=None, target_tab=None, meeting_id=None) -> None:
         """Open a main UI screen when the cloud Realtime model calls navigate_device_ui."""
         s = (screen or "").strip()
+
+        # show_meeting_summary opens a specific recording's summary page, which is
+        # not a fixed main screen (it needs the meeting/note id to load).
+        if s == "meeting_detail":
+            mid = str(meeting_id or "").strip()
+            if mid:
+                try:
+                    self._voice_open_meeting_detail(mid)
+                except Exception:
+                    logger.exception("Realtime navigate to meeting_detail failed")
+            return
+
         routes = {
             "home": ("home", "fade"),
             "voice_session": ("voice_session", "slide_right"),

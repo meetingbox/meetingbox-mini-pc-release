@@ -1104,8 +1104,9 @@ class RealtimeVoiceSession:
             except (ValueError, TypeError):
                 pass
         target_tab = data.get("target_tab") or None
+        meeting_id = data.get("meeting_id") or None
         Clock.schedule_once(
-            lambda _dt: self._safe_call(cb, screen.strip(), target_date, target_tab), 0
+            lambda _dt: self._safe_call(cb, screen.strip(), target_date, target_tab, meeting_id), 0
         )
 
     # ── Device-driven morning-brief walkthrough ────────────────────────────
@@ -2977,6 +2978,8 @@ class RealtimeVoiceSession:
                 model_out = self._redact_calendar_event_dismiss_for_model(out)
             elif name == "show_recipient_picker":
                 self._emit_recipient_picker(out)
+            elif name == "show_meeting_summary":
+                self._emit_device_navigation(out)
 
             pending.append({
                 "type": "conversation.item.create",
