@@ -345,6 +345,18 @@ _LOCAL_BARGE_IN_ECHO_MIN_REF_RATIO = _env_float(
     minimum=0.2,
     maximum=2.0,
 )
+_LOCAL_BARGE_IN_SPIKE_ECHO_SIMILARITY_GUARD = _env_float(
+    "REALTIME_BARGE_IN_SPIKE_ECHO_SIMILARITY_GUARD",
+    0.9,
+    minimum=0.5,
+    maximum=0.999,
+)
+_LOCAL_BARGE_IN_SPIKE_ECHO_MAX_REF_RATIO = _env_float(
+    "REALTIME_BARGE_IN_SPIKE_ECHO_MAX_REF_RATIO",
+    2.0,
+    minimum=1.0,
+    maximum=5.0,
+)
 _LOCAL_BARGE_IN_MIN_FRAMES = _env_int("REALTIME_BARGE_IN_MIN_FRAMES", 2, minimum=1, maximum=10)
 _LOCAL_BARGE_IN_PREROLL_S = _env_float("REALTIME_BARGE_IN_PREROLL_S", 0.18, minimum=0.0, maximum=0.5)
 
@@ -2086,6 +2098,16 @@ class RealtimeVoiceSession:
         # routes introduce enough speaker->mic coloration to look like "diverged"
         # echo and cause false self-interruption.
         loud_enough = mic_rms >= threshold
+        # Guard against strong pure echo spikes from external mic/speaker
+        # coupling: if mic looks almost identical to far-end playback and is
+        # only modestly louder than the reference, treat it as self-audio.
+        if (
+            loud_enough
+            and ref_rms > 0.0
+            and echo_similarity >= _LOCAL_BARGE_IN_SPIKE_ECHO_SIMILARITY_GUARD
+            and mic_rms <= (ref_rms * _LOCAL_BARGE_IN_SPIKE_ECHO_MAX_REF_RATIO)
+        ):
+            loud_enough = False
         diverged_from_echo = False
         if _LOCAL_BARGE_IN_ECHO_DIVERGENCE_ENABLED:
             diverged_from_echo = (
@@ -2350,37 +2372,42 @@ class RealtimeVoiceSession:
                     self._caption_active = True
                     self._caption_reset.set()
                     self._emit_user_speech_started()
-                    # User started talking. Cut playback now so they hear
-                    # themselves, not the assistant. The server cancels
-                    # the in-flight response on its own (interrupt_response).
-                    self._abort_aplay()
-                    self._suppress_audio_until = (
-                        time.monotonic() + _BARGE_IN_SUPPRESS_AUDIO_S
+                    # In half-duplex, server-side speech_started can still
+                    # occasionally come from residual echo on some external
+                    # mic/speaker paths. Only force-stop playback when local
+                    # barge-in already confirmed recently; otherwise defer to
+                    # the local detector and avoid false self-interrupt.
+                    should_force_interrupt = (
+                        not self._half_duplex
+                        or (time.monotonic() - self._barge_in_last_cancel_at) <= 0.9
                     )
-                    # Send an explicit cancel too. Some routes can take a
-                    # little longer for server-side interruption, and local
-                    # barge-in should always preempt playback immediately.
-                    try:
-                        await ws.send(json.dumps({"type": "response.cancel"}))
-                        self._log_voice_event("response_cancel_sent", source="speech_started")
-                    except Exception:
-                        logger.debug("speech_started response.cancel failed", exc_info=True)
-                    # Trim — do NOT fully clear — the AEC far-end reference.
-                    # aplay still has ~70 ms buffered and the room contributes
-                    # ~50–150 ms of reflections, so the assistant's tail audio
-                    # keeps reaching the mic for a short while after we kill
-                    # playback. Fully clearing the reference leaves AEC with
-                    # nothing to subtract, and the user's barge-in mic frames
-                    # arrive contaminated with the assistant's own voice —
-                    # which then mistranscribes and biases the realtime model.
-                    # Retain ~300 ms of far-end so AEC keeps suppressing the
-                    # tail; older samples are discarded.
-                    if self._aec is not None:
-                        retain_bytes = int(_REALTIME_RATE * 0.3) * 2  # 300 ms PCM16
-                        with self._aec_buf_lock:
-                            if len(self._aec_far_buf) > retain_bytes:
-                                del self._aec_far_buf[: len(self._aec_far_buf) - retain_bytes]
-                    self._emit_state("listening")
+                    if should_force_interrupt:
+                        # User started talking. Cut playback now so they hear
+                        # themselves, not the assistant. The server cancels
+                        # the in-flight response on its own (interrupt_response).
+                        self._abort_aplay()
+                        self._suppress_audio_until = (
+                            time.monotonic() + _BARGE_IN_SUPPRESS_AUDIO_S
+                        )
+                        # Send an explicit cancel too. Some routes can take a
+                        # little longer for server-side interruption.
+                        try:
+                            await ws.send(json.dumps({"type": "response.cancel"}))
+                            self._log_voice_event("response_cancel_sent", source="speech_started")
+                        except Exception:
+                            logger.debug("speech_started response.cancel failed", exc_info=True)
+                        # Trim — do NOT fully clear — the AEC far-end reference.
+                        if self._aec is not None:
+                            retain_bytes = int(_REALTIME_RATE * 0.3) * 2  # 300 ms PCM16
+                            with self._aec_buf_lock:
+                                if len(self._aec_far_buf) > retain_bytes:
+                                    del self._aec_far_buf[: len(self._aec_far_buf) - retain_bytes]
+                        self._emit_state("listening")
+                    else:
+                        self._log_voice_event(
+                            "speech_started_ignored",
+                            reason="half_duplex_unconfirmed",
+                        )
 
                 elif t == "input_audio_buffer.speech_stopped":
                     self._touch()

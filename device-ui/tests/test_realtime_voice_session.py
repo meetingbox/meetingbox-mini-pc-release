@@ -242,6 +242,40 @@ def test_local_barge_in_ignores_echo_divergence_by_default(monkeypatch):
     assert detected is False
 
 
+def test_local_barge_in_blocks_echo_like_rms_spike(monkeypatch):
+    import realtime_voice_session as rtv
+
+    monkeypatch.setattr(rtv, "sd", None)
+    monkeypatch.setattr(rtv, "_LOCAL_BARGE_IN_ECHO_DIVERGENCE_ENABLED", False)
+    session = RealtimeVoiceSession(
+        client_secret="ek_test",
+        model="gpt-realtime-2",
+        backend_base_url="http://127.0.0.1:8000",
+        device_token="mbd_test",
+        on_session_end=lambda: None,
+        on_error=lambda _msg: None,
+        on_connected=lambda: None,
+    )
+    session._response_in_progress = True
+    # Simulate a stale low baseline so threshold is dominated by ref ratio.
+    session._barge_in_noise_rms = 120.0
+
+    t = np.linspace(0.0, 2.0 * np.pi, 480, endpoint=False, dtype=np.float32)
+    ref_wave = (np.sin(t * 5.0) * 1000.0).astype(np.int16)
+    echo_spike = (ref_wave.astype(np.float32) * 1.85).astype(np.int16).tobytes()
+    session._aec_far_buf.extend(ref_wave.tobytes())
+
+    # Similarity is near-echo and mic/ref ratio is modest; should be vetoed.
+    detected, mic_rms, ref_rms, threshold, similarity = session._detect_local_barge_in(
+        echo_spike,
+        now=40.0,
+    )
+    assert mic_rms > threshold
+    assert ref_rms > 0.0
+    assert similarity > 0.9
+    assert detected is False
+
+
 def test_far_ref_slice_uses_most_recent_audio(monkeypatch):
     import realtime_voice_session as rtv
 
