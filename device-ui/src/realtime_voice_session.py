@@ -30,14 +30,10 @@ Echo / self-hearing handling depends on the resolved audio hardware:
 - Echo-isolated combined external mic+speaker puck (AudioDevicePair
   is_combined): full-duplex. Speex AEC + an energy-based barge-in gate
   let the user talk over the assistant.
-- Built-in mic + speaker (chassis-coupled) or any non-combined pair
-  (e.g. external mic + built-in speaker): half-duplex. While the assistant
-  speaks (plus an echo-decay tail) mic frames are NEVER uploaded — the
-  speaker bleeds into the mic and the server would transcribe the device's
-  own voice. With Speex AEC active, a genuine talk-over is detected LOCALLY
-  on the echo-cancelled residual and cancels the reply (the device sends its
-  own response.cancel); the user's continued speech then uploads cleanly.
-  Without AEC the uplink stays muted and only screen-tap barge-in works.
+- Built-in mic + speaker (chassis-coupled) or any non-combined pair:
+  half-duplex. While the assistant speaks (plus an echo-decay tail) ALL
+  mic frames are dropped so the device never hears its own voice and
+  loops; voice barge-in is off but screen-tap barge-in still works.
 Override with REALTIME_HALF_DUPLEX (auto|1|0).
 """
 
@@ -102,54 +98,6 @@ _APLAY_BUFFER_TIME_US = "70000"
 # the trailing bytes of the cancelled response. Cleared as soon as a new
 # response.created event arrives so we never silence a fresh response.
 _BARGE_IN_SUPPRESS_AUDIO_S = 0.4
-
-# ── Full-duplex voice barge-in (echo-isolated puck only) ───────────────────
-# On a combined mic+speaker puck the speaker barely bleeds into the mic, so a
-# loud mic frame can be streamed straight through while the assistant speaks
-# and the server's interrupt_response cancels the reply. A frame counts as
-# barge-in when its RMS exceeds BOTH a fraction of the playback echo reference
-# AND an absolute voice floor.
-_BARGE_IN_REF_MULT_FULL = 0.4
-_BARGE_IN_FLOOR_FULL = 300.0
-
-# ── Half-duplex local voice barge-in (echo-coupled hardware) ───────────────
-# On echo-coupled hardware (e.g. external mic + built-in speaker) the speaker
-# bleeds heavily into the mic, so mic frames are NEVER uploaded while the
-# assistant speaks — doing so makes the server transcribe the assistant's own
-# voice. Instead we detect a genuine talk-over LOCALLY on the echo-cancelled
-# residual and cancel the in-flight response ourselves; the user's continued
-# speech then uploads cleanly (speaker now silent). Detection requires the
-# residual RMS to stay above BOTH an absolute floor AND a multiple of the
-# adaptively-tracked residual-echo level for several consecutive frames, so
-# residual echo alone can never trigger it. All three are env-tunable.
-def _envf(name: str, default: float) -> float:
-    try:
-        return float(os.environ.get(name, "") or default)
-    except (TypeError, ValueError):
-        return default
-
-# Detection is a double-talk test on the echo-cancelled residual: echo is
-# proportional to what is playing RIGHT NOW (the far-end reference), so we learn
-# the echo-coupling ratio (residual/far) during single-talk and predict the
-# expected echo each frame. A talk-over fires only when the residual exceeds
-# BOTH an absolute floor AND the predicted echo by a margin, for several
-# consecutive frames. Because the threshold scales with the assistant's own
-# loudness, a loud passage of the assistant's speech can no longer look like an
-# interruption. All thresholds are env-tunable.
-_BARGE_IN_RESIDUAL_FLOOR = _envf("REALTIME_BARGEIN_FLOOR", 500.0)
-_BARGE_IN_RESIDUAL_MULT = _envf("REALTIME_BARGEIN_MULT", 2.0)
-_BARGE_IN_MIN_FRAMES = int(_envf("REALTIME_BARGEIN_FRAMES", 10))  # ~20 ms each
-_BARGE_IN_FAR_MIN = _envf("REALTIME_BARGEIN_FAR_MIN", 200.0)  # learn coupling only when assistant audibly playing
-_BARGE_IN_COUPLING_ALPHA = 0.05  # slow EMA for the learned echo-coupling ratio
-_BARGE_IN_COUPLING_INIT = _envf("REALTIME_BARGEIN_COUPLING", 0.5)  # conservative until learned
-_BARGE_IN_DEBUG = (os.environ.get("REALTIME_BARGEIN_DEBUG", "") or "").strip().lower() in ("1", "true", "yes", "on")
-# Kill-switch: set REALTIME_HALF_DUPLEX_BARGEIN=0 to disable half-duplex voice
-# barge-in entirely (mic stays muted while the assistant speaks; screen-tap
-# interrupt still works). Defaults ON. Lets the device fall back to rock-solid
-# behaviour instantly without a code change if detection ever misbehaves.
-_HALF_DUPLEX_BARGEIN_ENABLED = (
-    os.environ.get("REALTIME_HALF_DUPLEX_BARGEIN", "1") or "1"
-).strip().lower() not in ("0", "false", "no", "off")
 
 # Close the session if the user is silent (and we're not speaking) for
 # this many seconds. Matches the previous behavior.
@@ -711,8 +659,7 @@ class RealtimeVoiceSession:
             )
         logger.info(
             "Realtime duplex mode: %s (audio pair is_combined=%s)",
-            "half-duplex (local voice barge-in when AEC active)"
-            if self._half_duplex
+            "half-duplex (voice barge-in off)" if self._half_duplex
             else "full-duplex (voice barge-in on)",
             getattr(self._audio_pair, "is_combined", False),
         )
@@ -766,13 +713,6 @@ class RealtimeVoiceSession:
         self._assistant_audio_play_until = 0.0
         # Mic-mute window while assistant audio is still playing / echoing.
         self._mute_mic_uplink_until = 0.0
-        # Local half-duplex barge-in detector state (see _pump_mic). Counts
-        # consecutive talk-over frames and learns the echo-coupling ratio
-        # (AEC residual / far-end reference) during single-talk so a genuine
-        # interruption is told apart from speaker bleed.
-        self._barge_in_run = 0
-        self._echo_coupling_ema = 0.0   # learned residual/far ratio (0 = unset)
-        self._aec_last_far_rms = 0.0    # RMS of the far frame last cancelled
 
         # Acoustic echo canceller. The bytes we hand to aplay are also
         # buffered as the far-end reference; the mic stream (after resample
@@ -1775,9 +1715,6 @@ class RealtimeVoiceSession:
         with self._playback_clock_lock:
             self._assistant_audio_play_until = 0.0
             self._mute_mic_uplink_until = 0.0
-        # Drop any in-progress half-duplex barge-in candidate run so it can't
-        # carry across into the next reply.
-        self._barge_in_run = 0
         proc = self._aplay_proc
         self._aplay_proc = None
         self._aplay_pid = None
@@ -1958,8 +1895,6 @@ class RealtimeVoiceSession:
             return mic_pcm16
         fbytes = self._aec_frame_bytes
         out = bytearray()
-        far_sq_sum = 0.0
-        far_n = 0
         with self._aec_buf_lock:
             self._aec_near_buf.extend(mic_pcm16)
             while len(self._aec_near_buf) >= fbytes:
@@ -1970,97 +1905,12 @@ class RealtimeVoiceSession:
                     del self._aec_far_buf[:fbytes]
                 else:
                     far = b"\x00" * fbytes
-                # Track far-end (echo source) energy for the double-talk detector.
-                fa = np.frombuffer(far, dtype=np.int16).astype(np.float32)
-                if len(fa):
-                    far_sq_sum += float(np.sum(fa ** 2))
-                    far_n += len(fa)
                 try:
                     out.extend(aec.cancel(near, far))
                 except Exception:
                     logger.debug("AEC cancel failed", exc_info=True)
                     out.extend(near)
-        if far_n:
-            self._aec_last_far_rms = float((far_sq_sum / far_n) ** 0.5)
         return bytes(out)
-
-    # ------------------------------------------------------------------
-    # Half-duplex local voice barge-in detection
-    # ------------------------------------------------------------------
-
-    def _detect_local_barge_in(self, residual_pcm16: bytes) -> bool:
-        """Return True when the echo-cancelled mic residual is a real talk-over.
-
-        Double-talk test, called per 20 ms frame WHILE the assistant is speaking
-        (half-duplex). The echo left in the residual is proportional to what is
-        playing right now (the far-end reference), so we learn the echo-coupling
-        ratio (residual / far) during single-talk and predict the expected echo
-        each frame. A trigger requires the residual to exceed BOTH an absolute
-        floor AND the predicted echo by a margin, for several consecutive frames.
-        Because the threshold scales with the assistant's current loudness, a
-        loud passage of the assistant's own speech cannot look like a barge-in.
-        """
-        if not residual_pcm16:
-            return False
-        samples = np.frombuffer(residual_pcm16, dtype=np.int16).astype(np.float32)
-        if not len(samples):
-            return False
-        res_rms = float(np.sqrt(np.mean(samples ** 2)))
-        far_rms = self._aec_last_far_rms
-        coupling = self._echo_coupling_ema or _BARGE_IN_COUPLING_INIT
-        predicted_echo = coupling * far_rms
-        threshold = max(
-            _BARGE_IN_RESIDUAL_FLOOR,
-            predicted_echo * _BARGE_IN_RESIDUAL_MULT,
-        )
-        if res_rms > threshold:
-            self._barge_in_run += 1
-        else:
-            self._barge_in_run = 0
-        # Learn the echo-coupling ratio only during single-talk (no candidate
-        # run) and only while the assistant is audibly playing, so the user's
-        # own voice can never inflate it.
-        if self._barge_in_run == 0 and far_rms > _BARGE_IN_FAR_MIN:
-            ratio = res_rms / far_rms
-            if self._echo_coupling_ema <= 0.0:
-                self._echo_coupling_ema = ratio
-            else:
-                self._echo_coupling_ema += _BARGE_IN_COUPLING_ALPHA * (
-                    ratio - self._echo_coupling_ema
-                )
-        if _BARGE_IN_DEBUG:
-            logger.info(
-                "barge-in probe: res=%.0f far=%.0f k=%.3f thr=%.0f run=%d",
-                res_rms, far_rms, self._echo_coupling_ema, threshold,
-                self._barge_in_run,
-            )
-        if self._barge_in_run >= _BARGE_IN_MIN_FRAMES:
-            self._barge_in_run = 0
-            return True
-        return False
-
-    async def _do_local_barge_in(self, ws) -> None:
-        """Stop the assistant on a detected half-duplex talk-over.
-
-        Kills local playback and cancels the in-flight response so the speaker
-        goes silent. _abort_aplay clears the mic-mute window, so the next mic
-        frames (now echo-free) upload normally and the server picks up the
-        user's continued speech.
-        """
-        logger.info("Realtime: local voice barge-in detected (half-duplex)")
-        self._abort_aplay()
-        self._suppress_audio_until = time.monotonic() + _BARGE_IN_SUPPRESS_AUDIO_S
-        # Retain a short far-end tail so AEC keeps suppressing the speaker's
-        # decay while the user keeps talking; drop the rest.
-        if self._aec is not None:
-            retain_bytes = int(_REALTIME_RATE * 0.3) * 2  # 300 ms PCM16
-            with self._aec_buf_lock:
-                if len(self._aec_far_buf) > retain_bytes:
-                    del self._aec_far_buf[: len(self._aec_far_buf) - retain_bytes]
-        try:
-            await ws.send(json.dumps({"type": "response.cancel"}))
-        except Exception:
-            logger.debug("local barge-in response.cancel failed", exc_info=True)
 
     # ------------------------------------------------------------------
     # Mic pump (asyncio side)
@@ -2086,34 +1936,29 @@ class RealtimeVoiceSession:
                 continue
             try:
                 resampled = resample_pcm16_mono(piece, native_sr, _REALTIME_RATE)
-                # While the assistant is speaking (or in the echo-decay tail)
-                # decide what to do with this mic frame. Half-duplex never
-                # uploads here (it detects barge-in locally); full-duplex uses
-                # an energy gate to pass real talk-over straight to the server.
+                # Energy-based echo gate:
+                # While the agent is speaking, suppress mic frames whose energy
+                # is at or below the expected echo level (i.e. agent's own
+                # voice bouncing off the room).  Frames that are significantly
+                # louder than the playback reference pass through — that means
+                # the USER is speaking and wants to barge in.
+                # Threshold: mic RMS must exceed 40 % of the reference RMS
+                # AND be above a minimum voice floor (300 ≈ -82 dBFS).
+                # Both conditions ensure we don't pass near-silence or mild
+                # echo while still allowing clear speech to interrupt.
                 if time.monotonic() < self._mute_mic_uplink_until:
                     if self._half_duplex:
-                        # Echo-coupled hardware: NEVER upload mic audio while
-                        # the assistant is speaking — the speaker bleeds into
-                        # the mic and the server would transcribe the device's
-                        # own voice. Detect a genuine talk-over locally on the
-                        # echo-cancelled residual and, if found, cancel the
-                        # reply ourselves so the speaker goes silent; the
-                        # user's continued speech then uploads cleanly. Without
-                        # AEC (or when the kill-switch disables it) there is
-                        # nothing to analyse, so we just stay muted (screen-tap
-                        # barge-in still works).
-                        if self._aec is not None and _HALF_DUPLEX_BARGEIN_ENABLED:
-                            residual = self._aec_process(resampled)
-                            if self._detect_local_barge_in(residual):
-                                await self._do_local_barge_in(ws)
+                        # True half-duplex: never upload mic audio while the
+                        # assistant is speaking (or during the echo-decay tail).
+                        # Stops a chassis-coupled built-in mic from hearing the
+                        # device's own voice and looping. Voice barge-in is off;
+                        # screen-tap barge-in (cancel_current_response) clears
+                        # this window immediately via _abort_aplay.
                         continue
                     # Full-duplex (echo-isolated puck): energy-based barge-in
                     # gate. Let a frame through only if the mic is clearly
                     # louder than the expected echo — i.e. the user is talking
-                    # over the assistant. That frame reaches the server, whose
-                    # VAD fires speech_started and cancels the in-flight
-                    # response (interrupt_response), while the local
-                    # speech_started handler kills playback via _abort_aplay.
+                    # over the assistant.
                     mic_samples = np.frombuffer(resampled, dtype=np.int16).astype(np.float32)
                     mic_rms = float(np.sqrt(np.mean(mic_samples ** 2))) if len(mic_samples) else 0.0
                     with self._aec_buf_lock:
@@ -2124,9 +1969,7 @@ class RealtimeVoiceSession:
                     else:
                         ref_rms = 0.0
                     # Let through only if mic is clearly louder than the echo
-                    barge_in = mic_rms > max(
-                        ref_rms * _BARGE_IN_REF_MULT_FULL, _BARGE_IN_FLOOR_FULL
-                    )
+                    barge_in = mic_rms > max(ref_rms * 0.4, 300.0)
                     if not barge_in:
                         continue
                 if self._aec is not None:
@@ -2645,11 +2488,11 @@ class RealtimeVoiceSession:
         audio_input: dict = {
             "transcription": transcription_cfg,
         }
-        # Half-duplex never uploads mic audio while the assistant speaks, and it
-        # handles barge-in LOCALLY (see _do_local_barge_in: it sends its own
-        # response.cancel), so the server must NOT interrupt on detected speech —
-        # a stray echo frame at the tail boundary must never kill a reply.
-        # Full-duplex keeps interrupt_response on for true talk-over barge-in.
+        # Half-duplex disables voice barge-in entirely (the mic is muted while
+        # the assistant speaks), so tell the server NOT to interrupt the
+        # in-flight response on detected speech — a stray echo frame at the tail
+        # boundary must never kill a reply. Full-duplex keeps interrupt_response
+        # on for true talk-over barge-in.
         interrupt_response = not self._half_duplex
         # "auto" means: leave the server's turn_detection eagerness untouched.
         if _REALTIME_VAD_EAGERNESS and _REALTIME_VAD_EAGERNESS != "auto":
