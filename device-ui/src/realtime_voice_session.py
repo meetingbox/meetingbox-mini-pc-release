@@ -324,6 +324,12 @@ _LOCAL_BARGE_IN_ENABLED = (
 _LOCAL_BARGE_IN_MIN_RMS = _env_float("REALTIME_BARGE_IN_MIN_RMS", 900.0, minimum=100.0)
 _LOCAL_BARGE_IN_REF_RATIO = _env_float("REALTIME_BARGE_IN_REF_RATIO", 1.65, minimum=1.0)
 _LOCAL_BARGE_IN_BASELINE_RATIO = _env_float("REALTIME_BARGE_IN_BASELINE_RATIO", 2.4, minimum=1.2)
+_LOCAL_BARGE_IN_MAX_ECHO_SIMILARITY = _env_float(
+    "REALTIME_BARGE_IN_MAX_ECHO_SIMILARITY",
+    0.92,
+    minimum=0.2,
+    maximum=0.999,
+)
 _LOCAL_BARGE_IN_MIN_FRAMES = _env_int("REALTIME_BARGE_IN_MIN_FRAMES", 2, minimum=1, maximum=10)
 _LOCAL_BARGE_IN_PREROLL_S = _env_float("REALTIME_BARGE_IN_PREROLL_S", 0.18, minimum=0.0, maximum=0.5)
 
@@ -1865,7 +1871,7 @@ class RealtimeVoiceSession:
 
                 # Suppress mic uplink briefly so the room echo of the wake
                 # phrase decays before audio reaches OpenAI.  Without this,
-                # the VAD fires on the garbled "Hey Tony" echo and the model
+                # the VAD fires on the garbled "Hey Pepper" echo and the model
                 # responds with a confused phrase ("I can't catch on to that")
                 # before the proper wake greeting even plays.
                 _wake_echo_settle_s = float(
@@ -1981,14 +1987,46 @@ class RealtimeVoiceSession:
             return 0.0
         return float(np.sqrt(np.mean(samples ** 2)))
 
-    def _far_ref_rms(self, length: int) -> float:
+    def _far_ref_slice(self, length: int) -> bytes:
         if length <= 0:
-            return 0.0
+            return b""
         with self._aec_buf_lock:
-            ref = bytes(self._aec_far_buf[:length])
-        return self._pcm_rms(ref)
+            return bytes(self._aec_far_buf[:length])
 
-    def _detect_local_barge_in(self, mic_pcm16: bytes, *, now: float) -> tuple[bool, float, float, float]:
+    def _far_ref_rms(self, length: int) -> float:
+        return self._pcm_rms(self._far_ref_slice(length))
+
+    @staticmethod
+    def _echo_similarity(mic_pcm16: bytes, ref_pcm16: bytes) -> float:
+        """Cosine similarity between current mic and far-end playback slices.
+
+        Echo-only frames are highly similar to far-end playback. User barge-in
+        speech mixed on top of echo drops similarity even when RMS does not
+        exceed a strict amplitude ratio threshold.
+        """
+        if not mic_pcm16 or not ref_pcm16:
+            return 1.0
+        mic = np.frombuffer(mic_pcm16, dtype=np.int16).astype(np.float32)
+        ref = np.frombuffer(ref_pcm16, dtype=np.int16).astype(np.float32)
+        n = min(len(mic), len(ref))
+        if n < 80:
+            return 1.0
+        mic = mic[:n]
+        ref = ref[:n]
+        mic -= float(np.mean(mic))
+        ref -= float(np.mean(ref))
+        denom = float(np.linalg.norm(mic) * np.linalg.norm(ref))
+        if denom <= 1e-6:
+            return 1.0
+        sim = float(np.dot(mic, ref) / denom)
+        return max(-1.0, min(1.0, sim))
+
+    def _detect_local_barge_in(
+        self,
+        mic_pcm16: bytes,
+        *,
+        now: float,
+    ) -> tuple[bool, float, float, float, float]:
         """Detect live user speech while normal mic upload is muted for echo.
 
         This is intentionally separate from server VAD. Server VAD cannot see a
@@ -1997,11 +2035,13 @@ class RealtimeVoiceSession:
         new turn.
         """
         if not _LOCAL_BARGE_IN_ENABLED:
-            return False, 0.0, 0.0, 0.0
+            return False, 0.0, 0.0, 0.0, 1.0
         if now - self._barge_in_last_cancel_at < 0.45:
-            return False, 0.0, 0.0, 0.0
+            return False, 0.0, 0.0, 0.0, 1.0
         mic_rms = self._pcm_rms(mic_pcm16)
-        ref_rms = self._far_ref_rms(len(mic_pcm16))
+        ref_pcm = self._far_ref_slice(len(mic_pcm16))
+        ref_rms = self._pcm_rms(ref_pcm)
+        echo_similarity = self._echo_similarity(mic_pcm16, ref_pcm)
         baseline = self._barge_in_noise_rms
         if baseline <= 0.0:
             baseline = ref_rms if ref_rms > 0.0 else mic_rms
@@ -2011,7 +2051,17 @@ class RealtimeVoiceSession:
             ref_rms * _LOCAL_BARGE_IN_REF_RATIO,
             baseline * _LOCAL_BARGE_IN_BASELINE_RATIO,
         )
-        detected = mic_rms >= threshold
+        # Two independent barge-in paths:
+        # 1) classic RMS spike over playback-ref threshold
+        # 2) divergence from far-end echo (low similarity) even if RMS stays below
+        #    a strict loudness threshold while assistant audio is loud.
+        loud_enough = mic_rms >= threshold
+        diverged_from_echo = (
+            ref_rms > 0.0
+            and mic_rms >= max(_LOCAL_BARGE_IN_MIN_RMS * 0.55, 280.0)
+            and echo_similarity <= _LOCAL_BARGE_IN_MAX_ECHO_SIMILARITY
+        )
+        detected = loud_enough or diverged_from_echo
         if detected:
             self._barge_in_consecutive += 1
         else:
@@ -2024,6 +2074,7 @@ class RealtimeVoiceSession:
             mic_rms,
             ref_rms,
             threshold,
+            echo_similarity,
         )
 
     def _reset_local_barge_state(self) -> None:
@@ -2049,16 +2100,20 @@ class RealtimeVoiceSession:
         mic_rms: float,
         ref_rms: float,
         threshold: float,
+        echo_similarity: float,
     ) -> None:
         self._barge_in_last_cancel_at = time.monotonic()
         self._abort_aplay()
         self._suppress_audio_until = time.monotonic() + _BARGE_IN_SUPPRESS_AUDIO_S
         self._emit_state("listening")
+        detection_mode = "rms_spike" if mic_rms >= threshold else "echo_divergence"
         self._log_voice_event(
             "barge_in_detected",
             mic_rms=round(mic_rms, 1),
             ref_rms=round(ref_rms, 1),
             threshold=round(threshold, 1),
+            echo_similarity=round(echo_similarity, 3),
+            detection_mode=detection_mode,
             half_duplex=self._half_duplex,
         )
         try:
@@ -2123,7 +2178,7 @@ class RealtimeVoiceSession:
                 # echo while still allowing clear speech to interrupt.
                 if now < self._mute_mic_uplink_until:
                     self._barge_in_preroll.append(resampled)
-                    detected, mic_rms, ref_rms, threshold = self._detect_local_barge_in(
+                    detected, mic_rms, ref_rms, threshold, echo_similarity = self._detect_local_barge_in(
                         resampled,
                         now=now,
                     )
@@ -2133,6 +2188,7 @@ class RealtimeVoiceSession:
                             mic_rms=mic_rms,
                             ref_rms=ref_rms,
                             threshold=threshold,
+                            echo_similarity=echo_similarity,
                         )
                         frames = list(self._barge_in_preroll)
                         self._reset_local_barge_state()
@@ -2263,6 +2319,14 @@ class RealtimeVoiceSession:
                     self._suppress_audio_until = (
                         time.monotonic() + _BARGE_IN_SUPPRESS_AUDIO_S
                     )
+                    # Send an explicit cancel too. Some routes can take a
+                    # little longer for server-side interruption, and local
+                    # barge-in should always preempt playback immediately.
+                    try:
+                        await ws.send(json.dumps({"type": "response.cancel"}))
+                        self._log_voice_event("response_cancel_sent", source="speech_started")
+                    except Exception:
+                        logger.debug("speech_started response.cancel failed", exc_info=True)
                     # Trim — do NOT fully clear — the AEC far-end reference.
                     # aplay still has ~70 ms buffered and the room contributes
                     # ~50–150 ms of reflections, so the assistant's tail audio

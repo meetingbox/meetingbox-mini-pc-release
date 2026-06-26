@@ -1,7 +1,7 @@
 """
 Local wake-word voice control for the device UI.
 
-Listens for a configurable wake phrase (default: "hey tony"), then accepts
+Listens for a configurable wake phrase (default: "hey pepper"), then accepts
 follow-up commands covering meetings, navigation, device controls, and a small
 confirmation flow for destructive actions.
 """
@@ -460,7 +460,7 @@ class VoiceAssistant:
         self._on_amplitude = on_amplitude
         self._on_conversation_turn = on_conversation_turn
         self.enabled = _env_flag("VOICE_ASSISTANT_ENABLED", True)
-        self.wake_phrase = (os.getenv("VOICE_ASSISTANT_WAKE_PHRASE") or "hey tony").strip() or "hey tony"
+        self.wake_phrase = (os.getenv("VOICE_ASSISTANT_WAKE_PHRASE") or "hey pepper").strip() or "hey pepper"
         self.start_commands = [
             cmd.strip()
             for cmd in (

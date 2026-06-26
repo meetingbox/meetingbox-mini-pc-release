@@ -175,7 +175,42 @@ def test_local_barge_in_uses_reference_and_consecutive_frames(monkeypatch):
 
     detected, *_ = session._detect_local_barge_in(speech, now=10.02)
     assert detected is False
-    detected, mic_rms, ref_rms, threshold = session._detect_local_barge_in(speech, now=10.04)
+    detected, mic_rms, ref_rms, threshold, echo_similarity = session._detect_local_barge_in(speech, now=10.04)
     assert detected is True
     assert mic_rms > threshold
     assert ref_rms > 0
+    assert echo_similarity <= 1.0
+
+
+def test_local_barge_in_triggers_on_echo_divergence_without_rms_spike(monkeypatch):
+    import realtime_voice_session as rtv
+
+    monkeypatch.setattr(rtv, "sd", None)
+    session = RealtimeVoiceSession(
+        client_secret="ek_test",
+        model="gpt-realtime-2",
+        backend_base_url="http://127.0.0.1:8000",
+        device_token="mbd_test",
+        on_session_end=lambda: None,
+        on_error=lambda _msg: None,
+        on_connected=lambda: None,
+    )
+
+    t = np.linspace(0.0, 2.0 * np.pi, 480, endpoint=False, dtype=np.float32)
+    ref_wave = (np.sin(t * 4.0) * 900.0).astype(np.int16)
+    pure_echo = ref_wave.tobytes()
+    # Add a different voice-like component; RMS stays below strict spike
+    # threshold but similarity to far-end drops markedly.
+    user_wave = (np.sin(t * 11.0 + 0.7) * 650.0).astype(np.int16)
+    mixed = np.clip(ref_wave.astype(np.int32) + user_wave.astype(np.int32), -32768, 32767).astype(np.int16).tobytes()
+    session._aec_far_buf.extend(pure_echo)
+
+    detected, *_ = session._detect_local_barge_in(pure_echo, now=20.0)
+    assert detected is False
+    detected, *_ = session._detect_local_barge_in(mixed, now=20.02)
+    assert detected is False
+    detected, mic_rms, ref_rms, threshold, similarity = session._detect_local_barge_in(mixed, now=20.04)
+    assert detected is True
+    assert mic_rms < threshold
+    assert ref_rms > 0.0
+    assert similarity < 0.92
