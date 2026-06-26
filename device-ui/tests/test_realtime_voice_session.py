@@ -215,3 +215,25 @@ def test_local_barge_in_triggers_on_echo_divergence_without_rms_spike(monkeypatc
     assert mic_rms < threshold
     assert ref_rms > 0.0
     assert similarity < 0.72
+
+
+def test_far_ref_slice_uses_most_recent_audio(monkeypatch):
+    import realtime_voice_session as rtv
+
+    monkeypatch.setattr(rtv, "sd", None)
+    session = RealtimeVoiceSession(
+        client_secret="ek_test",
+        model="gpt-realtime-2",
+        backend_base_url="http://127.0.0.1:8000",
+        device_token="mbd_test",
+        on_session_end=lambda: None,
+        on_error=lambda _msg: None,
+        on_connected=lambda: None,
+    )
+    old = (np.ones(120, dtype=np.int16) * 100).tobytes()
+    new = (np.ones(120, dtype=np.int16) * 2000).tobytes()
+    session._aec_far_buf.extend(old + new)
+
+    ref = session._far_ref_slice(len(new))
+    ref_rms = session._pcm_rms(ref)
+    assert ref_rms > 1500

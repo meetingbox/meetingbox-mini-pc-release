@@ -2002,7 +2002,14 @@ class RealtimeVoiceSession:
         if length <= 0:
             return b""
         with self._aec_buf_lock:
-            return bytes(self._aec_far_buf[:length])
+            # Use the MOST RECENT far-end playback slice for barge-in checks.
+            # During half-duplex mute windows we don't consume far_buf through
+            # _aec_process, so the buffer front can be stale and mismatched to
+            # the current echo reaching the mic; that causes false "barge-in"
+            # detections that cut speaker audio.
+            if len(self._aec_far_buf) <= length:
+                return bytes(self._aec_far_buf)
+            return bytes(self._aec_far_buf[-length:])
 
     def _far_ref_rms(self, length: int) -> float:
         return self._pcm_rms(self._far_ref_slice(length))
