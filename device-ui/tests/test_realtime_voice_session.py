@@ -164,6 +164,7 @@ def test_local_barge_in_uses_reference_and_consecutive_frames(monkeypatch):
         on_error=lambda _msg: None,
         on_connected=lambda: None,
     )
+    session._response_in_progress = True
 
     ref = (np.ones(480, dtype=np.int16) * 200).tobytes()
     quiet = (np.ones(480, dtype=np.int16) * 250).tobytes()
@@ -195,14 +196,14 @@ def test_local_barge_in_triggers_on_echo_divergence_without_rms_spike(monkeypatc
         on_error=lambda _msg: None,
         on_connected=lambda: None,
     )
+    session._response_in_progress = True
 
     t = np.linspace(0.0, 2.0 * np.pi, 480, endpoint=False, dtype=np.float32)
     ref_wave = (np.sin(t * 4.0) * 900.0).astype(np.int16)
     pure_echo = ref_wave.tobytes()
-    # Add a different voice-like component; RMS stays below strict spike
-    # threshold but similarity to far-end drops markedly.
-    user_wave = (np.sin(t * 11.0 + 0.7) * 650.0).astype(np.int16)
-    mixed = np.clip(ref_wave.astype(np.int32) + user_wave.astype(np.int32), -32768, 32767).astype(np.int16).tobytes()
+    # Use a different voice-like waveform than the far-end reference. It keeps
+    # RMS below the strict spike threshold while dropping echo similarity.
+    mixed = (np.sin(t * 11.0 + 0.7) * 1300.0).astype(np.int16).tobytes()
     session._aec_far_buf.extend(pure_echo)
 
     detected, *_ = session._detect_local_barge_in(pure_echo, now=20.0)
@@ -213,4 +214,4 @@ def test_local_barge_in_triggers_on_echo_divergence_without_rms_spike(monkeypatc
     assert detected is True
     assert mic_rms < threshold
     assert ref_rms > 0.0
-    assert similarity < 0.92
+    assert similarity < 0.72

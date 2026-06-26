@@ -326,9 +326,20 @@ _LOCAL_BARGE_IN_REF_RATIO = _env_float("REALTIME_BARGE_IN_REF_RATIO", 1.65, mini
 _LOCAL_BARGE_IN_BASELINE_RATIO = _env_float("REALTIME_BARGE_IN_BASELINE_RATIO", 2.4, minimum=1.2)
 _LOCAL_BARGE_IN_MAX_ECHO_SIMILARITY = _env_float(
     "REALTIME_BARGE_IN_MAX_ECHO_SIMILARITY",
-    0.92,
+    0.72,
     minimum=0.2,
     maximum=0.999,
+)
+_LOCAL_BARGE_IN_ECHO_MIN_BASELINE_RATIO = _env_float(
+    "REALTIME_BARGE_IN_ECHO_MIN_BASELINE_RATIO",
+    1.35,
+    minimum=1.0,
+)
+_LOCAL_BARGE_IN_ECHO_MIN_REF_RATIO = _env_float(
+    "REALTIME_BARGE_IN_ECHO_MIN_REF_RATIO",
+    0.8,
+    minimum=0.2,
+    maximum=2.0,
 )
 _LOCAL_BARGE_IN_MIN_FRAMES = _env_int("REALTIME_BARGE_IN_MIN_FRAMES", 2, minimum=1, maximum=10)
 _LOCAL_BARGE_IN_PREROLL_S = _env_float("REALTIME_BARGE_IN_PREROLL_S", 0.18, minimum=0.0, maximum=0.5)
@@ -2038,6 +2049,11 @@ class RealtimeVoiceSession:
             return False, 0.0, 0.0, 0.0, 1.0
         if now - self._barge_in_last_cancel_at < 0.45:
             return False, 0.0, 0.0, 0.0, 1.0
+        # Ignore detector noise when no assistant response/audio is active.
+        # False positives in this idle tail can suppress the next reply's first
+        # chunks and appear as "transcript but no speaker audio".
+        if not (self._response_in_progress or self.audio_playback_remaining_s() > 0.12):
+            return False, 0.0, 0.0, 0.0, 1.0
         mic_rms = self._pcm_rms(mic_pcm16)
         ref_pcm = self._far_ref_slice(len(mic_pcm16))
         ref_rms = self._pcm_rms(ref_pcm)
@@ -2058,7 +2074,13 @@ class RealtimeVoiceSession:
         loud_enough = mic_rms >= threshold
         diverged_from_echo = (
             ref_rms > 0.0
-            and mic_rms >= max(_LOCAL_BARGE_IN_MIN_RMS * 0.55, 280.0)
+            and baseline > 0.0
+            and mic_rms >= max(
+                _LOCAL_BARGE_IN_MIN_RMS * 0.55,
+                baseline * _LOCAL_BARGE_IN_ECHO_MIN_BASELINE_RATIO,
+                ref_rms * _LOCAL_BARGE_IN_ECHO_MIN_REF_RATIO,
+                280.0,
+            )
             and echo_similarity <= _LOCAL_BARGE_IN_MAX_ECHO_SIMILARITY
         )
         detected = loud_enough or diverged_from_echo
