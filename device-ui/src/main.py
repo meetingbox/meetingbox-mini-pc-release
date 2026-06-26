@@ -3256,7 +3256,7 @@ class MeetingBoxApp(App):
             logger.debug("voice brief facts unavailable", exc_info=True)
         return {}
 
-    def _realtime_voice_navigate(self, screen: str, target_date=None, target_tab=None, meeting_id=None) -> None:
+    def _realtime_voice_navigate(self, screen: str, target_date=None, target_tab=None, meeting_id=None, summary_data=None) -> None:
         """Open a main UI screen when the cloud Realtime model calls navigate_device_ui."""
         s = (screen or "").strip()
 
@@ -3268,7 +3268,7 @@ class MeetingBoxApp(App):
             mid = str(meeting_id or "").strip()
             if mid:
                 try:
-                    self._voice_open_summary_review(mid)
+                    self._voice_open_summary_review(mid, summary_data)
                 except Exception:
                     logger.exception("Realtime navigate to summary_review failed")
             return
@@ -5842,13 +5842,14 @@ class MeetingBoxApp(App):
         detail.set_meeting_id(meeting_id)
         self.goto_screen("meeting_detail", "slide_left")
 
-    def _voice_open_summary_review(self, meeting_id: str) -> None:
+    def _voice_open_summary_review(self, meeting_id: str, summary_data=None) -> None:
         """Open the Meeting Summary page for a recording — the same screen the
-        user reaches by tapping the post-summary notification. The screen
-        self-loads the full detail from the backend given just the id."""
+        user reaches by tapping the post-summary notification. The server passes
+        the resolved summary so the page paints immediately; the screen also
+        re-fetches the full detail from the backend to enrich it."""
         screen = self.screen_manager.get_screen("summary_review")
         if hasattr(screen, "set_meeting_data"):
-            screen.set_meeting_data(meeting_id, {})
+            screen.set_meeting_data(meeting_id, summary_data if isinstance(summary_data, dict) else {})
         self.goto_screen("summary_review", "fade")
 
     def _voice_save_setting_async(self, payload: dict, failure_text: str | None = None) -> None:

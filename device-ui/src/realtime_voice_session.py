@@ -1105,8 +1105,12 @@ class RealtimeVoiceSession:
                 pass
         target_tab = data.get("target_tab") or None
         meeting_id = data.get("meeting_id") or None
+        summary_data = data.get("summary_data") if isinstance(data.get("summary_data"), dict) else None
         Clock.schedule_once(
-            lambda _dt: self._safe_call(cb, screen.strip(), target_date, target_tab, meeting_id), 0
+            lambda _dt: self._safe_call(
+                cb, screen.strip(), target_date, target_tab, meeting_id, summary_data
+            ),
+            0,
         )
 
     # ── Device-driven morning-brief walkthrough ────────────────────────────
@@ -2980,6 +2984,17 @@ class RealtimeVoiceSession:
                 self._emit_recipient_picker(out)
             elif name == "show_meeting_summary":
                 self._emit_device_navigation(out)
+                # The summary body is a DEVICE-ONLY surface (the screen shows it).
+                # Strip it from what the model sees so it confirms briefly instead
+                # of reading the whole summary aloud.
+                try:
+                    _ms = json.loads(out)
+                    if isinstance(_ms, dict) and "summary_data" in _ms:
+                        model_out = json.dumps(
+                            {k: v for k, v in _ms.items() if k != "summary_data"}
+                        )
+                except (TypeError, ValueError):
+                    pass
 
             pending.append({
                 "type": "conversation.item.create",
