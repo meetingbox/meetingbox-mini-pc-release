@@ -3261,14 +3261,16 @@ class MeetingBoxApp(App):
         s = (screen or "").strip()
 
         # show_meeting_summary opens a specific recording's summary page, which is
-        # not a fixed main screen (it needs the meeting/note id to load).
-        if s == "meeting_detail":
+        # not a fixed main screen (it needs the meeting/note id to load). Open the
+        # same light-theme Meeting Summary page the user reaches by tapping the
+        # "summary ready" notification.
+        if s == "summary_review":
             mid = str(meeting_id or "").strip()
             if mid:
                 try:
-                    self._voice_open_meeting_detail(mid)
+                    self._voice_open_summary_review(mid)
                 except Exception:
-                    logger.exception("Realtime navigate to meeting_detail failed")
+                    logger.exception("Realtime navigate to summary_review failed")
             return
 
         routes = {
@@ -5839,6 +5841,15 @@ class MeetingBoxApp(App):
         detail = self.screen_manager.get_screen("meeting_detail")
         detail.set_meeting_id(meeting_id)
         self.goto_screen("meeting_detail", "slide_left")
+
+    def _voice_open_summary_review(self, meeting_id: str) -> None:
+        """Open the Meeting Summary page for a recording — the same screen the
+        user reaches by tapping the post-summary notification. The screen
+        self-loads the full detail from the backend given just the id."""
+        screen = self.screen_manager.get_screen("summary_review")
+        if hasattr(screen, "set_meeting_data"):
+            screen.set_meeting_data(meeting_id, {})
+        self.goto_screen("summary_review", "fade")
 
     def _voice_save_setting_async(self, payload: dict, failure_text: str | None = None) -> None:
         async def _save():
