@@ -50,6 +50,7 @@ import string
 import subprocess
 import threading
 import time
+from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 from urllib.parse import quote
@@ -73,6 +74,40 @@ REALTIME_VOICE_IMPLEMENTED = True
 # ---------------------------------------------------------------------------
 # Tunables
 # ---------------------------------------------------------------------------
+
+def _env_float(name: str, default: float, *, minimum: float | None = None, maximum: float | None = None) -> float:
+    raw = os.environ.get(name)
+    if raw is None or str(raw).strip() == "":
+        value = default
+    else:
+        try:
+            value = float(str(raw).strip())
+        except ValueError:
+            logger.warning("%s=%r is not a float; using %s", name, raw, default)
+            value = default
+    if minimum is not None:
+        value = max(minimum, value)
+    if maximum is not None:
+        value = min(maximum, value)
+    return value
+
+
+def _env_int(name: str, default: int, *, minimum: int | None = None, maximum: int | None = None) -> int:
+    raw = os.environ.get(name)
+    if raw is None or str(raw).strip() == "":
+        value = default
+    else:
+        try:
+            value = int(float(str(raw).strip()))
+        except ValueError:
+            logger.warning("%s=%r is not an int; using %s", name, raw, default)
+            value = default
+    if minimum is not None:
+        value = max(minimum, value)
+    if maximum is not None:
+        value = min(maximum, value)
+    return value
+
 
 _REALTIME_WS_HOST = "api.openai.com"
 _REALTIME_RATE = 24000
@@ -214,18 +249,15 @@ _REALTIME_WAKE_GREETING_INSTRUCTIONS = (
 # STT model for the user-speech transcript stream (used by the UI
 # overlay, farewell detection, and grammar correction).
 #
-# gpt-4o-mini-transcribe streams partial transcripts as
-# `conversation.item.input_audio_transcription.delta` events so the
-# user's words appear on screen live, word-by-word, while they speak.
-# whisper-1 (the old default) only returns ONE final transcript at
-# end-of-utterance — which is why text used to appear all at once after
-# the user finished. Override via REALTIME_TRANSCRIBE_MODEL=whisper-1 to
-# revert.
+# gpt-4o-transcribe was the last known good model for short conversational
+# MeetingBox utterances. It avoids the random suffixes seen with the mini
+# transcript model while preserving Realtime input-audio transcript events.
 _DEFAULT_INPUT_TRANSCRIPTION_MODEL = (
-    os.environ.get("REALTIME_TRANSCRIBE_MODEL", "gpt-4o-mini-transcribe").strip()
-    or "gpt-4o-mini-transcribe"
+    os.environ.get("REALTIME_TRANSCRIBE_MODEL", "gpt-4o-transcribe").strip()
+    or "gpt-4o-transcribe"
 )
-# Deliberately neutral — see server/web/routes/voice.py for the rationale.
+# Deliberately empty. Prompt text was a real source of prompt-echo and
+# phrase-contamination hallucinations in short/noisy turns.
 _INPUT_TRANSCRIPTION_PROMPT = ""
 
 
@@ -271,17 +303,29 @@ _REALTIME_VAD_EAGERNESS = (
 
 # Half-duplex self-hearing guard. On a device whose mic and speaker share the
 # same chassis (built-in mic, no external puck) the speaker output couples
-# straight back into the mic, clears the energy-gate barge-in threshold, and
-# the assistant hears its own voice and loops. In half-duplex we drop ALL mic
-# frames while the assistant is speaking (plus a short echo-decay tail) instead
-# of energy-gating them, so no self-audio ever reaches OpenAI. Cost: voice
-# barge-in is disabled (the user can still interrupt by tapping the screen).
+# straight back into the mic. Half-duplex still suppresses normal mic upload
+# during assistant speech, but a separate local barge-in detector can cancel
+# playback immediately and promote the user's speech to the active turn.
 #   REALTIME_HALF_DUPLEX: auto (default) | 1/on | 0/off
 #     auto → enabled UNLESS an echo-isolated combined external mic+speaker
 #            puck is in use (audio pair reports is_combined).
 _REALTIME_HALF_DUPLEX_ENV = (
     os.environ.get("REALTIME_HALF_DUPLEX", "auto").strip().lower() or "auto"
 )
+
+# Local barge-in detection runs even while mic upload is echo-gated. It uses a
+# short adaptive baseline plus far-end reference energy to detect a new near-end
+# speaker, then kills playback and forwards a small pre-roll of mic audio so the
+# first word of the interruption is not clipped.
+_LOCAL_BARGE_IN_ENABLED = (
+    os.environ.get("REALTIME_LOCAL_BARGE_IN", "1").strip().lower()
+    not in ("0", "false", "no", "off", "")
+)
+_LOCAL_BARGE_IN_MIN_RMS = _env_float("REALTIME_BARGE_IN_MIN_RMS", 900.0, minimum=100.0)
+_LOCAL_BARGE_IN_REF_RATIO = _env_float("REALTIME_BARGE_IN_REF_RATIO", 1.65, minimum=1.0)
+_LOCAL_BARGE_IN_BASELINE_RATIO = _env_float("REALTIME_BARGE_IN_BASELINE_RATIO", 2.4, minimum=1.2)
+_LOCAL_BARGE_IN_MIN_FRAMES = _env_int("REALTIME_BARGE_IN_MIN_FRAMES", 2, minimum=1, maximum=10)
+_LOCAL_BARGE_IN_PREROLL_S = _env_float("REALTIME_BARGE_IN_PREROLL_S", 0.18, minimum=0.0, maximum=0.5)
 
 # Live on-screen captions WHILE the user speaks. OpenAI's input transcription
 # only runs AFTER end-of-turn (post-commit), so it can't show words mid-speech.
@@ -659,9 +703,16 @@ class RealtimeVoiceSession:
             )
         logger.info(
             "Realtime duplex mode: %s (audio pair is_combined=%s)",
-            "half-duplex (voice barge-in off)" if self._half_duplex
+            "half-duplex (local barge-in detector on)" if self._half_duplex
             else "full-duplex (voice barge-in on)",
             getattr(self._audio_pair, "is_combined", False),
+        )
+        self._log_voice_event(
+            "audio_route",
+            capture=getattr(self._audio_pair, "capture_name", None) or str(getattr(self._audio_pair, "capture", "")),
+            playback=getattr(self._audio_pair, "playback_name", None) or str(getattr(self._audio_pair, "playback", "")),
+            is_combined=bool(getattr(self._audio_pair, "is_combined", False)),
+            half_duplex=self._half_duplex,
         )
 
         # Echo-decay tail: keep the mic muted this long AFTER the assistant's
@@ -713,6 +764,12 @@ class RealtimeVoiceSession:
         self._assistant_audio_play_until = 0.0
         # Mic-mute window while assistant audio is still playing / echoing.
         self._mute_mic_uplink_until = 0.0
+        preroll_frames = max(1, int((_LOCAL_BARGE_IN_PREROLL_S * 1000) / max(1, _APPEND_CHUNK_MS)))
+        self._barge_in_preroll: deque[bytes] = deque(maxlen=preroll_frames)
+        self._barge_in_noise_rms = 0.0
+        self._barge_in_consecutive = 0
+        self._barge_in_last_cancel_at = 0.0
+        self._audio_q_drops = 0
 
         # Acoustic echo canceller. The bytes we hand to aplay are also
         # buffered as the far-end reference; the mic stream (after resample
@@ -759,7 +816,7 @@ class RealtimeVoiceSession:
         # bubble or create a new one for a fresh response.
         self._active_ai_transcript_item_id: str = ""
         # Running buffer for the USER transcript while streaming partials
-        # arrive (gpt-4o-mini-transcribe emits incremental deltas). We
+        # arrive. We
         # accumulate so the on-screen bubble shows the growing sentence
         # rather than only the latest fragment. Reset per utterance.
         self._user_transcript_buf: str = ""
@@ -1574,6 +1631,7 @@ class RealtimeVoiceSession:
             # PortAudio callback (which would distort the input stream).
             try:
                 _ = self._audio_q.get_nowait()
+                self._audio_q_drops += 1
                 self._audio_q.put_nowait(bytes(indata))
             except Exception:
                 pass
@@ -1662,10 +1720,10 @@ class RealtimeVoiceSession:
             return
         if not raw:
             return
-        # Push the same PCM into the AEC far-end ring so the canceller knows
-        # what is about to come out of the speaker. Cap to ~5 s to keep memory
-        # bounded if the mic side stalls.
-        if self._aec is not None:
+        # Push the same PCM into the far-end ring so AEC and local barge-in
+        # detection know what is about to come out of the speaker. Cap to ~5 s
+        # to keep memory bounded if the mic side stalls.
+        if self._aec is not None or _LOCAL_BARGE_IN_ENABLED:
             with self._aec_buf_lock:
                 self._aec_far_buf.extend(raw)
                 max_bytes = _REALTIME_RATE * 2 * 5
@@ -1720,6 +1778,7 @@ class RealtimeVoiceSession:
         self._aplay_pid = None
         if proc is None:
             return
+        pid = getattr(proc, "pid", None)
         try:
             if proc.stdin is not None:
                 try:
@@ -1728,6 +1787,7 @@ class RealtimeVoiceSession:
                     pass
             if proc.poll() is None:
                 proc.kill()
+                self._log_voice_event("aplay_killed", pid=pid)
         except Exception:
             pass
 
@@ -1912,6 +1972,120 @@ class RealtimeVoiceSession:
                     out.extend(near)
         return bytes(out)
 
+    @staticmethod
+    def _pcm_rms(pcm16: bytes) -> float:
+        if not pcm16:
+            return 0.0
+        samples = np.frombuffer(pcm16, dtype=np.int16).astype(np.float32)
+        if len(samples) == 0:
+            return 0.0
+        return float(np.sqrt(np.mean(samples ** 2)))
+
+    def _far_ref_rms(self, length: int) -> float:
+        if length <= 0:
+            return 0.0
+        with self._aec_buf_lock:
+            ref = bytes(self._aec_far_buf[:length])
+        return self._pcm_rms(ref)
+
+    def _detect_local_barge_in(self, mic_pcm16: bytes, *, now: float) -> tuple[bool, float, float, float]:
+        """Detect live user speech while normal mic upload is muted for echo.
+
+        This is intentionally separate from server VAD. Server VAD cannot see a
+        half-duplex interruption because the mic frames are being withheld; this
+        detector only decides when to stop local playback and release the user's
+        new turn.
+        """
+        if not _LOCAL_BARGE_IN_ENABLED:
+            return False, 0.0, 0.0, 0.0
+        if now - self._barge_in_last_cancel_at < 0.45:
+            return False, 0.0, 0.0, 0.0
+        mic_rms = self._pcm_rms(mic_pcm16)
+        ref_rms = self._far_ref_rms(len(mic_pcm16))
+        baseline = self._barge_in_noise_rms
+        if baseline <= 0.0:
+            baseline = ref_rms if ref_rms > 0.0 else mic_rms
+            self._barge_in_noise_rms = baseline
+        threshold = max(
+            _LOCAL_BARGE_IN_MIN_RMS,
+            ref_rms * _LOCAL_BARGE_IN_REF_RATIO,
+            baseline * _LOCAL_BARGE_IN_BASELINE_RATIO,
+        )
+        detected = mic_rms >= threshold
+        if detected:
+            self._barge_in_consecutive += 1
+        else:
+            self._barge_in_consecutive = 0
+            # Track the echo/noise floor while muted; keep it slow so a user's
+            # first syllable remains a spike rather than becoming the baseline.
+            self._barge_in_noise_rms = (baseline * 0.96) + (mic_rms * 0.04)
+        return (
+            self._barge_in_consecutive >= _LOCAL_BARGE_IN_MIN_FRAMES,
+            mic_rms,
+            ref_rms,
+            threshold,
+        )
+
+    def _reset_local_barge_state(self) -> None:
+        self._barge_in_consecutive = 0
+        self._barge_in_noise_rms = 0.0
+        self._barge_in_preroll.clear()
+
+    def _log_voice_event(self, event: str, **fields: Any) -> None:
+        payload = {
+            "event": event,
+            "ts": round(time.time(), 3),
+            **fields,
+        }
+        try:
+            logger.info("VOICE_EVENT %s", json.dumps(payload, sort_keys=True))
+        except Exception:
+            logger.info("VOICE_EVENT %s %s", event, fields)
+
+    async def _cancel_for_local_barge_in(
+        self,
+        ws,
+        *,
+        mic_rms: float,
+        ref_rms: float,
+        threshold: float,
+    ) -> None:
+        self._barge_in_last_cancel_at = time.monotonic()
+        self._abort_aplay()
+        self._suppress_audio_until = time.monotonic() + _BARGE_IN_SUPPRESS_AUDIO_S
+        self._emit_state("listening")
+        self._log_voice_event(
+            "barge_in_detected",
+            mic_rms=round(mic_rms, 1),
+            ref_rms=round(ref_rms, 1),
+            threshold=round(threshold, 1),
+            half_duplex=self._half_duplex,
+        )
+        try:
+            await ws.send(json.dumps({"type": "response.cancel"}))
+            self._log_voice_event("response_cancel_sent", source="local_barge_in")
+        except Exception:
+            logger.debug("local barge-in response.cancel failed", exc_info=True)
+
+    async def _upload_resampled_audio(self, ws, resampled: bytes) -> None:
+        if self._aec is not None:
+            resampled = self._aec_process(resampled)
+            if not resampled:
+                return
+        # Feed the same echo-cancelled PCM to the live-caption recognizer
+        # (non-blocking; dropped if the side thread falls behind).
+        if self._caption_q is not None:
+            try:
+                self._caption_q.put_nowait(resampled)
+            except queue.Full:
+                pass
+        payload = base64.b64encode(resampled).decode("ascii")
+        await ws.send(json.dumps({
+            "type": "input_audio_buffer.append",
+            "audio": payload,
+        }))
+        self._touch()
+
     # ------------------------------------------------------------------
     # Mic pump (asyncio side)
     # ------------------------------------------------------------------
@@ -1936,6 +2110,7 @@ class RealtimeVoiceSession:
                 continue
             try:
                 resampled = resample_pcm16_mono(piece, native_sr, _REALTIME_RATE)
+                now = time.monotonic()
                 # Energy-based echo gate:
                 # While the agent is speaking, suppress mic frames whose energy
                 # is at or below the expected echo level (i.e. agent's own
@@ -1946,14 +2121,28 @@ class RealtimeVoiceSession:
                 # AND be above a minimum voice floor (300 ≈ -82 dBFS).
                 # Both conditions ensure we don't pass near-silence or mild
                 # echo while still allowing clear speech to interrupt.
-                if time.monotonic() < self._mute_mic_uplink_until:
+                if now < self._mute_mic_uplink_until:
+                    self._barge_in_preroll.append(resampled)
+                    detected, mic_rms, ref_rms, threshold = self._detect_local_barge_in(
+                        resampled,
+                        now=now,
+                    )
+                    if detected:
+                        await self._cancel_for_local_barge_in(
+                            ws,
+                            mic_rms=mic_rms,
+                            ref_rms=ref_rms,
+                            threshold=threshold,
+                        )
+                        frames = list(self._barge_in_preroll)
+                        self._reset_local_barge_state()
+                        for frame in frames:
+                            await self._upload_resampled_audio(ws, frame)
+                        continue
                     if self._half_duplex:
-                        # True half-duplex: never upload mic audio while the
-                        # assistant is speaking (or during the echo-decay tail).
-                        # Stops a chassis-coupled built-in mic from hearing the
-                        # device's own voice and looping. Voice barge-in is off;
-                        # screen-tap barge-in (cancel_current_response) clears
-                        # this window immediately via _abort_aplay.
+                        # Half-duplex still withholds echo-contaminated mic
+                        # frames, but local barge-in above can break out as
+                        # soon as live user speech is detected.
                         continue
                     # Full-duplex (echo-isolated puck): energy-based barge-in
                     # gate. Let a frame through only if the mic is clearly
@@ -1972,23 +2161,9 @@ class RealtimeVoiceSession:
                     barge_in = mic_rms > max(ref_rms * 0.4, 300.0)
                     if not barge_in:
                         continue
-                if self._aec is not None:
-                    resampled = self._aec_process(resampled)
-                    if not resampled:
-                        continue
-                # Feed the same echo-cancelled PCM to the live-caption recognizer
-                # (non-blocking; dropped if the side thread falls behind).
-                if self._caption_q is not None:
-                    try:
-                        self._caption_q.put_nowait(resampled)
-                    except queue.Full:
-                        pass
-                payload = base64.b64encode(resampled).decode("ascii")
-                await ws.send(json.dumps({
-                    "type": "input_audio_buffer.append",
-                    "audio": payload,
-                }))
-                self._touch()
+                else:
+                    self._reset_local_barge_state()
+                await self._upload_resampled_audio(ws, resampled)
             except websockets.ConnectionClosed:
                 break
             except Exception:
@@ -2063,6 +2238,7 @@ class RealtimeVoiceSession:
                 # ---- User speech --------------------------------------
                 elif t == "input_audio_buffer.speech_started":
                     self._touch()
+                    self._log_voice_event("speech_started")
                     # The user is taking over — stop auto-driving the briefing so
                     # we don't fight their request (e.g. "skip to my emails").
                     # Hand the model the context it lacks (the briefing was on a
@@ -2106,6 +2282,7 @@ class RealtimeVoiceSession:
 
                 elif t == "input_audio_buffer.speech_stopped":
                     self._touch()
+                    self._log_voice_event("speech_stopped")
                     self._emit_state("thinking")
                     # Stop live captions — OpenAI's accurate transcript now
                     # owns the bubble for this finished utterance.
@@ -2167,6 +2344,11 @@ class RealtimeVoiceSession:
                         spoken = ""
                     if spoken:
                         logger.info("User said: %r", spoken)
+                        self._log_voice_event(
+                            "final_transcript",
+                            text=spoken,
+                            transcript_model=_DEFAULT_INPUT_TRANSCRIPTION_MODEL,
+                        )
                         self._emit_user_transcript(spoken, is_final=True)
                         # Client-side farewell fallback: if the transcript is
                         # a clear goodbye phrase, close the session immediately
@@ -2488,12 +2670,10 @@ class RealtimeVoiceSession:
         audio_input: dict = {
             "transcription": transcription_cfg,
         }
-        # Half-duplex disables voice barge-in entirely (the mic is muted while
-        # the assistant speaks), so tell the server NOT to interrupt the
-        # in-flight response on detected speech — a stray echo frame at the tail
-        # boundary must never kill a reply. Full-duplex keeps interrupt_response
-        # on for true talk-over barge-in.
-        interrupt_response = not self._half_duplex
+        # Keep server-side interruption enabled. Half-duplex echo protection now
+        # happens locally before frames reach OpenAI; when the local detector
+        # does release user speech, the latest user turn must still win.
+        interrupt_response = True
         # "auto" means: leave the server's turn_detection eagerness untouched.
         if _REALTIME_VAD_EAGERNESS and _REALTIME_VAD_EAGERNESS != "auto":
             audio_input["turn_detection"] = {
@@ -2501,15 +2681,6 @@ class RealtimeVoiceSession:
                 "eagerness": _REALTIME_VAD_EAGERNESS,
                 "create_response": True,
                 "interrupt_response": interrupt_response,
-            }
-        elif self._half_duplex:
-            # Even with eagerness left on "auto" we still must flip
-            # interrupt_response off for half-duplex; keep the server's
-            # conservative default eagerness by omitting the field.
-            audio_input["turn_detection"] = {
-                "type": "semantic_vad",
-                "create_response": True,
-                "interrupt_response": False,
             }
         try:
             await ws.send(json.dumps({
@@ -2522,6 +2693,14 @@ class RealtimeVoiceSession:
                     "tools": merged_tools,
                 },
             }))
+            self._log_voice_event(
+                "session_update_sent",
+                transcript_model=_DEFAULT_INPUT_TRANSCRIPTION_MODEL,
+                transcript_prompt=bool(_INPUT_TRANSCRIPTION_PROMPT.strip()),
+                vad_eagerness=_REALTIME_VAD_EAGERNESS,
+                interrupt_response=interrupt_response,
+                half_duplex=self._half_duplex,
+            )
         except Exception:
             logger.warning("Realtime session.update failed", exc_info=True)
 

@@ -4,7 +4,7 @@ Complete rewrite matching the clean minimal Figma design:
   - Full-bleed abstract background image
   - Live 24-hour time (200 px SemiBold) + date (43 px SemiBold)
   - Mic orb button (tappable — activates voice agent)
-  - 'Say Hey Pepper' frosted-glass prompt pill (always visible)
+  - 'Say Hey Tony' frosted-glass prompt pill (always visible)
   - Voice-state pill (hidden at idle; shows Listening / Thinking / Talking
     during voice-agent sessions; includes animated speech waveform)
   - WiFi icon + real-battery indicator in top-right
@@ -281,7 +281,7 @@ class _MicButton(ButtonBehavior, Widget):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 'Say Hey Pepper' frosted-glass prompt pill  (node 1023:2042, 657 × 78 px)
+# 'Say Hey Tony' frosted-glass prompt pill  (node 1023:2042, 657 × 78 px)
 # ─────────────────────────────────────────────────────────────────────────────
 class _HeyTonyPill(Widget):
     """Frosted-glass pill drawn entirely in canvas.
@@ -551,7 +551,7 @@ class HomeScreen(BaseScreen):
         self._time_lbl.bind(size=self._time_lbl.setter("text_size"))
         root.add_widget(self._time_lbl)
 
-        # 7 · 'Say Hey Pepper' pill  (302, 596)  657 × 78  40 px radius ────
+        # 7 · 'Say Hey Tony' pill  (302, 596)  657 × 78  40 px radius ────
         hey_pill = _HeyTonyPill(
             size_hint=(_sw(657), _sh(78)),
             pos_hint={"x": _x(302), "y": _y(596, 78)},
@@ -561,7 +561,7 @@ class HomeScreen(BaseScreen):
         # 8 · Hey-Tony text  (Figma: x+54 inside pill, 549 × 38, centred) ─
         #     Figma: 32 px SemiBold, #3A3B3D, center
         hey_lbl = Label(
-            text="Say 'Hey Pepper' to start a conversation",
+            text="Say 'Hey Tony' to start a conversation",
             font_name=_FONT_SB,
             font_size=_ff(32),
             color=_TEXT,

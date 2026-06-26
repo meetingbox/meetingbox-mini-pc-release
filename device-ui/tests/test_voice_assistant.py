@@ -3,7 +3,7 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from voice_assistant import VoiceCommandInterpreter, utterance_is_voice_farewell
+from voice_assistant import VoiceAssistant, VoiceCommandInterpreter, utterance_is_voice_farewell
 
 
 def _mk() -> VoiceCommandInterpreter:
@@ -14,6 +14,12 @@ def _mk() -> VoiceCommandInterpreter:
         action_cooldown_seconds=2.0,
         confirmation_timeout_seconds=8.0,
     )
+
+
+def test_voice_assistant_default_wake_phrase_is_tony(monkeypatch):
+    monkeypatch.delenv("VOICE_ASSISTANT_WAKE_PHRASE", raising=False)
+    assistant = VoiceAssistant(lambda _intent: None)
+    assert assistant.wake_phrase == "hey tony"
 
 
 def test_combined_wake_and_command_starts_meeting():

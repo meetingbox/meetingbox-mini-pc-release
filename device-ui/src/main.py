@@ -803,10 +803,10 @@ class MeetingBoxApp(App):
         self._realtime_mic_acquired = False
         self._voice_runtime_state = "idle"
         self.voice_realtime_assistant = False
-        # Sync interpreter to the UI default immediately so wake works before
-        # async device-settings load (VoiceAssistant env-var default is "hey pepper").
-        self.voice_wake_phrase_display = "Hey Pepper"
-        self.voice_assistant.apply_server_settings(wake_phrase="hey pepper")
+        # Sync interpreter to the product default immediately so wake works
+        # before async device-settings load.
+        self.voice_wake_phrase_display = "Hey Tony"
+        self.voice_assistant.apply_server_settings(wake_phrase="hey tony")
         self.voice_assistant_enabled = True
         self.assistant_speech_volume = 85
         # Realtime may only start when _handle_voice_wake_phrase sets this True (one-shot).
@@ -1677,8 +1677,8 @@ class MeetingBoxApp(App):
                     vae = str(vae).strip().lower() in ("1", "true", "yes", "on")
                 self.voice_assistant_enabled = bool(vae)
 
-                vwp = (settings.get("voice_wake_phrase") or "hey pepper").strip().lower() or "hey pepper"
-                self.voice_wake_phrase_display = vwp[:1].upper() + vwp[1:] if vwp else "Hey Pepper"
+                vwp = (settings.get("voice_wake_phrase") or "hey tony").strip().lower() or "hey tony"
+                self.voice_wake_phrase_display = vwp[:1].upper() + vwp[1:] if vwp else "Hey Tony"
                 try:
                     sv = settings.get("assistant_speech_volume", 85)
                     if isinstance(sv, str):
@@ -2871,7 +2871,7 @@ class MeetingBoxApp(App):
                 self.voice_indicator.set_state("speaking", "Speaking…")
             return
         if self.voice_assistant.available and self._voice_assistant_should_listen():
-            wkd = getattr(self, "voice_wake_phrase_display", None) or "Hey Pepper"
+            wkd = getattr(self, "voice_wake_phrase_display", None) or "Hey Tony"
             self.voice_indicator.set_state("idle", f'Say "{wkd}"')
             return
         self.voice_indicator.set_state("hidden")
@@ -2972,7 +2972,22 @@ class MeetingBoxApp(App):
         self._realtime_launch_permitted = False
 
         timeout = max(2.0, self.voice_assistant.command_timeout_seconds)
-        lbl = getattr(self, "voice_wake_phrase_display", "Hey Pepper") or "Hey Pepper"
+        lbl = getattr(self, "voice_wake_phrase_display", "Hey Tony") or "Hey Tony"
+        try:
+            _logging.getLogger(__name__).info(
+                "VOICE_EVENT %s",
+                json.dumps(
+                    {
+                        "event": "wake_detected",
+                        "phrase": lbl,
+                        "realtime_enabled": bool(getattr(self, "voice_realtime_assistant", False)),
+                        "recording_active": bool(self.recording_state.get("active")),
+                    },
+                    sort_keys=True,
+                ),
+            )
+        except Exception:
+            pass
 
         def _wake_ui(_dt):
             self._set_voice_indicator_override(

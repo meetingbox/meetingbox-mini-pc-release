@@ -26,7 +26,10 @@ sys.modules.setdefault("kivy.clock", _mod_clock)
 
 from realtime_voice_session import (  # noqa: E402
     _APPEND_CHUNK_MS,
+    _DEFAULT_INPUT_TRANSCRIPTION_MODEL,
+    _INPUT_TRANSCRIPTION_PROMPT,
     _MIC_QUEUE_POLL_S,
+    RealtimeVoiceSession,
     build_realtime_websocket_url,
     resample_pcm16_mono,
 )
@@ -79,7 +82,7 @@ def test_invoke_realtime_tool_sync_uses_httpx(monkeypatch):
     assert ctx.__enter__.return_value.post.called
 
 
-def test_resolve_sounddevice_capture_prefers_usb_then_builtin_then_first():
+def test_resolve_sounddevice_capture_prefers_usb_then_builtin_then_first(monkeypatch):
     import mic_input_resolve as mir
 
     class _SD:
@@ -92,6 +95,8 @@ def test_resolve_sounddevice_capture_prefers_usb_then_builtin_then_first():
             ]
 
     assert mir.resolve_sounddevice_capture_device_index(_SD) == 1
+
+    monkeypatch.setenv("MEETINGBOX_USB_MIC_STRICT", "0")
 
     class _SDNoUsb:
         @staticmethod
@@ -135,5 +140,42 @@ def test_capture_device_fallback_candidates_include_default_and_none():
 
 
 def test_realtime_latency_tuning_constants():
-    assert _APPEND_CHUNK_MS <= 8
+    # 20 ms avoids PortAudio input overflow on the appliance while staying
+    # comfortably below perceptible turn-latency boundaries.
+    assert _APPEND_CHUNK_MS <= 20
     assert _MIC_QUEUE_POLL_S <= 0.01
+
+
+def test_realtime_transcription_defaults_are_accuracy_first():
+    assert _DEFAULT_INPUT_TRANSCRIPTION_MODEL == "gpt-4o-transcribe"
+    assert _INPUT_TRANSCRIPTION_PROMPT == ""
+
+
+def test_local_barge_in_uses_reference_and_consecutive_frames(monkeypatch):
+    import realtime_voice_session as rtv
+
+    monkeypatch.setattr(rtv, "sd", None)
+    session = RealtimeVoiceSession(
+        client_secret="ek_test",
+        model="gpt-realtime-2",
+        backend_base_url="http://127.0.0.1:8000",
+        device_token="mbd_test",
+        on_session_end=lambda: None,
+        on_error=lambda _msg: None,
+        on_connected=lambda: None,
+    )
+
+    ref = (np.ones(480, dtype=np.int16) * 200).tobytes()
+    quiet = (np.ones(480, dtype=np.int16) * 250).tobytes()
+    speech = (np.ones(480, dtype=np.int16) * 4000).tobytes()
+    session._aec_far_buf.extend(ref)
+
+    detected, *_ = session._detect_local_barge_in(quiet, now=10.0)
+    assert detected is False
+
+    detected, *_ = session._detect_local_barge_in(speech, now=10.02)
+    assert detected is False
+    detected, mic_rms, ref_rms, threshold = session._detect_local_barge_in(speech, now=10.04)
+    assert detected is True
+    assert mic_rms > threshold
+    assert ref_rms > 0
