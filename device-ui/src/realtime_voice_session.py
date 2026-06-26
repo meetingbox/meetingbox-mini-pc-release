@@ -330,6 +330,10 @@ _LOCAL_BARGE_IN_MAX_ECHO_SIMILARITY = _env_float(
     minimum=0.2,
     maximum=0.999,
 )
+_LOCAL_BARGE_IN_ECHO_DIVERGENCE_ENABLED = (
+    os.environ.get("REALTIME_BARGE_IN_ECHO_DIVERGENCE", "0").strip().lower()
+    not in ("0", "false", "no", "off", "")
+)
 _LOCAL_BARGE_IN_ECHO_MIN_BASELINE_RATIO = _env_float(
     "REALTIME_BARGE_IN_ECHO_MIN_BASELINE_RATIO",
     1.35,
@@ -2076,20 +2080,25 @@ class RealtimeVoiceSession:
         )
         # Two independent barge-in paths:
         # 1) classic RMS spike over playback-ref threshold
-        # 2) divergence from far-end echo (low similarity) even if RMS stays below
-        #    a strict loudness threshold while assistant audio is loud.
+        # 2) optional divergence from far-end echo (low similarity) even if RMS
+        #    stays below a strict loudness threshold while assistant audio is loud.
+        # Divergence mode is intentionally OFF by default because some hardware
+        # routes introduce enough speaker->mic coloration to look like "diverged"
+        # echo and cause false self-interruption.
         loud_enough = mic_rms >= threshold
-        diverged_from_echo = (
-            ref_rms > 0.0
-            and baseline > 0.0
-            and mic_rms >= max(
-                _LOCAL_BARGE_IN_MIN_RMS * 0.55,
-                baseline * _LOCAL_BARGE_IN_ECHO_MIN_BASELINE_RATIO,
-                ref_rms * _LOCAL_BARGE_IN_ECHO_MIN_REF_RATIO,
-                280.0,
+        diverged_from_echo = False
+        if _LOCAL_BARGE_IN_ECHO_DIVERGENCE_ENABLED:
+            diverged_from_echo = (
+                ref_rms > 0.0
+                and baseline > 0.0
+                and mic_rms >= max(
+                    _LOCAL_BARGE_IN_MIN_RMS * 0.55,
+                    baseline * _LOCAL_BARGE_IN_ECHO_MIN_BASELINE_RATIO,
+                    ref_rms * _LOCAL_BARGE_IN_ECHO_MIN_REF_RATIO,
+                    280.0,
+                )
+                and echo_similarity <= _LOCAL_BARGE_IN_MAX_ECHO_SIMILARITY
             )
-            and echo_similarity <= _LOCAL_BARGE_IN_MAX_ECHO_SIMILARITY
-        )
         detected = loud_enough or diverged_from_echo
         if detected:
             self._barge_in_consecutive += 1

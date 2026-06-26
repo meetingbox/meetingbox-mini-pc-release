@@ -187,6 +187,7 @@ def test_local_barge_in_triggers_on_echo_divergence_without_rms_spike(monkeypatc
     import realtime_voice_session as rtv
 
     monkeypatch.setattr(rtv, "sd", None)
+    monkeypatch.setattr(rtv, "_LOCAL_BARGE_IN_ECHO_DIVERGENCE_ENABLED", True)
     session = RealtimeVoiceSession(
         client_secret="ek_test",
         model="gpt-realtime-2",
@@ -215,6 +216,30 @@ def test_local_barge_in_triggers_on_echo_divergence_without_rms_spike(monkeypatc
     assert mic_rms < threshold
     assert ref_rms > 0.0
     assert similarity < 0.72
+
+
+def test_local_barge_in_ignores_echo_divergence_by_default(monkeypatch):
+    import realtime_voice_session as rtv
+
+    monkeypatch.setattr(rtv, "sd", None)
+    monkeypatch.setattr(rtv, "_LOCAL_BARGE_IN_ECHO_DIVERGENCE_ENABLED", False)
+    session = RealtimeVoiceSession(
+        client_secret="ek_test",
+        model="gpt-realtime-2",
+        backend_base_url="http://127.0.0.1:8000",
+        device_token="mbd_test",
+        on_session_end=lambda: None,
+        on_error=lambda _msg: None,
+        on_connected=lambda: None,
+    )
+    session._response_in_progress = True
+    t = np.linspace(0.0, 2.0 * np.pi, 480, endpoint=False, dtype=np.float32)
+    ref_wave = (np.sin(t * 4.0) * 900.0).astype(np.int16)
+    mixed = (np.sin(t * 11.0 + 0.7) * 1300.0).astype(np.int16).tobytes()
+    session._aec_far_buf.extend(ref_wave.tobytes())
+
+    detected, *_ = session._detect_local_barge_in(mixed, now=30.0)
+    assert detected is False
 
 
 def test_far_ref_slice_uses_most_recent_audio(monkeypatch):
