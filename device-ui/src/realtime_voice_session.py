@@ -128,11 +128,28 @@ def _envf(name: str, default: float) -> float:
     except (TypeError, ValueError):
         return default
 
+# Detection is a double-talk test on the echo-cancelled residual: echo is
+# proportional to what is playing RIGHT NOW (the far-end reference), so we learn
+# the echo-coupling ratio (residual/far) during single-talk and predict the
+# expected echo each frame. A talk-over fires only when the residual exceeds
+# BOTH an absolute floor AND the predicted echo by a margin, for several
+# consecutive frames. Because the threshold scales with the assistant's own
+# loudness, a loud passage of the assistant's speech can no longer look like an
+# interruption. All thresholds are env-tunable.
 _BARGE_IN_RESIDUAL_FLOOR = _envf("REALTIME_BARGEIN_FLOOR", 500.0)
-_BARGE_IN_RESIDUAL_MULT = _envf("REALTIME_BARGEIN_MULT", 3.0)
-_BARGE_IN_MIN_FRAMES = int(_envf("REALTIME_BARGEIN_FRAMES", 8))  # ~20 ms each
-_BARGE_IN_ECHO_EMA_ALPHA = 0.05  # slow EMA so a brief barge-in barely moves it
+_BARGE_IN_RESIDUAL_MULT = _envf("REALTIME_BARGEIN_MULT", 2.0)
+_BARGE_IN_MIN_FRAMES = int(_envf("REALTIME_BARGEIN_FRAMES", 10))  # ~20 ms each
+_BARGE_IN_FAR_MIN = _envf("REALTIME_BARGEIN_FAR_MIN", 200.0)  # learn coupling only when assistant audibly playing
+_BARGE_IN_COUPLING_ALPHA = 0.05  # slow EMA for the learned echo-coupling ratio
+_BARGE_IN_COUPLING_INIT = _envf("REALTIME_BARGEIN_COUPLING", 0.5)  # conservative until learned
 _BARGE_IN_DEBUG = (os.environ.get("REALTIME_BARGEIN_DEBUG", "") or "").strip().lower() in ("1", "true", "yes", "on")
+# Kill-switch: set REALTIME_HALF_DUPLEX_BARGEIN=0 to disable half-duplex voice
+# barge-in entirely (mic stays muted while the assistant speaks; screen-tap
+# interrupt still works). Defaults ON. Lets the device fall back to rock-solid
+# behaviour instantly without a code change if detection ever misbehaves.
+_HALF_DUPLEX_BARGEIN_ENABLED = (
+    os.environ.get("REALTIME_HALF_DUPLEX_BARGEIN", "1") or "1"
+).strip().lower() not in ("0", "false", "no", "off")
 
 # Close the session if the user is silent (and we're not speaking) for
 # this many seconds. Matches the previous behavior.
@@ -750,10 +767,12 @@ class RealtimeVoiceSession:
         # Mic-mute window while assistant audio is still playing / echoing.
         self._mute_mic_uplink_until = 0.0
         # Local half-duplex barge-in detector state (see _pump_mic). Counts
-        # consecutive talk-over frames and adaptively tracks the residual-echo
-        # level so a genuine interruption is distinguished from speaker bleed.
+        # consecutive talk-over frames and learns the echo-coupling ratio
+        # (AEC residual / far-end reference) during single-talk so a genuine
+        # interruption is told apart from speaker bleed.
         self._barge_in_run = 0
-        self._echo_residual_ema = 0.0
+        self._echo_coupling_ema = 0.0   # learned residual/far ratio (0 = unset)
+        self._aec_last_far_rms = 0.0    # RMS of the far frame last cancelled
 
         # Acoustic echo canceller. The bytes we hand to aplay are also
         # buffered as the far-end reference; the mic stream (after resample
@@ -1939,6 +1958,8 @@ class RealtimeVoiceSession:
             return mic_pcm16
         fbytes = self._aec_frame_bytes
         out = bytearray()
+        far_sq_sum = 0.0
+        far_n = 0
         with self._aec_buf_lock:
             self._aec_near_buf.extend(mic_pcm16)
             while len(self._aec_near_buf) >= fbytes:
@@ -1949,11 +1970,18 @@ class RealtimeVoiceSession:
                     del self._aec_far_buf[:fbytes]
                 else:
                     far = b"\x00" * fbytes
+                # Track far-end (echo source) energy for the double-talk detector.
+                fa = np.frombuffer(far, dtype=np.int16).astype(np.float32)
+                if len(fa):
+                    far_sq_sum += float(np.sum(fa ** 2))
+                    far_n += len(fa)
                 try:
                     out.extend(aec.cancel(near, far))
                 except Exception:
                     logger.debug("AEC cancel failed", exc_info=True)
                     out.extend(near)
+        if far_n:
+            self._aec_last_far_rms = float((far_sq_sum / far_n) ** 0.5)
         return bytes(out)
 
     # ------------------------------------------------------------------
@@ -1963,42 +1991,48 @@ class RealtimeVoiceSession:
     def _detect_local_barge_in(self, residual_pcm16: bytes) -> bool:
         """Return True when the echo-cancelled mic residual is a real talk-over.
 
-        Called per 20 ms frame WHILE the assistant is speaking (half-duplex).
-        The residual is mostly the user's voice (the AEC has removed the
-        speaker echo), so we compare its RMS against an adaptively-tracked
-        residual-echo floor. A trigger requires the residual to clearly exceed
-        both an absolute floor and a multiple of the tracked echo level for
-        several consecutive frames, so leftover echo alone can never fire it.
+        Double-talk test, called per 20 ms frame WHILE the assistant is speaking
+        (half-duplex). The echo left in the residual is proportional to what is
+        playing right now (the far-end reference), so we learn the echo-coupling
+        ratio (residual / far) during single-talk and predict the expected echo
+        each frame. A trigger requires the residual to exceed BOTH an absolute
+        floor AND the predicted echo by a margin, for several consecutive frames.
+        Because the threshold scales with the assistant's current loudness, a
+        loud passage of the assistant's own speech cannot look like a barge-in.
         """
         if not residual_pcm16:
             return False
         samples = np.frombuffer(residual_pcm16, dtype=np.int16).astype(np.float32)
         if not len(samples):
             return False
-        rms = float(np.sqrt(np.mean(samples ** 2)))
-        # Seed the echo baseline on the first frame so a loud-but-steady echo at
-        # playback start can't be mistaken for a talk-over before the EMA warms.
-        if self._echo_residual_ema <= 0.0:
-            self._echo_residual_ema = rms
+        res_rms = float(np.sqrt(np.mean(samples ** 2)))
+        far_rms = self._aec_last_far_rms
+        coupling = self._echo_coupling_ema or _BARGE_IN_COUPLING_INIT
+        predicted_echo = coupling * far_rms
         threshold = max(
             _BARGE_IN_RESIDUAL_FLOOR,
-            self._echo_residual_ema * _BARGE_IN_RESIDUAL_MULT,
+            predicted_echo * _BARGE_IN_RESIDUAL_MULT,
         )
-        if rms > threshold:
+        if res_rms > threshold:
             self._barge_in_run += 1
         else:
             self._barge_in_run = 0
-        # Track the echo baseline only when NOT in a candidate run, so the
-        # user's own voice can never inflate it (which would suppress the very
-        # interruption we are trying to detect).
-        if self._barge_in_run == 0:
-            self._echo_residual_ema += _BARGE_IN_ECHO_EMA_ALPHA * (
-                rms - self._echo_residual_ema
-            )
+        # Learn the echo-coupling ratio only during single-talk (no candidate
+        # run) and only while the assistant is audibly playing, so the user's
+        # own voice can never inflate it.
+        if self._barge_in_run == 0 and far_rms > _BARGE_IN_FAR_MIN:
+            ratio = res_rms / far_rms
+            if self._echo_coupling_ema <= 0.0:
+                self._echo_coupling_ema = ratio
+            else:
+                self._echo_coupling_ema += _BARGE_IN_COUPLING_ALPHA * (
+                    ratio - self._echo_coupling_ema
+                )
         if _BARGE_IN_DEBUG:
             logger.info(
-                "barge-in probe: rms=%.0f thr=%.0f echo_ema=%.0f run=%d",
-                rms, threshold, self._echo_residual_ema, self._barge_in_run,
+                "barge-in probe: res=%.0f far=%.0f k=%.3f thr=%.0f run=%d",
+                res_rms, far_rms, self._echo_coupling_ema, threshold,
+                self._barge_in_run,
             )
         if self._barge_in_run >= _BARGE_IN_MIN_FRAMES:
             self._barge_in_run = 0
@@ -2065,9 +2099,10 @@ class RealtimeVoiceSession:
                         # echo-cancelled residual and, if found, cancel the
                         # reply ourselves so the speaker goes silent; the
                         # user's continued speech then uploads cleanly. Without
-                        # AEC there is no residual to analyse, so we just stay
-                        # muted (screen-tap barge-in still works).
-                        if self._aec is not None:
+                        # AEC (or when the kill-switch disables it) there is
+                        # nothing to analyse, so we just stay muted (screen-tap
+                        # barge-in still works).
+                        if self._aec is not None and _HALF_DUPLEX_BARGEIN_ENABLED:
                             residual = self._aec_process(resampled)
                             if self._detect_local_barge_in(residual):
                                 await self._do_local_barge_in(ws)
