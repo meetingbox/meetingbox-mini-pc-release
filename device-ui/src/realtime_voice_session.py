@@ -30,10 +30,13 @@ Echo / self-hearing handling depends on the resolved audio hardware:
 - Echo-isolated combined external mic+speaker puck (AudioDevicePair
   is_combined): full-duplex. Speex AEC + an energy-based barge-in gate
   let the user talk over the assistant.
-- Built-in mic + speaker (chassis-coupled) or any non-combined pair:
-  half-duplex. While the assistant speaks (plus an echo-decay tail) ALL
-  mic frames are dropped so the device never hears its own voice and
-  loops; voice barge-in is off but screen-tap barge-in still works.
+- Built-in mic + speaker (chassis-coupled) or any non-combined pair
+  (e.g. external mic + built-in speaker): half-duplex. While the assistant
+  speaks (plus an echo-decay tail) mic frames are gated: with Speex AEC
+  active, only frames clearly louder than the speaker echo pass through so
+  the user can still talk over the assistant (energy-gated voice barge-in,
+  with a larger margin than full-duplex to reject the heavier coupling);
+  without AEC the uplink is fully muted and only screen-tap barge-in works.
 Override with REALTIME_HALF_DUPLEX (auto|1|0).
 """
 
@@ -98,6 +101,19 @@ _APLAY_BUFFER_TIME_US = "70000"
 # the trailing bytes of the cancelled response. Cleared as soon as a new
 # response.created event arrives so we never silence a fresh response.
 _BARGE_IN_SUPPRESS_AUDIO_S = 0.4
+
+# Energy-based voice barge-in thresholds (applied while the assistant is
+# speaking). A mic frame is treated as a real user interruption only when its
+# RMS exceeds BOTH a fraction of the playback echo reference AND an absolute
+# voice floor — so neither near-silence nor mild speaker echo can interrupt.
+# Full-duplex uses an echo-isolated puck, so a modest margin suffices.
+# Half-duplex (e.g. external mic + built-in speaker) is more acoustically
+# coupled, so it needs a larger margin over the echo to avoid the assistant
+# interrupting itself on its own voice.
+_BARGE_IN_REF_MULT_FULL = 0.4
+_BARGE_IN_FLOOR_FULL = 300.0
+_BARGE_IN_REF_MULT_HALF = 0.8
+_BARGE_IN_FLOOR_HALF = 600.0
 
 # Close the session if the user is silent (and we're not speaking) for
 # this many seconds. Matches the previous behavior.
@@ -659,7 +675,8 @@ class RealtimeVoiceSession:
             )
         logger.info(
             "Realtime duplex mode: %s (audio pair is_combined=%s)",
-            "half-duplex (voice barge-in off)" if self._half_duplex
+            "half-duplex (energy-gated voice barge-in when AEC active)"
+            if self._half_duplex
             else "full-duplex (voice barge-in on)",
             getattr(self._audio_pair, "is_combined", False),
         )
@@ -1942,23 +1959,29 @@ class RealtimeVoiceSession:
                 # voice bouncing off the room).  Frames that are significantly
                 # louder than the playback reference pass through — that means
                 # the USER is speaking and wants to barge in.
-                # Threshold: mic RMS must exceed 40 % of the reference RMS
-                # AND be above a minimum voice floor (300 ≈ -82 dBFS).
+                # Threshold: mic RMS must exceed a fraction of the reference
+                # RMS AND be above a minimum voice floor (see the
+                # _BARGE_IN_* constants — a larger margin for half-duplex).
                 # Both conditions ensure we don't pass near-silence or mild
                 # echo while still allowing clear speech to interrupt.
                 if time.monotonic() < self._mute_mic_uplink_until:
-                    if self._half_duplex:
-                        # True half-duplex: never upload mic audio while the
-                        # assistant is speaking (or during the echo-decay tail).
-                        # Stops a chassis-coupled built-in mic from hearing the
-                        # device's own voice and looping. Voice barge-in is off;
-                        # screen-tap barge-in (cancel_current_response) clears
-                        # this window immediately via _abort_aplay.
+                    if self._half_duplex and self._aec is None:
+                        # Half-duplex with no echo canceller: there is no
+                        # far-end reference to tell the user's voice apart from
+                        # speaker echo, so hard-mute the uplink to stop a
+                        # chassis-coupled mic from hearing the device's own
+                        # voice and looping. Voice barge-in is unavailable in
+                        # this fallback; screen-tap barge-in
+                        # (cancel_current_response) still clears this window
+                        # immediately via _abort_aplay.
                         continue
-                    # Full-duplex (echo-isolated puck): energy-based barge-in
-                    # gate. Let a frame through only if the mic is clearly
-                    # louder than the expected echo — i.e. the user is talking
-                    # over the assistant.
+                    # Energy-based barge-in gate (full-duplex, and half-duplex
+                    # when AEC is active). Let a frame through only if the mic
+                    # is clearly louder than the expected echo — i.e. the user
+                    # is talking over the assistant. That frame reaches the
+                    # server, whose VAD fires speech_started and cancels the
+                    # in-flight response (interrupt_response), while the local
+                    # speech_started handler kills playback via _abort_aplay.
                     mic_samples = np.frombuffer(resampled, dtype=np.int16).astype(np.float32)
                     mic_rms = float(np.sqrt(np.mean(mic_samples ** 2))) if len(mic_samples) else 0.0
                     with self._aec_buf_lock:
@@ -1968,8 +1991,15 @@ class RealtimeVoiceSession:
                         ref_rms = float(np.sqrt(np.mean(ref_samples ** 2)))
                     else:
                         ref_rms = 0.0
+                    # Half-duplex hardware is more acoustically coupled, so it
+                    # needs a larger margin over the echo before a frame counts
+                    # as a real interruption.
+                    if self._half_duplex:
+                        ref_mult, floor = _BARGE_IN_REF_MULT_HALF, _BARGE_IN_FLOOR_HALF
+                    else:
+                        ref_mult, floor = _BARGE_IN_REF_MULT_FULL, _BARGE_IN_FLOOR_FULL
                     # Let through only if mic is clearly louder than the echo
-                    barge_in = mic_rms > max(ref_rms * 0.4, 300.0)
+                    barge_in = mic_rms > max(ref_rms * ref_mult, floor)
                     if not barge_in:
                         continue
                 if self._aec is not None:
@@ -2488,12 +2518,15 @@ class RealtimeVoiceSession:
         audio_input: dict = {
             "transcription": transcription_cfg,
         }
-        # Half-duplex disables voice barge-in entirely (the mic is muted while
-        # the assistant speaks), so tell the server NOT to interrupt the
-        # in-flight response on detected speech — a stray echo frame at the tail
-        # boundary must never kill a reply. Full-duplex keeps interrupt_response
-        # on for true talk-over barge-in.
-        interrupt_response = not self._half_duplex
+        # Voice barge-in (the user talking over the assistant) needs the server
+        # to cancel the in-flight response the moment it detects user speech.
+        # Full-duplex always supports it. Half-duplex supports it too when the
+        # Speex echo canceller is active: the mic-uplink energy gate (see
+        # _pump_mic) only forwards frames clearly louder than the speaker echo,
+        # so a genuine interruption — not the assistant's own voice — reaches
+        # the server. Without AEC there is no reference to reject echo, so the
+        # half-duplex uplink stays muted and interrupt_response must stay off.
+        interrupt_response = (not self._half_duplex) or (self._aec is not None)
         # "auto" means: leave the server's turn_detection eagerness untouched.
         if _REALTIME_VAD_EAGERNESS and _REALTIME_VAD_EAGERNESS != "auto":
             audio_input["turn_detection"] = {
@@ -2502,10 +2535,11 @@ class RealtimeVoiceSession:
                 "create_response": True,
                 "interrupt_response": interrupt_response,
             }
-        elif self._half_duplex:
-            # Even with eagerness left on "auto" we still must flip
-            # interrupt_response off for half-duplex; keep the server's
-            # conservative default eagerness by omitting the field.
+        elif not interrupt_response:
+            # Eagerness left on "auto" (keep the server's conservative default
+            # by omitting the field) but interrupt must still be forced off for
+            # the half-duplex no-AEC fallback, where a stray echo frame at the
+            # tail boundary must never kill a reply.
             audio_input["turn_detection"] = {
                 "type": "semantic_vad",
                 "create_response": True,

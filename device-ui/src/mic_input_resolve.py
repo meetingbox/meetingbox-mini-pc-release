@@ -363,6 +363,29 @@ def resolve_sounddevice_capture_device_index(sd) -> int | None:
     if usb is not None:
         return usb
 
+    # 3f. ALSA-based external capture fallback. PortAudio enumerates devices
+    # ONCE at process start and caches the list, so a USB/Bluetooth mic that
+    # only became ready AFTER init (common inside containers, where /dev/snd
+    # and PipeWire settle a moment after launch) is absent from
+    # sd.query_devices() for the whole life of the process — even though the
+    # card is present in `arecord -l`. audio_device_resolve reads ALSA / pactl
+    # live (immune to that cache) and returns an ALSA device string that
+    # PortAudio can still open via device=. Consult it before giving up on an
+    # external mic so the always-on wake listener matches the realtime path.
+    try:
+        from audio_device_resolve import resolve_audio_pair
+
+        alsa_capture = resolve_audio_pair(sd).capture
+        if alsa_capture is not None:
+            logger.info(
+                "Auto-selected external capture via ALSA scan "
+                "(PortAudio enumeration missed it): %s",
+                alsa_capture,
+            )
+            return alsa_capture
+    except Exception:
+        logger.debug("ALSA-based external capture fallback failed", exc_info=True)
+
     # No external mic visible. In strict mode (default) do NOT fall back to
     # the built-in/HDMI mic — return None so callers report "no external mic"
     # instead of silently capturing the wrong device.
