@@ -528,7 +528,10 @@ class _StartButton(ButtonBehavior, Widget):
     (scale-down → soft spring back) before firing ``on_fire``.
     """
 
-    press = NumericProperty(1.0)
+    # NB: must NOT be named ``press`` — Kivy would route changes to an
+    # ``on_press`` method, colliding with ButtonBehavior's ``on_press`` event
+    # (and crashing with a signature mismatch when the scale animates).
+    press_scale = NumericProperty(1.0)
 
     def __init__(self, *, fs_ratio: float, on_fire=None, suppress=None, **kwargs):
         super().__init__(**kwargs)
@@ -557,13 +560,13 @@ class _StartButton(ButtonBehavior, Widget):
         )
         self._label.bind(size=self._label.setter("text_size"))
         self.add_widget(self._label)
-        self.bind(pos=self._sync, size=self._sync, press=self._sync_scale)
+        self.bind(pos=self._sync, size=self._sync, press_scale=self._sync_scale)
 
     def _sync_scale(self, *_):
         cx, cy = self.center
         self._scale.origin = (cx, cy, 0)
-        self._scale.x = self.press
-        self._scale.y = self.press
+        self._scale.x = self.press_scale
+        self._scale.y = self.press_scale
 
     def _sync(self, *_):
         x, y, w, h = self.x, self.y, self.width, self.height
@@ -595,14 +598,14 @@ class _StartButton(ButtonBehavior, Widget):
     def on_press(self):
         if self.disabled:
             return
-        Animation.cancel_all(self, "press")
-        Animation(press=0.96, duration=0.12, t="out_quad").start(self)
+        Animation.cancel_all(self, "press_scale")
+        Animation(press_scale=0.96, duration=0.12, t="out_quad").start(self)
 
     def on_release(self):
         if self.disabled:
             return
-        Animation.cancel_all(self, "press")
-        Animation(press=1.0, duration=0.20, t="out_back").start(self)
+        Animation.cancel_all(self, "press_scale")
+        Animation(press_scale=1.0, duration=0.20, t="out_back").start(self)
         # A back-swipe that started on this button must not also fire the morph.
         if self._suppress is not None and self._suppress():
             return
@@ -886,7 +889,7 @@ class RecordingScreen(BaseScreen):
                 Animation.cancel_all(w, "opacity")
                 w.opacity = 1.0
         self.start_btn.disabled = False
-        self.start_btn.press = 1.0
+        self.start_btn.press_scale = 1.0
         self.pause_btn.disabled = True
         self.stop_pill.disabled = True
         self.status_dot.stop_blink()
