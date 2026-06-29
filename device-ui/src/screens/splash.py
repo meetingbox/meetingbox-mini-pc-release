@@ -13,9 +13,17 @@ from kivy.graphics import Color, Rectangle
 from kivy.animation import Animation
 from kivy.clock import Clock
 
+import sys
+
 from screens.base_screen import BaseScreen
 from async_helper import run_async
-from config import COLORS, FONT_SIZES, SPLASH_DURATION, USE_MOCK_BACKEND
+from config import (
+    COLORS,
+    FONT_SIZES,
+    SPLASH_DURATION,
+    USE_MOCK_BACKEND,
+    get_device_auth_token,
+)
 
 
 class SplashScreen(BaseScreen):
@@ -66,6 +74,15 @@ class SplashScreen(BaseScreen):
 
     def _advance(self, _dt):
         """Move to next screen based on setup state (server marker is authoritative)."""
+        # Desktop (Windows/macOS): the appliance pairing-code + Wi-Fi onboarding
+        # is replaced by an on-device Google sign-in. If we already hold a device
+        # token go straight home; otherwise show the sign-in step.
+        if not sys.platform.startswith('linux'):
+            if (get_device_auth_token() or '').strip():
+                self.goto('home', transition='fade')
+            else:
+                self.goto('sign_in', transition='fade')
+            return
         if USE_MOCK_BACKEND:
             if self.app.needs_setup():
                 self.goto('welcome', transition='fade')

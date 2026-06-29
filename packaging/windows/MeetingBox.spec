@@ -73,6 +73,7 @@ hiddenimports += [
     "net_status",
     "tts_windows",
     "audio_output",
+    "google_signin",
     "kivy.core.window.window_sdl2",
     "kivy.core.text.text_sdl2",
     "kivy.core.image.img_sdl2",

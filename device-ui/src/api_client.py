@@ -415,6 +415,77 @@ class BackendClient:
         self._refresh_auth_header()
         return data
 
+    async def get_google_services_auth_url(self, user_jwt: str) -> str:
+        """Combined Gmail + Calendar consent URL (the same one the web app uses).
+
+        Calls ``GET /api/integrations/google/auth-url`` with the *user* JWT — the
+        ``google`` provider requests gmail.{send,compose,readonly} +
+        calendar.{events,readonly} in a single consent screen. The backend
+        callback saves the tokens server-side and redirects the browser to the
+        hosted dashboard, so the device confirms completion by polling
+        :meth:`get_integrations` rather than catching the redirect.
+        """
+        jwt = (user_jwt or "").strip()
+        if not jwt:
+            raise ValueError("Missing Google sign-in token")
+        async with httpx.AsyncClient(timeout=API_TIMEOUT) as raw:
+            resp = await raw.get(
+                f"{self.base_url}/api/integrations/google/auth-url",
+                headers={"Authorization": f"Bearer {jwt}"},
+            )
+        resp.raise_for_status()
+        url = (resp.json().get("auth_url") or "").strip()
+        if not url:
+            raise ValueError("Server did not return a Google services consent URL")
+        return url
+
+    async def finalize_google_signin(
+        self,
+        user_jwt: str,
+        device_name: Optional[str] = None,
+    ) -> Dict:
+        """Self-pair this desktop after a Google sign-in and persist its device token.
+
+        The desktop sign-in yields a *user* JWT. Device API routes
+        (pairing-status, audio commands, uploads) require a *device* ``mbd_``
+        token, so we use the user JWT to mint a pairing code
+        (``POST /api/devices/pairing-codes``) and immediately claim it
+        (``POST /api/devices/claim``) — the same handshake the dashboard +
+        appliance perform, but entirely on-device. The resulting device token is
+        persisted and becomes the client's Bearer credential.
+
+        Returns the claim response (``device`` + ``owner_email``).
+        """
+        jwt = (user_jwt or "").strip()
+        if not jwt:
+            raise ValueError("Missing Google sign-in token")
+        async with httpx.AsyncClient(timeout=API_TIMEOUT) as raw:
+            code_resp = await raw.post(
+                f"{self.base_url}/api/devices/pairing-codes",
+                headers={"Authorization": f"Bearer {jwt}"},
+            )
+            code_resp.raise_for_status()
+            code = (code_resp.json().get("code") or "").strip()
+            if not code:
+                raise ValueError("Could not generate a pairing code for this account")
+
+            payload: Dict[str, str] = {"code": code}
+            dn = (device_name or "").strip()
+            if dn:
+                payload["device_name"] = dn
+            claim_resp = await raw.post(
+                f"{self.base_url}/api/devices/claim",
+                json=payload,
+            )
+        claim_resp.raise_for_status()
+        data = claim_resp.json()
+        access = (data.get("access_token") or "").strip()
+        if not access:
+            raise ValueError("Claim response missing access_token")
+        persist_device_auth_token(access)
+        self._refresh_auth_header()
+        return data
+
     # ==================================================================
     # MEETINGS API
     # ==================================================================

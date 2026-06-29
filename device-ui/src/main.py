@@ -309,6 +309,7 @@ REALTIME_WARM_STANDBY = os.environ.get(
 
 # Boot-flow screens
 from screens.splash import SplashScreen
+from screens.sign_in import SignInScreen
 from screens.welcome import WelcomeScreen
 from screens.room_name import RoomNameScreen
 from screens.network_choice import NetworkChoiceScreen
@@ -1175,6 +1176,7 @@ class MeetingBoxApp(App):
 
         # Register ALL screens
         self.screen_manager.add_widget(SplashScreen(name='splash'))
+        self.screen_manager.add_widget(SignInScreen(name='sign_in'))
         self.screen_manager.add_widget(WelcomeScreen(name='welcome'))
         self.screen_manager.add_widget(RoomNameScreen(name='room_name'))
         self.screen_manager.add_widget(NetworkChoiceScreen(name='network_choice'))
@@ -1843,8 +1845,9 @@ class MeetingBoxApp(App):
             target = self._nav_stack.pop()
             # Skip non-core screens in stack when going back
             skip = {
-                'splash', 'welcome', 'network_choice', 'wifi_setup', 'wifi_connected',
-                'setup_progress', 'all_set', 'pair_device', 'meetingbox_ready',
+                'splash', 'sign_in', 'welcome', 'network_choice', 'wifi_setup',
+                'wifi_connected', 'setup_progress', 'all_set', 'pair_device',
+                'meetingbox_ready',
             }
             while target in skip and self._nav_stack:
                 target = self._nav_stack.pop()
