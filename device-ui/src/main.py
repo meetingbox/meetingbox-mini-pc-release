@@ -50,6 +50,34 @@ if getattr(sys, "frozen", False):
         if os.path.isdir(_assets):
             os.environ.setdefault("MEETINGBOX_ASSETS_DIR", _assets)
 
+    # In a windowed (--noconsole) build there is no console, so sys.stdout and
+    # sys.stderr are None. Every ``print(..., flush=True)`` would then raise
+    # (AttributeError: 'NoneType' has no 'write'/'flush'). Route them to a log
+    # file so diagnostics survive and prints never crash the app.
+    if sys.stdout is None or sys.stderr is None:
+        _sink = None
+        try:
+            import platform_compat as _pc
+            _root = _pc.app_user_data_dir()
+            if _root is not None:
+                _logs = _root / "logs"
+                _logs.mkdir(parents=True, exist_ok=True)
+                _sink = open(_logs / "meetingbox-stdout.log", "a", buffering=1,
+                             encoding="utf-8", errors="replace")
+        except Exception:
+            _sink = None
+        if _sink is None:
+            class _NullWriter:
+                def write(self, *_a, **_k):
+                    return 0
+                def flush(self):
+                    pass
+            _sink = _NullWriter()
+        if sys.stdout is None:
+            sys.stdout = _sink
+        if sys.stderr is None:
+            sys.stderr = _sink
+
 from xauthority_util import display_refers_to_screen_zero, xauthority_list_has_display_zero
 
 # Before importing Kivy: stable clipboard provider on Linux (see kivy_options).
@@ -1398,6 +1426,8 @@ class MeetingBoxApp(App):
             )
         except Exception as _e:
             logger.error("_on_window_rotate_guard: failed to revert xrandr: %s", _e)
+
+    def _panel_swipe_down(self, _window, touch):
         """Window-level: record a touch that starts in the top-edge zone."""
         zone = 72  # px from top of screen — just above the pill handle
         if Window.height > 0 and touch.y >= Window.height - zone:
@@ -6695,7 +6725,11 @@ def main():
         print("[MeetingBox] Traceback:", flush=True)
         for _line in tb_str.rstrip().splitlines():
             print(f"[MeetingBox]   {_line}", flush=True)
-        sys.stdout.flush()
+        try:
+            if sys.stdout is not None:
+                sys.stdout.flush()
+        except Exception:
+            pass
         logger.exception(f"Fatal error: {e}")
         sys.exit(1)
 
