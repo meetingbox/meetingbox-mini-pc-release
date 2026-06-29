@@ -12,6 +12,7 @@ import os
 import subprocess
 
 from config import AUDIO_INPUT_DEVICE_INDEX, AUDIO_INPUT_DEVICE_NAME
+from platform_compat import has_linux_audio_tools
 
 logger = logging.getLogger(__name__)
 
@@ -164,6 +165,8 @@ _BT_PULSE_KEYWORDS = ("bluez", "bluetooth", "a2dp", "hsp", "hfp")
 
 def _pulse_bt_source_name() -> str | None:
     """Return the first Bluetooth source name from PulseAudio/PipeWire, or None."""
+    if not has_linux_audio_tools():
+        return None
     try:
         r = subprocess.run(
             ["pactl", "list", "sources", "short"],
@@ -285,8 +288,14 @@ def capture_device_fallback_candidates(sd, preferred: int | None) -> list[int | 
 
 
 def _strict_usb_enabled() -> bool:
-    """Match audio_capture.py's MEETINGBOX_USB_MIC_STRICT default (on)."""
-    v = (os.getenv("MEETINGBOX_USB_MIC_STRICT") or "1").strip().lower()
+    """Match audio_capture.py's MEETINGBOX_USB_MIC_STRICT default.
+
+    On the Linux appliance this defaults ON (only an external USB/BT mic is
+    acceptable). On desktop OSes (Windows/macOS) it defaults OFF so the PC's
+    own default/built-in microphone is used for testing.
+    """
+    default = "1" if has_linux_audio_tools() else "0"
+    v = (os.getenv("MEETINGBOX_USB_MIC_STRICT") or default).strip().lower()
     return v not in ("0", "false", "no", "off")
 
 
@@ -372,19 +381,20 @@ def resolve_sounddevice_capture_device_index(sd) -> int | None:
     # live (immune to that cache) and returns an ALSA device string that
     # PortAudio can still open via device=. Consult it before giving up on an
     # external mic so the always-on wake listener matches the realtime path.
-    try:
-        from audio_device_resolve import resolve_audio_pair
+    if has_linux_audio_tools():
+        try:
+            from audio_device_resolve import resolve_audio_pair
 
-        alsa_capture = resolve_audio_pair(sd).capture
-        if alsa_capture is not None:
-            logger.info(
-                "Auto-selected external capture via ALSA scan "
-                "(PortAudio enumeration missed it): %s",
-                alsa_capture,
-            )
-            return alsa_capture
-    except Exception:
-        logger.debug("ALSA-based external capture fallback failed", exc_info=True)
+            alsa_capture = resolve_audio_pair(sd).capture
+            if alsa_capture is not None:
+                logger.info(
+                    "Auto-selected external capture via ALSA scan "
+                    "(PortAudio enumeration missed it): %s",
+                    alsa_capture,
+                )
+                return alsa_capture
+        except Exception:
+            logger.debug("ALSA-based external capture fallback failed", exc_info=True)
 
     # No external mic visible. In strict mode (default) do NOT fall back to
     # the built-in/HDMI mic — return None so callers report "no external mic"

@@ -28,8 +28,17 @@ from config import (COLORS, FONT_SIZES, SPACING, DEVICE_MODEL,
 from hardware import request_system_poweroff, request_system_reboot
 from network_util import linux_ethernet_ready
 from weather_client import get_weather_client
+from platform_compat import IS_WINDOWS, IS_MACOS
 
 logger = logging.getLogger(__name__)
+
+# On desktop OSes (Windows/macOS) the PC owns device-specific hardware and
+# OS settings, so appliance-only rows are hidden (brightness, restart, OTA
+# software updates, timezone/date set, ALSA device pickers, Wi-Fi radio
+# toggle / forget, Bluetooth radio toggle). Network status remains visible
+# read-only. See the Windows port plan.
+_DESKTOP_BUILD = IS_WINDOWS or IS_MACOS
+_SHOW_APPLIANCE_ROWS = not _DESKTOP_BUILD
 
 
 def voice_realtime_settings_subtitle() -> str:
@@ -136,6 +145,7 @@ class SettingsScreen(BaseScreen):
         # ---- NETWORK ----
         self.container.add_widget(self._section_header('NETWORK'))
 
+        # Wi-Fi radio toggle is appliance-only; on a PC the OS owns the radio.
         self.wifi_radio_item = SettingsItem(
             title='WiFi',
             subtitle='',
@@ -143,13 +153,17 @@ class SettingsScreen(BaseScreen):
             active=True,
             on_toggle=self._on_wifi_radio_toggled,
         )
-        self.container.add_widget(self.wifi_radio_item)
+        if _SHOW_APPLIANCE_ROWS:
+            self.container.add_widget(self.wifi_radio_item)
 
+        # Wi-Fi network: appliance opens a scan/connect screen; desktop shows
+        # the PC's current network read-only (managed by the OS).
         self.wifi_item = SettingsItem(
             title='WiFi network',
             subtitle='Loading…',
-            mode='arrow',
-            on_press=lambda _: self.goto('wifi', transition='slide_left'),
+            mode='info' if _DESKTOP_BUILD else 'arrow',
+            on_press=(None if _DESKTOP_BUILD
+                      else (lambda _: self.goto('wifi', transition='slide_left'))),
         )
         self.container.add_widget(self.wifi_item)
 
@@ -166,8 +180,10 @@ class SettingsScreen(BaseScreen):
             mode='arrow',
             on_press=lambda _: self.goto('wifi_forget_screen', transition='slide_left'),
         )
-        self.container.add_widget(self.wifi_forget_item)
+        if _SHOW_APPLIANCE_ROWS:
+            self.container.add_widget(self.wifi_forget_item)
 
+        # Bluetooth radio toggle is appliance-only on a PC.
         self.bluetooth_radio_item = SettingsItem(
             title='Bluetooth',
             subtitle='Loading…',
@@ -175,13 +191,17 @@ class SettingsScreen(BaseScreen):
             active=False,
             on_toggle=self._on_bluetooth_radio_toggled,
         )
-        self.container.add_widget(self.bluetooth_radio_item)
+        if _SHOW_APPLIANCE_ROWS:
+            self.container.add_widget(self.bluetooth_radio_item)
 
+        # Bluetooth devices: appliance opens a scan/pair screen; desktop shows
+        # the PC's connected devices read-only.
         self.bluetooth_item = SettingsItem(
             title='Bluetooth devices',
             subtitle='Scan, pair & manage',
-            mode='arrow',
-            on_press=lambda _: self.goto('bluetooth_screen', transition='slide_left'),
+            mode='info' if _DESKTOP_BUILD else 'arrow',
+            on_press=(None if _DESKTOP_BUILD
+                      else (lambda _: self.goto('bluetooth_screen', transition='slide_left'))),
         )
         self.container.add_widget(self.bluetooth_item)
 
@@ -227,7 +247,8 @@ class SettingsScreen(BaseScreen):
             mode='arrow',
             on_press=lambda _: self.goto('update_check', transition='slide_left'),
         )
-        self.container.add_widget(self.update_item)
+        if _SHOW_APPLIANCE_ROWS:
+            self.container.add_widget(self.update_item)
 
         self.uptime_item = SettingsItem(
             title='Uptime',
@@ -243,7 +264,8 @@ class SettingsScreen(BaseScreen):
             active=True,
             on_toggle=lambda v: self._save_setting('auto_update_enabled', v),
         )
-        self.container.add_widget(self.auto_update_item)
+        if _SHOW_APPLIANCE_ROWS:
+            self.container.add_widget(self.auto_update_item)
 
         self.update_channel_item = SettingsItem(
             title='Update channel',
@@ -251,15 +273,18 @@ class SettingsScreen(BaseScreen):
             mode='arrow',
             on_press=lambda _: self.goto('update_channel_picker', transition='slide_left'),
         )
-        self.container.add_widget(self.update_channel_item)
+        if _SHOW_APPLIANCE_ROWS:
+            self.container.add_widget(self.update_channel_item)
 
+        # Date/time + timezone are OS-managed on a PC.
         self.datetime_item = SettingsItem(
             title='Date & Time',
             subtitle='',
             mode='arrow',
             on_press=lambda _: self.goto('datetime_screen', transition='slide_left'),
         )
-        self.container.add_widget(self.datetime_item)
+        if _SHOW_APPLIANCE_ROWS:
+            self.container.add_widget(self.datetime_item)
 
         self.timezone_item = SettingsItem(
             title='Timezone',
@@ -267,7 +292,8 @@ class SettingsScreen(BaseScreen):
             mode='arrow',
             on_press=lambda _: self.goto('timezone_picker', transition='slide_left'),
         )
-        self.container.add_widget(self.timezone_item)
+        if _SHOW_APPLIANCE_ROWS:
+            self.container.add_widget(self.timezone_item)
 
         self.diag_logs_item = SettingsItem(
             title='Diagnostic logs',
@@ -344,13 +370,15 @@ class SettingsScreen(BaseScreen):
         # ---- DISPLAY ----
         self.container.add_widget(self._section_header('DISPLAY'))
 
+        # Screen brightness is controlled by the OS on a PC.
         self.brightness_item = SettingsItem(
             title='Screen Brightness',
             subtitle='',
             mode='arrow',
             on_press=lambda _: self.goto('brightness_slider', transition='slide_left'),
         )
-        self.container.add_widget(self.brightness_item)
+        if _SHOW_APPLIANCE_ROWS:
+            self.container.add_widget(self.brightness_item)
 
         # Replaces the old "Screen Timeout" (display-off) entry. Opens the
         # idle-timeout picker so users can set how long until the lock-screen
@@ -410,13 +438,16 @@ class SettingsScreen(BaseScreen):
         )
         self.container.add_widget(self.mic_gain_item)
 
+        # ALSA device pickers are appliance-only; a PC uses the OS default
+        # input/output devices (change them in Windows sound settings).
         self.audio_output_item = SettingsItem(
             title='Output device',
             subtitle='',
             mode='arrow',
             on_press=lambda _: self.goto('audio_output_picker', transition='slide_left'),
         )
-        self.container.add_widget(self.audio_output_item)
+        if _SHOW_APPLIANCE_ROWS:
+            self.container.add_widget(self.audio_output_item)
 
         self.audio_input_item = SettingsItem(
             title='Input (microphone) device',
@@ -424,7 +455,8 @@ class SettingsScreen(BaseScreen):
             mode='arrow',
             on_press=lambda _: self.goto('audio_input_picker', transition='slide_left'),
         )
-        self.container.add_widget(self.audio_input_item)
+        if _SHOW_APPLIANCE_ROWS:
+            self.container.add_widget(self.audio_input_item)
 
         self.mic_test_item = SettingsItem(
             title='Microphone Test',
@@ -539,13 +571,16 @@ class SettingsScreen(BaseScreen):
         )
         self.container.add_widget(self.unpair_account_item)
 
+        # Restart / Power Off control the appliance hardware; on a PC the user
+        # uses the OS power controls instead.
         self.restart_item = SettingsItem(
             title='Restart Device',
             subtitle='',
             mode='arrow',
             on_press=lambda _: self._show_restart_dialog(),
         )
-        self.container.add_widget(self.restart_item)
+        if _SHOW_APPLIANCE_ROWS:
+            self.container.add_widget(self.restart_item)
 
         self.poweroff_item = SettingsItem(
             title='Power Off',
@@ -553,7 +588,8 @@ class SettingsScreen(BaseScreen):
             mode='arrow',
             on_press=lambda _: self._show_poweroff_dialog(),
         )
-        self.container.add_widget(self.poweroff_item)
+        if _SHOW_APPLIANCE_ROWS:
+            self.container.add_widget(self.poweroff_item)
 
         self.reset_item = SettingsItem(
             title='Factory Reset',
@@ -631,6 +667,8 @@ class SettingsScreen(BaseScreen):
     def on_enter(self):
         self._load_system_info()
         self._load_radio_states()
+        if _DESKTOP_BUILD:
+            self._load_desktop_network_status()
         # Sync privacy and auto_record toggles from app state
         privacy = getattr(self.app, 'privacy_mode', False)
         self.privacy_item.toggle.active = privacy
@@ -653,6 +691,60 @@ class SettingsScreen(BaseScreen):
         if not hasattr(self, "voice_realtime_item") or not self.voice_realtime_item:
             return
         self.voice_realtime_item.subtitle_label.text = voice_realtime_settings_subtitle()
+
+    def _load_desktop_network_status(self):
+        """Populate the read-only network rows from the PC's own state (Windows/macOS).
+
+        On a desktop build the PC owns Wi-Fi/Ethernet/Bluetooth, so we reflect
+        the OS's current connection instead of the appliance/backend values.
+        """
+        import threading
+        import net_status
+        from kivy.clock import Clock
+
+        def _fetch():
+            try:
+                wifi = net_status.current_wifi()
+            except Exception:
+                wifi = None
+            try:
+                ip = net_status.primary_ipv4()
+            except Exception:
+                ip = None
+            try:
+                bt_on = net_status.bluetooth_radio_on()
+                bt_devs = net_status.bluetooth_devices() if bt_on else []
+            except Exception:
+                bt_on, bt_devs = None, []
+
+            def _apply(_dt):
+                if wifi and wifi.get("ssid"):
+                    sig = wifi.get("signal_strength") or 0
+                    self.wifi_item.subtitle_label.text = (
+                        f"{wifi['ssid']} · {sig}%" if sig else wifi["ssid"]
+                    )
+                else:
+                    self.wifi_item.subtitle_label.text = "Not connected"
+                # Ethernet: if we have a LAN IP and no Wi-Fi, it's almost
+                # certainly the wired link. Always show the reachable IP.
+                if ip:
+                    self.ethernet_item.subtitle_label.text = f"Connected · {ip}"
+                else:
+                    self.ethernet_item.subtitle_label.text = "Not connected"
+                if bt_on is None:
+                    self.bluetooth_item.subtitle_label.text = "No Bluetooth adapter"
+                elif not bt_on:
+                    self.bluetooth_item.subtitle_label.text = "Off"
+                elif bt_devs:
+                    names = ", ".join(d["name"] for d in bt_devs[:2])
+                    extra = f" +{len(bt_devs) - 2}" if len(bt_devs) > 2 else ""
+                    self.bluetooth_item.subtitle_label.text = f"{names}{extra}"
+                else:
+                    self.bluetooth_item.subtitle_label.text = "On · no devices connected"
+
+            Clock.schedule_once(_apply, 0)
+
+        threading.Thread(target=_fetch, daemon=True).start()
 
     # ------------------------------------------------------------------
     # Data

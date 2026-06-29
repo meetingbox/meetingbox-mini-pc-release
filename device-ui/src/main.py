@@ -31,6 +31,25 @@ _src_dir = Path(__file__).resolve().parent
 if str(_src_dir) not in sys.path:
     sys.path.insert(0, str(_src_dir))
 
+# Load packaged/desktop configuration (device-ui.env) into the environment
+# BEFORE config is imported, so BACKEND_URL/DASHBOARD_URL/etc. take effect.
+# No-op on the Linux appliance unless a device-ui.env is present.
+try:
+    from env_file import load_env_file
+    load_env_file()
+except Exception:
+    pass
+
+# PyInstaller frozen builds: bundled data files live under sys._MEIPASS.
+# Point asset resolution there so fonts/icons/welcome images load correctly.
+if getattr(sys, "frozen", False):
+    _meipass = getattr(sys, "_MEIPASS", None)
+    if _meipass:
+        os.environ.setdefault("MEETINGBOX_APP_DIR", _meipass)
+        _assets = os.path.join(_meipass, "assets")
+        if os.path.isdir(_assets):
+            os.environ.setdefault("MEETINGBOX_ASSETS_DIR", _assets)
+
 from xauthority_util import display_refers_to_screen_zero, xauthority_list_has_display_zero
 
 # Before importing Kivy: stable clipboard provider on Linux (see kivy_options).
@@ -5420,7 +5439,16 @@ class MeetingBoxApp(App):
 
             aplay = shutil.which("aplay")
             if not aplay:
-                logger.debug("aplay not found — cannot play OpenAI TTS audio")
+                # No ALSA (Windows/macOS): play the raw 24 kHz PCM16 through
+                # PortAudio via the cross-platform audio_output helper.
+                try:
+                    import audio_output
+
+                    if audio_output.play_pcm16(audio_bytes, sample_rate=24000, channels=1):
+                        return True
+                    logger.debug("OpenAI TTS PortAudio playback failed")
+                except Exception as exc:  # noqa: BLE001
+                    logger.debug("OpenAI TTS PortAudio playback error: %s", exc)
                 return False
 
             import tempfile
@@ -5472,6 +5500,23 @@ class MeetingBoxApp(App):
             # --- 0. OpenAI TTS via server (natural AI voice — best quality) ---
             if self._speak_via_openai_tts(phrase):
                 return True
+
+            # --- 0b. Windows/macOS native speech (SAPI5 / NSSpeechSynthesizer) ---
+            # The offline Linux engines below (piper/mimic3/espeak) do not exist
+            # on desktop OSes, so use the OS speech engine via pyttsx3.
+            if not sys.platform.startswith("linux"):
+                try:
+                    import tts_windows
+
+                    if tts_windows.is_available():
+                        vol = int(getattr(self, "assistant_speech_volume", 85) or 85)
+                        if tts_windows.speak(phrase, volume=vol):
+                            return True
+                        logger.debug("Windows/macOS TTS returned False")
+                except Exception as exc:  # noqa: BLE001
+                    logger.debug("Windows/macOS TTS error: %s", exc)
+                # No further offline engines exist on this OS.
+                return False
 
             amp_n = self._espeak_amplitude()
             if amp_n <= 0:
@@ -6599,23 +6644,44 @@ def main():
                 flush=True,
             )
 
-    try:
-        result = subprocess.run(
-            ['ls', '-la', '/tmp/.X11-unix/'],
-            capture_output=True, text=True, timeout=5)
-        print(f"[MeetingBox] X11 socket dir: {result.stdout.strip()}", flush=True)
-    except Exception as e:
-        print(f"[MeetingBox] X11 socket check failed: {e}", flush=True)
+    if sys.platform.startswith('linux'):
+        try:
+            result = subprocess.run(
+                ['ls', '-la', '/tmp/.X11-unix/'],
+                capture_output=True, text=True, timeout=5)
+            print(f"[MeetingBox] X11 socket dir: {result.stdout.strip()}", flush=True)
+        except Exception as e:
+            print(f"[MeetingBox] X11 socket check failed: {e}", flush=True)
 
-    _diagnose_xauthority_for_docker()
+        _diagnose_xauthority_for_docker()
 
     logger.info("Starting MeetingBox Device UI")
     print(
         f"[MeetingBox] Kivy UI starting — full log: {LOG_FILE}",
         flush=True,
     )
+
+    # Single-instance guard (desktop): a second launch must not fight over the
+    # mic, config dir, or backend socket. Disabled when MEETINGBOX_ALLOW_MULTI=1.
+    _instance_handle = None
+    if (os.environ.get("MEETINGBOX_ALLOW_MULTI") or "").strip().lower() not in ("1", "true", "yes", "on"):
+        try:
+            from single_instance import acquire as _acquire_instance
+            _instance_handle = _acquire_instance()
+            if _instance_handle is None:
+                print(
+                    "[MeetingBox] Another MeetingBox window is already running — exiting.",
+                    flush=True,
+                )
+                sys.exit(0)
+        except SystemExit:
+            raise
+        except Exception as _e:
+            logger.warning("single-instance guard skipped: %s", _e)
+
     try:
         app = MeetingBoxApp()
+        app._single_instance_handle = _instance_handle
         app.run()
     except KeyboardInterrupt:
         logger.info("Interrupted by user")

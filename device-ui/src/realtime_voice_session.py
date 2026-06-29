@@ -48,6 +48,7 @@ import queue
 import shutil
 import string
 import subprocess
+import sys
 import threading
 import time
 from collections import deque
@@ -67,6 +68,12 @@ try:
     import sounddevice as sd
 except ImportError:
     sd = None
+
+# On the Linux appliance, model audio is played by piping raw PCM to ``aplay``
+# (ALSA). Windows/macOS have no ``aplay``; there we play through PortAudio via
+# the cross-platform :mod:`audio_output` helper, which preserves the same
+# instant barge-in (abort + flush) semantics.
+_USE_SD_PLAYBACK = not sys.platform.startswith("linux")
 
 REALTIME_VOICE_IMPLEMENTED = True
 
@@ -789,6 +796,8 @@ class RealtimeVoiceSession:
         self._aplay_writer = ThreadPoolExecutor(
             max_workers=1, thread_name_prefix="rtv-aplay"
         )
+        # Windows/macOS PortAudio playback sink (replaces the aplay pipe).
+        self._win_player = None
         self._suppress_audio_until = 0.0
         # Playback clock. Realtime audio deltas often arrive faster than aplay
         # can speak them, so timing UI transitions from the last chunk alone is
@@ -1691,6 +1700,32 @@ class RealtimeVoiceSession:
     # Playback (aplay subprocess)
     # ------------------------------------------------------------------
 
+    def _ensure_win_player(self) -> None:
+        """Lazily create the PortAudio streaming sink (Windows/macOS)."""
+        if self._win_player is not None:
+            return
+        try:
+            from audio_output import PcmStreamPlayer
+
+            device = None
+            env_dev = (os.getenv("MEETINGBOX_OUTPUT_DEVICE_INDEX") or "").strip()
+            if env_dev.isdigit():
+                device = int(env_dev)
+            player = PcmStreamPlayer(
+                sample_rate=_REALTIME_RATE, channels=1, device=device
+            )
+            if not player.start():
+                logger.warning("Realtime: PortAudio playback sink unavailable")
+                return
+            self._win_player = player
+            logger.info(
+                "Realtime PortAudio playback started (rate=%s device=%s)",
+                _REALTIME_RATE, device if device is not None else "default",
+            )
+        except Exception:
+            logger.exception("Realtime: PortAudio playback start failed")
+            self._win_player = None
+
     def _ensure_aplay(self) -> None:
         if self._aplay_proc is not None and self._aplay_proc.poll() is None:
             return
@@ -1782,6 +1817,12 @@ class RealtimeVoiceSession:
                 self._mute_mic_uplink_until,
                 self._assistant_audio_play_until + self._mic_reopen_tail_s,
             )
+        if _USE_SD_PLAYBACK:
+            self._ensure_win_player()
+            player = self._win_player
+            if player is not None:
+                player.write(raw)
+            return
         self._ensure_aplay()
         proc = self._aplay_proc
         if proc is None or proc.stdin is None:
@@ -1807,10 +1848,20 @@ class RealtimeVoiceSession:
             logger.debug("aplay write failed", exc_info=True)
 
     def _abort_aplay(self) -> None:
-        """Hard-kill the playback subprocess immediately."""
+        """Hard-stop playback immediately (barge-in)."""
         with self._playback_clock_lock:
             self._assistant_audio_play_until = 0.0
             self._mute_mic_uplink_until = 0.0
+        if _USE_SD_PLAYBACK:
+            player = self._win_player
+            self._win_player = None
+            if player is not None:
+                try:
+                    player.stop()
+                    self._log_voice_event("playback_aborted")
+                except Exception:
+                    pass
+            return
         proc = self._aplay_proc
         self._aplay_proc = None
         self._aplay_pid = None

@@ -15,8 +15,12 @@ from urllib import request as urlrequest
 
 import numpy as np
 import pyaudio
-import webrtcvad
 import yaml
+
+try:
+  import webrtcvad
+except Exception:  # pragma: no cover - optional on platforms without a wheel
+  webrtcvad = None
 
 try:
   import sounddevice as sd
@@ -178,7 +182,38 @@ class AudioCaptureService:
   ``audio_supervisor`` running inside the device-ui process).
   """
 
+  @staticmethod
+  def _resolve_config_path(config_path: str) -> str:
+    """Find config.yaml across source/frozen layouts.
+
+    Order: explicit env override, the given path if it exists (cwd), next to
+    this module, the PyInstaller bundle dir (sys._MEIPASS), and finally next
+    to the frozen executable.
+    """
+    import os as _os
+    import sys as _sys
+
+    env_cfg = (_os.environ.get("MEETINGBOX_AUDIO_CONFIG") or "").strip()
+    candidates = []
+    if env_cfg:
+      candidates.append(env_cfg)
+    candidates.append(config_path)
+    candidates.append(_os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "config.yaml"))
+    meipass = getattr(_sys, "_MEIPASS", None)
+    if meipass:
+      candidates.append(_os.path.join(meipass, "config.yaml"))
+    if getattr(_sys, "frozen", False):
+      candidates.append(_os.path.join(_os.path.dirname(_sys.executable), "config.yaml"))
+    for cand in candidates:
+      try:
+        if cand and _os.path.isfile(cand):
+          return cand
+      except OSError:
+        continue
+    return config_path
+
   def __init__(self, config_path: str = "config.yaml") -> None:
+    config_path = self._resolve_config_path(config_path)
     with open(config_path, "r") as f:
       self.config = yaml.safe_load(f)
 
@@ -199,7 +234,7 @@ class AudioCaptureService:
     self._wav_writer: wave.Wave_write | None = None
     self._last_level_emit_at = 0.0
     self._mic_status: str | None = None
-    self.vad = webrtcvad.Vad(self.config["vad"]["aggressiveness"])
+    self.vad = webrtcvad.Vad(self.config["vad"]["aggressiveness"]) if webrtcvad is not None else None
 
     storage_cfg = self.config.get("storage", {})
     self.temp_dir = Path(os.getenv("TEMP_SEGMENTS_DIR", storage_cfg.get("temp_dir", "/data/audio/temp")))
@@ -217,10 +252,16 @@ class AudioCaptureService:
       self.input_gain = 1.0
     if self.input_gain > 1.0:
       logger.info("Applying AUDIO_INPUT_GAIN=%sx to captured microphone samples", self.input_gain)
-    self.capture_backend = os.getenv("AUDIO_CAPTURE_BACKEND", "arecord").strip().lower()
+    # arecord is Linux/ALSA only. On Windows/macOS default to the PortAudio
+    # (sounddevice) backend so no ALSA tooling is required.
+    _default_backend = "arecord" if sys.platform.startswith("linux") else "sounddevice"
+    self.capture_backend = os.getenv("AUDIO_CAPTURE_BACKEND", _default_backend).strip().lower()
     if self.capture_backend not in ("arecord", "pyaudio", "sounddevice"):
-      logger.warning("Unknown AUDIO_CAPTURE_BACKEND=%r; using arecord", self.capture_backend)
-      self.capture_backend = "arecord"
+      logger.warning("Unknown AUDIO_CAPTURE_BACKEND=%r; using %s", self.capture_backend, _default_backend)
+      self.capture_backend = _default_backend
+    if self.capture_backend == "arecord" and not sys.platform.startswith("linux"):
+      logger.info("arecord backend is Linux-only; switching to sounddevice on this OS")
+      self.capture_backend = "sounddevice" if sd is not None else "pyaudio"
     if self.capture_backend == "sounddevice" and sd is None:
       logger.warning("AUDIO_CAPTURE_BACKEND=sounddevice requested but sounddevice is unavailable; using pyaudio")
       self.capture_backend = "pyaudio"
@@ -1087,6 +1128,8 @@ class AudioCaptureService:
 
   def process_audio_chunk(self, chunk: bytes) -> bool:
     """Return True if this chunk likely contains speech."""
+    if self.vad is None:
+      return True  # No VAD available: treat every chunk as speech.
     # webrtcvad supports 8000, 16000, 32000, 48000 Hz
     if self.RATE in (8000, 16000, 32000, 48000):
       vad_rate = self.RATE

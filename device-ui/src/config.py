@@ -11,6 +11,8 @@ import os
 from pathlib import Path
 from urllib.parse import urlparse, urlunparse
 
+import platform_compat
+
 logger = logging.getLogger(__name__)
 
 # ============================================================================
@@ -513,7 +515,7 @@ DASHBOARD_PUBLIC_URL = _d_public
 # ============================================================================
 
 LOG_LEVEL = os.getenv('LOG_LEVEL', 'INFO')
-LOG_FILE = os.getenv('LOG_FILE', '/tmp/meetingbox-ui.log')
+LOG_FILE = os.getenv('LOG_FILE', platform_compat.default_log_file())
 LOG_TO_CONSOLE = os.getenv('LOG_TO_CONSOLE', '1') == '1'
 
 # ============================================================================
@@ -557,9 +559,21 @@ def resolve_device_config_dir() -> Path:
     """
     Writable directory for device_profiles.json and local .setup_complete.
 
-    Prefers /data/config when the compose volume exists and is writable.
-    Otherwise uses BASE_DIR/data/config (under the app tree).
+    On the Linux appliance, prefers /data/config when the compose volume
+    exists and is writable, otherwise BASE_DIR/data/config (under the app
+    tree). On Windows/macOS, prefers the per-user data dir
+    (e.g. %LOCALAPPDATA%\\MeetingBox\\data\\config) which is always writable
+    even when the app is installed under Program Files.
     """
+    desktop_dir = platform_compat.default_config_dir()
+    if desktop_dir is not None:
+        try:
+            desktop_dir.mkdir(parents=True, exist_ok=True)
+            if desktop_dir.is_dir() and os.access(desktop_dir, os.W_OK):
+                return desktop_dir
+        except OSError:
+            pass
+
     for d in (Path('/data/config'), Path('/opt/meetingbox/data/config')):
         if _system_config_dir_usable(d):
             return d
@@ -743,6 +757,40 @@ try:
     (ASSETS_DIR / "welcome").mkdir(exist_ok=True)
 except OSError as e:
     logger.warning("Could not create assets/fonts/icons dirs: %s", e)
+
+
+def _seed_desktop_audio_env() -> None:
+    """On Windows/macOS, default the audio child's recording paths and token
+    file to the per-user data dir so a Program-Files install still records.
+
+    The audio_capture child process inherits these via the supervisor's
+    ``os.environ.copy()``. Linux keeps its /data defaults untouched.
+    """
+    rec = platform_compat.default_recordings_dir()
+    tmp = platform_compat.default_temp_segments_dir()
+    if rec is None or tmp is None:
+        return
+    cfg = resolve_device_config_dir()
+    defaults = {
+        "RECORDINGS_DIR": str(rec),
+        "TEMP_SEGMENTS_DIR": str(tmp),
+        "DEVICE_AUTH_TOKEN_FILE": str(cfg / DEVICE_AUTH_TOKEN_FILE_NAME),
+        # The Linux appliance defaults the capture backend to arecord; on
+        # desktop OSes force PortAudio so no ALSA tooling is required.
+        "AUDIO_CAPTURE_BACKEND": "sounddevice",
+    }
+    for key, value in defaults.items():
+        if not (os.environ.get(key) or "").strip():
+            os.environ[key] = value
+    for d in (rec, tmp):
+        try:
+            Path(d).mkdir(parents=True, exist_ok=True)
+        except OSError:
+            pass
+
+
+if platform_compat.IS_WINDOWS or platform_compat.IS_MACOS:
+    _seed_desktop_audio_env()
 
 # ============================================================================
 # DEVELOPMENT

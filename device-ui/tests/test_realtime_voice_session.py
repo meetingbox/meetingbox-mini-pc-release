@@ -9,20 +9,25 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
-# Kivy is optional in CI; stub minimal clock API before importing realtime_voice_session.
-_mod_kivy = types.ModuleType("kivy")
-_mod_clock = types.ModuleType("kivy.clock")
+# Kivy is optional in CI; stub a minimal clock API ONLY when the real Kivy
+# package is not importable. Installing a bare ``kivy`` stub unconditionally
+# would shadow the real package for other tests in the same session (e.g.
+# ``from kivy.uix...``), so we guard on real availability.
+try:
+    import kivy  # noqa: F401  (real package present -> use it)
+    import kivy.clock  # noqa: F401
+except Exception:
+    _mod_kivy = types.ModuleType("kivy")
+    _mod_clock = types.ModuleType("kivy.clock")
 
+    class _Clock:
+        @staticmethod
+        def schedule_once(fn, dt=0):
+            return None
 
-class _Clock:
-    @staticmethod
-    def schedule_once(fn, dt=0):
-        return None
-
-
-_mod_clock.Clock = _Clock
-sys.modules.setdefault("kivy", _mod_kivy)
-sys.modules.setdefault("kivy.clock", _mod_clock)
+    _mod_clock.Clock = _Clock
+    sys.modules.setdefault("kivy", _mod_kivy)
+    sys.modules.setdefault("kivy.clock", _mod_clock)
 
 from realtime_voice_session import (  # noqa: E402
     _APPEND_CHUNK_MS,

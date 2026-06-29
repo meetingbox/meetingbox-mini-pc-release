@@ -12,10 +12,16 @@ import logging
 import os
 import shutil
 import subprocess
+import sys
 import time
 from typing import Optional
 
 logger = logging.getLogger(__name__)
+
+# Desktop (Windows/macOS): the OS owns Wi-Fi. These functions become read-only
+# reflections of the PC's connection (via net_status); mutations are no-ops
+# that return a clear "managed by the OS" message.
+_DESKTOP = not sys.platform.startswith("linux")
 
 
 def has_nmcli() -> bool:
@@ -107,6 +113,12 @@ def get_wifi_radio_enabled() -> Optional[bool]:
     True if NetworkManager Wi-Fi radio is on.
     Returns None if nmcli output could not be parsed.
     """
+    if _DESKTOP:
+        try:
+            import net_status
+            return net_status.wifi_radio_on()
+        except Exception:
+            return None
     if not has_nmcli():
         return None
     try:
@@ -125,6 +137,8 @@ def get_wifi_radio_enabled() -> Optional[bool]:
 
 def set_wifi_radio(enabled: bool) -> dict:
     """Turn the main Wi-Fi hardware/software switch on or off (nmcli)."""
+    if _DESKTOP:
+        return {"ok": False, "message": "Wi-Fi is managed by Windows. Change it in Windows settings."}
     if not has_nmcli():
         return {"ok": False, "message": "nmcli not available"}
     arg = "on" if enabled else "off"
@@ -212,6 +226,20 @@ def empty_scan_hint() -> str:
 
 
 def scan_wifi_networks(rescan: bool = False) -> list[dict]:
+    if _DESKTOP:
+        try:
+            import net_status
+            cur = net_status.current_wifi()
+            return [
+                {
+                    "ssid": cur["ssid"],
+                    "signal_strength": cur.get("signal_strength", 0),
+                    "security": "",
+                    "connected": True,
+                }
+            ] if cur and cur.get("ssid") else []
+        except Exception:
+            return []
     if not has_nmcli():
         raise RuntimeError("nmcli not available")
     if rescan:
@@ -337,6 +365,9 @@ def connect_wifi_network(ssid: str, password: Optional[str]) -> dict:
     ssid = (ssid or "").strip()
     if not ssid:
         return {"status": "failed", "message": "SSID is required"}
+    if _DESKTOP:
+        return {"status": "failed",
+                "message": "Wi-Fi is managed by Windows. Connect from the Windows network menu."}
 
     # QuickPanel can call connect immediately after enabling Wi-Fi.
     # Ensure radio is ON before join attempts.
