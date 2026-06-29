@@ -240,10 +240,11 @@ if command -v gsettings >/dev/null 2>&1; then
     || true
 fi
 
-# Optional background watchdog: re-apply xrandr rotation every 5 s so any surviving
-# auto-rotation daemon cannot permanently override the landscape lock.
-# Enable with MEETINGBOX_XRANDR_LOCK_LOOP=1 in /etc/meetingbox/panel-xrandr.env.
-if [[ "${MEETINGBOX_XRANDR_LOCK_LOOP:-0}" == "1" ]] && command -v xrandr >/dev/null 2>&1; then
+# Background watchdog: re-apply xrandr rotation every 5 s so any auto-rotation
+# daemon (iio-sensor-proxy, udev rules, etc.) cannot permanently override the
+# landscape lock after this script exits.
+# Runs by default; disable with MEETINGBOX_XRANDR_LOCK_LOOP=0 in panel-xrandr.env.
+if [[ "${MEETINGBOX_XRANDR_LOCK_LOOP:-1}" == "1" ]] && command -v xrandr >/dev/null 2>&1; then
   (
     while true; do
       sleep 5
