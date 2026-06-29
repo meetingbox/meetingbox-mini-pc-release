@@ -1968,7 +1968,16 @@ class MeetingBoxApp(App):
         self._voice_start_confirmation_pending = False
         self._reset_recording_elapsed_clock()
         Clock.schedule_once(lambda _: self._suspend_voice_assistant_for_recording(), 0)
-        Clock.schedule_once(lambda _: self.goto_screen('recording', 'fade'), 0)
+        # If the user already started recording via the in-place morph on the
+        # Start-Recording page (optimistic start), we're on that screen and it is
+        # already showing the active recording UI — don't re-enter/reset it.
+        rec = self.screen_manager.get_screen('recording')
+        already_recording = (
+            self.screen_manager.current == 'recording'
+            and getattr(rec, 'is_recording_active', False)
+        )
+        if not already_recording:
+            Clock.schedule_once(lambda _: self.goto_screen('recording', 'fade'), 0)
 
     def _kick_post_stop_meeting_polls(self, sid):
         """HTTP fallbacks so processing screen gets transcript + summary without relying on WS."""
