@@ -1379,6 +1379,8 @@ class MeetingBoxApp(App):
             )
         except Exception as _e:
             logger.error("_on_window_rotate_guard: failed to revert xrandr: %s", _e)
+
+    def _panel_swipe_down(self, _window, touch):
         """Window-level: record a touch that starts in the top-edge zone."""
         zone = 72  # px from top of screen — just above the pill handle
         if Window.height > 0 and touch.y >= Window.height - zone:
