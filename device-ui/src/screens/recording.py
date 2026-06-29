@@ -594,6 +594,15 @@ class _StartButton(ButtonBehavior, Widget):
     def font_size(self, value: float) -> None:
         self._label.font_size = value
 
+    def on_touch_down(self, touch):
+        # While disabled (the RECORDING state) this button overlaps the Pause /
+        # Stop controls. A disabled Kivy widget normally *absorbs* touches that
+        # land on it, which would swallow taps meant for Stop — so stay fully
+        # transparent to touches here and let the controls beneath respond.
+        if self.disabled:
+            return False
+        return super().on_touch_down(touch)
+
     # Phase 1 — button press: slight scale-down then soft spring release.
     def on_press(self):
         if self.disabled:
