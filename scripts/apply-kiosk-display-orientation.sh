@@ -223,36 +223,29 @@ if [[ "${MEETINGBOX_MAP_TOUCH_TO_OUTPUT:-1}" == "1" ]]; then
   _map_touch_to_output
 fi
 
-# ── Prevent auto-rotation from overriding the fixed landscape lock ────────────
-# iio-sensor-proxy detects the accelerometer and can fire xrandr rotation changes
-# after this script exits (e.g. when the device is physically flipped).
-# Stop it here so the rotation set above stays permanent.
+# ── Permanently disable auto-rotation at the source (no reactive fighting) ────
+# iio-sensor-proxy reads the accelerometer and is what flips the display when the
+# device is moved. We do NOT want to react to rotation after it happens (that
+# causes a visible flip then a correction). Instead, stop + mask the daemon so no
+# rotation event is ever generated — xrandr above set landscape once and it stays.
+# (install-gdm-kiosk-session.sh masks it persistently as root; this is a runtime
+# best-effort fallback in case the daemon got re-enabled.)
 if systemctl is-active --quiet iio-sensor-proxy.service 2>/dev/null; then
   systemctl stop iio-sensor-proxy.service 2>/dev/null \
-    && logger -t meetingbox-kiosk "xrandr: stopped iio-sensor-proxy to lock landscape orientation" \
-    || logger -t meetingbox-kiosk "xrandr: could not stop iio-sensor-proxy (rotation may still be overridden)"
+    && logger -t meetingbox-kiosk "orientation: stopped iio-sensor-proxy" \
+    || logger -t meetingbox-kiosk "orientation: could not stop iio-sensor-proxy (need root mask at install)"
+fi
+if ! systemctl is-enabled iio-sensor-proxy.service 2>/dev/null | grep -q masked; then
+  systemctl mask iio-sensor-proxy.service 2>/dev/null \
+    && logger -t meetingbox-kiosk "orientation: masked iio-sensor-proxy" \
+    || true
 fi
 
 # Lock GNOME orientation if gsettings is available (covers gnome-settings-daemon auto-rotation).
 if command -v gsettings >/dev/null 2>&1; then
   gsettings set org.gnome.settings-daemon.peripherals.touchscreen orientation-lock true 2>/dev/null \
-    && logger -t meetingbox-kiosk "xrandr: set gsettings orientation-lock=true" \
+    && logger -t meetingbox-kiosk "orientation: set gsettings orientation-lock=true" \
     || true
-fi
-
-# Background watchdog: re-apply xrandr rotation every 5 s so any auto-rotation
-# daemon (iio-sensor-proxy, udev rules, etc.) cannot permanently override the
-# landscape lock after this script exits.
-# Runs by default; disable with MEETINGBOX_XRANDR_LOCK_LOOP=0 in panel-xrandr.env.
-if [[ "${MEETINGBOX_XRANDR_LOCK_LOOP:-1}" == "1" ]] && command -v xrandr >/dev/null 2>&1; then
-  (
-    while true; do
-      sleep 5
-      xrandr --output "$OUT" --rotate "$ROT" >/dev/null 2>&1 || true
-    done
-  ) &
-  disown "$!" 2>/dev/null || true
-  logger -t meetingbox-kiosk "xrandr: lock-loop started (re-enforces --output $OUT --rotate $ROT every 5 s)"
 fi
 
 exit 0

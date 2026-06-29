@@ -1309,10 +1309,6 @@ class MeetingBoxApp(App):
         # gesture still produces the expected result.
         Window.bind(on_minimize=self._on_window_minimized)
 
-        # Guard against auto-rotation daemons resizing the window to portrait.
-        if FULLSCREEN:
-            Window.bind(on_resize=self._on_window_rotate_guard)
-
         # Ensure the SDL window is mapped and on top (some WMs / SSH DISPLAY
         # combinations leave it hidden until raised).
         Clock.schedule_once(lambda *_: self._ensure_window_visible(), 0)
@@ -1351,34 +1347,6 @@ class MeetingBoxApp(App):
                 pass
 
         Clock.schedule_once(_restore, 0.05)
-
-    def _on_window_rotate_guard(self, _win, width, height):
-        """Re-apply xrandr landscape rotation if the display is auto-rotated to portrait.
-
-        When an accelerometer-based auto-rotation daemon (e.g. iio-sensor-proxy)
-        flips the xrandr rotation after session start, SDL2 fires a resize event
-        and the fullscreen window becomes portrait (height > width).  Detect that
-        here and immediately call xrandr to revert to the configured rotation so
-        the UI stays landscape.
-        """
-        if height <= width or width <= 0 or height <= 0:
-            return  # already landscape — nothing to do
-
-        logger.warning(
-            "Portrait resize detected (%dx%d) — display was auto-rotated; "
-            "reverting xrandr to landscape.",
-            width, height,
-        )
-        try:
-            import subprocess as _sp
-            _out = os.environ.get('MEETINGBOX_PANEL_OUTPUT', 'DSI-1')
-            _rot = os.environ.get('MEETINGBOX_PANEL_ROTATE', 'left')
-            _sp.Popen(
-                ['xrandr', '--output', _out, '--rotate', _rot],
-                stdout=_sp.DEVNULL, stderr=_sp.DEVNULL,
-            )
-        except Exception as _e:
-            logger.error("_on_window_rotate_guard: failed to revert xrandr: %s", _e)
 
     def _panel_swipe_down(self, _window, touch):
         """Window-level: record a touch that starts in the top-edge zone."""
