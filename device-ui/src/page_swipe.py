@@ -33,8 +33,20 @@ from typing import Callable
 
 from kivy.clock import Clock
 from kivy.core.window import Window
+from kivy.uix.modalview import ModalView
 
 logger = logging.getLogger(__name__)
+
+
+def any_modal_open() -> bool:
+    """True when a Kivy ``ModalView`` (edit / date-picker / etc.) is open.
+
+    Used by screens to suppress page swipes while a modal owns the interaction.
+    """
+    try:
+        return any(isinstance(w, ModalView) for w in Window.children)
+    except Exception:
+        return False
 
 # ── Spring (critically damped) ────────────────────────────────────────────────
 # Tuned for a calm, premium settle: quick to respond, no perceptible bounce.

@@ -29,6 +29,7 @@ from kivy.graphics import (
     Rectangle,
     RoundedRectangle,
     Scale,
+    Translate,
 )
 from kivy.properties import NumericProperty
 from kivy.uix.boxlayout import BoxLayout
@@ -40,6 +41,7 @@ from kivy.uix.widget import Widget
 
 from async_helper import run_async
 from config import ASSETS_DIR, DISPLAY_HEIGHT, DISPLAY_WIDTH, display_now, to_display_local
+from page_swipe import PageSwipeController, any_modal_open
 from screens.base_screen import BaseScreen
 
 logger = logging.getLogger(__name__)
@@ -249,7 +251,29 @@ class CalendarScreen(BaseScreen):
         self._voice_poll_event = None
         self._last_voice_state = None
 
+        self._page_tx = None                 # transform-only page translate
+
         self._build_ui()
+
+        # Interactive adjacent-page reveals (iOS Home-Screen feel):
+        #   left-to-right  → Home   (Home sits to the left)
+        #   right-to-left  → Tasks  (Tasks sits to the right)
+        self._home_pager = PageSwipeController(
+            self,
+            "home",
+            direction=1,
+            prepare_dest=self._prepare_adjacent,
+            commit=lambda: self.app.goto_screen("home", transition="none"),
+            can_start=self._can_page,
+        )
+        self._tasks_pager = PageSwipeController(
+            self,
+            "tasks",
+            direction=-1,
+            prepare_dest=self._prepare_adjacent,
+            commit=lambda: self.app.goto_screen("tasks", transition="none"),
+            can_start=self._can_page,
+        )
 
     # ── Build ──────────────────────────────────────────────────────────────────
 
@@ -653,7 +677,73 @@ class CalendarScreen(BaseScreen):
         """Called by main.py before on_enter to jump to a specific date."""
         self._target_date = d
 
+    # ── Interactive page swipe (Calendar ⇄ Home / Tasks) ──────────────────────
+
+    def _pagers(self):
+        return (
+            getattr(self, "_home_pager", None),
+            getattr(self, "_tasks_pager", None),
+        )
+
+    def _can_page(self) -> bool:
+        return not any_modal_open()
+
+    def _prepare_adjacent(self, dest) -> None:
+        try:
+            dest.prime_preview()
+        except Exception:
+            logger.exception("calendar: failed to prime adjacent page preview")
+
+    def _ensure_page_translate(self) -> None:
+        if self._page_tx is not None:
+            return
+        with self.canvas.before:
+            PushMatrix()
+            self._page_tx = Translate(0, 0, 0)
+        with self.canvas.after:
+            PopMatrix()
+
+    def set_page_offset(self, dx: float) -> None:
+        self._ensure_page_translate()
+        self._page_tx.x = float(dx)
+
+    def prime_preview(self) -> None:
+        """Refresh content so the swipe preview shows live data."""
+        self.set_page_offset(0.0)
+        try:
+            today = display_now().date()
+            target = self._target_date if self._target_date is not None else today
+            self._sel_date = target
+            self._view_week_mon = target - timedelta(days=target.weekday())
+            self._update_day_view(target, animate=False)
+            Clock.schedule_once(lambda _dt: self._load_week(), 0)
+        except Exception:
+            logger.debug("calendar: prime_preview failed", exc_info=True)
+
+    def on_touch_down(self, touch):
+        for pager in self._pagers():
+            if pager is not None and pager.on_touch_down(touch):
+                return True
+        return super().on_touch_down(touch)
+
+    def on_touch_move(self, touch):
+        for pager in self._pagers():
+            if pager is not None and pager.on_touch_move(touch):
+                return True
+        return super().on_touch_move(touch)
+
+    def on_touch_up(self, touch):
+        for pager in self._pagers():
+            if pager is not None and pager.on_touch_up(touch):
+                return True
+        return super().on_touch_up(touch)
+
     def on_enter(self) -> None:
+        for pager in self._pagers():
+            if pager is not None:
+                pager.cancel()
+        self.set_page_offset(0.0)
+
         today = display_now().date()
         target = self._target_date if self._target_date is not None else today
 
@@ -701,6 +791,10 @@ class CalendarScreen(BaseScreen):
         self._voice_poll_event = Clock.schedule_interval(self._poll_voice_state, 0.25)
 
     def on_leave(self) -> None:
+        for pager in self._pagers():
+            if pager is not None:
+                pager.cancel()
+        self.set_page_offset(0.0)
         self._target_date = None
         if self._subscribed_key:
             self.app.ui_cache_unsubscribe(self._subscribed_key, self._on_cached_week)

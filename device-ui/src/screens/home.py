@@ -499,6 +499,17 @@ class HomeScreen(BaseScreen):
             commit=self._commit_to_recording_ready,
             can_start=self._can_start_swipe,
         )
+        # Right-to-left reveal of the Calendar page. Calendar sits to the *right*
+        # of Home (mirroring Start-Recording on the left), and Tasks sits to the
+        # right of Calendar — one continuous chain of adjacent pages.
+        self._cal_pager = PageSwipeController(
+            self,
+            "calendar",
+            direction=-1,
+            prepare_dest=self._prepare_adjacent,
+            commit=self._commit_to_calendar,
+            can_start=self._can_start_swipe,
+        )
 
     # ── Build ─────────────────────────────────────────────────────────────────
 
@@ -634,6 +645,17 @@ class HomeScreen(BaseScreen):
             logger.exception("home: failed to flag recording ready entry")
         self.app.goto_screen("recording", transition="none")
 
+    def _prepare_adjacent(self, dest) -> None:
+        """Prime an adjacent page (Calendar) with live content for the preview."""
+        try:
+            dest.prime_preview()
+        except Exception:
+            logger.exception("home: failed to prime adjacent page preview")
+
+    def _commit_to_calendar(self) -> None:
+        """Settle onto the Calendar page."""
+        self.app.goto_screen("calendar", transition="none")
+
     def _ensure_page_translate(self) -> None:
         if self._page_tx is not None:
             return
@@ -655,27 +677,37 @@ class HomeScreen(BaseScreen):
         except Exception:
             logger.debug("home: prime_preview clock refresh failed", exc_info=True)
 
+    def _pagers(self):
+        return (
+            getattr(self, "_fwd_pager", None),
+            getattr(self, "_cal_pager", None),
+        )
+
     def on_touch_down(self, touch):
-        if self._fwd_pager is not None and self._fwd_pager.on_touch_down(touch):
-            return True
+        for pager in self._pagers():
+            if pager is not None and pager.on_touch_down(touch):
+                return True
         return super().on_touch_down(touch)
 
     def on_touch_move(self, touch):
-        if self._fwd_pager is not None and self._fwd_pager.on_touch_move(touch):
-            return True
+        for pager in self._pagers():
+            if pager is not None and pager.on_touch_move(touch):
+                return True
         return super().on_touch_move(touch)
 
     def on_touch_up(self, touch):
-        if self._fwd_pager is not None and self._fwd_pager.on_touch_up(touch):
-            return True
+        for pager in self._pagers():
+            if pager is not None and pager.on_touch_up(touch):
+                return True
         return super().on_touch_up(touch)
 
     # ── Lifecycle ─────────────────────────────────────────────────────────────
 
     def on_enter(self):
         # Reset any in-flight page swipe and the page translate.
-        if getattr(self, "_fwd_pager", None) is not None:
-            self._fwd_pager.cancel()
+        for pager in self._pagers():
+            if pager is not None:
+                pager.cancel()
         self.set_page_offset(0.0)
         # Reset voice state to idle
         self._listening_active  = False
@@ -707,8 +739,9 @@ class HomeScreen(BaseScreen):
         self._summary_poll_ev = Clock.schedule_interval(self._check_summary_ready, 1.5)
 
     def on_leave(self):
-        if getattr(self, "_fwd_pager", None) is not None:
-            self._fwd_pager.cancel()
+        for pager in self._pagers():
+            if pager is not None:
+                pager.cancel()
         self.set_page_offset(0.0)
         self._listening_active  = False
         self._current_amplitude = 0.0

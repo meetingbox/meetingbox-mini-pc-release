@@ -40,7 +40,9 @@ import logging
 from datetime import date, datetime, timedelta
 
 from kivy.clock import Clock
-from kivy.graphics import Color, Ellipse, Line, Rectangle, RoundedRectangle
+from kivy.graphics import (
+    Color, Ellipse, Line, PopMatrix, PushMatrix, Rectangle, RoundedRectangle, Translate,
+)
 from kivy.uix.behaviors import ButtonBehavior
 from kivy.uix.boxlayout import BoxLayout
 from kivy.uix.floatlayout import FloatLayout
@@ -54,6 +56,7 @@ from kivy.uix.widget import Widget
 from async_helper import run_async
 from components.live_wifi_icon import LiveWifiIcon as _WifiIcon
 from config import ASSETS_DIR, DISPLAY_HEIGHT, DISPLAY_WIDTH, display_now
+from page_swipe import PageSwipeController, any_modal_open
 from screens.base_screen import BaseScreen
 from screens.home import _BatteryWidget, _VoiceStatePill  # noqa: PLC2701
 
@@ -633,8 +636,20 @@ class TasksScreen(BaseScreen):
         self._list_box:    BoxLayout | None        = None
         self._voice_pill:  _VoiceStatePill | None  = None
         self._menu_overlay: Widget | None          = None
+        self._page_tx = None                       # transform-only page translate
 
         self._build_ui()
+
+        # Tasks is the right-most page in the chain. A left-to-right swipe reveals
+        # Calendar (which sits to its left); there is no page to the right.
+        self._calendar_pager = PageSwipeController(
+            self,
+            "calendar",
+            direction=1,
+            prepare_dest=self._prepare_adjacent,
+            commit=lambda: self.app.goto_screen("calendar", transition="none"),
+            can_start=self._can_page,
+        )
 
     # ── Build ──────────────────────────────────────────────────────────────────
 
@@ -1152,7 +1167,61 @@ class TasksScreen(BaseScreen):
 
     # ── Lifecycle ──────────────────────────────────────────────────────────────
 
+    # ── Interactive page swipe (Tasks → Calendar) ─────────────────────────────
+
+    def _can_page(self) -> bool:
+        return self._menu_overlay is None and not any_modal_open()
+
+    def _prepare_adjacent(self, dest) -> None:
+        try:
+            dest.prime_preview()
+        except Exception:
+            logger.exception("tasks: failed to prime adjacent page preview")
+
+    def _ensure_page_translate(self) -> None:
+        if self._page_tx is not None:
+            return
+        with self.canvas.before:
+            PushMatrix()
+            self._page_tx = Translate(0, 0, 0)
+        with self.canvas.after:
+            PopMatrix()
+
+    def set_page_offset(self, dx: float) -> None:
+        self._ensure_page_translate()
+        self._page_tx.x = float(dx)
+
+    def prime_preview(self) -> None:
+        """Refresh content so the swipe preview shows live data."""
+        self.set_page_offset(0.0)
+        try:
+            Clock.schedule_once(self._load_tasks, 0)
+        except Exception:
+            logger.debug("tasks: prime_preview failed", exc_info=True)
+
+    def on_touch_down(self, touch):
+        pager = getattr(self, "_calendar_pager", None)
+        if pager is not None and pager.on_touch_down(touch):
+            return True
+        return super().on_touch_down(touch)
+
+    def on_touch_move(self, touch):
+        pager = getattr(self, "_calendar_pager", None)
+        if pager is not None and pager.on_touch_move(touch):
+            return True
+        return super().on_touch_move(touch)
+
+    def on_touch_up(self, touch):
+        pager = getattr(self, "_calendar_pager", None)
+        if pager is not None and pager.on_touch_up(touch):
+            return True
+        return super().on_touch_up(touch)
+
     def on_enter(self) -> None:
+        pager = getattr(self, "_calendar_pager", None)
+        if pager is not None:
+            pager.cancel()
+        self.set_page_offset(0.0)
         self._loading = True
         if self._list_box is not None:
             self._list_box.clear_widgets()
@@ -1164,6 +1233,10 @@ class TasksScreen(BaseScreen):
             self._refresh_ev = Clock.schedule_interval(self._load_tasks, _REFRESH_INTERVAL)
 
     def on_leave(self) -> None:
+        pager = getattr(self, "_calendar_pager", None)
+        if pager is not None:
+            pager.cancel()
+        self.set_page_offset(0.0)
         self._close_menu()
         if self._refresh_ev is not None:
             self._refresh_ev.cancel()
