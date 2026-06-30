@@ -233,6 +233,11 @@ def scan_wifi_networks(rescan: bool = False) -> list[dict]:
         timeout=15,
     )
     nets: list[dict] = []
+    # nmcli returns one row per BSSID/AP, so dual-band routers (2.4 + 5 GHz)
+    # and mesh nodes yield several rows with the same SSID. Collapse them to a
+    # single entry per SSID, keeping the strongest signal and marking the
+    # network connected if any of its BSSIDs is the active one.
+    by_ssid: dict[str, dict] = {}
     cur: dict[str, str] = {}
 
     def flush_current():
@@ -246,14 +251,25 @@ def scan_wifi_networks(rescan: bool = False) -> list[dict]:
             signal = int(signal_raw) if signal_raw else 0
         except ValueError:
             signal = 0
-        nets.append(
-            {
+        connected = in_use == "*"
+
+        existing = by_ssid.get(ssid)
+        if existing is None:
+            entry = {
                 "ssid": ssid,
                 "signal_strength": signal,
                 "security": sec_raw or "open",
-                "connected": in_use == "*",
+                "connected": connected,
             }
-        )
+            by_ssid[ssid] = entry
+            nets.append(entry)
+            return
+
+        # Merge into the existing SSID entry.
+        if signal > existing["signal_strength"]:
+            existing["signal_strength"] = signal
+            existing["security"] = sec_raw or "open"
+        existing["connected"] = existing["connected"] or connected
 
     for line in res.stdout.splitlines():
         if ":" not in line:

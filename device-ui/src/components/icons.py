@@ -112,11 +112,13 @@ class Icon(Widget):
         # Center dot
         d = max(3, m * 0.13)
         Ellipse(pos=(cx - d / 2, cy - m * 0.42), size=(d, d))
-        # Three arcs (small → large), centered on that dot
+        # Three arcs (small → large), centered on that dot.
+        # Kivy ellipse angles: 0° = top, clockwise. -50°→50° arches over the
+        # top of the dot = upright WiFi fan (∩ shape).
         dot_cy = cy - m * 0.42 + d / 2
         for r in (m * 0.22, m * 0.36, m * 0.50):
             Line(
-                ellipse=(cx - r, dot_cy - r, r * 2, r * 2, 40, 140),
+                ellipse=(cx - r, dot_cy - r, r * 2, r * 2, -50, 50),
                 width=lw,
             )
 
