@@ -41,8 +41,10 @@ from kivy.uix.widget import Widget
 
 from async_helper import run_async
 from config import ASSETS_DIR, DISPLAY_HEIGHT, DISPLAY_WIDTH, display_now, to_display_local
+from frame19_layout import BG_BOT, BG_TOP
 from page_swipe import PageSwipeController, any_modal_open
 from screens.base_screen import BaseScreen
+from ui_bg import attach_swirl_bg
 
 logger = logging.getLogger(__name__)
 
@@ -245,6 +247,7 @@ class CalendarScreen(BaseScreen):
         self._subscribed_key: str | None = None
 
         # Listening pill
+        self._pill: FloatLayout | None = None   # whole pill (hidden when idle)
         self._pill_lbl: Label | None = None
         self._pill_dot = None          # purple Color instruction
         self._pill_wave: Image | None = None
@@ -271,7 +274,7 @@ class CalendarScreen(BaseScreen):
             "tasks",
             direction=-1,
             prepare_dest=self._prepare_adjacent,
-            commit=lambda: self.app.goto_screen("tasks", transition="none"),
+            commit=self._commit_to_tasks,
             can_start=self._can_page,
         )
 
@@ -281,20 +284,10 @@ class CalendarScreen(BaseScreen):
         root = FloatLayout(size_hint=(1, 1))
         self._root_layout = root
 
-        # Background image + white 0.91 overlay (matches Figma)
-        bg_src = _asset("bg_new.png")
-        if bg_src:
-            root.add_widget(Image(source=bg_src, fit_mode="cover",
-                                  size_hint=(1, 1), pos_hint={"x": 0, "y": 0}))
-        overlay = Widget(size_hint=(1, 1), pos_hint={"x": 0, "y": 0})
-        with overlay.canvas:
-            Color(1, 1, 1, 0.91 if bg_src else 1.0)
-            self._ov_rect = Rectangle(pos=overlay.pos, size=overlay.size)
-        overlay.bind(
-            pos=lambda w, v: setattr(self._ov_rect, "pos", v),
-            size=lambda w, v: setattr(self._ov_rect, "size", v),
-        )
-        root.add_widget(overlay)
+        # Shared light paper-swirl background — identical to the Start-Recording /
+        # Processing / Summary screens — so the Home page-swipe chain feels like
+        # one continuous surface.
+        attach_swirl_bg(root, BG_TOP, BG_BOT)
 
         self._build_status_area(root)
         self._build_flip_calendar(root)
@@ -307,7 +300,10 @@ class CalendarScreen(BaseScreen):
 
     def _build_status_area(self, root: FloatLayout) -> None:
         # Listening pill — Frame 27: 867,17  222×47  r=23.5 (fully rounded)
+        # Hidden at idle; revealed only while a voice session is active.
         pill = FloatLayout(**_ph(867, 17, 222, 47))
+        pill.opacity = 0.0
+        self._pill = pill
         r = 47.0 / 2 * _scale()
         with pill.canvas.before:
             Color(*_SHADOW)
@@ -657,6 +653,10 @@ class CalendarScreen(BaseScreen):
         active = state in ("listening", "thinking", "speaking")
         label = {"listening": "Listening", "thinking": "Thinking",
                  "speaking": "Speaking"}.get(state, "Listening")
+        if self._pill is not None:
+            Animation.cancel_all(self._pill, "opacity")
+            Animation(opacity=1.0 if active else 0.0,
+                      duration=0.22, t="out_cubic").start(self._pill)
         if self._pill_lbl:
             self._pill_lbl.text = label
         if self._pill_dot is not None:
@@ -693,6 +693,14 @@ class CalendarScreen(BaseScreen):
             dest.prime_preview()
         except Exception:
             logger.exception("calendar: failed to prime adjacent page preview")
+
+    def _commit_to_tasks(self) -> None:
+        """Settle onto Tasks, flagging it as a swipe entry (no back button)."""
+        try:
+            self.app.screen_manager.get_screen("tasks").entered_via_swipe = True
+        except Exception:
+            logger.exception("calendar: failed to flag tasks swipe entry")
+        self.app.goto_screen("tasks", transition="none")
 
     def _ensure_page_translate(self) -> None:
         if self._page_tx is not None:
