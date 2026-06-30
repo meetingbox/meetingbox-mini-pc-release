@@ -44,6 +44,15 @@ _env_template = REPO_ROOT / "packaging" / "windows" / "device-ui.env"
 if _env_template.is_file():
     datas += [(str(_env_template), ".")]
 
+# Vendored Speex DSP library for acoustic echo cancellation + noise suppression
+# on the realtime voice path. There is no system libspeexdsp on Windows (the
+# Linux appliance got it from the OS), so _aec.py loads this bundled copy from
+# _internal/vendor/windows/. Without it the voice falls back to half-duplex
+# mic-mute: the assistant reacts to its own audio and the mic input is noisy.
+_speexdsp_dll = SRC / "vendor" / "windows" / "libspeexdsp.dll"
+if _speexdsp_dll.is_file():
+    datas += [(str(_speexdsp_dll), os.path.join("vendor", "windows"))]
+
 # Third-party packages that ship data / need full collection.
 binaries = []
 hiddenimports = []
@@ -74,6 +83,7 @@ hiddenimports += [
     "tts_windows",
     "audio_output",
     "google_signin",
+    "mic_permission",
     "kivy.core.window.window_sdl2",
     "kivy.core.text.text_sdl2",
     "kivy.core.image.img_sdl2",
@@ -166,9 +176,24 @@ audio_pyz = PYZ(audio_a.pure, audio_a.zipped_data, cipher=block_cipher)
 _icon = REPO_ROOT / "packaging" / "windows" / "meetingbox.ico"
 icon_arg = str(_icon) if _icon.is_file() else None
 
+# Native splash shown instantly by the bootloader while the Kivy UI loads, so
+# the user sees branded feedback immediately instead of a blank delay.
+_splash_img = REPO_ROOT / "packaging" / "windows" / "splash.png"
+ui_splash = None
+if _splash_img.is_file():
+    ui_splash = Splash(
+        str(_splash_img),
+        binaries=ui_a.binaries,
+        datas=ui_a.datas,
+        text_pos=None,
+        always_on_top=True,
+    )
+
+_ui_exe_extra = [ui_splash] if ui_splash is not None else []
 ui_exe = EXE(
     ui_pyz,
     ui_a.scripts,
+    *_ui_exe_extra,
     [],
     exclude_binaries=True,
     name="MeetingBox",
@@ -196,8 +221,10 @@ audio_exe = EXE(
     icon=icon_arg,
 )
 
+_splash_binaries = [ui_splash.binaries] if ui_splash is not None else []
 coll = COLLECT(
     ui_exe,
+    *_splash_binaries,
     ui_a.binaries,
     ui_a.zipfiles,
     ui_a.datas,

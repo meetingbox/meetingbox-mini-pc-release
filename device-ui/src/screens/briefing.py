@@ -15,6 +15,7 @@ from kivy.uix.widget import Widget
 from async_helper import run_async
 from components.button import PrimaryButton, SecondaryButton
 from config import COLORS, FONT_SIZES, SPACING, display_now
+from platform_compat import TAP_OR_CLICK
 from screens.base_screen import BaseScreen
 
 _BULLET_RE = re.compile(r"^\s*[-•]\s+")
@@ -205,7 +206,7 @@ class BriefingScreen(BaseScreen):
         self.response_label = Label(
             text=(
                 "Good day. I can brief your calendar, scan your inbox, and recall recent meeting follow-ups.\n\n"
-                "Tap a card above to begin. Writes like email/calendar changes still require approval on web."
+                f"{TAP_OR_CLICK} a card above to begin. Writes like email/calendar changes still require approval on web."
             ),
             markup=False,
             font_size=sf(FONT_SIZES["body"]),

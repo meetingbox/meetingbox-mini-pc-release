@@ -62,6 +62,11 @@ from kivy.clock import Clock
 
 from api_client import invoke_realtime_tool_sync
 
+try:
+    from platform_compat import IS_DESKTOP
+except Exception:  # pragma: no cover - platform_compat always present in app
+    IS_DESKTOP = not sys.platform.startswith("linux")
+
 logger = logging.getLogger(__name__)
 
 try:
@@ -328,8 +333,27 @@ _LOCAL_BARGE_IN_ENABLED = (
     os.environ.get("REALTIME_LOCAL_BARGE_IN", "1").strip().lower()
     not in ("0", "false", "no", "off", "")
 )
-_LOCAL_BARGE_IN_MIN_RMS = _env_float("REALTIME_BARGE_IN_MIN_RMS", 900.0, minimum=100.0)
+# Desktop (laptop/PC built-in mic) is quieter and more variable than the
+# appliance's far-field USB array, so the fixed appliance floor (900) often
+# sits ABOVE genuine speech and the local detector never "confirms" the user —
+# the server hears them but we withhold the audio (the "it ignores my input"
+# symptom). Use a lower default floor on desktop; both stay env-overridable.
+_LOCAL_BARGE_IN_MIN_RMS = _env_float(
+    "REALTIME_BARGE_IN_MIN_RMS", 500.0 if IS_DESKTOP else 900.0, minimum=100.0
+)
 _LOCAL_BARGE_IN_REF_RATIO = _env_float("REALTIME_BARGE_IN_REF_RATIO", 1.65, minimum=1.0)
+
+# Optional digital gain applied to the desktop uplink before AEC/VAD. Helps a
+# quiet built-in mic clear the server VAD floor without re-running setup.
+# 1.0 = unchanged. Clipped to avoid distortion.
+_REALTIME_INPUT_GAIN = _env_float("REALTIME_INPUT_GAIN", 1.0, minimum=0.1, maximum=12.0)
+
+# When the OpenAI server VAD reports speech_started while we're half-duplex
+# (mic gated for echo), trust it on desktop: open the uplink for this long so
+# the user's full utterance reaches the server instead of being withheld.
+_REALTIME_SPEECH_UPLINK_S = _env_float(
+    "REALTIME_SPEECH_UPLINK_S", 3.0, minimum=0.5, maximum=15.0
+)
 _LOCAL_BARGE_IN_BASELINE_RATIO = _env_float("REALTIME_BARGE_IN_BASELINE_RATIO", 2.4, minimum=1.2)
 _LOCAL_BARGE_IN_MAX_ECHO_SIMILARITY = _env_float(
     "REALTIME_BARGE_IN_MAX_ECHO_SIMILARITY",
@@ -623,6 +647,51 @@ def resample_pcm16_mono(data: bytes, src_sr: int, dst_sr: int) -> bytes:
     return (np.clip(out, -1.0, 1.0) * 32767.0).astype(np.int16).tobytes()
 
 
+class _AntiAliasResampler:
+    """Stateful mono int16 resampler with anti-aliasing for DOWNsampling.
+
+    The appliance's USB mic captures at/below 24 kHz, so it only ever
+    UPsamples (16k->24k) — linear interpolation is fine there. A desktop mic
+    captures at 32/44.1/48 kHz, so reaching the 24 kHz Realtime rate requires
+    DOWNsampling. Plain linear interpolation has no anti-alias filter, so
+    energy above the 12 kHz target Nyquist folds back into the speech band as
+    hiss/garble and wrecks transcription. We pre-filter with a windowed-sinc
+    FIR low-pass whose history is carried across chunks (no per-block edge
+    clicks), then interpolate. Used on desktop only.
+    """
+
+    def __init__(self, src_sr: int, dst_sr: int, taps: int = 64) -> None:
+        self.src_sr = int(src_sr)
+        self.dst_sr = int(dst_sr)
+        self._needs_aa = self.dst_sr < self.src_sr
+        self._h = None
+        self._hist = None
+        if self._needs_aa:
+            cutoff = 0.45 * self.dst_sr  # Hz, just under the target Nyquist
+            n = np.arange(taps) - (taps - 1) / 2.0
+            h = np.sinc(2.0 * cutoff / self.src_sr * n) * np.hamming(taps)
+            self._h = (h / np.sum(h)).astype(np.float32)
+            self._hist = np.zeros(taps - 1, dtype=np.float32)
+
+    def process(self, pcm16: bytes) -> bytes:
+        if not pcm16 or self.src_sr == self.dst_sr:
+            return pcm16
+        x = np.frombuffer(pcm16, dtype=np.int16).astype(np.float32) / 32768.0
+        if x.size < 2:
+            return pcm16
+        if self._needs_aa:
+            buf = np.concatenate([self._hist, x])
+            x = np.convolve(buf, self._h, mode="valid")  # length == x.size
+            self._hist = buf[-(self._h.size - 1):]
+        n_src = x.size
+        dur = n_src / float(self.src_sr)
+        n_dst = max(1, int(dur * self.dst_sr))
+        x_src = np.linspace(0.0, dur, num=n_src, endpoint=False)
+        x_dst = np.linspace(0.0, dur, num=n_dst, endpoint=False)
+        out = np.interp(x_dst, x_src, x)
+        return (np.clip(out, -1.0, 1.0) * 32767.0).astype(np.int16).tobytes()
+
+
 # ---------------------------------------------------------------------------
 # RealtimeVoiceSession
 # ---------------------------------------------------------------------------
@@ -758,7 +827,13 @@ class RealtimeVoiceSession:
         # Echo-decay tail: keep the mic muted this long AFTER the assistant's
         # queued audio finishes, so residual room echo doesn't reopen the
         # uplink. Longer in half-duplex (built-in mic) where coupling is worse.
-        _default_tail = 1.0 if self._half_duplex else 0.6
+        # Desktop opens the uplink on server VAD speech_started (below), so a
+        # long echo-decay tail mostly just clips the start of the user's next
+        # turn. Keep it short on desktop; the appliance keeps its tuned value.
+        if IS_DESKTOP:
+            _default_tail = 0.5
+        else:
+            _default_tail = 1.0 if self._half_duplex else 0.6
         try:
             self._mic_reopen_tail_s = float(
                 os.environ.get("REALTIME_MIC_TAIL_S", "") or _default_tail
@@ -786,6 +861,14 @@ class RealtimeVoiceSession:
         self._audio_q: queue.Queue[bytes | None] = queue.Queue(maxsize=400)
         self._mic_stream = None
         self._mic_native_sr = _REALTIME_RATE
+        # Anti-aliased desktop downsampler (built lazily in _pump_mic once the
+        # actual capture rate is known). None on the appliance / when no
+        # resampling is needed.
+        self._mic_resampler: _AntiAliasResampler | None = None
+        # Desktop only: when the server VAD reports the user started talking,
+        # open the gated uplink until this monotonic deadline so the utterance
+        # is actually sent (fixes half-duplex withholding real speech).
+        self._force_uplink_until = 0.0
 
         # Playback (aplay) — pipe writes go through a dedicated
         # single-thread executor. Writing on the asyncio loop would
@@ -1640,12 +1723,23 @@ class RealtimeVoiceSession:
             self._emit_error("sounddevice not installed; microphone unavailable.")
             return False
 
+        # Prefer capturing at (or near) the 24 kHz Realtime rate so we avoid a
+        # quality-destroying downsample. On Windows WASAPI shared mode this
+        # succeeds via the OS's high-quality resampler; if the device rejects
+        # it we fall back through 16 kHz (clean upsample) before the higher
+        # rates that force our own downsample. The appliance keeps its original
+        # order (its USB mic is natively 16 kHz / 48 kHz).
+        if IS_DESKTOP:
+            sample_rates = (_REALTIME_RATE, 16000, 48000, 32000, 44100)
+        else:
+            sample_rates = (48000, 44100, 32000, 16000, _REALTIME_RATE)
+
         tried: list = []
         for dev in [preferred_device_id, *candidate_device_ids]:
             if dev in tried:
                 continue
             tried.append(dev)
-            for sr in (48000, 44100, 32000, 16000, _REALTIME_RATE):
+            for sr in sample_rates:
                 try:
                     stream = sd.RawInputStream(
                         samplerate=sr,
@@ -1658,8 +1752,22 @@ class RealtimeVoiceSession:
                     stream.start()
                     self._mic_stream = stream
                     self._mic_native_sr = sr
+                    dev_name = ""
+                    try:
+                        if dev is not None:
+                            dev_name = (sd.query_devices(dev).get("name") or "")
+                        else:
+                            di = sd.default.device[0]
+                            if isinstance(di, int) and di >= 0:
+                                dev_name = (sd.query_devices(di).get("name") or "")
+                    except Exception:
+                        dev_name = ""
                     logger.info(
-                        "Realtime mic open: device=%s samplerate=%s", dev, sr
+                        "Realtime mic open: device=%s (%s) samplerate=%s%s",
+                        dev,
+                        dev_name or "?",
+                        sr,
+                        "" if sr == _REALTIME_RATE else f" -> resample to {_REALTIME_RATE}",
                     )
                     return True
                 except Exception as e:
@@ -2261,11 +2369,39 @@ class RealtimeVoiceSession:
     # Mic pump (asyncio side)
     # ------------------------------------------------------------------
 
+    def _apply_input_gain(self, pcm16: bytes) -> bytes:
+        """Apply optional desktop digital gain with hard clipping."""
+        if _REALTIME_INPUT_GAIN == 1.0 or not pcm16:
+            return pcm16
+        s = np.frombuffer(pcm16, dtype=np.int16).astype(np.float32)
+        s *= _REALTIME_INPUT_GAIN
+        np.clip(s, -32768.0, 32767.0, out=s)
+        return s.astype(np.int16).tobytes()
+
+    def _drain_far(self, nbytes: int) -> None:
+        """Drop ``nbytes`` from the FRONT of the AEC far-end ring.
+
+        While the uplink is withheld during assistant playback, mic frames are
+        not run through ``_aec_process`` (which is what normally consumes the
+        far ring in lockstep). Without draining, the far ring's front goes
+        stale, so when the uplink reopens the echo canceller subtracts the
+        WRONG (old) reference and lets residual echo through — heard by the
+        server as "random words". Draining keeps the front time-aligned.
+        """
+        if nbytes <= 0:
+            return
+        with self._aec_buf_lock:
+            if len(self._aec_far_buf) >= nbytes:
+                del self._aec_far_buf[:nbytes]
+
     async def _pump_mic(self) -> None:
         assert self._ws is not None
         ws = self._ws
         loop = asyncio.get_running_loop()
         native_sr = self._mic_native_sr
+        if IS_DESKTOP and native_sr != _REALTIME_RATE:
+            self._mic_resampler = _AntiAliasResampler(native_sr, _REALTIME_RATE)
+        resampler = self._mic_resampler
 
         def _get() -> bytes:
             try:
@@ -2280,8 +2416,16 @@ class RealtimeVoiceSession:
             if not piece:
                 continue
             try:
-                resampled = resample_pcm16_mono(piece, native_sr, _REALTIME_RATE)
+                if resampler is not None:
+                    resampled = resampler.process(piece)
+                else:
+                    resampled = resample_pcm16_mono(piece, native_sr, _REALTIME_RATE)
+                resampled = self._apply_input_gain(resampled)
                 now = time.monotonic()
+                # Desktop: once the server VAD has flagged user speech, trust it
+                # and let frames through even inside the echo-mute window so the
+                # full utterance is captured (AEC still strips the echo).
+                force_uplink = IS_DESKTOP and now < self._force_uplink_until
                 # Energy-based echo gate:
                 # While the agent is speaking, suppress mic frames whose energy
                 # is at or below the expected echo level (i.e. agent's own
@@ -2292,7 +2436,7 @@ class RealtimeVoiceSession:
                 # AND be above a minimum voice floor (300 ≈ -82 dBFS).
                 # Both conditions ensure we don't pass near-silence or mild
                 # echo while still allowing clear speech to interrupt.
-                if now < self._mute_mic_uplink_until:
+                if now < self._mute_mic_uplink_until and not force_uplink:
                     self._barge_in_preroll.append(resampled)
                     detected, mic_rms, ref_rms, threshold, echo_similarity = self._detect_local_barge_in(
                         resampled,
@@ -2314,7 +2458,11 @@ class RealtimeVoiceSession:
                     if self._half_duplex:
                         # Half-duplex still withholds echo-contaminated mic
                         # frames, but local barge-in above can break out as
-                        # soon as live user speech is detected.
+                        # soon as live user speech is detected. Keep the AEC
+                        # far-end reference time-aligned while we withhold
+                        # (desktop) so echo cancellation stays effective.
+                        if IS_DESKTOP:
+                            self._drain_far(len(resampled))
                         continue
                     # Full-duplex (echo-isolated puck): energy-based barge-in
                     # gate. Let a frame through only if the mic is clearly
@@ -2459,6 +2607,27 @@ class RealtimeVoiceSession:
                                 if len(self._aec_far_buf) > retain_bytes:
                                     del self._aec_far_buf[: len(self._aec_far_buf) - retain_bytes]
                         self._emit_state("listening")
+                    elif IS_DESKTOP:
+                        # The server's VAD detected the user. On a desktop the
+                        # local energy detector is unreliable (built-in mic +
+                        # speakers), so instead of withholding the turn, open
+                        # the gated uplink and flush the pre-roll so the full
+                        # utterance reaches the server. AEC still strips the
+                        # assistant's echo from these frames, and playback is
+                        # only force-stopped once a real barge-in is confirmed.
+                        self._force_uplink_until = (
+                            time.monotonic() + _REALTIME_SPEECH_UPLINK_S
+                        )
+                        frames = list(self._barge_in_preroll)
+                        self._barge_in_preroll.clear()
+                        for frame in frames:
+                            await self._upload_resampled_audio(ws, frame)
+                        self._emit_state("listening")
+                        self._log_voice_event(
+                            "speech_started_uplink_opened",
+                            reason="server_vad_desktop",
+                            window_s=_REALTIME_SPEECH_UPLINK_S,
+                        )
                     else:
                         self._log_voice_event(
                             "speech_started_ignored",
@@ -2467,6 +2636,9 @@ class RealtimeVoiceSession:
 
                 elif t == "input_audio_buffer.speech_stopped":
                     self._touch()
+                    # Close the desktop "trust server VAD" uplink window; the
+                    # echo-mute gate resumes for the assistant's reply.
+                    self._force_uplink_until = 0.0
                     self._log_voice_event("speech_stopped")
                     self._emit_state("thinking")
                     # Stop live captions — OpenAI's accurate transcript now

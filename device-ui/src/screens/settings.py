@@ -223,19 +223,23 @@ class SettingsScreen(BaseScreen):
         )
         self.container.add_widget(self.auto_delete_item)
 
+        # Storage breakdown reads appliance RAM (/proc/meminfo) and the device
+        # data partition — meaningless on a PC, so hide it on desktop.
         self.storage_breakdown_item = SettingsItem(
             title='Storage breakdown',
             subtitle='Recordings · transcripts · cache',
             mode='arrow',
             on_press=lambda _: self.goto('storage_breakdown', transition='slide_left'),
         )
-        self.container.add_widget(self.storage_breakdown_item)
+        if _SHOW_APPLIANCE_ROWS:
+            self.container.add_widget(self.storage_breakdown_item)
 
         # ---- SYSTEM ----
         self.container.add_widget(self._section_header('SYSTEM'))
 
+        # On desktop this is the app version, not appliance firmware.
         self.firmware_item = SettingsItem(
-            title='Firmware Version',
+            title='App Version' if _DESKTOP_BUILD else 'Firmware Version',
             subtitle='Loading…',
             mode='info',
         )
@@ -250,12 +254,14 @@ class SettingsScreen(BaseScreen):
         if _SHOW_APPLIANCE_ROWS:
             self.container.add_widget(self.update_item)
 
+        # Host uptime is an appliance concept; hide on desktop.
         self.uptime_item = SettingsItem(
             title='Uptime',
             subtitle='Loading…',
             mode='info',
         )
-        self.container.add_widget(self.uptime_item)
+        if _SHOW_APPLIANCE_ROWS:
+            self.container.add_widget(self.uptime_item)
 
         self.auto_update_item = SettingsItem(
             title='Auto-update',
@@ -295,13 +301,15 @@ class SettingsScreen(BaseScreen):
         if _SHOW_APPLIANCE_ROWS:
             self.container.add_widget(self.timezone_item)
 
+        # Diagnostic logs viewer reads journalctl (Linux appliance only).
         self.diag_logs_item = SettingsItem(
             title='Diagnostic logs',
             subtitle='View system log output',
             mode='arrow',
             on_press=lambda _: self.goto('diagnostic_logs', transition='slide_left'),
         )
-        self.container.add_widget(self.diag_logs_item)
+        if _SHOW_APPLIANCE_ROWS:
+            self.container.add_widget(self.diag_logs_item)
 
         # ---- PRIVACY ----
         self.container.add_widget(self._section_header('PRIVACY'))
@@ -380,16 +388,16 @@ class SettingsScreen(BaseScreen):
         if _SHOW_APPLIANCE_ROWS:
             self.container.add_widget(self.brightness_item)
 
-        # Replaces the old "Screen Timeout" (display-off) entry. Opens the
-        # idle-timeout picker so users can set how long until the lock-screen
-        # idle UI takes over.
+        # Idle "lock screen" takeover is an appliance behavior; on desktop the
+        # OS owns lock/screensaver, so this picker is hidden.
         self.idle_timeout_item = SettingsItem(
             title='Idle Screen',
             subtitle='After 30 seconds',
             mode='arrow',
             on_press=lambda _: self.goto('idle_timeout_picker', transition='slide_left'),
         )
-        self.container.add_widget(self.idle_timeout_item)
+        if _SHOW_APPLIANCE_ROWS:
+            self.container.add_widget(self.idle_timeout_item)
 
         # Weather location used by the home/idle screens. Stored locally on
         # the device (no backend involvement) — IP-detected by default,
@@ -402,6 +410,7 @@ class SettingsScreen(BaseScreen):
         )
         self.container.add_widget(self.weather_location_item)
 
+        # Tied to the idle lock screen, which is disabled on desktop.
         self.screen_always_on_item = SettingsItem(
             title='Screen always-on during recording',
             subtitle='Prevent idle screen while recording',
@@ -409,7 +418,8 @@ class SettingsScreen(BaseScreen):
             active=True,
             on_toggle=lambda v: self._save_setting('screen_always_on_recording', v),
         )
-        self.container.add_widget(self.screen_always_on_item)
+        if _SHOW_APPLIANCE_ROWS:
+            self.container.add_widget(self.screen_always_on_item)
 
         # ---- AUDIO ----
         self.container.add_widget(self._section_header('AUDIO'))
@@ -422,13 +432,16 @@ class SettingsScreen(BaseScreen):
         )
         self.container.add_widget(self.speech_volume_item)
 
+        # System volume and mic gain go through PulseAudio/ALSA (Linux). On a PC
+        # the OS sound settings own these, so hide them on desktop.
         self.notif_volume_item = SettingsItem(
             title='System / notification volume',
             subtitle='',
             mode='arrow',
             on_press=lambda _: self.goto('notification_volume_picker', transition='slide_left'),
         )
-        self.container.add_widget(self.notif_volume_item)
+        if _SHOW_APPLIANCE_ROWS:
+            self.container.add_widget(self.notif_volume_item)
 
         self.mic_gain_item = SettingsItem(
             title='Microphone input gain',
@@ -436,7 +449,8 @@ class SettingsScreen(BaseScreen):
             mode='arrow',
             on_press=lambda _: self.goto('mic_gain_picker', transition='slide_left'),
         )
-        self.container.add_widget(self.mic_gain_item)
+        if _SHOW_APPLIANCE_ROWS:
+            self.container.add_widget(self.mic_gain_item)
 
         # ALSA device pickers are appliance-only; a PC uses the OS default
         # input/output devices (change them in Windows sound settings).
@@ -550,22 +564,28 @@ class SettingsScreen(BaseScreen):
         self.container.add_widget(self.notif_settings_item)
 
         # ---- SECURITY ----
-        self.container.add_widget(self._section_header('SECURITY'))
-
+        # Settings PIN lock + auto-logout are kiosk behaviors (and unenforced);
+        # on desktop the OS account/lock handles this, so hide the section.
         self.security_item = SettingsItem(
             title='Security settings',
             subtitle='PIN lock, session timeout',
             mode='arrow',
             on_press=lambda _: self.goto('security_settings', transition='slide_left'),
         )
-        self.container.add_widget(self.security_item)
+        if _SHOW_APPLIANCE_ROWS:
+            self.container.add_widget(self._section_header('SECURITY'))
+            self.container.add_widget(self.security_item)
 
         # ---- MAINTENANCE ----
         self.container.add_widget(self._section_header('MAINTENANCE'))
 
+        # On desktop the pairing model is a Google sign-in, so this is "Sign out".
         self.unpair_account_item = SettingsItem(
-            title='Unpair from account',
-            subtitle='Link again with a new pairing code',
+            title='Sign out' if _DESKTOP_BUILD else 'Unpair from account',
+            subtitle=(
+                'Sign out and disconnect this account'
+                if _DESKTOP_BUILD else 'Link again with a new pairing code'
+            ),
             mode='arrow',
             on_press=lambda _: self._show_unpair_account_dialog(),
         )
@@ -591,13 +611,16 @@ class SettingsScreen(BaseScreen):
         if _SHOW_APPLIANCE_ROWS:
             self.container.add_widget(self.poweroff_item)
 
+        # Factory Reset wipes the appliance and reboots the host — wrong and
+        # dangerous on a PC, so it is hidden on desktop.
         self.reset_item = SettingsItem(
             title='Factory Reset',
             subtitle='',
             mode='arrow',
             on_press=lambda _: self._show_factory_reset_dialog(),
         )
-        self.container.add_widget(self.reset_item)
+        if _SHOW_APPLIANCE_ROWS:
+            self.container.add_widget(self.reset_item)
 
         self.connectivity_item = SettingsItem(
             title='Server connectivity check',
@@ -607,13 +630,15 @@ class SettingsScreen(BaseScreen):
         )
         self.container.add_widget(self.connectivity_item)
 
+        # USB info reads Linux sysfs / lsusb; hide on desktop.
         self.usb_info_item = SettingsItem(
             title='Connected USB devices',
             subtitle='Peripheral info',
             mode='arrow',
             on_press=lambda _: self.goto('usb_info', transition='slide_left'),
         )
-        self.container.add_widget(self.usb_info_item)
+        if _SHOW_APPLIANCE_ROWS:
+            self.container.add_widget(self.usb_info_item)
 
         self.diag_report_item = SettingsItem(
             title='Send diagnostic report',
@@ -628,7 +653,10 @@ class SettingsScreen(BaseScreen):
 
         self.about_item = SettingsItem(
             title='About / Licenses',
-            subtitle='Firmware build, open-source notices',
+            subtitle=(
+                'App version, open-source notices'
+                if _DESKTOP_BUILD else 'Firmware build, open-source notices'
+            ),
             mode='arrow',
             on_press=lambda _: self.goto('about_screen', transition='slide_left'),
         )
@@ -797,7 +825,18 @@ class SettingsScreen(BaseScreen):
                 wifi_text = f'{wifi_ssid}  ({sig}%)\nIP: {ip}'
 
                 try:
-                    _du = shutil.disk_usage('/')
+                    if _DESKTOP_BUILD:
+                        # The appliance reports its /data partition; on a PC use
+                        # the drive that holds the app's data dir.
+                        from pathlib import Path
+                        try:
+                            from platform_compat import app_user_data_dir
+                            _root = str(app_user_data_dir() or Path.home())
+                        except Exception:
+                            _root = str(Path.home())
+                    else:
+                        _root = '/'
+                    _du = shutil.disk_usage(_root)
                     su = _du.used / (1024 ** 3)
                     st = _du.total / (1024 ** 3)
                     sf = _du.free / (1024 ** 3)
@@ -1189,12 +1228,22 @@ class SettingsScreen(BaseScreen):
     # Restart dialog
     # ------------------------------------------------------------------
     def _show_unpair_account_dialog(self):
+        if _DESKTOP_BUILD:
+            title = 'Sign out?'
+            message = ('This will disconnect your MeetingBox account from\n'
+                       'this computer. Gmail stays linked in the web dashboard.\n'
+                       'You will sign in with Google again to reconnect.')
+            confirm_text = 'SIGN OUT'
+        else:
+            title = 'Unpair this device?'
+            message = ('This device will disconnect from your MeetingBox\n'
+                       'account. Gmail stays linked in the web dashboard.\n'
+                       'You will enter a new pairing code to reconnect.')
+            confirm_text = 'UNPAIR'
         dialog = ModalDialog(
-            title='Unpair this device?',
-            message=('This device will disconnect from your MeetingBox\n'
-                     'account. Gmail stays linked in the web dashboard.\n'
-                     'You will enter a new pairing code to reconnect.'),
-            confirm_text='UNPAIR',
+            title=title,
+            message=message,
+            confirm_text=confirm_text,
             cancel_text='CANCEL',
             danger=True,
             border_color=COLORS['red'],

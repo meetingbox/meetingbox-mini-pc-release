@@ -95,6 +95,18 @@ if (
     if _disp.startswith("localhost:") and Path("/tmp/.X11-unix/X0").exists():
         os.environ["DISPLAY"] = ":0"
 
+# Quiet Kivy's logger BEFORE importing Kivy. At import time Kivy attaches its
+# own handler to the root logger at DEBUG; left alone it dumps every websocket
+# frame (including base64 Realtime audio) and httpx wire traffic to disk on the
+# asyncio thread, which severely degrades voice/UI performance. Default to
+# 'warning'; honor an explicit KIVY_LOG_LEVEL or a DEBUG app LOG_LEVEL when
+# troubleshooting. KIVY_NO_FILELOG stops Kivy writing its own rotating log too.
+_app_log_level = (os.environ.get("LOG_LEVEL", "INFO") or "INFO").strip().upper()
+os.environ.setdefault(
+    "KIVY_LOG_LEVEL", "debug" if _app_log_level == "DEBUG" else "warning"
+)
+os.environ.setdefault("KIVY_NO_FILELOG", "1")
+
 from kivy.app import App
 from kivy.uix.screenmanager import (
     ScreenManager, FadeTransition, SlideTransition, NoTransition
@@ -147,16 +159,30 @@ _W = _env_display_int("DISPLAY_WIDTH", 1024)
 _H = _env_display_int("DISPLAY_HEIGHT", 600)
 
 Config.set('graphics', 'window_state', 'visible')
-Config.set('graphics', 'position', 'custom')
-Config.set('graphics', 'left', '0')
-Config.set('graphics', 'top', '0')
+if _FULLSCREEN:
+    # Kiosk / appliance: borderless, pinned top-left, fullscreen.
+    Config.set('graphics', 'position', 'custom')
+    Config.set('graphics', 'left', '0')
+    Config.set('graphics', 'top', '0')
+    Config.set('graphics', 'borderless', '1')
+    Config.set('graphics', 'fullscreen', 'auto')
+else:
+    # Desktop windowed: a normal decorated frame (title bar with minimize and
+    # close), centered by the OS so the title bar is always on-screen and
+    # reachable, and resizable/movable like any standard Windows app.
+    Config.set('graphics', 'position', 'auto')
+    Config.set('graphics', 'borderless', '0')
+    Config.set('graphics', 'fullscreen', '0')
+    Config.set('graphics', 'resizable', '1')
 Config.set('graphics', 'width', str(_W))
 Config.set('graphics', 'height', str(_H))
-Config.set('graphics', 'borderless', '1' if _FULLSCREEN else '0')
-Config.set('graphics', 'fullscreen', 'auto' if _FULLSCREEN else '0')
 Config.set('input', 'mouse', 'mouse,multitouch_on_demand')
-# On-screen keyboard for TextInput when no system keyboard (touch / kiosk).
-Config.set('kivy', 'keyboard_mode', 'systemanddock')
+# On the touch appliance, dock an on-screen keyboard for TextInput. On desktop
+# a physical keyboard always exists, so use the system keyboard only (no popup).
+if sys.platform.startswith('linux'):
+    Config.set('kivy', 'keyboard_mode', 'systemanddock')
+else:
+    Config.set('kivy', 'keyboard_mode', 'system')
 
 
 def _configure_kivy_default_font() -> None:
@@ -285,6 +311,7 @@ from config import (
     WAKE_LOCAL_VOICE_ONLY,
 )
 
+from platform_compat import IS_DESKTOP
 from api_client import BackendClient
 from mock_backend import MockBackendClient
 from hardware import (
@@ -394,7 +421,33 @@ def setup_logging():
         handlers.append(fh)
     except Exception as e:
         print(f"Warning: Could not create log file {LOG_FILE}: {e}")
-    logging.basicConfig(level=getattr(logging, LOG_LEVEL), handlers=handlers)
+    # force=True is essential: Kivy already attached a handler to the root logger
+    # at import time, which makes a plain basicConfig() a no-op (our level and
+    # file handler would be silently ignored — that's why meetingbox-ui.log was
+    # empty while DEBUG flooded stdout).
+    logging.basicConfig(
+        level=getattr(logging, LOG_LEVEL, logging.INFO),
+        handlers=handlers,
+        force=True,
+    )
+    # Silence very chatty third-party loggers. At DEBUG these dump full HTTP and
+    # WebSocket payloads (including base64 audio) on the hot path, which is the
+    # single biggest desktop performance regression. Keep them at WARNING unless
+    # the app itself is explicitly in DEBUG.
+    _noisy_level = (
+        logging.DEBUG if str(LOG_LEVEL).upper() == "DEBUG" else logging.WARNING
+    )
+    for _name in (
+        "websockets",
+        "websockets.client",
+        "websockets.protocol",
+        "httpx",
+        "httpcore",
+        "PIL",
+        "asyncio",
+        "urllib3",
+    ):
+        logging.getLogger(_name).setLevel(_noisy_level)
 
 setup_logging()
 logger = logging.getLogger(__name__)
@@ -479,8 +532,8 @@ def _recording_start_error_screen_args(exc: BaseException) -> tuple[str, str]:
             "Cannot reach server",
             "Could not connect to the MeetingBox backend. After switching networks (for "
             "example unplugging Ethernet and using Wi‑Fi), wait a few seconds, confirm this "
-            "device can reach the server URL, then tap TRY AGAIN. If it keeps failing, check "
-            "BACKEND_URL in the appliance configuration.",
+            "device can reach the server URL, then press TRY AGAIN. If it keeps failing, check "
+            "BACKEND_URL in the configuration.",
         )
     msg = (str(exc) or "Unknown error").strip()
     if len(msg) > 400:
@@ -689,6 +742,8 @@ def _pick_english_piper_model_path() -> str | None:
 # ==================================================================
 
 class MeetingBoxApp(App):
+    # Window title shown in the desktop title bar / taskbar.
+    title = "MeetingBox"
     """
     Main Kivy application for the MeetingBox device UI.
 
@@ -1315,57 +1370,69 @@ class MeetingBoxApp(App):
             logger.exception("VoiceControlBar failed to load")
             self._voice_control_bar = None
 
-        # Quick pull-down panel — floats above everything, hidden by default.
-        try:
-            self.quick_panel = QuickPanel()
-            self.quick_panel.app = self
-            self.root_layout.add_widget(self.quick_panel)
-        except Exception:
-            logger.exception("QuickPanel failed to load")
-            self.quick_panel = None
+        # Quick pull-down panel — appliance control center (brightness, Wi-Fi/BT
+        # radios, scan/connect, restart, power). On desktop the OS owns all of
+        # this, so the panel and its swipe/handle/button triggers are omitted.
+        self.quick_panel = None
+        if not IS_DESKTOP:
+            try:
+                self.quick_panel = QuickPanel()
+                self.quick_panel.app = self
+                self.root_layout.add_widget(self.quick_panel)
+            except Exception:
+                logger.exception("QuickPanel failed to load")
+                self.quick_panel = None
 
-        # Swipe handle — thin bar at the very top of the screen.
-        # Added LAST so it is drawn and hit-tested before other widgets.
-        # Uses touch.grab() so it is coordinate-system-independent.
-        try:
-            _handle = _SwipeHandle(app=self)
-            self.root_layout.add_widget(_handle)
-        except Exception:
-            logger.exception("SwipeHandle failed to load")
-        # Explicit top-edge shutter button as a guaranteed fallback trigger.
-        # Some kiosk window managers swallow top-edge swipe gestures before
-        # Kivy receives them; a visible tap target avoids that failure mode.
-        try:
-            _qp_btn = _QuickPanelButton(app=self)
-            self.root_layout.add_widget(_qp_btn)
-        except Exception:
-            logger.exception("QuickPanelButton failed to load")
+            # Swipe handle — thin bar at the very top of the screen.
+            # Added LAST so it is drawn and hit-tested before other widgets.
+            # Uses touch.grab() so it is coordinate-system-independent.
+            try:
+                _handle = _SwipeHandle(app=self)
+                self.root_layout.add_widget(_handle)
+            except Exception:
+                logger.exception("SwipeHandle failed to load")
+            # Explicit top-edge shutter button as a guaranteed fallback trigger.
+            # Some kiosk window managers swallow top-edge swipe gestures before
+            # Kivy receives them; a visible tap target avoids that failure mode.
+            try:
+                _qp_btn = _QuickPanelButton(app=self)
+                self.root_layout.add_widget(_qp_btn)
+            except Exception:
+                logger.exception("QuickPanelButton failed to load")
 
         if SHOW_FPS:
             Clock.schedule_interval(self._log_fps, 1.0)
 
-        Window.bind(on_touch_down=self._reset_idle_timer)
-        # Backup swipe detector: catches top-edge swipes that miss the
-        # _SwipeHandle widget (e.g. touch starts just below its zone).
-        self._panel_swipe_uid: Optional[int] = None
-        self._panel_swipe_start_y: float = 0.0
-        Window.bind(on_touch_down=self._panel_swipe_down)
-        Window.bind(on_touch_move=self._panel_swipe_move)
+        # Idle "lock screen" auto-takeover and the swipe-down QuickPanel are
+        # appliance/touch behaviors. On desktop, skip the idle timer and the
+        # top-edge swipe detectors entirely (the OS provides lock/screensaver
+        # and a system tray for these controls).
+        if not IS_DESKTOP:
+            Window.bind(on_touch_down=self._reset_idle_timer)
+            # Backup swipe detector: catches top-edge swipes that miss the
+            # _SwipeHandle widget (e.g. touch starts just below its zone).
+            self._panel_swipe_uid: Optional[int] = None
+            self._panel_swipe_start_y: float = 0.0
+            Window.bind(on_touch_down=self._panel_swipe_down)
+            Window.bind(on_touch_move=self._panel_swipe_move)
 
-        # On Linux kiosk setups the window manager may intercept a top-edge
-        # swipe (intended for our QuickPanel) and minimize the app instead.
-        # Catch that event, restore immediately, and open the panel so the
-        # gesture still produces the expected result.
-        Window.bind(on_minimize=self._on_window_minimized)
+            # On Linux kiosk setups the window manager may intercept a top-edge
+            # swipe (intended for our QuickPanel) and minimize the app instead.
+            # Catch that event, restore immediately, and open the panel so the
+            # gesture still produces the expected result. On desktop this would
+            # fight the standard minimize button, so it is NOT bound there.
+            Window.bind(on_minimize=self._on_window_minimized)
 
         # Guard against auto-rotation daemons resizing the window to portrait.
         if FULLSCREEN:
             Window.bind(on_resize=self._on_window_rotate_guard)
 
         # Ensure the SDL window is mapped and on top (some WMs / SSH DISPLAY
-        # combinations leave it hidden until raised).
+        # combinations leave it hidden until raised). On desktop a single show
+        # is enough; the appliance re-asserts to beat kiosk WM races.
         Clock.schedule_once(lambda *_: self._ensure_window_visible(), 0)
-        Clock.schedule_once(lambda *_: self._ensure_window_visible(), 0.3)
+        if not IS_DESKTOP:
+            Clock.schedule_once(lambda *_: self._ensure_window_visible(), 0.3)
 
         logger.info("UI built – starting on splash screen")
         return self.root_layout
@@ -1522,7 +1589,9 @@ class MeetingBoxApp(App):
         self._ui_cache_inflight.discard("emails_inbox")
         self._ui_cache_persist_to_disk()
         self._nav_stack.clear()
-        self.goto_screen('pair_device', 'fade')
+        # Desktop re-auth is the Google sign-in screen; the appliance uses the
+        # pairing-code screen.
+        self.goto_screen('sign_in' if IS_DESKTOP else 'pair_device', 'fade')
 
     def _pairing_watchdog(self, _dt):
         if USE_MOCK_BACKEND:
@@ -1577,8 +1646,26 @@ class MeetingBoxApp(App):
     # APP LIFECYCLE
     # ==================================================================
 
+    @staticmethod
+    def _close_native_splash(*_args):
+        """Close the PyInstaller bootloader splash once the Kivy window is up.
+
+        ``pyi_splash`` only exists in a frozen build that was packaged with a
+        Splash(); running from source (or a build without one) is a no-op.
+        """
+        try:
+            import pyi_splash  # type: ignore
+        except Exception:
+            return
+        try:
+            pyi_splash.close()
+        except Exception:
+            pass
+
     def on_start(self):
         logger.info("MeetingBox UI started")
+        # Hand off from the native boot splash to the live UI on the first frame.
+        Clock.schedule_once(self._close_native_splash, 0)
         self._ui_cache_load_from_disk()
         if self._audio_supervisor is not None:
             try:
@@ -1603,8 +1690,11 @@ class MeetingBoxApp(App):
         except Exception as e:  # noqa: BLE001
             logger.debug("weather client start failed: %s", e)
         # Kick off the idle countdown immediately so a freshly-booted device
-        # that gets no touches still falls asleep into the lock screen.
-        self._reset_idle_timer()
+        # that gets no touches still falls asleep into the lock screen. The
+        # idle "lock screen" is an appliance behavior; desktop relies on the
+        # OS lock/screensaver, so it is skipped there.
+        if not IS_DESKTOP:
+            self._reset_idle_timer()
         if self.needs_setup():
             self._setup_poll = Clock.schedule_interval(self._global_setup_check, 3.0)
         else:
@@ -1612,12 +1702,23 @@ class MeetingBoxApp(App):
         if not USE_MOCK_BACKEND:
             self._pairing_poll = Clock.schedule_interval(
                 self._pairing_watchdog, 45.0)
-            self._metrics_push = Clock.schedule_interval(
-                self._push_appliance_metrics_tick, 30.0)
-            Clock.schedule_once(lambda _dt: self._push_appliance_metrics_tick(0), 6.0)
+            # Appliance "device health" telemetry pushed to the web dashboard.
+            # On desktop this would report the user's PC as if it were an
+            # appliance, so it is disabled.
+            if not IS_DESKTOP:
+                self._metrics_push = Clock.schedule_interval(
+                    self._push_appliance_metrics_tick, 30.0)
+                Clock.schedule_once(
+                    lambda _dt: self._push_appliance_metrics_tick(0), 6.0)
+            else:
+                self._metrics_push = None
         else:
             self._metrics_push = None
 
+        # Desktop port only: actively check/request OS microphone permission early
+        # (Windows/macOS gate desktop-app mic access behind privacy switches).
+        if not sys.platform.startswith('linux'):
+            Clock.schedule_once(self._run_mic_permission_check, 3.0)
         # After boot-time API bursts settle, run connectivity / mic / model checks once.
         # A slightly later start avoids transient false-negatives during initial network churn.
         Clock.schedule_once(self._run_startup_self_test_overlay, 8.0)
@@ -1628,6 +1729,90 @@ class MeetingBoxApp(App):
             self._ui_sync_event.cancel()
         self._ui_sync_event = Clock.schedule_interval(self._ui_cache_sync_tick, 5.0)
         Clock.schedule_once(lambda _dt: self._ui_cache_sync_tick(0), 1.6)
+
+    def _run_mic_permission_check(self, _dt):
+        """Desktop: probe mic access off-thread; if blocked, guide the user to grant it.
+
+        Win32 desktop apps get no OS consent popup, so the genuine "request" is to
+        attempt opening the mic; if Windows privacy blocks it we deep-link the user
+        to the microphone settings page. Disable with MEETINGBOX_MIC_PERMISSION_CHECK=0.
+        """
+        raw = (os.environ.get("MEETINGBOX_MIC_PERMISSION_CHECK") or "1").strip().lower()
+        if raw in ("0", "false", "no", "off"):
+            return
+        if getattr(self, "_mic_permission_checked", False):
+            return
+        self._mic_permission_checked = True
+
+        def _worker():
+            try:
+                import mic_permission
+                status = mic_permission.check_microphone()
+            except Exception:
+                logger.exception("mic permission check failed")
+                return
+            if status.ok:
+                logger.info("Microphone OK (%s).", status.detail)
+                return
+            logger.warning("Microphone not ready: %s (%s)", status.state, status.detail)
+            # Only interrupt the user for actionable cases (blocked by privacy, or
+            # no device). Ambiguous failures are left to the boot self-test overlay.
+            if status.state not in (
+                mic_permission.STATUS_DENIED,
+                mic_permission.STATUS_NO_DEVICE,
+            ):
+                return
+            Clock.schedule_once(
+                lambda _dt, s=status: self._show_mic_permission_popup(s), 0
+            )
+
+        threading.Thread(target=_worker, name="mic-permission", daemon=True).start()
+
+    def _show_mic_permission_popup(self, status):
+        """Modal explaining the mic issue with a one-click jump to OS settings."""
+        try:
+            import mic_permission
+            from kivy.uix.popup import Popup
+            from kivy.uix.boxlayout import BoxLayout
+            from kivy.uix.label import Label
+            from components.button import PrimaryButton
+            from config import FONT_SIZES
+        except Exception:
+            logger.exception("could not build mic permission popup")
+            return
+
+        if status.state == mic_permission.STATUS_NO_DEVICE:
+            title = "No microphone found"
+            msg = ("MeetingBox could not find a microphone. Plug one in (or enable your "
+                   "built-in mic), then restart MeetingBox to use voice and recording.")
+            show_settings = False
+        else:
+            title = "Allow microphone access"
+            msg = ("MeetingBox needs your microphone for the voice assistant and meeting "
+                   "recording. Windows is currently blocking microphone access for desktop "
+                   "apps.\n\nClick \"Open Settings\", turn on \"Microphone access\" and "
+                   "\"Let desktop apps access your microphone\", then restart MeetingBox.")
+            show_settings = True
+
+        root = BoxLayout(orientation="vertical", padding=16, spacing=12)
+        body = Label(text=msg, halign="left", valign="top", font_size=FONT_SIZES["small"] + 2)
+        body.bind(size=lambda w, *_: setattr(w, "text_size", (w.width, None)))
+        root.add_widget(body)
+
+        btn_row = BoxLayout(orientation="horizontal", size_hint=(1, None), height=52, spacing=10)
+        popup = Popup(title=title, content=root, size_hint=(0.86, 0.6), auto_dismiss=True)
+
+        if show_settings:
+            open_btn = PrimaryButton(text="Open Settings", font_size=FONT_SIZES["medium"])
+            open_btn.bind(on_release=lambda *_: mic_permission.open_privacy_settings())
+            btn_row.add_widget(open_btn)
+
+        close_btn = PrimaryButton(text="Continue", font_size=FONT_SIZES["medium"])
+        close_btn.bind(on_release=lambda *_: popup.dismiss())
+        btn_row.add_widget(close_btn)
+        root.add_widget(btn_row)
+
+        popup.open()
 
     def _run_startup_self_test_overlay(self, _dt):
         """Boot-time self-test modal (disable with MEETINGBOX_STARTUP_SELF_TEST=0)."""
@@ -2834,6 +3019,9 @@ class MeetingBoxApp(App):
         (which fires once children pass), but doing it here as well covers
         gestures that don't reach a screen widget (e.g. global swipes).
         """
+        # Desktop has no idle "lock screen" takeover (the OS owns lock/sleep).
+        if IS_DESKTOP:
+            return
         if self.screen_manager and self.screen_manager.current == 'idle':
             self.goto_screen('home', 'fade')
 
@@ -6467,6 +6655,19 @@ class MeetingBoxApp(App):
             )
             return
 
+        # Appliance-only hardware/kiosk commands: on desktop the OS owns the
+        # display, power and lock/screensaver, so decline politely instead of
+        # silently no-opping (brightness/screen/restart/shutdown/factory reset).
+        if IS_DESKTOP and intent.name in (
+            "brightness", "screen_off", "wake_screen",
+            "restart_device", "power_off", "factory_reset",
+        ):
+            self._voice_reply(
+                "That's handled by your computer, not MeetingBox.",
+                duration=3.5,
+            )
+            return
+
         if intent.name == "brightness":
             level = intent.value or "high"
             set_brightness(level)
@@ -6526,9 +6727,14 @@ class MeetingBoxApp(App):
             return
 
         if intent.name == "help":
-            self._voice_reply(
-                "I can start, stop, pause or resume meetings, open settings or meetings, check time, WiFi, storage, version and calendar, change privacy or brightness, turn the screen off, and restart or shut down with confirmation."
-            )
+            if IS_DESKTOP:
+                self._voice_reply(
+                    "I can start, stop, pause or resume meetings, open settings or meetings, check time, storage, version and calendar, change privacy, and manage your emails and tasks."
+                )
+            else:
+                self._voice_reply(
+                    "I can start, stop, pause or resume meetings, open settings or meetings, check time, WiFi, storage, version and calendar, change privacy or brightness, turn the screen off, and restart or shut down with confirmation."
+                )
             return
 
         self._voice_reply("I can't do that yet.")

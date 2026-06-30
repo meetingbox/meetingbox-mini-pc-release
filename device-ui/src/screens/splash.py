@@ -79,7 +79,10 @@ class SplashScreen(BaseScreen):
         # token go straight home; otherwise show the sign-in step.
         if not sys.platform.startswith('linux'):
             if (get_device_auth_token() or '').strip():
-                self.goto('home', transition='fade')
+                # We have a saved token, but it may have expired or been revoked.
+                # Verify it against the backend before landing on home so the user
+                # isn't stuck on a screen where every request silently fails.
+                run_async(self._advance_desktop_with_token_check())
             else:
                 self.goto('sign_in', transition='fade')
             return
@@ -90,6 +93,35 @@ class SplashScreen(BaseScreen):
                 self.goto('home', transition='fade')
             return
         run_async(self._advance_with_backend())
+
+    async def _advance_desktop_with_token_check(self):
+        """Desktop only: validate the saved device token, re-auth if it's dead."""
+        try:
+            status = await self.backend.validate_device_token()
+        except Exception:
+            status = 'unknown'
+
+        def _go(_clk):
+            if self.manager.current != 'splash':
+                return
+            if status == 'invalid':
+                # Token expired/revoked: forget it and send the user back through
+                # Google sign-in. "unknown" (offline/blip) keeps the token and
+                # proceeds home so a network hiccup never forces a re-login.
+                try:
+                    from config import clear_stored_device_auth_token
+                    clear_stored_device_auth_token()
+                except Exception:
+                    pass
+                try:
+                    self.backend.set_device_auth_header(None)
+                except Exception:
+                    pass
+                self.goto('sign_in', transition='fade')
+            else:
+                self.goto('home', transition='fade')
+
+        Clock.schedule_once(_go, 0)
 
     async def _advance_with_backend(self):
         need = self.app.needs_setup()

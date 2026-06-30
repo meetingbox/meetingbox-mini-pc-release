@@ -23,6 +23,15 @@ IS_WINDOWS = sys.platform.startswith("win")
 IS_MACOS = sys.platform == "darwin"
 IS_LINUX = sys.platform.startswith("linux")
 
+# Desktop = Windows/macOS port (mouse + keyboard, OS owns hardware). Used to
+# hide/adapt appliance-only UI (Quick Panel, idle lock screen, brightness,
+# Wi-Fi/BT radios, reboot/power, OTA, etc.). Linux = the 7" touch appliance.
+IS_DESKTOP = IS_WINDOWS or IS_MACOS
+
+# Input verb for user-facing copy: desktop is mouse/click, appliance is touch.
+TAP_OR_CLICK = "Click" if IS_DESKTOP else "Tap"
+tap_or_click = "click" if IS_DESKTOP else "tap"
+
 # Product name used for per-user data directories on desktop OSes.
 _APP_DIR_NAME = "MeetingBox"
 

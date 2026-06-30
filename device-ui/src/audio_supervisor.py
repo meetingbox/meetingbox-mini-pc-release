@@ -176,6 +176,14 @@ class AudioSupervisor:
             }
             if sys.platform.startswith("linux"):
                 popen_kwargs["start_new_session"] = True
+            elif sys.platform == "win32":
+                # The audio child is a console-subsystem exe (so its stdout pipe
+                # works reliably). Without this flag Windows pops a black console
+                # window because the windowed UI has no console to inherit.
+                # CREATE_NO_WINDOW keeps the piped stdout but hides the window.
+                popen_kwargs["creationflags"] = getattr(
+                    subprocess, "CREATE_NO_WINDOW", 0x08000000
+                )
             self._proc = subprocess.Popen(cmd, **popen_kwargs)
         except FileNotFoundError as exc:
             logger.error("cannot launch audio child (missing executable): %s", exc)

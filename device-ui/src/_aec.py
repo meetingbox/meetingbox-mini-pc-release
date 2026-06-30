@@ -17,13 +17,51 @@ from __future__ import annotations
 import ctypes
 import ctypes.util
 import logging
+import os
+import sys
 import threading
 
 logger = logging.getLogger(__name__)
 
 
+def _bundled_lib_dirs() -> list[str]:
+    """Directories we ship the speex DSP library in, for source and frozen runs.
+
+    On Linux the appliance gets libspeexdsp from the OS package (libspeexdsp1);
+    on the Windows/macOS desktop port there's no system copy, so we vendor a
+    self-contained DLL/dylib next to the code and into the PyInstaller bundle.
+    """
+    dirs: list[str] = []
+    # PyInstaller one-folder: binaries land in sys._MEIPASS (the _internal dir).
+    meipass = getattr(sys, "_MEIPASS", None)
+    if meipass:
+        dirs.append(meipass)
+        dirs.append(os.path.join(meipass, "vendor", "windows"))
+    here = os.path.dirname(os.path.abspath(__file__))
+    dirs.append(os.path.join(here, "vendor", "windows"))
+    dirs.append(here)
+    return dirs
+
+
 def _load_libspeexdsp() -> ctypes.CDLL | None:
-    candidates = []
+    candidates: list[str] = []
+
+    # 1) Vendored copy bundled with the app (required on Windows/macOS where no
+    #    system libspeexdsp exists). Try absolute paths first so we never depend
+    #    on PATH / the loader search order.
+    if sys.platform.startswith("win"):
+        lib_names = ("libspeexdsp.dll", "libspeexdsp-1.dll", "speexdsp.dll")
+    elif sys.platform == "darwin":
+        lib_names = ("libspeexdsp.dylib", "libspeexdsp.1.dylib")
+    else:
+        lib_names = ("libspeexdsp.so.1", "libspeexdsp.so")
+    for d in _bundled_lib_dirs():
+        for name in lib_names:
+            p = os.path.join(d, name)
+            if os.path.isfile(p):
+                candidates.append(p)
+
+    # 2) System-installed copy (Linux appliance / dev machines with it on PATH).
     found = ctypes.util.find_library("speexdsp")
     if found:
         candidates.append(found)
@@ -33,9 +71,12 @@ def _load_libspeexdsp() -> ctypes.CDLL | None:
         "/usr/lib/x86_64-linux-gnu/libspeexdsp.so.1",
         "/usr/lib/aarch64-linux-gnu/libspeexdsp.so.1",
     ])
+
     for name in candidates:
         try:
-            return ctypes.CDLL(name)
+            lib = ctypes.CDLL(name)
+            logger.info("libspeexdsp loaded from %s", name)
+            return lib
         except OSError:
             continue
     return None

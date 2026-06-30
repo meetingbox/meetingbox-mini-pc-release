@@ -870,6 +870,46 @@ class BackendClient:
     # SETTINGS API (device route)
     # ==================================================================
 
+    async def validate_device_token(self) -> str:
+        """Check whether the persisted device token is still accepted by the backend.
+
+        Used at startup so an expired/revoked Google sign-in doesn't leave the
+        user on a home screen where every request silently fails (e.g. voice
+        stuck on "Listening"). Probes ``GET /api/device/pairing-status``.
+
+        Returns one of:
+          ``"valid"``   – token works (HTTP 200).
+          ``"invalid"`` – token rejected (HTTP 401/403): caller should re-run
+                          Google sign-in.
+          ``"unknown"`` – couldn't determine (network/server error): caller
+                          should NOT discard the token (likely offline / a blip).
+        """
+        token = (get_device_auth_token() or "").strip()
+        if not token:
+            return "invalid"
+        self._refresh_auth_header()
+        try:
+            resp = await self.client.get(
+                f"{self.base_url}/api/device/pairing-status",
+                timeout=8.0,
+            )
+        except Exception as e:
+            logger.warning("Device token validation could not reach backend: %s", e)
+            return "unknown"
+        if resp.status_code == 200:
+            return "valid"
+        if resp.status_code in (401, 403):
+            logger.warning(
+                "Device token rejected (HTTP %s) — re-authentication required",
+                resp.status_code,
+            )
+            return "invalid"
+        logger.warning(
+            "Device token validation got HTTP %s — treating as unknown",
+            resp.status_code,
+        )
+        return "unknown"
+
     async def get_pairing_status(self) -> Dict:
         """GET /api/device/pairing-status — 401 if unpaired from dashboard."""
         try:

@@ -71,10 +71,38 @@ def _built_in_like_name(name: str) -> bool:
     )
 
 
+def _is_loopback_like_name(name: str) -> bool:
+    """True for output-loopback "inputs" that capture system audio, not a mic.
+
+    On Windows these enumerate as input-capable devices but actually return
+    whatever is playing (the assistant's own voice), which the server then
+    transcribes as "random words". Never auto-select them.
+    """
+    low = (name or "").lower()
+    return any(
+        k in low
+        for k in (
+            "stereo mix",
+            "what u hear",
+            "wave out",
+            "loopback",
+            "voicemeeter out",   # virtual-cable outputs used as inputs
+            "cable output",
+            "primary sound capture",
+        )
+    )
+
+
 def _capture_devices(sd) -> list[tuple[int, dict]]:
     out: list[tuple[int, dict]] = []
     for idx, dev in enumerate(sd.query_devices()):
         if int(dev.get("max_input_channels") or 0) <= 0:
+            continue
+        if _is_loopback_like_name(dev.get("name") or ""):
+            logger.info(
+                "Skipping loopback-style capture device [%s]: %s (captures system audio, not a mic)",
+                idx, dev.get("name") or "",
+            )
             continue
         out.append((idx, dev))
     return out
