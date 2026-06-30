@@ -76,6 +76,11 @@ except Exception:
 # ---------------------------------------------------------------------------
 hiddenimports += collect_submodules("screens")
 hiddenimports += collect_submodules("components")
+# websockets.connect lazily imports websockets.asyncio.client via __getattr__,
+# so the submodule is a *dynamic* import. The contrib hook normally collects it,
+# but pin it explicitly so a hook change can never drop it (realtime voice +
+# device-events WS both rely on it).
+hiddenimports += collect_submodules("websockets")
 hiddenimports += [
     "single_instance",
     "env_file",
@@ -150,6 +155,8 @@ audio_hidden = [
     "requests",
     "scipy",
     "scipy.signal",
+    # Audio child pins urllib TLS to the certifi bundle (see _install_certifi_opener).
+    "certifi",
 ]
 
 audio_a = Analysis(

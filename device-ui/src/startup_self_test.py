@@ -130,6 +130,7 @@ async def _check_websocket(app: Any, on_status: Callable[[str], None]) -> SelfCh
     try:
         import websockets
         from api_client import build_websocket_url
+        from ssl_compat import ws_ssl_context
 
         url = build_websocket_url(app.backend.ws_url)
         async with websockets.connect(
@@ -138,6 +139,7 @@ async def _check_websocket(app: Any, on_status: Callable[[str], None]) -> SelfCh
             ping_interval=None,
             close_timeout=2,
             max_size=None,
+            ssl=ws_ssl_context(url),
         ) as ws:
             try:
                 raw = await asyncio.wait_for(ws.recv(), timeout=6.0)

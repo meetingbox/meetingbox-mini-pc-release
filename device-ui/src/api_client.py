@@ -19,6 +19,8 @@ import httpx
 import websockets
 from websockets.exceptions import ConnectionClosed
 
+from ssl_compat import ws_ssl_context
+
 from config import (
     BACKEND_URL,
     BACKEND_WS_URL,
@@ -1490,6 +1492,7 @@ class BackendClient:
                     ping_interval=20,
                     ping_timeout=20,
                     max_size=None,
+                    ssl=ws_ssl_context(ws_connect_url),
                 ) as ws:
                     logger.info("WebSocket connected")
                     self._ws_reconnect_attempts = 0

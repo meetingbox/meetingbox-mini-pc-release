@@ -61,6 +61,7 @@ import websockets
 from kivy.clock import Clock
 
 from api_client import invoke_realtime_tool_sync
+from ssl_compat import ws_ssl_context
 
 try:
     from platform_compat import IS_DESKTOP
@@ -2007,6 +2008,7 @@ class RealtimeVoiceSession:
                 url,
                 additional_headers=headers,
                 max_size=None,
+                ssl=ws_ssl_context(url),
                 # Default open_timeout is 10s — too tight for transient slowness
                 # during the TLS + HTTP-101 upgrade to api.openai.com, which
                 # surfaces as "timed out during opening handshake" and kills

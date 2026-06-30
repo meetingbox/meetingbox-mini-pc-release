@@ -30,6 +30,34 @@ except ImportError:
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(name)s] %(levelname)s: %(message)s")
 logger = logging.getLogger("meetingbox.audio")
 
+
+def _install_certifi_opener() -> None:
+    """Make urllib verify TLS against the bundled certifi CA bundle.
+
+    On Windows/macOS, ``urlopen`` builds its SSL context from the OS system
+    trust store. On machines with AV "HTTPS scanning" (e.g. Kaspersky) or a
+    stale root store, that path can reject a valid server cert with
+    ``CERTIFICATE_VERIFY_FAILED: certificate has expired`` — which kills the
+    audio-command long-poll and upload paths even though the cert is fine.
+    certifi ships a current CA bundle with the app, so pin every ``urlopen``
+    to it (matching the device-ui httpx/websockets TLS trust).
+    """
+    if not sys.platform.startswith(("win", "darwin")):
+        return  # Linux appliance uses the OS store as before.
+    try:
+        import ssl
+        import certifi
+
+        ctx = ssl.create_default_context(cafile=certifi.where())
+        opener = urlrequest.build_opener(urlrequest.HTTPSHandler(context=ctx))
+        urlrequest.install_opener(opener)
+        logger.info("Audio HTTP TLS using certifi bundle: %s", certifi.where())
+    except Exception as e:  # pragma: no cover - defensive
+        logger.warning("Could not install certifi TLS opener (using system trust): %s", e)
+
+
+_install_certifi_opener()
+
 DEVICE_AUTH_TOKEN_FILE = os.getenv("DEVICE_AUTH_TOKEN_FILE", "/data/config/device_auth_token").strip()
 DEVICE_AUTH_TOKEN_REVOKED_MARKER = Path(DEVICE_AUTH_TOKEN_FILE).with_name("device_auth_token.revoked")
 # Device identity (multi-device scoping). Set via the ``DEVICE_ID`` env
