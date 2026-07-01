@@ -1,0 +1,13 @@
+('C:\\Users\\tpotl\\pepper\\meetingbox-mini-pc-release\\meetingbox-mini-pc-release\\device-ui\\.venv\\share\\angle\\bin',
+ None,
+ [],
+ 'DATA',
+ [('d3dcompiler_47.dll',
+   'C:\\Users\\tpotl\\pepper\\meetingbox-mini-pc-release\\meetingbox-mini-pc-release\\device-ui\\.venv\\share\\angle\\bin\\d3dcompiler_47.dll',
+   'DATA'),
+  ('libEGL.dll',
+   'C:\\Users\\tpotl\\pepper\\meetingbox-mini-pc-release\\meetingbox-mini-pc-release\\device-ui\\.venv\\share\\angle\\bin\\libEGL.dll',
+   'DATA'),
+  ('libGLESv2.dll',
+   'C:\\Users\\tpotl\\pepper\\meetingbox-mini-pc-release\\meetingbox-mini-pc-release\\device-ui\\.venv\\share\\angle\\bin\\libGLESv2.dll',
+   'DATA')])

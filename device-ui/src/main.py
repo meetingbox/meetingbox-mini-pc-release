@@ -106,6 +106,12 @@ os.environ.setdefault(
     "KIVY_LOG_LEVEL", "debug" if _app_log_level == "DEBUG" else "warning"
 )
 os.environ.setdefault("KIVY_NO_FILELOG", "1")
+# Stop Kivy from installing its console handler and hijacking sys.stdout/stderr.
+# Matches the Docker appliance (KIVY_NO_CONSOLELOG=1). Without this, a logging
+# encoding error gets written to Kivy's stderr wrapper, which feeds it back into
+# logging and recurses forever (multi-GB log). Our own file/stream handlers in
+# setup_logging() still capture everything.
+os.environ.setdefault("KIVY_NO_CONSOLELOG", "1")
 
 from kivy.app import App
 from kivy.uix.screenmanager import (
@@ -415,7 +421,12 @@ def setup_logging():
             '%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
         handlers.append(ch)
     try:
-        fh = logging.FileHandler(LOG_FILE)
+        # encoding="utf-8" is REQUIRED: the default FileHandler encoding on
+        # Windows is cp1252, which raises UnicodeEncodeError on the many
+        # non-ASCII characters in our log messages (→, —, …). That error is
+        # routed to stderr, which Kivy reroutes back into logging, causing an
+        # infinite recursion that floods the log file to many GB.
+        fh = logging.FileHandler(LOG_FILE, encoding="utf-8")
         fh.setFormatter(logging.Formatter(
             '%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
         handlers.append(fh)
@@ -567,17 +578,22 @@ def _post_tts_wake_guard_seconds() -> float:
 
 def _post_realtime_session_wake_guard_seconds() -> float:
     """After a Realtime session ENDS (e.g. the user said goodbye), suppress the
-    wake word for this long. The end-of-conversation tail + room echo, plus the
-    warm-standby reconnect window, would otherwise be misheard by Vosk as the
-    wake phrase and instantly re-open a session. This is intentionally longer
-    than the mid-conversation TTS-tail guard above."""
+    wake word for this long, so the goodbye tail / echo doesn't instantly
+    re-open a session.
+
+    Historically this was 2.5s because, without echo cancellation, the
+    conversation tail + room echo were routinely misheard by Vosk as the wake
+    phrase. The Windows OS-AEC now removes the assistant's own voice at the
+    source, and the wake matcher requires a "hey"+"pepper" structure, so the
+    false re-wake risk is low. Keep only a short guard so the user can
+    re-engage almost immediately after a session ends."""
     raw = (os.getenv("MEETINGBOX_POST_REALTIME_WAKE_GUARD_SEC") or "").strip()
     if not raw:
-        return 2.5
+        return 1.0
     try:
         v = float(raw)
     except ValueError:
-        return 2.5
+        return 1.0
     return max(0.0, min(8.0, v))
 
 

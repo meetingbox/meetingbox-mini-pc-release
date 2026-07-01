@@ -87,6 +87,11 @@ hiddenimports += [
     "net_status",
     "tts_windows",
     "audio_output",
+    # OS-grade AEC via the Windows Voice Capture DSP (lazy-imported inside
+    # RealtimeVoiceSession; drives comtypes COM/DMO directly). This is the
+    # single echo/barge-in solution on Windows.
+    "windows_aec",
+    "windows_aec_dmo",
     "google_signin",
     "mic_permission",
     "kivy.core.window.window_sdl2",

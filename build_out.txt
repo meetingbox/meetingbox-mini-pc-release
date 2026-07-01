@@ -1,0 +1,399 @@
+121 INFO: PyInstaller: 6.21.0, contrib hooks: 2026.6
+121 INFO: Python: 3.11.9
+131 INFO: Platform: Windows-10-10.0.26200-SP0
+131 INFO: Python environment: C:\Users\tpotl\pepper\meetingbox-mini-pc-release\meetingbox-mini-pc-release\device-ui\.venv
+640 WARNING: collect_data_files - skipping data collection for module 'sounddevice' as it is not a package.
+640 WARNING: collect_dynamic_libs - skipping library collection for module 'sounddevice' as it is not a package.
+1042 WARNING: collect_data_files - skipping data collection for module '_cffi_backend' as it is not a package.
+1043 WARNING: collect_dynamic_libs - skipping library collection for module '_cffi_backend' as it is not a package.
+12296 INFO: deps: Successfully imported "kivy_deps.angle" 0.4.0
+12307 INFO: Logger: Record log in C:\Users\tpotl\.kivy\logs\kivy_26-06-30_54.txt
+[INFO   ] [Logger      ] Record log in C:\Users\tpotl\.kivy\logs\kivy_26-06-30_54.txt
+[INFO   ] [deps        ] Successfully imported "kivy_deps.angle" 0.4.0
+12307 INFO: deps: Successfully imported "kivy_deps.glew" 0.3.1
+[INFO   ] [deps        ] Successfully imported "kivy_deps.glew" 0.3.1
+12307 INFO: deps: Successfully imported "kivy_deps.sdl2" 0.8.0
+[INFO   ] [deps        ] Successfully imported "kivy_deps.sdl2" 0.8.0
+12307 INFO: Kivy: v2.3.1
+[INFO   ] [Kivy        ] v2.3.1
+12307 INFO: Kivy: Installed at "C:\Users\tpotl\pepper\meetingbox-mini-pc-release\meetingbox-mini-pc-release\device-ui\.venv\Lib\site-packages\kivy\__init__.py"
+[INFO   ] [Kivy        ] Installed at "C:\Users\tpotl\pepper\meetingbox-mini-pc-release\meetingbox-mini-pc-release\device-ui\.venv\Lib\site-packages\kivy\__init__.py"
+12307 INFO: Python: v3.11.9 (tags/v3.11.9:de54cf5, Apr  2 2024, 10:12:12) [MSC v.1938 64 bit (AMD64)]
+[INFO   ] [Python      ] v3.11.9 (tags/v3.11.9:de54cf5, Apr  2 2024, 10:12:12) [MSC v.1938 64 bit (AMD64)]
+12307 INFO: Python: Interpreter at "C:\Users\tpotl\pepper\meetingbox-mini-pc-release\meetingbox-mini-pc-release\device-ui\.venv\Scripts\python.exe"
+[INFO   ] [Python      ] Interpreter at "C:\Users\tpotl\pepper\meetingbox-mini-pc-release\meetingbox-mini-pc-release\device-ui\.venv\Scripts\python.exe"
+12308 INFO: Logger: Purge log fired. Processing...
+[INFO   ] [Logger      ] Purge log fired. Processing...
+12319 INFO: Logger: Purge finished!
+[INFO   ] [Logger      ] Purge finished!
+12325 INFO: Factory: 195 symbols loaded
+[INFO   ] [Factory     ] 195 symbols loaded
+[INFO   ] [Logger      ] Record log in C:\Users\tpotl\.kivy\logs\kivy_26-06-30_55.txt
+[INFO   ] [deps        ] Successfully imported "kivy_deps.angle" 0.4.0
+[INFO   ] [deps        ] Successfully imported "kivy_deps.glew" 0.3.1
+[INFO   ] [deps        ] Successfully imported "kivy_deps.sdl2" 0.8.0
+[INFO   ] [Kivy        ] v2.3.1
+[INFO   ] [Kivy        ] Installed at "C:\Users\tpotl\pepper\meetingbox-mini-pc-release\meetingbox-mini-pc-release\device-ui\.venv\Lib\site-packages\kivy\__init__.py"
+[INFO   ] [Python      ] v3.11.9 (tags/v3.11.9:de54cf5, Apr  2 2024, 10:12:12) [MSC v.1938 64 bit (AMD64)]
+[INFO   ] [Python      ] Interpreter at "C:\Users\tpotl\pepper\meetingbox-mini-pc-release\meetingbox-mini-pc-release\device-ui\.venv\Scripts\python.exe"
+[INFO   ] [Logger      ] Purge log fired. Processing...
+[INFO   ] [Logger      ] Purge finished!
+109 INFO: deps: Successfully imported "kivy_deps.angle" 0.4.0
+113 INFO: Logger: Record log in C:\Users\tpotl\.kivy\logs\kivy_26-06-30_56.txt
+[INFO   ] [Logger      ] Record log in C:\Users\tpotl\.kivy\logs\kivy_26-06-30_56.txt
+[INFO   ] [deps        ] Successfully imported "kivy_deps.angle" 0.4.0
+114 INFO: deps: Successfully imported "kivy_deps.glew" 0.3.1
+[INFO   ] [deps        ] Successfully imported "kivy_deps.glew" 0.3.1
+114 INFO: deps: Successfully imported "kivy_deps.sdl2" 0.8.0
+[INFO   ] [deps        ] Successfully imported "kivy_deps.sdl2" 0.8.0
+114 INFO: Kivy: v2.3.1
+[INFO   ] [Kivy        ] v2.3.1
+114 INFO: Kivy: Installed at "C:\Users\tpotl\pepper\meetingbox-mini-pc-release\meetingbox-mini-pc-release\device-ui\.venv\Lib\site-packages\kivy\__init__.py"
+[INFO   ] [Kivy        ] Installed at "C:\Users\tpotl\pepper\meetingbox-mini-pc-release\meetingbox-mini-pc-release\device-ui\.venv\Lib\site-packages\kivy\__init__.py"
+114 INFO: Python: v3.11.9 (tags/v3.11.9:de54cf5, Apr  2 2024, 10:12:12) [MSC v.1938 64 bit (AMD64)]
+[INFO   ] [Python      ] v3.11.9 (tags/v3.11.9:de54cf5, Apr  2 2024, 10:12:12) [MSC v.1938 64 bit (AMD64)]
+114 INFO: Python: Interpreter at "C:\Users\tpotl\pepper\meetingbox-mini-pc-release\meetingbox-mini-pc-release\device-ui\.venv\Scripts\python.exe"
+[INFO   ] [Python      ] Interpreter at "C:\Users\tpotl\pepper\meetingbox-mini-pc-release\meetingbox-mini-pc-release\device-ui\.venv\Scripts\python.exe"
+115 INFO: Logger: Purge log fired. Processing...
+[INFO   ] [Logger      ] Purge log fired. Processing...
+122 INFO: Logger: Purge finished!
+[INFO   ] [Logger      ] Purge finished!
+242 INFO: Image: Providers: img_tex, img_dds, img_sdl2, img_pil (img_ffpyplayer ignored)
+[INFO   ] [Image       ] Providers: img_tex, img_dds, img_sdl2, img_pil (img_ffpyplayer ignored)
+264 DEBUG: collect_submodules - scanning (sub)package kivy.graphics in location(s): ['C:\\Users\\tpotl\\pepper\\meetingbox-mini-pc-release\\meetingbox-mini-pc-release\\device-ui\\.venv\\Lib\\site-packages\\kivy\\graphics']
+[DEBUG  ] [collect_submodules - scanning (sub)package kivy.graphics in location(s)] ['C:\\Users\\tpotl\\pepper\\meetingbox-mini-pc-release\\meetingbox-mini-pc-release\\device-ui\\.venv\\Lib\\site-packages\\kivy\\graphics']
+267 DEBUG: collect_submodules - scanning (sub)package kivy.graphics.cgl_backend
+[DEBUG  ] collect_submodules - scanning (sub)package kivy.graphics.cgl_backend
+268 DEBUG: collect_submodules - scanning (sub)package kivy.graphics.cgl_backend in location(s): ['C:\\Users\\tpotl\\pepper\\meetingbox-mini-pc-release\\meetingbox-mini-pc-release\\device-ui\\.venv\\Lib\\site-packages\\kivy\\graphics\\cgl_backend']
+[DEBUG  ] [collect_submodules - scanning (sub)package kivy.graphics.cgl_backend in location(s)] ['C:\\Users\\tpotl\\pepper\\meetingbox-mini-pc-release\\meetingbox-mini-pc-release\\device-ui\\.venv\\Lib\\site-packages\\kivy\\graphics\\cgl_backend']
+12943 WARNING: Could not find GStreamer plugins. Possible solution: set GST_PLUGIN_PATH
+[WARNING] [Could not find GStreamer plugins. Possible solution] set GST_PLUGIN_PATH
+[INFO   ] [Logger      ] Record log in C:\Users\tpotl\.kivy\logs\kivy_26-06-30_57.txt
+[INFO   ] [deps        ] Successfully imported "kivy_deps.angle" 0.4.0
+[INFO   ] [deps        ] Successfully imported "kivy_deps.glew" 0.3.1
+[INFO   ] [deps        ] Successfully imported "kivy_deps.sdl2" 0.8.0
+[INFO   ] [Kivy        ] v2.3.1
+[INFO   ] [Kivy        ] Installed at "C:\Users\tpotl\pepper\meetingbox-mini-pc-release\meetingbox-mini-pc-release\device-ui\.venv\Lib\site-packages\kivy\__init__.py"
+[INFO   ] [Python      ] v3.11.9 (tags/v3.11.9:de54cf5, Apr  2 2024, 10:12:12) [MSC v.1938 64 bit (AMD64)]
+[INFO   ] [Python      ] Interpreter at "C:\Users\tpotl\pepper\meetingbox-mini-pc-release\meetingbox-mini-pc-release\device-ui\.venv\Scripts\python.exe"
+[INFO   ] [Logger      ] Purge log fired. Processing...
+[INFO   ] [Logger      ] Purge finished!
+117 INFO: deps: Successfully imported "kivy_deps.angle" 0.4.0
+120 INFO: Logger: Record log in C:\Users\tpotl\.kivy\logs\kivy_26-06-30_58.txt
+[INFO   ] [Logger      ] Record log in C:\Users\tpotl\.kivy\logs\kivy_26-06-30_58.txt
+[INFO   ] [deps        ] Successfully imported "kivy_deps.angle" 0.4.0
+120 INFO: deps: Successfully imported "kivy_deps.glew" 0.3.1
+[INFO   ] [deps        ] Successfully imported "kivy_deps.glew" 0.3.1
+121 INFO: deps: Successfully imported "kivy_deps.sdl2" 0.8.0
+[INFO   ] [deps        ] Successfully imported "kivy_deps.sdl2" 0.8.0
+121 INFO: Kivy: v2.3.1
+[INFO   ] [Kivy        ] v2.3.1
+121 INFO: Kivy: Installed at "C:\Users\tpotl\pepper\meetingbox-mini-pc-release\meetingbox-mini-pc-release\device-ui\.venv\Lib\site-packages\kivy\__init__.py"
+[INFO   ] [Kivy        ] Installed at "C:\Users\tpotl\pepper\meetingbox-mini-pc-release\meetingbox-mini-pc-release\device-ui\.venv\Lib\site-packages\kivy\__init__.py"
+121 INFO: Python: v3.11.9 (tags/v3.11.9:de54cf5, Apr  2 2024, 10:12:12) [MSC v.1938 64 bit (AMD64)]
+[INFO   ] [Python      ] v3.11.9 (tags/v3.11.9:de54cf5, Apr  2 2024, 10:12:12) [MSC v.1938 64 bit (AMD64)]
+121 INFO: Python: Interpreter at "C:\Users\tpotl\pepper\meetingbox-mini-pc-release\meetingbox-mini-pc-release\device-ui\.venv\Scripts\python.exe"
+[INFO   ] [Python      ] Interpreter at "C:\Users\tpotl\pepper\meetingbox-mini-pc-release\meetingbox-mini-pc-release\device-ui\.venv\Scripts\python.exe"
+122 INFO: Logger: Purge log fired. Processing...
+[INFO   ] [Logger      ] Purge log fired. Processing...
+129 INFO: Logger: Purge finished!
+[INFO   ] [Logger      ] Purge finished!
+130 DEBUG: collect_submodules - scanning (sub)package kivy.core in location(s): ['C:\\Users\\tpotl\\pepper\\meetingbox-mini-pc-release\\meetingbox-mini-pc-release\\device-ui\\.venv\\Lib\\site-packages\\kivy\\core']
+[DEBUG  ] [collect_submodules - scanning (sub)package kivy.core in location(s)] ['C:\\Users\\tpotl\\pepper\\meetingbox-mini-pc-release\\meetingbox-mini-pc-release\\device-ui\\.venv\\Lib\\site-packages\\kivy\\core']
+136 DEBUG: collect_submodules - scanning (sub)package kivy.core.window
+[DEBUG  ] collect_submodules - scanning (sub)package kivy.core.window
+171 INFO: Factory: 195 symbols loaded
+[INFO   ] [Factory     ] 195 symbols loaded
+283 INFO: Image: Providers: img_tex, img_dds, img_sdl2, img_pil (img_ffpyplayer ignored)
+[INFO   ] [Image       ] Providers: img_tex, img_dds, img_sdl2, img_pil (img_ffpyplayer ignored)
+325 INFO: Window: Provider: sdl2
+[INFO   ] [Window      ] Provider: sdl2
+991 INFO: GL: Using the "OpenGL" graphics system
+[INFO   ] [GL          ] Using the "OpenGL" graphics system
+995 INFO: GL: GLEW initialization succeeded
+[INFO   ] [GL          ] GLEW initialization succeeded
+995 INFO: GL: Backend used <glew>
+[INFO   ] [GL          ] Backend used <glew>
+997 INFO: GL: OpenGL version <b'4.6.0 - Build 32.0.101.8132'>
+[INFO   ] [GL          ] OpenGL version <b'4.6.0 - Build 32.0.101.8132'>
+997 INFO: GL: OpenGL vendor <b'Intel'>
+[INFO   ] [GL          ] OpenGL vendor <b'Intel'>
+997 INFO: GL: OpenGL renderer <b'Intel(R) Arc(TM) 140V GPU (16GB)'>
+[INFO   ] [GL          ] OpenGL renderer <b'Intel(R) Arc(TM) 140V GPU (16GB)'>
+997 INFO: GL: OpenGL parsed version: 4, 6
+[INFO   ] [GL          ] OpenGL parsed version: 4, 6
+997 INFO: GL: Shading version <b'4.60 - Build 32.0.101.8132'>
+[INFO   ] [GL          ] Shading version <b'4.60 - Build 32.0.101.8132'>
+997 INFO: GL: Texture max size <16384>
+[INFO   ] [GL          ] Texture max size <16384>
+997 INFO: GL: Texture max units <32>
+[INFO   ] [GL          ] Texture max units <32>
+1043 INFO: Window: auto add sdl2 input provider
+[INFO   ] [Window      ] auto add sdl2 input provider
+1046 INFO: Window: virtual keyboard not allowed, single mode, not docked
+[INFO   ] [Window      ] virtual keyboard not allowed, single mode, not docked
+1046 DEBUG: collect_submodules - scanning (sub)package kivy.core.window in location(s): ['C:\\Users\\tpotl\\pepper\\meetingbox-mini-pc-release\\meetingbox-mini-pc-release\\device-ui\\.venv\\Lib\\site-packages\\kivy\\core\\window']
+[DEBUG  ] [collect_submodules - scanning (sub)package kivy.core.window in location(s)] ['C:\\Users\\tpotl\\pepper\\meetingbox-mini-pc-release\\meetingbox-mini-pc-release\\device-ui\\.venv\\Lib\\site-packages\\kivy\\core\\window']
+1047 DEBUG: collect_submodules - scanning (sub)package kivy.core.video
+[DEBUG  ] collect_submodules - scanning (sub)package kivy.core.video
+1057 INFO: Video: Provider: null(['video_ffmpeg', 'video_ffpyplayer'] ignored)
+[INFO   ] [Video       ] Provider: null(['video_ffmpeg', 'video_ffpyplayer'] ignored)
+1057 DEBUG: collect_submodules - scanning (sub)package kivy.core.video in location(s): ['C:\\Users\\tpotl\\pepper\\meetingbox-mini-pc-release\\meetingbox-mini-pc-release\\device-ui\\.venv\\Lib\\site-packages\\kivy\\core\\video']
+[DEBUG  ] [collect_submodules - scanning (sub)package kivy.core.video in location(s)] ['C:\\Users\\tpotl\\pepper\\meetingbox-mini-pc-release\\meetingbox-mini-pc-release\\device-ui\\.venv\\Lib\\site-packages\\kivy\\core\\video']
+1058 DEBUG: collect_submodules - scanning (sub)package kivy.core.text
+[DEBUG  ] collect_submodules - scanning (sub)package kivy.core.text
+1068 INFO: Text: Provider: sdl2
+[INFO   ] [Text        ] Provider: sdl2
+1070 DEBUG: collect_submodules - scanning (sub)package kivy.core.text in location(s): ['C:\\Users\\tpotl\\pepper\\meetingbox-mini-pc-release\\meetingbox-mini-pc-release\\device-ui\\.venv\\Lib\\site-packages\\kivy\\core\\text']
+[DEBUG  ] [collect_submodules - scanning (sub)package kivy.core.text in location(s)] ['C:\\Users\\tpotl\\pepper\\meetingbox-mini-pc-release\\meetingbox-mini-pc-release\\device-ui\\.venv\\Lib\\site-packages\\kivy\\core\\text']
+1071 DEBUG: collect_submodules - scanning (sub)package kivy.core.spelling
+[DEBUG  ] collect_submodules - scanning (sub)package kivy.core.spelling
+1077 CRITICAL: Spelling: Unable to find any valuable Spelling provider. Please enable debug logging (e.g. add -d if running from the command line, or change the log level in the config) and re-run your app to identify potential causes
+enchant - ModuleNotFoundError: No module named 'enchant'
+  File "C:\Users\tpotl\pepper\meetingbox-mini-pc-release\meetingbox-mini-pc-release\device-ui\.venv\Lib\site-packages\kivy\core\__init__.py", line 59, in core_select_lib
+    mod = importlib.__import__(name='{2}.{0}.{1}'.format(
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<frozen importlib._bootstrap>", line 1283, in __import__
+  File "<frozen importlib._bootstrap>", line 1204, in _gcd_import
+  File "<frozen importlib._bootstrap>", line 1176, in _find_and_load
+  File "<frozen importlib._bootstrap>", line 1147, in _find_and_load_unlocked
+  File "<frozen importlib._bootstrap>", line 690, in _load_unlocked
+  File "<frozen importlib._bootstrap_external>", line 940, in exec_module
+  File "<frozen importlib._bootstrap>", line 241, in _call_with_frames_removed
+  File "C:\Users\tpotl\pepper\meetingbox-mini-pc-release\meetingbox-mini-pc-release\device-ui\.venv\Lib\site-packages\kivy\core\spelling\spelling_enchant.py", line 12, in <module>
+    import enchant
+
+[CRITICAL] [Spelling    ] Unable to find any valuable Spelling provider. Please enable debug logging (e.g. add -d if running from the command line, or change the log level in the config) and re-run your app to identify potential causes
+enchant - ModuleNotFoundError: No module named 'enchant'
+  File "C:\Users\tpotl\pepper\meetingbox-mini-pc-release\meetingbox-mini-pc-release\device-ui\.venv\Lib\site-packages\kivy\core\__init__.py", line 59, in core_select_lib
+    mod = importlib.__import__(name='{2}.{0}.{1}'.format(
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<frozen importlib._bootstrap>", line 1283, in __import__
+  File "<frozen importlib._bootstrap>", line 1204, in _gcd_import
+  File "<frozen importlib._bootstrap>", line 1176, in _find_and_load
+  File "<frozen importlib._bootstrap>", line 1147, in _find_and_load_unlocked
+  File "<frozen importlib._bootstrap>", line 690, in _load_unlocked
+  File "<frozen importlib._bootstrap_external>", line 940, in exec_module
+  File "<frozen importlib._bootstrap>", line 241, in _call_with_frames_removed
+  File "C:\Users\tpotl\pepper\meetingbox-mini-pc-release\meetingbox-mini-pc-release\device-ui\.venv\Lib\site-packages\kivy\core\spelling\spelling_enchant.py", line 12, in <module>
+    import enchant
+
+1077 DEBUG: collect_submodules - scanning (sub)package kivy.core.spelling in location(s): ['C:\\Users\\tpotl\\pepper\\meetingbox-mini-pc-release\\meetingbox-mini-pc-release\\device-ui\\.venv\\Lib\\site-packages\\kivy\\core\\spelling']
+[DEBUG  ] [collect_submodules - scanning (sub)package kivy.core.spelling in location(s)] ['C:\\Users\\tpotl\\pepper\\meetingbox-mini-pc-release\\meetingbox-mini-pc-release\\device-ui\\.venv\\Lib\\site-packages\\kivy\\core\\spelling']
+1078 DEBUG: collect_submodules - scanning (sub)package kivy.core.image
+[DEBUG  ] collect_submodules - scanning (sub)package kivy.core.image
+1078 DEBUG: collect_submodules - scanning (sub)package kivy.core.image in location(s): ['C:\\Users\\tpotl\\pepper\\meetingbox-mini-pc-release\\meetingbox-mini-pc-release\\device-ui\\.venv\\Lib\\site-packages\\kivy\\core\\image']
+[DEBUG  ] [collect_submodules - scanning (sub)package kivy.core.image in location(s)] ['C:\\Users\\tpotl\\pepper\\meetingbox-mini-pc-release\\meetingbox-mini-pc-release\\device-ui\\.venv\\Lib\\site-packages\\kivy\\core\\image']
+1079 DEBUG: collect_submodules - scanning (sub)package kivy.core.gl
+[DEBUG  ] collect_submodules - scanning (sub)package kivy.core.gl
+1079 DEBUG: collect_submodules - scanning (sub)package kivy.core.gl in location(s): ['C:\\Users\\tpotl\\pepper\\meetingbox-mini-pc-release\\meetingbox-mini-pc-release\\device-ui\\.venv\\Lib\\site-packages\\kivy\\core\\gl']
+[DEBUG  ] [collect_submodules - scanning (sub)package kivy.core.gl in location(s)] ['C:\\Users\\tpotl\\pepper\\meetingbox-mini-pc-release\\meetingbox-mini-pc-release\\device-ui\\.venv\\Lib\\site-packages\\kivy\\core\\gl']
+1080 DEBUG: collect_submodules - scanning (sub)package kivy.core.clipboard
+[DEBUG  ] collect_submodules - scanning (sub)package kivy.core.clipboard
+1082 INFO: Clipboard: Provider: winctypes
+[INFO   ] [Clipboard   ] Provider: winctypes
+1082 DEBUG: collect_submodules - scanning (sub)package kivy.core.clipboard in location(s): ['C:\\Users\\tpotl\\pepper\\meetingbox-mini-pc-release\\meetingbox-mini-pc-release\\device-ui\\.venv\\Lib\\site-packages\\kivy\\core\\clipboard']
+[DEBUG  ] [collect_submodules - scanning (sub)package kivy.core.clipboard in location(s)] ['C:\\Users\\tpotl\\pepper\\meetingbox-mini-pc-release\\meetingbox-mini-pc-release\\device-ui\\.venv\\Lib\\site-packages\\kivy\\core\\clipboard']
+1083 DEBUG: collect_submodules - scanning (sub)package kivy.core.camera
+[DEBUG  ] collect_submodules - scanning (sub)package kivy.core.camera
+1093 CRITICAL: Camera: Unable to find any valuable Camera provider. Please enable debug logging (e.g. add -d if running from the command line, or change the log level in the config) and re-run your app to identify potential causes
+picamera - ModuleNotFoundError: No module named 'picamera'
+  File "C:\Users\tpotl\pepper\meetingbox-mini-pc-release\meetingbox-mini-pc-release\device-ui\.venv\Lib\site-packages\kivy\core\__init__.py", line 59, in core_select_lib
+    mod = importlib.__import__(name='{2}.{0}.{1}'.format(
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<frozen importlib._bootstrap>", line 1283, in __import__
+  File "<frozen importlib._bootstrap>", line 1204, in _gcd_import
+  File "<frozen importlib._bootstrap>", line 1176, in _find_and_load
+  File "<frozen importlib._bootstrap>", line 1147, in _find_and_load_unlocked
+  File "<frozen importlib._bootstrap>", line 690, in _load_unlocked
+  File "<frozen importlib._bootstrap_external>", line 940, in exec_module
+  File "<frozen importlib._bootstrap>", line 241, in _call_with_frames_removed
+  File "C:\Users\tpotl\pepper\meetingbox-mini-pc-release\meetingbox-mini-pc-release\device-ui\.venv\Lib\site-packages\kivy\core\camera\camera_picamera.py", line 18, in <module>
+    from picamera import PiCamera
+
+gi - ModuleNotFoundError: No module named 'gi'
+  File "C:\Users\tpotl\pepper\meetingbox-mini-pc-release\meetingbox-mini-pc-release\device-ui\.venv\Lib\site-packages\kivy\core\__init__.py", line 59, in core_select_lib
+    mod = importlib.__import__(name='{2}.{0}.{1}'.format(
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<frozen importlib._bootstrap>", line 1283, in __import__
+  File "<frozen importlib._bootstrap>", line 1204, in _gcd_import
+  File "<frozen importlib._bootstrap>", line 1176, in _find_and_load
+  File "<frozen importlib._bootstrap>", line 1147, in _find_and_load_unlocked
+  File "<frozen importlib._bootstrap>", line 690, in _load_unlocked
+  File "<frozen importlib._bootstrap_external>", line 940, in exec_module
+  File "<frozen importlib._bootstrap>", line 241, in _call_with_frames_removed
+  File "C:\Users\tpotl\pepper\meetingbox-mini-pc-release\meetingbox-mini-pc-release\device-ui\.venv\Lib\site-packages\kivy\core\camera\camera_gi.py", line 10, in <module>
+    from gi.repository import Gst
+
+opencv - ModuleNotFoundError: No module named 'cv2'
+  File "C:\Users\tpotl\pepper\meetingbox-mini-pc-release\meetingbox-mini-pc-release\device-ui\.venv\Lib\site-packages\kivy\core\__init__.py", line 59, in core_select_lib
+    mod = importlib.__import__(name='{2}.{0}.{1}'.format(
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<frozen importlib._bootstrap>", line 1283, in __import__
+  File "<frozen importlib._bootstrap>", line 1204, in _gcd_import
+  File "<frozen importlib._bootstrap>", line 1176, in _find_and_load
+  File "<frozen importlib._bootstrap>", line 1147, in _find_and_load_unlocked
+  File "<frozen importlib._bootstrap>", line 690, in _load_unlocked
+  File "<frozen importlib._bootstrap_external>", line 940, in exec_module
+  File "<frozen importlib._bootstrap>", line 241, in _call_with_frames_removed
+  File "C:\Users\tpotl\pepper\meetingbox-mini-pc-release\meetingbox-mini-pc-release\device-ui\.venv\Lib\site-packages\kivy\core\camera\camera_opencv.py", line 48, in <module>
+    import cv2
+
+[CRITICAL] [Camera      ] Unable to find any valuable Camera provider. Please enable debug logging (e.g. add -d if running from the command line, or change the log level in the config) and re-run your app to identify potential causes
+picamera - ModuleNotFoundError: No module named 'picamera'
+  File "C:\Users\tpotl\pepper\meetingbox-mini-pc-release\meetingbox-mini-pc-release\device-ui\.venv\Lib\site-packages\kivy\core\__init__.py", line 59, in core_select_lib
+    mod = importlib.__import__(name='{2}.{0}.{1}'.format(
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<frozen importlib._bootstrap>", line 1283, in __import__
+  File "<frozen importlib._bootstrap>", line 1204, in _gcd_import
+  File "<frozen importlib._bootstrap>", line 1176, in _find_and_load
+  File "<frozen importlib._bootstrap>", line 1147, in _find_and_load_unlocked
+  File "<frozen importlib._bootstrap>", line 690, in _load_unlocked
+  File "<frozen importlib._bootstrap_external>", line 940, in exec_module
+  File "<frozen importlib._bootstrap>", line 241, in _call_with_frames_removed
+  File "C:\Users\tpotl\pepper\meetingbox-mini-pc-release\meetingbox-mini-pc-release\device-ui\.venv\Lib\site-packages\kivy\core\camera\camera_picamera.py", line 18, in <module>
+    from picamera import PiCamera
+
+gi - ModuleNotFoundError: No module named 'gi'
+  File "C:\Users\tpotl\pepper\meetingbox-mini-pc-release\meetingbox-mini-pc-release\device-ui\.venv\Lib\site-packages\kivy\core\__init__.py", line 59, in core_select_lib
+    mod = importlib.__import__(name='{2}.{0}.{1}'.format(
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<frozen importlib._bootstrap>", line 1283, in __import__
+  File "<frozen importlib._bootstrap>", line 1204, in _gcd_import
+  File "<frozen importlib._bootstrap>", line 1176, in _find_and_load
+  File "<frozen importlib._bootstrap>", line 1147, in _find_and_load_unlocked
+  File "<frozen importlib._bootstrap>", line 690, in _load_unlocked
+  File "<frozen importlib._bootstrap_external>", line 940, in exec_module
+  File "<frozen importlib._bootstrap>", line 241, in _call_with_frames_removed
+  File "C:\Users\tpotl\pepper\meetingbox-mini-pc-release\meetingbox-mini-pc-release\device-ui\.venv\Lib\site-packages\kivy\core\camera\camera_gi.py", line 10, in <module>
+    from gi.repository import Gst
+
+opencv - ModuleNotFoundError: No module named 'cv2'
+  File "C:\Users\tpotl\pepper\meetingbox-mini-pc-release\meetingbox-mini-pc-release\device-ui\.venv\Lib\site-packages\kivy\core\__init__.py", line 59, in core_select_lib
+    mod = importlib.__import__(name='{2}.{0}.{1}'.format(
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<frozen importlib._bootstrap>", line 1283, in __import__
+  File "<frozen importlib._bootstrap>", line 1204, in _gcd_import
+  File "<frozen importlib._bootstrap>", line 1176, in _find_and_load
+  File "<frozen importlib._bootstrap>", line 1147, in _find_and_load_unlocked
+  File "<frozen importlib._bootstrap>", line 690, in _load_unlocked
+  File "<frozen importlib._bootstrap_external>", line 940, in exec_module
+  File "<frozen importlib._bootstrap>", line 241, in _call_with_frames_removed
+  File "C:\Users\tpotl\pepper\meetingbox-mini-pc-release\meetingbox-mini-pc-release\device-ui\.venv\Lib\site-packages\kivy\core\camera\camera_opencv.py", line 48, in <module>
+    import cv2
+
+1093 DEBUG: collect_submodules - scanning (sub)package kivy.core.camera in location(s): ['C:\\Users\\tpotl\\pepper\\meetingbox-mini-pc-release\\meetingbox-mini-pc-release\\device-ui\\.venv\\Lib\\site-packages\\kivy\\core\\camera']
+[DEBUG  ] [collect_submodules - scanning (sub)package kivy.core.camera in location(s)] ['C:\\Users\\tpotl\\pepper\\meetingbox-mini-pc-release\\meetingbox-mini-pc-release\\device-ui\\.venv\\Lib\\site-packages\\kivy\\core\\camera']
+1094 DEBUG: collect_submodules - scanning (sub)package kivy.core.audio
+[DEBUG  ] collect_submodules - scanning (sub)package kivy.core.audio
+1105 INFO: Audio: Providers: audio_sdl2 (audio_ffpyplayer ignored)
+[INFO   ] [Audio       ] Providers: audio_sdl2 (audio_ffpyplayer ignored)
+1106 DEBUG: collect_submodules - scanning (sub)package kivy.core.audio in location(s): ['C:\\Users\\tpotl\\pepper\\meetingbox-mini-pc-release\\meetingbox-mini-pc-release\\device-ui\\.venv\\Lib\\site-packages\\kivy\\core\\audio']
+[DEBUG  ] [collect_submodules - scanning (sub)package kivy.core.audio in location(s)] ['C:\\Users\\tpotl\\pepper\\meetingbox-mini-pc-release\\meetingbox-mini-pc-release\\device-ui\\.venv\\Lib\\site-packages\\kivy\\core\\audio']
+27332 ERROR: Hidden import 'soundfile' not found
+[ERROR  ] Hidden import 'soundfile' not found
+27480 WARNING: Hidden import "pycparser.lextab" not found!
+[WARNING] Hidden import "pycparser.lextab" not found!
+27480 WARNING: Hidden import "pycparser.yacctab" not found!
+[WARNING] Hidden import "pycparser.yacctab" not found!
+[INFO   ] [Logger      ] Record log in C:\Users\tpotl\.kivy\logs\kivy_26-06-30_59.txt
+[INFO   ] [deps        ] Successfully imported "kivy_deps.angle" 0.4.0
+[INFO   ] [deps        ] Successfully imported "kivy_deps.glew" 0.3.1
+[INFO   ] [deps        ] Successfully imported "kivy_deps.sdl2" 0.8.0
+[INFO   ] [Kivy        ] v2.3.1
+[INFO   ] [Kivy        ] Installed at "C:\Users\tpotl\pepper\meetingbox-mini-pc-release\meetingbox-mini-pc-release\device-ui\.venv\Lib\site-packages\kivy\__init__.py"
+[INFO   ] [Python      ] v3.11.9 (tags/v3.11.9:de54cf5, Apr  2 2024, 10:12:12) [MSC v.1938 64 bit (AMD64)]
+[INFO   ] [Python      ] Interpreter at "C:\Users\tpotl\pepper\meetingbox-mini-pc-release\meetingbox-mini-pc-release\device-ui\.venv\Scripts\python.exe"
+[INFO   ] [Logger      ] Purge log fired. Processing...
+[INFO   ] [Logger      ] Purge finished!
+[INFO   ] [Factory     ] 195 symbols loaded
+[INFO   ] [Audio       ] Providers: audio_sdl2 (audio_ffpyplayer ignored)
+[INFO   ] [Image       ] Providers: img_tex, img_dds, img_sdl2, img_pil (img_ffpyplayer ignored)
+[INFO   ] [Window      ] Provider: sdl2
+[INFO   ] [GL          ] Using the "OpenGL" graphics system
+[INFO   ] [GL          ] GLEW initialization succeeded
+[INFO   ] [GL          ] Backend used <glew>
+[INFO   ] [GL          ] OpenGL version <b'4.6.0 - Build 32.0.101.8132'>
+[INFO   ] [GL          ] OpenGL vendor <b'Intel'>
+[INFO   ] [GL          ] OpenGL renderer <b'Intel(R) Arc(TM) 140V GPU (16GB)'>
+[INFO   ] [GL          ] OpenGL parsed version: 4, 6
+[INFO   ] [GL          ] Shading version <b'4.60 - Build 32.0.101.8132'>
+[INFO   ] [GL          ] Texture max size <16384>
+[INFO   ] [GL          ] Texture max units <32>
+[INFO   ] [Window      ] auto add sdl2 input provider
+[INFO   ] [Window      ] virtual keyboard not allowed, single mode, not docked
+[CRITICAL] [Spelling    ] Unable to find any valuable Spelling provider. Please enable debug logging (e.g. add -d if running from the command line, or change the log level in the config) and re-run your app to identify potential causes
+enchant - ModuleNotFoundError: No module named 'enchant'
+  File "C:\Users\tpotl\pepper\meetingbox-mini-pc-release\meetingbox-mini-pc-release\device-ui\.venv\Lib\site-packages\kivy\core\__init__.py", line 59, in core_select_lib
+    mod = importlib.__import__(name='{2}.{0}.{1}'.format(
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<frozen importlib._bootstrap>", line 1283, in __import__
+  File "<frozen importlib._bootstrap>", line 1204, in _gcd_import
+  File "<frozen importlib._bootstrap>", line 1176, in _find_and_load
+  File "<frozen importlib._bootstrap>", line 1147, in _find_and_load_unlocked
+  File "<frozen importlib._bootstrap>", line 690, in _load_unlocked
+  File "<frozen importlib._bootstrap_external>", line 940, in exec_module
+  File "<frozen importlib._bootstrap>", line 241, in _call_with_frames_removed
+  File "C:\Users\tpotl\pepper\meetingbox-mini-pc-release\meetingbox-mini-pc-release\device-ui\.venv\Lib\site-packages\kivy\core\spelling\spelling_enchant.py", line 12, in <module>
+    import enchant
+
+[INFO   ] [Video       ] Provider: null(['video_ffmpeg', 'video_ffpyplayer'] ignored)
+[CRITICAL] [Camera      ] Unable to find any valuable Camera provider. Please enable debug logging (e.g. add -d if running from the command line, or change the log level in the config) and re-run your app to identify potential causes
+picamera - ModuleNotFoundError: No module named 'picamera'
+  File "C:\Users\tpotl\pepper\meetingbox-mini-pc-release\meetingbox-mini-pc-release\device-ui\.venv\Lib\site-packages\kivy\core\__init__.py", line 59, in core_select_lib
+    mod = importlib.__import__(name='{2}.{0}.{1}'.format(
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<frozen importlib._bootstrap>", line 1283, in __import__
+  File "<frozen importlib._bootstrap>", line 1204, in _gcd_import
+  File "<frozen importlib._bootstrap>", line 1176, in _find_and_load
+  File "<frozen importlib._bootstrap>", line 1147, in _find_and_load_unlocked
+  File "<frozen importlib._bootstrap>", line 690, in _load_unlocked
+  File "<frozen importlib._bootstrap_external>", line 940, in exec_module
+  File "<frozen importlib._bootstrap>", line 241, in _call_with_frames_removed
+  File "C:\Users\tpotl\pepper\meetingbox-mini-pc-release\meetingbox-mini-pc-release\device-ui\.venv\Lib\site-packages\kivy\core\camera\camera_picamera.py", line 18, in <module>
+    from picamera import PiCamera
+
+gi - ModuleNotFoundError: No module named 'gi'
+  File "C:\Users\tpotl\pepper\meetingbox-mini-pc-release\meetingbox-mini-pc-release\device-ui\.venv\Lib\site-packages\kivy\core\__init__.py", line 59, in core_select_lib
+    mod = importlib.__import__(name='{2}.{0}.{1}'.format(
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<frozen importlib._bootstrap>", line 1283, in __import__
+  File "<frozen importlib._bootstrap>", line 1204, in _gcd_import
+  File "<frozen importlib._bootstrap>", line 1176, in _find_and_load
+  File "<frozen importlib._bootstrap>", line 1147, in _find_and_load_unlocked
+  File "<frozen importlib._bootstrap>", line 690, in _load_unlocked
+  File "<frozen importlib._bootstrap_external>", line 940, in exec_module
+  File "<frozen importlib._bootstrap>", line 241, in _call_with_frames_removed
+  File "C:\Users\tpotl\pepper\meetingbox-mini-pc-release\meetingbox-mini-pc-release\device-ui\.venv\Lib\site-packages\kivy\core\camera\camera_gi.py", line 10, in <module>
+    from gi.repository import Gst
+
+opencv - ModuleNotFoundError: No module named 'cv2'
+  File "C:\Users\tpotl\pepper\meetingbox-mini-pc-release\meetingbox-mini-pc-release\device-ui\.venv\Lib\site-packages\kivy\core\__init__.py", line 59, in core_select_lib
+    mod = importlib.__import__(name='{2}.{0}.{1}'.format(
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<frozen importlib._bootstrap>", line 1283, in __import__
+  File "<frozen importlib._bootstrap>", line 1204, in _gcd_import
+  File "<frozen importlib._bootstrap>", line 1176, in _find_and_load
+  File "<frozen importlib._bootstrap>", line 1147, in _find_and_load_unlocked
+  File "<frozen importlib._bootstrap>", line 690, in _load_unlocked
+  File "<frozen importlib._bootstrap_external>", line 940, in exec_module
+  File "<frozen importlib._bootstrap>", line 241, in _call_with_frames_removed
+  File "C:\Users\tpotl\pepper\meetingbox-mini-pc-release\meetingbox-mini-pc-release\device-ui\.venv\Lib\site-packages\kivy\core\camera\camera_opencv.py", line 48, in <module>
+    import cv2
+
+[INFO   ] [Clipboard   ] Provider: winctypes
+[INFO   ] [Text        ] Provider: sdl2
+[DEBUG  ] Calling CoUninitialize()
+[DEBUG  ] CoUninitialize() done.
+39640 WARNING: Library not found: could not resolve 'gobject-2.0-0.dll', dependency of 'C:\\Users\\tpotl\\pepper\\meetingbox-mini-pc-release\\meetingbox-mini-pc-release\\device-ui\\.venv\\Lib\\site-packages\\kivy\\lib\\gstplayer\\_gstplayer.cp311-win_amd64.pyd'.
+[WARNING] [Library not found] could not resolve 'gobject-2.0-0.dll', dependency of 'C:\\Users\\tpotl\\pepper\\meetingbox-mini-pc-release\\meetingbox-mini-pc-release\\device-ui\\.venv\\Lib\\site-packages\\kivy\\lib\\gstplayer\\_gstplayer.cp311-win_amd64.pyd'.
+39641 WARNING: Library not found: could not resolve 'gstreamer-1.0-0.dll', dependency of 'C:\\Users\\tpotl\\pepper\\meetingbox-mini-pc-release\\meetingbox-mini-pc-release\\device-ui\\.venv\\Lib\\site-packages\\kivy\\lib\\gstplayer\\_gstplayer.cp311-win_amd64.pyd'.
+[WARNING] [Library not found] could not resolve 'gstreamer-1.0-0.dll', dependency of 'C:\\Users\\tpotl\\pepper\\meetingbox-mini-pc-release\\meetingbox-mini-pc-release\\device-ui\\.venv\\Lib\\site-packages\\kivy\\lib\\gstplayer\\_gstplayer.cp311-win_amd64.pyd'.
+39642 WARNING: Library not found: could not resolve 'glib-2.0-0.dll', dependency of 'C:\\Users\\tpotl\\pepper\\meetingbox-mini-pc-release\\meetingbox-mini-pc-release\\device-ui\\.venv\\Lib\\site-packages\\kivy\\lib\\gstplayer\\_gstplayer.cp311-win_amd64.pyd'.
+[WARNING] [Library not found] could not resolve 'glib-2.0-0.dll', dependency of 'C:\\Users\\tpotl\\pepper\\meetingbox-mini-pc-release\\meetingbox-mini-pc-release\\device-ui\\.venv\\Lib\\site-packages\\kivy\\lib\\gstplayer\\_gstplayer.cp311-win_amd64.pyd'.
+49462 ERROR: Hidden import 'redis' not found
+[ERROR  ] Hidden import 'redis' not found
+54000 ERROR: Hidden import 'scipy' not found
+[ERROR  ] Hidden import 'scipy' not found
+54002 ERROR: Hidden import 'scipy.signal' not found
+[ERROR  ] Hidden import 'scipy.signal' not found

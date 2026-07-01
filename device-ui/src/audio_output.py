@@ -22,7 +22,6 @@ from __future__ import annotations
 
 import logging
 import os
-import queue
 import threading
 import wave
 
@@ -123,18 +122,34 @@ class PcmStreamPlayer:
         player.close()                  # on teardown
     """
 
-    def __init__(self, sample_rate: int = 24000, channels: int = 1, device=None):
+    def __init__(self, sample_rate: int = 24000, channels: int = 1, device=None,
+                 fade_ms: float | None = None):
         self.sample_rate = int(sample_rate)
         self.channels = int(channels)
         self._device = _resolve_output_device(device)
+        # Barge-in fade-out length. Cutting a PortAudio stream mid-waveform
+        # (abort()) leaves the DAC at a non-zero sample; that step to zero is an
+        # audible click/"scratch". Instead we ramp the last few ms to zero in
+        # the callback before stopping, so the waveform lands on silence. A few
+        # ms is inaudible as latency but removes the pop.
+        env_fade = (os.getenv("MEETINGBOX_BARGE_FADE_MS") or "").strip()
+        if fade_ms is None:
+            try:
+                fade_ms = float(env_fade) if env_fade else 12.0
+            except ValueError:
+                fade_ms = 12.0
+        self._fade_ms = max(1.0, float(fade_ms))
+        self._fade_total = max(1, int(self.sample_rate * self._fade_ms / 1000.0))
         self._stream = None
-        self._queue: "queue.Queue[bytes | None]" = queue.Queue()
-        self._thread: threading.Thread | None = None
+        self._buf = bytearray()             # int16 PCM awaiting playback
+        self._buf_lock = threading.Lock()
         self._lock = threading.Lock()
         self._active = False
+        self._fade_remaining: int | None = None  # None = not fading
+        self._finished = threading.Event()
 
     def is_supported(self) -> bool:
-        return _sd is not None
+        return _sd is not None and np is not None
 
     def start(self) -> bool:
         if not self.is_supported():
@@ -142,80 +157,107 @@ class PcmStreamPlayer:
         with self._lock:
             if self._active:
                 return True
+            with self._buf_lock:
+                self._buf.clear()
+                self._fade_remaining = None
+            self._finished.clear()
+            try:
+                self._stream = _sd.OutputStream(
+                    samplerate=self.sample_rate,
+                    channels=self.channels,
+                    dtype="int16",
+                    device=self._device,
+                    blocksize=0,
+                    callback=self._callback,
+                )
+                self._stream.start()
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("PcmStreamPlayer could not open output stream: %s", exc)
+                self._stream = None
+                return False
             self._active = True
-            # Drain any stale sentinels from a previous stop().
-            self._drain_queue()
-            self._thread = threading.Thread(
-                target=self._run, name="PcmStreamPlayer", daemon=True
-            )
-            self._thread.start()
             return True
 
-    def _run(self) -> None:
-        try:
-            self._stream = _sd.RawOutputStream(
-                samplerate=self.sample_rate,
-                channels=self.channels,
-                dtype="int16",
-                device=self._device,
-                blocksize=0,
-            )
-            self._stream.start()
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("PcmStreamPlayer could not open output stream: %s", exc)
-            self._active = False
+    def _callback(self, outdata, frames, time_info, status):  # noqa: ANN001
+        del time_info, status
+        ch = self.channels
+        want = frames * ch
+        with self._buf_lock:
+            avail = len(self._buf) // 2
+            take = min(want, avail)
+            if take:
+                chunk = np.frombuffer(bytes(self._buf[: take * 2]), dtype=np.int16).copy()
+                del self._buf[: take * 2]
+            else:
+                chunk = None
+            fade_rem = self._fade_remaining
+
+        block = np.zeros(want, dtype=np.int16)
+        if chunk is not None and chunk.size:
+            block[: chunk.size] = chunk
+        block = block.reshape(frames, ch)
+
+        if fade_rem is not None:
+            # Linear ramp from the current gain down to zero across the tail.
+            idx = np.arange(frames, dtype=np.float32)
+            gains = (float(fade_rem) - idx) / float(self._fade_total)
+            np.clip(gains, 0.0, 1.0, out=gains)
+            block = (block.astype(np.float32) * gains[:, None]).astype(np.int16)
+            outdata[:] = block
+            new_rem = fade_rem - frames
+            if new_rem <= 0:
+                with self._buf_lock:
+                    self._fade_remaining = 0
+                self._finished.set()
+                raise _sd.CallbackStop
+            with self._buf_lock:
+                if self._fade_remaining is not None:
+                    self._fade_remaining = new_rem
             return
-        try:
-            while True:
-                chunk = self._queue.get()
-                if chunk is None:  # stop sentinel
-                    break
-                if not self._active:
-                    break
-                try:
-                    self._stream.write(chunk)
-                except Exception as exc:  # noqa: BLE001
-                    logger.debug("PcmStreamPlayer write error: %s", exc)
-                    break
-        finally:
-            try:
-                if self._stream is not None:
-                    self._stream.stop()
-                    self._stream.close()
-            except Exception:  # noqa: BLE001
-                pass
-            self._stream = None
+
+        outdata[:] = block
 
     def write(self, pcm_bytes: bytes) -> None:
         if not pcm_bytes or not self._active:
             return
-        self._queue.put(pcm_bytes)
-
-    def _drain_queue(self) -> None:
-        try:
-            while True:
-                self._queue.get_nowait()
-        except queue.Empty:
-            pass
+        with self._buf_lock:
+            if self._fade_remaining is not None:
+                return  # barge-in in progress; ignore trailing audio
+            self._buf.extend(pcm_bytes)
 
     def stop(self) -> None:
-        """Barge-in: drop queued audio and abort the active stream immediately."""
+        """Barge-in: ramp the tail to zero (no click) then stop the stream."""
         with self._lock:
             if not self._active:
                 return
-            self._active = False
-            self._drain_queue()
-            self._queue.put(None)
             st = self._stream
+            if st is None:
+                self._active = False
+                return
+            with self._buf_lock:
+                if self._fade_remaining is None:
+                    self._fade_remaining = self._fade_total
+        # Let the callback play out the fade ramp before we tear down.
+        self._finished.wait(timeout=max(0.05, (self._fade_ms / 1000.0) * 4))
+        self._teardown()
+
+    def _teardown(self) -> None:
+        with self._lock:
+            st = self._stream
+            self._stream = None
+            self._active = False
         if st is not None:
             try:
-                st.abort()
+                st.stop()
             except Exception:  # noqa: BLE001
                 pass
-        t = self._thread
-        if t is not None:
-            t.join(timeout=1.0)
-        self._thread = None
+            try:
+                st.close()
+            except Exception:  # noqa: BLE001
+                pass
+        with self._buf_lock:
+            self._buf.clear()
+            self._fade_remaining = None
 
     def close(self) -> None:
         self.stop()

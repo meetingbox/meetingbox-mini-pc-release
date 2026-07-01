@@ -314,6 +314,30 @@ _REALTIME_VAD_EAGERNESS = (
     os.environ.get("REALTIME_VAD_EAGERNESS", "medium").strip().lower() or "medium"
 )
 
+# Turn-detection strategy. "semantic_vad" waits for a semantic end-of-turn and
+# is easily held open by ambient room noise (it keeps "listening" until the
+# noise settles). "server_vad" is energy-based with an explicit threshold and a
+# fixed end-of-turn silence window, so it ignores anything below the threshold
+# and commits a fixed time after the user stops — much more focused on the
+# active talker. With OS-AEC the mic is clean, so on desktop we default to
+# server_vad. "auto" leaves the server's own config untouched.
+#   server_vad | semantic_vad | auto
+_REALTIME_TURN_DETECTION = (
+    os.environ.get("REALTIME_TURN_DETECTION", "auto").strip().lower() or "auto"
+)
+# server_vad tuning. threshold: 0..1, higher = ignore quieter sounds (ambient).
+# silence_ms: how long below threshold before the turn ends (lower = snappier).
+# prefix_ms: audio kept before speech onset so the first word isn't clipped.
+_REALTIME_VAD_THRESHOLD = _env_float(
+    "REALTIME_VAD_THRESHOLD", 0.6, minimum=0.0, maximum=1.0
+)
+_REALTIME_VAD_SILENCE_MS = _env_int(
+    "REALTIME_VAD_SILENCE_MS", 500, minimum=100, maximum=4000
+)
+_REALTIME_VAD_PREFIX_MS = _env_int(
+    "REALTIME_VAD_PREFIX_MS", 300, minimum=0, maximum=1000
+)
+
 # Half-duplex self-hearing guard. On a device whose mic and speaker share the
 # same chassis (built-in mic, no external puck) the speaker output couples
 # straight back into the mic. Half-duplex still suppresses normal mic upload
@@ -391,6 +415,20 @@ _LOCAL_BARGE_IN_SPIKE_ECHO_MAX_REF_RATIO = _env_float(
 )
 _LOCAL_BARGE_IN_MIN_FRAMES = _env_int("REALTIME_BARGE_IN_MIN_FRAMES", 2, minimum=1, maximum=10)
 _LOCAL_BARGE_IN_PREROLL_S = _env_float("REALTIME_BARGE_IN_PREROLL_S", 0.18, minimum=0.0, maximum=0.5)
+
+# --- OS-grade acoustic echo cancellation (the single Windows solution) --------
+# Drive the Windows "Voice Capture DSP" (CWMAudioAEC). It captures the mic AND
+# references the system render itself, returning a clean, echo-cancelled 16 kHz
+# mono stream — the desktop equivalent of the hardware AEC phone assistants use.
+# When live it becomes the mic source and we run true FULL-DUPLEX barge-in:
+# stream the cancelled mic continuously and let the server VAD +
+# interrupt_response handle interruption. Windows-only; on the Linux appliance
+# (and any box where the DSP is unavailable) the Speex + local barge-in path
+# below is used instead.
+_OS_AEC_ENABLED = (
+    os.environ.get("REALTIME_OS_AEC", "1").strip().lower()
+    not in ("0", "false", "no", "off", "")
+)
 
 # Live on-screen captions WHILE the user speaks. OpenAI's input transcription
 # only runs AFTER end-of-turn (post-commit), so it can't show words mid-speech.
@@ -920,6 +958,29 @@ class RealtimeVoiceSession:
         self._aec_far_buf = bytearray()
         self._aec_near_buf = bytearray()
         self._aec_buf_lock = threading.Lock()
+
+        # OS-grade echo cancellation (Windows Voice Capture DSP) — the single
+        # echo/barge-in solution on Windows. When it starts at session-open it
+        # becomes the mic source itself (source mode) and supersedes the Speex
+        # path entirely. Created here only as an instance; actually started in
+        # the session-open path. On the appliance / non-Windows this stays None
+        # and the Speex + local barge-in path above is used.
+        self._os_aec = None
+        self._os_aec_full_duplex = False
+        try:
+            if _OS_AEC_ENABLED and IS_DESKTOP:
+                import windows_aec
+                if windows_aec.is_available():
+                    self._os_aec = windows_aec.WindowsEchoCanceller(
+                        on_frames=self._on_os_aec_frames
+                    )
+                    logger.info(
+                        "Realtime AEC: Windows Voice Capture DSP available "
+                        "(will use OS echo cancellation, full-duplex)"
+                    )
+        except Exception:
+            self._os_aec = None
+            logger.debug("OS AEC init failed", exc_info=True)
 
         # Live caption (on-device Vosk partials while the user speaks). Enabled
         # only when the feature flag is on AND a preloaded Vosk model was handed
@@ -1902,10 +1963,17 @@ class RealtimeVoiceSession:
             return
         if not raw:
             return
-        # Push the same PCM into the far-end ring so AEC and local barge-in
-        # detection know what is about to come out of the speaker. Cap to ~5 s
-        # to keep memory bounded if the mic side stalls.
-        if self._aec is not None or _LOCAL_BARGE_IN_ENABLED:
+        # Push the same PCM into the far-end ring so the Speex AEC and local
+        # barge-in detection know what is about to come out of the speaker. Cap
+        # to ~5 s to keep memory bounded if the mic side stalls.
+        #
+        # Skipped entirely when the OS AEC is the mic source: it cancels echo at
+        # the source and never reads this ring, so filling it would just be
+        # wasted work.
+        if (
+            not self._os_aec_full_duplex
+            and (self._aec is not None or _LOCAL_BARGE_IN_ENABLED)
+        ):
             with self._aec_buf_lock:
                 self._aec_far_buf.extend(raw)
                 max_bytes = _REALTIME_RATE * 2 * 5
@@ -2055,12 +2123,56 @@ class RealtimeVoiceSession:
                     self._safe_call(self._on_before_open_mic_cb)
                     await asyncio.sleep(0.01)
 
-                preferred, candidates = self._resolve_input_device()
-                if not self._open_mic(preferred, candidates):
-                    self._emit_error("Realtime: microphone unavailable.")
-                    await ws.close()
-                    self._emit_session_end()
-                    return
+                # Prefer the OS echo canceller. In source mode it opens the
+                # default communications mic itself and returns clean,
+                # echo-cancelled audio, so we must NOT also open a PortAudio mic
+                # on the same device. When it starts, it becomes the mic source,
+                # supersedes Speex, and we run full-duplex.
+                os_aec_live = False
+                if self._os_aec is not None:
+                    try:
+                        if self._os_aec.start():
+                            os_aec_live = True
+                            self._os_aec_full_duplex = True
+                            # DSP emits 16 kHz mono; _pump_mic resamples to 24k.
+                            self._mic_native_sr = 16000
+                            # The mic is now genuinely echo-free, so run true
+                            # full-duplex: a server speech_started must hard-stop
+                            # playback IMMEDIATELY (no "defer to local detector"
+                            # guard, which is only needed on coupled mics).
+                            self._half_duplex = False
+                            # OS AEC removes echo at the source: disable Speex so
+                            # nothing double-cancels.
+                            if self._aec is not None:
+                                try:
+                                    self._aec.close()
+                                except Exception:
+                                    pass
+                                self._aec = None
+                            logger.info(
+                                "Realtime AEC: Windows Voice Capture DSP live — "
+                                "OS echo cancellation, full-duplex barge-in "
+                                "(device='%s')",
+                                self._os_aec.device_name,
+                            )
+                        else:
+                            logger.warning(
+                                "Realtime AEC: OS AEC failed to start (%s); "
+                                "falling back to mic + Speex",
+                                self._os_aec.last_error,
+                            )
+                            self._os_aec = None
+                    except Exception:
+                        logger.debug("OS AEC start failed", exc_info=True)
+                        self._os_aec = None
+
+                if not os_aec_live:
+                    preferred, candidates = self._resolve_input_device()
+                    if not self._open_mic(preferred, candidates):
+                        self._emit_error("Realtime: microphone unavailable.")
+                        await ws.close()
+                        self._emit_session_end()
+                        return
 
                 # Suppress mic uplink briefly so the room echo of the wake
                 # phrase decays before audio reaches OpenAI.  Without this,
@@ -2124,6 +2236,13 @@ class RealtimeVoiceSession:
             self._ws = None
             self._abort_aplay()
             self._close_mic()
+            if self._os_aec is not None:
+                try:
+                    self._os_aec.stop()
+                except Exception:
+                    pass
+                self._os_aec = None
+                self._os_aec_full_duplex = False
             try:
                 self._aplay_writer.shutdown(wait=False, cancel_futures=True)
             except Exception:
@@ -2139,6 +2258,28 @@ class RealtimeVoiceSession:
     # ------------------------------------------------------------------
     # Echo cancellation
     # ------------------------------------------------------------------
+
+    def _on_os_aec_frames(self, pcm16: bytes) -> None:
+        """Mic source feeder for the Windows Voice Capture DSP.
+
+        Called from the OS AEC capture thread with already-echo-cancelled mono
+        PCM16 at the DSP's native 16 kHz. We push it onto the same queue the
+        PortAudio mic callback would use, so _pump_mic resamples it to 24 kHz
+        and uploads it like any other mic audio — except the assistant's own
+        voice has already been removed at the source.
+        """
+        if not pcm16:
+            return
+        try:
+            self._audio_q.put_nowait(pcm16)
+        except queue.Full:
+            # Drop oldest rather than block the capture thread.
+            try:
+                _ = self._audio_q.get_nowait()
+                self._audio_q_drops += 1
+                self._audio_q.put_nowait(pcm16)
+            except Exception:
+                pass
 
     def _aec_process(self, mic_pcm16: bytes) -> bytes:
         """Run speex AEC on resampled mic bytes; return echo-cancelled PCM16.
@@ -2424,6 +2565,17 @@ class RealtimeVoiceSession:
                     resampled = resample_pcm16_mono(piece, native_sr, _REALTIME_RATE)
                 resampled = self._apply_input_gain(resampled)
                 now = time.monotonic()
+
+                # OS-AEC full-duplex path: the Windows Voice Capture DSP already
+                # removed the assistant's echo at the source, so the mic stream
+                # is genuinely clean. Stream it continuously and let the server
+                # VAD + interrupt_response handle barge-in — no Speex, no energy
+                # heuristics, no mic muting. This is the phone/desktop
+                # voice-assistant model and the whole point of the OS canceller.
+                if self._os_aec_full_duplex:
+                    await self._upload_resampled_audio(ws, resampled)
+                    continue
+
                 # Desktop: once the server VAD has flagged user speech, trust it
                 # and let frames through even inside the echo-mute window so the
                 # full utterance is captured (AEC still strips the echo).
@@ -3033,14 +3185,42 @@ class RealtimeVoiceSession:
         # happens locally before frames reach OpenAI; when the local detector
         # does release user speech, the latest user turn must still win.
         interrupt_response = True
-        # "auto" means: leave the server's turn_detection eagerness untouched.
-        if _REALTIME_VAD_EAGERNESS and _REALTIME_VAD_EAGERNESS != "auto":
-            audio_input["turn_detection"] = {
+        # Decide turn detection. On desktop the OS AEC gives a clean mic, so we
+        # default to energy-based server_vad (focused on the active talker,
+        # ignores sub-threshold ambient, commits a fixed time after you stop).
+        # The appliance keeps its semantic_vad behavior unless overridden.
+        td_mode = _REALTIME_TURN_DETECTION
+        if td_mode == "auto":
+            # Desktop (Windows): energy-based server_vad — focused on the active
+            # talker, ignores sub-threshold ambient. Appliance keeps semantic.
+            td_mode = "server_vad" if IS_DESKTOP else "semantic"
+        turn_detection = None
+        if td_mode == "server_vad":
+            turn_detection = {
+                "type": "server_vad",
+                "threshold": _REALTIME_VAD_THRESHOLD,
+                "prefix_padding_ms": _REALTIME_VAD_PREFIX_MS,
+                "silence_duration_ms": _REALTIME_VAD_SILENCE_MS,
+                "create_response": True,
+                "interrupt_response": interrupt_response,
+            }
+        elif td_mode == "semantic_vad":
+            turn_detection = {
+                "type": "semantic_vad",
+                "eagerness": (_REALTIME_VAD_EAGERNESS if _REALTIME_VAD_EAGERNESS != "auto" else "medium"),
+                "create_response": True,
+                "interrupt_response": interrupt_response,
+            }
+        elif _REALTIME_VAD_EAGERNESS and _REALTIME_VAD_EAGERNESS != "auto":
+            # Backwards-compatible path: eagerness set but no explicit mode.
+            turn_detection = {
                 "type": "semantic_vad",
                 "eagerness": _REALTIME_VAD_EAGERNESS,
                 "create_response": True,
                 "interrupt_response": interrupt_response,
             }
+        if turn_detection is not None:
+            audio_input["turn_detection"] = turn_detection
         try:
             await ws.send(json.dumps({
                 "type": "session.update",
@@ -3056,6 +3236,9 @@ class RealtimeVoiceSession:
                 "session_update_sent",
                 transcript_model=_DEFAULT_INPUT_TRANSCRIPTION_MODEL,
                 transcript_prompt=bool(_INPUT_TRANSCRIPTION_PROMPT.strip()),
+                turn_detection=(turn_detection or {}).get("type", "server_default"),
+                vad_threshold=_REALTIME_VAD_THRESHOLD if td_mode == "server_vad" else None,
+                vad_silence_ms=_REALTIME_VAD_SILENCE_MS if td_mode == "server_vad" else None,
                 vad_eagerness=_REALTIME_VAD_EAGERNESS,
                 interrupt_response=interrupt_response,
                 half_duplex=self._half_duplex,
