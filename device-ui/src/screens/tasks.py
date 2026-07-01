@@ -40,7 +40,9 @@ import logging
 from datetime import date, datetime, timedelta
 
 from kivy.clock import Clock
-from kivy.graphics import Color, Ellipse, Line, Rectangle, RoundedRectangle
+from kivy.graphics import (
+    Color, Ellipse, Line, PopMatrix, PushMatrix, Rectangle, RoundedRectangle, Translate,
+)
 from kivy.uix.behaviors import ButtonBehavior
 from kivy.uix.boxlayout import BoxLayout
 from kivy.uix.floatlayout import FloatLayout
@@ -54,8 +56,11 @@ from kivy.uix.widget import Widget
 from async_helper import run_async
 from components.live_wifi_icon import LiveWifiIcon as _WifiIcon
 from config import ASSETS_DIR, DISPLAY_HEIGHT, DISPLAY_WIDTH, display_now
+from frame19_layout import BG_BOT, BG_TOP
+from page_swipe import PageSwipeController, any_modal_open
 from screens.base_screen import BaseScreen
 from screens.home import _BatteryWidget, _VoiceStatePill  # noqa: PLC2701
+from ui_bg import attach_swirl_bg
 
 logger = logging.getLogger(__name__)
 
@@ -633,33 +638,33 @@ class TasksScreen(BaseScreen):
         self._list_box:    BoxLayout | None        = None
         self._voice_pill:  _VoiceStatePill | None  = None
         self._menu_overlay: Widget | None          = None
+        self._back_btn = None                      # top-left back button
+        # Set by the Calendar→Tasks swipe so the back button is suppressed when
+        # Tasks is reached as part of the Home page-swipe chain (you swipe back).
+        self.entered_via_swipe = False
+        self._page_tx = None                       # transform-only page translate
 
         self._build_ui()
+
+        # Tasks is the right-most page in the chain. A left-to-right swipe reveals
+        # Calendar (which sits to its left); there is no page to the right.
+        self._calendar_pager = PageSwipeController(
+            self,
+            "calendar",
+            direction=1,
+            prepare_dest=self._prepare_adjacent,
+            commit=lambda: self.app.goto_screen("calendar", transition="none"),
+            can_start=self._can_page,
+        )
 
     # ── Build ──────────────────────────────────────────────────────────────────
 
     def _build_ui(self) -> None:
         root = FloatLayout(size_hint=(1, 1))
 
-        # Base colour behind the image (in case the asset is missing)
-        with root.canvas.before:
-            Color(*_BG_BASE)
-            self._bg_rect = Rectangle(pos=root.pos, size=root.size)
-        root.bind(pos=lambda w, v: setattr(self._bg_rect, "pos", v),
-                  size=lambda w, v: setattr(self._bg_rect, "size", v))
-
-        bg_src = _vs_asset("vs_bg.png")
-        if bg_src:
-            root.add_widget(Image(source=bg_src, size_hint=(1, 1), pos_hint={"x": 0, "y": 0},
-                                  fit_mode="fill", allow_stretch=True, keep_ratio=False))
-
-        ov = Widget(size_hint=(1, 1), pos_hint={"x": 0, "y": 0})
-        with ov.canvas:
-            Color(*_OVERLAY)
-            _ovr = Rectangle(pos=ov.pos, size=ov.size)
-        ov.bind(pos=lambda w, p: setattr(_ovr, "pos", p),
-                size=lambda w, s: setattr(_ovr, "size", s))
-        root.add_widget(ov)
+        # Shared light paper-swirl background — identical to the Start-Recording /
+        # Calendar screens — so the Home page-swipe chain feels continuous.
+        attach_swirl_bg(root, BG_TOP, BG_BOT)
 
         self._build_header(root)
         self._build_tab_bar(root)
@@ -680,6 +685,7 @@ class TasksScreen(BaseScreen):
                                  ha="center", va="middle", size_hint=(1, 1),
                                  pos_hint={"x": 0, "y": 0}))
         back.bind(on_release=lambda *_: self.go_back())
+        self._back_btn = back
         root.add_widget(back)
 
         # "Tasks" title — black, 42dot Bold 40
@@ -802,8 +808,9 @@ class TasksScreen(BaseScreen):
     # ── Top-right chrome: voice pill + wifi + battery ───────────────────────────
 
     def _build_chrome(self, root: FloatLayout) -> None:
+        # Hidden at idle; only revealed while a voice session is active.
         self._voice_pill = _VoiceStatePill(**_ph(851.0, 17.0, 222.0, 47.0))
-        self._voice_pill.opacity = 1.0
+        self._voice_pill.opacity = 0.0
         try:
             self._voice_pill.set_state_text("Listening")
         except Exception:
@@ -1149,10 +1156,80 @@ class TasksScreen(BaseScreen):
         if label:
             self._voice_pill.set_state_text(label)
             self._voice_pill.opacity = 1.0
+        else:
+            self._voice_pill.opacity = 0.0
 
     # ── Lifecycle ──────────────────────────────────────────────────────────────
 
+    # ── Interactive page swipe (Tasks → Calendar) ─────────────────────────────
+
+    def _can_page(self) -> bool:
+        return self._menu_overlay is None and not any_modal_open()
+
+    def _prepare_adjacent(self, dest) -> None:
+        try:
+            dest.prime_preview()
+        except Exception:
+            logger.exception("tasks: failed to prime adjacent page preview")
+
+    def _ensure_page_translate(self) -> None:
+        if self._page_tx is not None:
+            return
+        with self.canvas.before:
+            PushMatrix()
+            self._page_tx = Translate(0, 0, 0)
+        with self.canvas.after:
+            PopMatrix()
+
+    def set_page_offset(self, dx: float) -> None:
+        self._ensure_page_translate()
+        self._page_tx.x = float(dx)
+
+    def prime_preview(self) -> None:
+        """Refresh content so the swipe preview shows live data.
+
+        Reaching Tasks via a swipe means the back button is redundant (you swipe
+        back), so hide it for the preview too — avoids a flash on commit.
+        """
+        self.set_page_offset(0.0)
+        self._set_back_visible(False)
+        try:
+            Clock.schedule_once(self._load_tasks, 0)
+        except Exception:
+            logger.debug("tasks: prime_preview failed", exc_info=True)
+
+    def _set_back_visible(self, visible: bool) -> None:
+        if self._back_btn is None:
+            return
+        self._back_btn.opacity = 1.0 if visible else 0.0
+        self._back_btn.disabled = not visible
+
+    def on_touch_down(self, touch):
+        pager = getattr(self, "_calendar_pager", None)
+        if pager is not None and pager.on_touch_down(touch):
+            return True
+        return super().on_touch_down(touch)
+
+    def on_touch_move(self, touch):
+        pager = getattr(self, "_calendar_pager", None)
+        if pager is not None and pager.on_touch_move(touch):
+            return True
+        return super().on_touch_move(touch)
+
+    def on_touch_up(self, touch):
+        pager = getattr(self, "_calendar_pager", None)
+        if pager is not None and pager.on_touch_up(touch):
+            return True
+        return super().on_touch_up(touch)
+
     def on_enter(self) -> None:
+        pager = getattr(self, "_calendar_pager", None)
+        if pager is not None:
+            pager.cancel()
+        self.set_page_offset(0.0)
+        # Show the back button only when Tasks was opened by normal navigation
+        # (e.g. voice), not when reached via the Home→Calendar→Tasks swipe chain.
+        self._set_back_visible(not self.entered_via_swipe)
         self._loading = True
         if self._list_box is not None:
             self._list_box.clear_widgets()
@@ -1164,6 +1241,11 @@ class TasksScreen(BaseScreen):
             self._refresh_ev = Clock.schedule_interval(self._load_tasks, _REFRESH_INTERVAL)
 
     def on_leave(self) -> None:
+        pager = getattr(self, "_calendar_pager", None)
+        if pager is not None:
+            pager.cancel()
+        self.set_page_offset(0.0)
+        self.entered_via_swipe = False
         self._close_menu()
         if self._refresh_ev is not None:
             self._refresh_ev.cancel()

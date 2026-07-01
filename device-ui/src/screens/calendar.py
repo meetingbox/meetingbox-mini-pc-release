@@ -29,6 +29,7 @@ from kivy.graphics import (
     Rectangle,
     RoundedRectangle,
     Scale,
+    Translate,
 )
 from kivy.properties import NumericProperty
 from kivy.uix.boxlayout import BoxLayout
@@ -40,7 +41,10 @@ from kivy.uix.widget import Widget
 
 from async_helper import run_async
 from config import ASSETS_DIR, DISPLAY_HEIGHT, DISPLAY_WIDTH, display_now, to_display_local
+from frame19_layout import BG_BOT, BG_TOP
+from page_swipe import PageSwipeController, any_modal_open
 from screens.base_screen import BaseScreen
+from ui_bg import attach_swirl_bg
 
 logger = logging.getLogger(__name__)
 
@@ -243,13 +247,36 @@ class CalendarScreen(BaseScreen):
         self._subscribed_key: str | None = None
 
         # Listening pill
+        self._pill: FloatLayout | None = None   # whole pill (hidden when idle)
         self._pill_lbl: Label | None = None
         self._pill_dot = None          # purple Color instruction
         self._pill_wave: Image | None = None
         self._voice_poll_event = None
         self._last_voice_state = None
 
+        self._page_tx = None                 # transform-only page translate
+
         self._build_ui()
+
+        # Interactive adjacent-page reveals (iOS Home-Screen feel):
+        #   left-to-right  → Home   (Home sits to the left)
+        #   right-to-left  → Tasks  (Tasks sits to the right)
+        self._home_pager = PageSwipeController(
+            self,
+            "home",
+            direction=1,
+            prepare_dest=self._prepare_adjacent,
+            commit=lambda: self.app.goto_screen("home", transition="none"),
+            can_start=self._can_page,
+        )
+        self._tasks_pager = PageSwipeController(
+            self,
+            "tasks",
+            direction=-1,
+            prepare_dest=self._prepare_adjacent,
+            commit=self._commit_to_tasks,
+            can_start=self._can_page,
+        )
 
     # ── Build ──────────────────────────────────────────────────────────────────
 
@@ -257,20 +284,10 @@ class CalendarScreen(BaseScreen):
         root = FloatLayout(size_hint=(1, 1))
         self._root_layout = root
 
-        # Background image + white 0.91 overlay (matches Figma)
-        bg_src = _asset("bg_new.png")
-        if bg_src:
-            root.add_widget(Image(source=bg_src, fit_mode="cover",
-                                  size_hint=(1, 1), pos_hint={"x": 0, "y": 0}))
-        overlay = Widget(size_hint=(1, 1), pos_hint={"x": 0, "y": 0})
-        with overlay.canvas:
-            Color(1, 1, 1, 0.91 if bg_src else 1.0)
-            self._ov_rect = Rectangle(pos=overlay.pos, size=overlay.size)
-        overlay.bind(
-            pos=lambda w, v: setattr(self._ov_rect, "pos", v),
-            size=lambda w, v: setattr(self._ov_rect, "size", v),
-        )
-        root.add_widget(overlay)
+        # Shared light paper-swirl background — identical to the Start-Recording /
+        # Processing / Summary screens — so the Home page-swipe chain feels like
+        # one continuous surface.
+        attach_swirl_bg(root, BG_TOP, BG_BOT)
 
         self._build_status_area(root)
         self._build_flip_calendar(root)
@@ -283,7 +300,10 @@ class CalendarScreen(BaseScreen):
 
     def _build_status_area(self, root: FloatLayout) -> None:
         # Listening pill — Frame 27: 867,17  222×47  r=23.5 (fully rounded)
+        # Hidden at idle; revealed only while a voice session is active.
         pill = FloatLayout(**_ph(867, 17, 222, 47))
+        pill.opacity = 0.0
+        self._pill = pill
         r = 47.0 / 2 * _scale()
         with pill.canvas.before:
             Color(*_SHADOW)
@@ -633,6 +653,10 @@ class CalendarScreen(BaseScreen):
         active = state in ("listening", "thinking", "speaking")
         label = {"listening": "Listening", "thinking": "Thinking",
                  "speaking": "Speaking"}.get(state, "Listening")
+        if self._pill is not None:
+            Animation.cancel_all(self._pill, "opacity")
+            Animation(opacity=1.0 if active else 0.0,
+                      duration=0.22, t="out_cubic").start(self._pill)
         if self._pill_lbl:
             self._pill_lbl.text = label
         if self._pill_dot is not None:
@@ -653,7 +677,81 @@ class CalendarScreen(BaseScreen):
         """Called by main.py before on_enter to jump to a specific date."""
         self._target_date = d
 
+    # ── Interactive page swipe (Calendar ⇄ Home / Tasks) ──────────────────────
+
+    def _pagers(self):
+        return (
+            getattr(self, "_home_pager", None),
+            getattr(self, "_tasks_pager", None),
+        )
+
+    def _can_page(self) -> bool:
+        return not any_modal_open()
+
+    def _prepare_adjacent(self, dest) -> None:
+        try:
+            dest.prime_preview()
+        except Exception:
+            logger.exception("calendar: failed to prime adjacent page preview")
+
+    def _commit_to_tasks(self) -> None:
+        """Settle onto Tasks, flagging it as a swipe entry (no back button)."""
+        try:
+            self.app.screen_manager.get_screen("tasks").entered_via_swipe = True
+        except Exception:
+            logger.exception("calendar: failed to flag tasks swipe entry")
+        self.app.goto_screen("tasks", transition="none")
+
+    def _ensure_page_translate(self) -> None:
+        if self._page_tx is not None:
+            return
+        with self.canvas.before:
+            PushMatrix()
+            self._page_tx = Translate(0, 0, 0)
+        with self.canvas.after:
+            PopMatrix()
+
+    def set_page_offset(self, dx: float) -> None:
+        self._ensure_page_translate()
+        self._page_tx.x = float(dx)
+
+    def prime_preview(self) -> None:
+        """Refresh content so the swipe preview shows live data."""
+        self.set_page_offset(0.0)
+        try:
+            today = display_now().date()
+            target = self._target_date if self._target_date is not None else today
+            self._sel_date = target
+            self._view_week_mon = target - timedelta(days=target.weekday())
+            self._update_day_view(target, animate=False)
+            Clock.schedule_once(lambda _dt: self._load_week(), 0)
+        except Exception:
+            logger.debug("calendar: prime_preview failed", exc_info=True)
+
+    def on_touch_down(self, touch):
+        for pager in self._pagers():
+            if pager is not None and pager.on_touch_down(touch):
+                return True
+        return super().on_touch_down(touch)
+
+    def on_touch_move(self, touch):
+        for pager in self._pagers():
+            if pager is not None and pager.on_touch_move(touch):
+                return True
+        return super().on_touch_move(touch)
+
+    def on_touch_up(self, touch):
+        for pager in self._pagers():
+            if pager is not None and pager.on_touch_up(touch):
+                return True
+        return super().on_touch_up(touch)
+
     def on_enter(self) -> None:
+        for pager in self._pagers():
+            if pager is not None:
+                pager.cancel()
+        self.set_page_offset(0.0)
+
         today = display_now().date()
         target = self._target_date if self._target_date is not None else today
 
@@ -701,6 +799,10 @@ class CalendarScreen(BaseScreen):
         self._voice_poll_event = Clock.schedule_interval(self._poll_voice_state, 0.25)
 
     def on_leave(self) -> None:
+        for pager in self._pagers():
+            if pager is not None:
+                pager.cancel()
+        self.set_page_offset(0.0)
         self._target_date = None
         if self._subscribed_key:
             self.app.ui_cache_unsubscribe(self._subscribed_key, self._on_cached_week)

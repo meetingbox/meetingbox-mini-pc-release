@@ -30,7 +30,7 @@ from kivy.clock import Clock
 from kivy.core.image import Image as CoreImage
 from kivy.graphics import (
     Color, Ellipse, Line, PopMatrix, PushMatrix,
-    Rectangle, RoundedRectangle, Scale,
+    Rectangle, RoundedRectangle, Scale, Translate,
 )
 from kivy.properties import NumericProperty
 from kivy.uix.behaviors import ButtonBehavior
@@ -42,6 +42,7 @@ from kivy.uix.widget import Widget
 from components.live_wifi_icon import LiveWifiIcon
 from components.modal_dialog import ModalDialog
 from config import ASSETS_DIR, DISPLAY_HEIGHT, DISPLAY_WIDTH, display_now
+from page_swipe import PageSwipeController
 from screens.base_screen import BaseScreen
 
 logger = logging.getLogger(__name__)
@@ -248,9 +249,10 @@ class _MicButton(ButtonBehavior, Widget):
 
     orb_scale = NumericProperty(1.0)
 
-    def __init__(self, source: str, on_tap=None, **kw):
+    def __init__(self, source: str, on_tap=None, suppress=None, **kw):
         super().__init__(**kw)
         self._on_tap = on_tap
+        self._suppress = suppress
         self._tex = None
         try:
             self._tex = CoreImage(source).texture
@@ -275,7 +277,11 @@ class _MicButton(ButtonBehavior, Widget):
         self._rect.size = self.size
         self._sync_scale()
 
-    def on_press(self):
+    def on_release(self):
+        # Fire on release (not press) so a horizontal page-swipe that begins on
+        # the orb cancels cleanly instead of triggering the voice agent.
+        if self._suppress is not None and self._suppress():
+            return
         if self._on_tap:
             self._on_tap(self)
 
@@ -481,7 +487,29 @@ class HomeScreen(BaseScreen):
         self._time_lbl:   Label           | None = None
         self._date_lbl:   Label           | None = None
         self._summary_ready_popup: _SummaryPopupPill | None = None
+        self._page_tx = None
         self._build_ui()
+        # Left-to-right reveal of the Start-Recording (READY) page, dragged
+        # directly under the finger like an adjacent iOS Home-Screen page.
+        self._fwd_pager = PageSwipeController(
+            self,
+            "recording",
+            direction=1,
+            prepare_dest=self._prepare_recording_ready,
+            commit=self._commit_to_recording_ready,
+            can_start=self._can_start_swipe,
+        )
+        # Right-to-left reveal of the Calendar page. Calendar sits to the *right*
+        # of Home (mirroring Start-Recording on the left), and Tasks sits to the
+        # right of Calendar — one continuous chain of adjacent pages.
+        self._cal_pager = PageSwipeController(
+            self,
+            "calendar",
+            direction=-1,
+            prepare_dest=self._prepare_adjacent,
+            commit=self._commit_to_calendar,
+            can_start=self._can_start_swipe,
+        )
 
     # ── Build ─────────────────────────────────────────────────────────────────
 
@@ -578,6 +606,10 @@ class HomeScreen(BaseScreen):
         self._mic_btn = _MicButton(
             source=mic_src or "",
             on_tap=self._on_mic_tapped,
+            suppress=lambda: (
+                getattr(self, "_fwd_pager", None) is not None
+                and self._fwd_pager.is_engaged
+            ),
             size_hint=(_sw(122), _sh(122)),
             pos_hint={"x": _x(570), "y": _y(415, 122)},
         )
@@ -585,9 +617,98 @@ class HomeScreen(BaseScreen):
 
         self.add_widget(root)
 
+    # ── Interactive page swipe (Home → Start Recording) ───────────────────────
+
+    def _can_start_swipe(self) -> bool:
+        # Don't hijack touches while a voice session is animating or a modal
+        # dialog is on screen.
+        if self._listening_active:
+            return False
+        for child in self.children:
+            if isinstance(child, ModalDialog):
+                return False
+        return True
+
+    def _prepare_recording_ready(self, rec) -> None:
+        """Put the borrowed recording screen into its static READY look."""
+        try:
+            rec.show_ready_preview()
+        except Exception:
+            logger.exception("home: failed to prepare recording ready preview")
+
+    def _commit_to_recording_ready(self) -> None:
+        """Settle onto the real recording screen in its READY state."""
+        try:
+            rec = self.app.screen_manager.get_screen("recording")
+            rec.enter_ready_next = True
+        except Exception:
+            logger.exception("home: failed to flag recording ready entry")
+        self.app.goto_screen("recording", transition="none")
+
+    def _prepare_adjacent(self, dest) -> None:
+        """Prime an adjacent page (Calendar) with live content for the preview."""
+        try:
+            dest.prime_preview()
+        except Exception:
+            logger.exception("home: failed to prime adjacent page preview")
+
+    def _commit_to_calendar(self) -> None:
+        """Settle onto the Calendar page."""
+        self.app.goto_screen("calendar", transition="none")
+
+    def _ensure_page_translate(self) -> None:
+        if self._page_tx is not None:
+            return
+        with self.canvas.before:
+            PushMatrix()
+            self._page_tx = Translate(0, 0, 0)
+        with self.canvas.after:
+            PopMatrix()
+
+    def set_page_offset(self, dx: float) -> None:
+        self._ensure_page_translate()
+        self._page_tx.x = float(dx)
+
+    def prime_preview(self) -> None:
+        """Refresh transient content so the back-swipe preview looks live."""
+        self.set_page_offset(0.0)
+        try:
+            self._update_clock()
+        except Exception:
+            logger.debug("home: prime_preview clock refresh failed", exc_info=True)
+
+    def _pagers(self):
+        return (
+            getattr(self, "_fwd_pager", None),
+            getattr(self, "_cal_pager", None),
+        )
+
+    def on_touch_down(self, touch):
+        for pager in self._pagers():
+            if pager is not None and pager.on_touch_down(touch):
+                return True
+        return super().on_touch_down(touch)
+
+    def on_touch_move(self, touch):
+        for pager in self._pagers():
+            if pager is not None and pager.on_touch_move(touch):
+                return True
+        return super().on_touch_move(touch)
+
+    def on_touch_up(self, touch):
+        for pager in self._pagers():
+            if pager is not None and pager.on_touch_up(touch):
+                return True
+        return super().on_touch_up(touch)
+
     # ── Lifecycle ─────────────────────────────────────────────────────────────
 
     def on_enter(self):
+        # Reset any in-flight page swipe and the page translate.
+        for pager in self._pagers():
+            if pager is not None:
+                pager.cancel()
+        self.set_page_offset(0.0)
         # Reset voice state to idle
         self._listening_active  = False
         self._current_amplitude = 0.0
@@ -618,6 +739,10 @@ class HomeScreen(BaseScreen):
         self._summary_poll_ev = Clock.schedule_interval(self._check_summary_ready, 1.5)
 
     def on_leave(self):
+        for pager in self._pagers():
+            if pager is not None:
+                pager.cancel()
+        self.set_page_offset(0.0)
         self._listening_active  = False
         self._current_amplitude = 0.0
         self._stop_waveform_tick()

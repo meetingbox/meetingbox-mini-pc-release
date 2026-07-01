@@ -954,7 +954,9 @@ class QuickPanel(FloatLayout):
             def _apply(_dt):
                 if result.get("status") == "connected":
                     self._network_lbl.text = f"Wi-Fi: Connected {ssid}"
-                    self._expand_wifi_section(rescan=False)
+                    # Re-scan so the list reflects the newly active network
+                    # instead of the stale pre-connection cache.
+                    self._expand_wifi_section(rescan=True)
                     Clock.schedule_once(lambda _x: self._refresh(), 0.10)
                     return
 

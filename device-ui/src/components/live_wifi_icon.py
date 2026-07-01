@@ -32,7 +32,7 @@ from kivy.clock import Clock
 from kivy.graphics import Color, Ellipse, Line
 from kivy.uix.widget import Widget
 
-_POLL_INTERVAL = 30.0   # seconds between background signal polls
+_POLL_INTERVAL = 10.0   # seconds between background signal polls
 _DIM_ALPHA     = 0.20   # opacity for unlit / inactive arcs
 
 
@@ -68,16 +68,27 @@ class LiveWifiIcon(Widget):
         threading.Thread(target=self._fetch, daemon=True).start()
 
     def _fetch(self) -> None:
-        signal: int | None = None
+        # Wired LAN takes precedence: hide the WiFi icon entirely when ethernet
+        # is up so the indicator never misrepresents the active connection.
+        ethernet = False
         try:
-            import wifi_nmcli_local  # noqa: PLC0415
-            signal = wifi_nmcli_local.get_current_wifi_signal()
+            import network_util  # noqa: PLC0415
+            ethernet = bool(network_util.linux_ethernet_ready())
         except Exception:  # noqa: BLE001
-            pass
-        Clock.schedule_once(lambda _dt: self._on_signal(signal), 0)
+            ethernet = False
 
-    def _on_signal(self, signal: int | None) -> None:
+        signal: int | None = None
+        if not ethernet:
+            try:
+                import wifi_nmcli_local  # noqa: PLC0415
+                signal = wifi_nmcli_local.get_current_wifi_signal()
+            except Exception:  # noqa: BLE001
+                pass
+        Clock.schedule_once(lambda _dt: self._on_signal(signal, ethernet), 0)
+
+    def _on_signal(self, signal: int | None, ethernet: bool = False) -> None:
         self._signal = signal
+        self.opacity = 0.0 if ethernet else 1.0
         self._redraw()
 
     # ── drawing ───────────────────────────────────────────────────────────────
@@ -114,8 +125,9 @@ class LiveWifiIcon(Widget):
         ]
         for i, (col, arc, frac) in enumerate(arcs):
             r = h * frac
-            # 45°-135° in Kivy's CCW system = upward-opening fan (standard WiFi shape)
-            arc.ellipse = (cx - r, cy - r, 2 * r, 2 * r, 45, 135)
+            # Kivy ellipse angles: 0° = top, increasing clockwise. A -45°→45°
+            # sweep arches over the top of the dot = upright WiFi fan (∩ shape).
+            arc.ellipse = (cx - r, cy - r, 2 * r, 2 * r, -45, 45)
             col.rgba = (r0, g0, b0, 1.0 if i < lit else _DIM_ALPHA)
 
         # Dot: bright when connected, dimmed when offline
