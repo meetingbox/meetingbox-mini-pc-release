@@ -430,6 +430,61 @@ _OS_AEC_ENABLED = (
     not in ("0", "false", "no", "off", "")
 )
 
+# Genuine WebRTC AEC3 (the echo canceller Chrome/Meet/Discord use) driven off a
+# real playback reference: WASAPI loopback on Windows, the app's own PCM on
+# macOS (see aec_reference.py). This is the PREFERRED desktop echo path — it is
+# device- and volume-agnostic (loopback is the post-mix speaker signal) and its
+# nonlinear residual suppressor gives full-duplex barge-in without muting or
+# energy heuristics. When live it becomes the mic-processing engine and we run
+# true full-duplex, superseding the OS DSP and Speex paths. Disable via
+# REALTIME_WEBRTC_AEC=0. AEC3 only accepts 16/32/48 kHz; we run it at 48 kHz
+# (loopback's native rate) and downsample the cleaned near-end to the 24 kHz
+# uplink.
+_WEBRTC_AEC_ENABLED = (
+    os.environ.get("REALTIME_WEBRTC_AEC", "1").strip().lower()
+    not in ("0", "false", "no", "off", "")
+)
+_AEC3_RATE = 48000
+
+# Residual-echo uplink gate for the AEC3 path. AEC3 delivers ~35 dB ERLE, not
+# infinite suppression: on loud consonants a little echo survives in the cleaned
+# near-end and can trip the *server* VAD (threshold ~0.85) into a phantom
+# speech_started -> a one-token transcript ("the", "."). While the assistant is
+# actually playing (far-end RMS above _AEC3_GATE_FAR_ACTIVE_RMS) we forward mic
+# frames only when the cleaned near-end RMS clearly exceeds the adaptive residual
+# floor (genuine double-talk); otherwise the frame is withheld so residual echo
+# never reaches the server VAD. When the assistant is silent the gate is fully
+# open, so normal user turns are never affected. A short preroll is flushed when
+# the gate opens so the first syllable of a real barge-in is not clipped, and a
+# hangover keeps it open through natural pauses. Disable via
+# REALTIME_AEC3_RESIDUAL_GATE=0.
+_AEC3_RESIDUAL_GATE_ENABLED = (
+    os.environ.get("REALTIME_AEC3_RESIDUAL_GATE", "1").strip().lower()
+    not in ("0", "false", "no", "off", "")
+)
+# Far-end RMS above which the assistant is considered "playing" (gate armed).
+_AEC3_GATE_FAR_ACTIVE_RMS = _env_float(
+    "REALTIME_AEC3_GATE_FAR_ACTIVE_RMS", 200.0, minimum=1.0
+)
+# Absolute near-end RMS floor a frame must clear to count as real speech while
+# the assistant is playing. Genuine speech is ~1500-5000; post-AEC echo residual
+# is far lower, so this cleanly separates them.
+_AEC3_GATE_MIN_RMS = _env_float(
+    "REALTIME_AEC3_GATE_MIN_RMS", 550.0 if IS_DESKTOP else 750.0, minimum=100.0
+)
+# A frame must also exceed the adaptive residual floor by this ratio.
+_AEC3_GATE_FLOOR_RATIO = _env_float(
+    "REALTIME_AEC3_GATE_FLOOR_RATIO", 3.0, minimum=1.2
+)
+# Keep the gate open this long after the last speech frame (natural pauses).
+_AEC3_GATE_HANGOVER_S = _env_float(
+    "REALTIME_AEC3_GATE_HANGOVER_S", 0.4, minimum=0.0, maximum=2.0
+)
+# Preroll flushed when the gate opens so a real barge-in's first syllable is kept.
+_AEC3_GATE_PREROLL_S = _env_float(
+    "REALTIME_AEC3_GATE_PREROLL_S", 0.15, minimum=0.0, maximum=0.5
+)
+
 # Live on-screen captions WHILE the user speaks. OpenAI's input transcription
 # only runs AFTER end-of-turn (post-commit), so it can't show words mid-speech.
 # To fill that gap we run the on-device Vosk model (the same one used for wake
@@ -981,6 +1036,56 @@ class RealtimeVoiceSession:
         except Exception:
             self._os_aec = None
             logger.debug("OS AEC init failed", exc_info=True)
+
+        # Genuine WebRTC AEC3 — the preferred desktop echo path. We build the
+        # engine and the OS far-end reference lazily at session-open (below);
+        # here we only probe availability so the log/route reflect the real
+        # decision. The engine runs at 48 kHz on its own near/far buffers and
+        # the mic pump downsamples the cleaned output to the 24 kHz uplink.
+        self._aec3 = None
+        self._far_ref = None
+        self._aec3_full_duplex = False
+        self._aec3_in_resampler: _AntiAliasResampler | None = None   # mic -> 48k
+        self._aec3_out_resampler: _AntiAliasResampler | None = None  # 48k -> 24k
+        # Residual-echo uplink gate state (AEC3 path).
+        self._aec3_gate_open_until = 0.0
+        self._aec3_residual_floor = 0.0
+        self._aec3_gate_preroll: deque[bytes] = deque()
+        self._aec3_gate_preroll_bytes = 0
+        self._aec3_gate_suppressed = 0
+        self._aec3_gate_last_log = 0.0
+        self._webrtc_aec_available = False
+        try:
+            if not (_WEBRTC_AEC_ENABLED and IS_DESKTOP):
+                logger.info(
+                    "Realtime AEC: WebRTC AEC3 disabled (REALTIME_WEBRTC_AEC=%s, desktop=%s)",
+                    _WEBRTC_AEC_ENABLED, IS_DESKTOP,
+                )
+            else:
+                import webrtc_apm
+                import aec_reference
+                if not webrtc_apm.is_available():
+                    logger.warning(
+                        "Realtime AEC: WebRTC AEC3 module not importable (%s) — "
+                        "falling back to OS DSP / Speex",
+                        getattr(webrtc_apm, "import_error", None),
+                    )
+                elif not (aec_reference._IS_WIN or aec_reference._IS_MAC):
+                    logger.info(
+                        "Realtime AEC: WebRTC AEC3 present but no OS far-end "
+                        "reference on this platform — falling back"
+                    )
+                else:
+                    self._webrtc_aec_available = True
+                    logger.info(
+                        "Realtime AEC: WebRTC AEC3 engine available "
+                        "(will use AEC3 + %s far-end reference, full-duplex)",
+                        "WASAPI loopback" if aec_reference._IS_WIN
+                        else "app-playback",
+                    )
+        except Exception:
+            self._webrtc_aec_available = False
+            logger.warning("WebRTC AEC3 availability probe failed", exc_info=True)
 
         # Live caption (on-device Vosk partials while the user speaks). Enabled
         # only when the feature flag is on AND a preloaded Vosk model was handed
@@ -1780,7 +1885,8 @@ class RealtimeVoiceSession:
 
         return preferred, candidates
 
-    def _open_mic(self, preferred_device_id, candidate_device_ids) -> bool:
+    def _open_mic(self, preferred_device_id, candidate_device_ids,
+                  sample_rates=None) -> bool:
         if sd is None:
             self._emit_error("sounddevice not installed; microphone unavailable.")
             return False
@@ -1791,10 +1897,13 @@ class RealtimeVoiceSession:
         # it we fall back through 16 kHz (clean upsample) before the higher
         # rates that force our own downsample. The appliance keeps its original
         # order (its USB mic is natively 16 kHz / 48 kHz).
-        if IS_DESKTOP:
-            sample_rates = (_REALTIME_RATE, 16000, 48000, 32000, 44100)
-        else:
-            sample_rates = (48000, 44100, 32000, 16000, _REALTIME_RATE)
+        # ``sample_rates`` overrides this order (the AEC3 path prefers a native
+        # 48 kHz capture so the near-end matches the loopback reference rate).
+        if sample_rates is None:
+            if IS_DESKTOP:
+                sample_rates = (_REALTIME_RATE, 16000, 48000, 32000, 44100)
+            else:
+                sample_rates = (48000, 44100, 32000, 16000, _REALTIME_RATE)
 
         tried: list = []
         for dev in [preferred_device_id, *candidate_device_ids]:
@@ -1970,8 +2079,17 @@ class RealtimeVoiceSession:
         # Skipped entirely when the OS AEC is the mic source: it cancels echo at
         # the source and never reads this ring, so filling it would just be
         # wasted work.
+        # AEC3 (macOS): hand the far-end reference the exact PCM we're about to
+        # play so it can cancel it from the mic. Windows loopback captures the
+        # real speaker output itself, so its reference ignores this feed.
+        if self._far_ref is not None and not self._far_ref.active_capture:
+            try:
+                self._far_ref.feed_playback(raw)
+            except Exception:
+                logger.debug("far-ref feed_playback failed", exc_info=True)
         if (
             not self._os_aec_full_duplex
+            and not self._aec3_full_duplex
             and (self._aec is not None or _LOCAL_BARGE_IN_ENABLED)
         ):
             with self._aec_buf_lock:
@@ -2123,13 +2241,30 @@ class RealtimeVoiceSession:
                     self._safe_call(self._on_before_open_mic_cb)
                     await asyncio.sleep(0.01)
 
+                # PREFERRED: genuine WebRTC AEC3 driven by a real playback
+                # reference (WASAPI loopback / app-PCM). Opens a normal mic and
+                # cancels the assistant's echo in software with device- and
+                # volume-agnostic quality. When it goes live it becomes the mic
+                # engine, runs true full-duplex, and supersedes the OS DSP and
+                # Speex paths. Falls through cleanly if anything is unavailable.
+                aec3_live = False
+                if self._webrtc_aec_available:
+                    try:
+                        aec3_live = self._start_aec3_capture()
+                    except Exception:
+                        logger.debug("AEC3 capture start failed", exc_info=True)
+                        aec3_live = False
+                    if aec3_live:
+                        # AEC3 owns the mic; do not also start the OS DSP.
+                        self._os_aec = None
+
                 # Prefer the OS echo canceller. In source mode it opens the
                 # default communications mic itself and returns clean,
                 # echo-cancelled audio, so we must NOT also open a PortAudio mic
                 # on the same device. When it starts, it becomes the mic source,
                 # supersedes Speex, and we run full-duplex.
                 os_aec_live = False
-                if self._os_aec is not None:
+                if not aec3_live and self._os_aec is not None:
                     try:
                         if self._os_aec.start():
                             os_aec_live = True
@@ -2166,7 +2301,7 @@ class RealtimeVoiceSession:
                         logger.debug("OS AEC start failed", exc_info=True)
                         self._os_aec = None
 
-                if not os_aec_live:
+                if not aec3_live and not os_aec_live:
                     preferred, candidates = self._resolve_input_device()
                     if not self._open_mic(preferred, candidates):
                         self._emit_error("Realtime: microphone unavailable.")
@@ -2243,6 +2378,19 @@ class RealtimeVoiceSession:
                     pass
                 self._os_aec = None
                 self._os_aec_full_duplex = False
+            if self._far_ref is not None:
+                try:
+                    self._far_ref.stop()
+                except Exception:
+                    pass
+                self._far_ref = None
+            if self._aec3 is not None:
+                try:
+                    self._aec3.close()
+                except Exception:
+                    pass
+                self._aec3 = None
+                self._aec3_full_duplex = False
             try:
                 self._aplay_writer.shutdown(wait=False, cancel_futures=True)
             except Exception:
@@ -2258,6 +2406,89 @@ class RealtimeVoiceSession:
     # ------------------------------------------------------------------
     # Echo cancellation
     # ------------------------------------------------------------------
+
+    def _start_aec3_capture(self) -> bool:
+        """Bring up the WebRTC AEC3 full-duplex path. Returns True on success.
+
+        Starts the OS far-end reference (loopback / app-PCM at 48 kHz), opens a
+        normal PortAudio mic (preferring a native 48 kHz capture so the near-end
+        matches the reference), and constructs the AEC3 engine. On any failure it
+        tears down cleanly and returns False so the caller falls back to the OS
+        DSP / Speex paths.
+        """
+        import webrtc_apm
+        from aec_reference import create_reference
+
+        ref = create_reference(rate=_AEC3_RATE)
+        if ref is None:
+            logger.info("Realtime AEC: no far-end reference available; skipping AEC3")
+            return False
+        if not ref.start():
+            logger.warning(
+                "Realtime AEC: far-end reference failed to start (%s); skipping AEC3",
+                getattr(ref, "last_error", None),
+            )
+            try:
+                ref.stop()
+            except Exception:
+                pass
+            return False
+
+        # Open a normal mic; prefer a native 48 kHz capture (AEC3's rate).
+        preferred, candidates = self._resolve_input_device()
+        if not self._open_mic(
+            preferred, candidates,
+            sample_rates=(_AEC3_RATE, 32000, 16000, 44100, _REALTIME_RATE),
+        ):
+            logger.warning("Realtime AEC: mic open failed for AEC3 path")
+            try:
+                ref.stop()
+            except Exception:
+                pass
+            return False
+
+        try:
+            self._aec3 = webrtc_apm.WebRtcAEC(
+                sample_rate=_AEC3_RATE,
+                noise_suppression=True,
+                high_pass_filter=True,
+                auto_gain_control=False,
+            )
+        except Exception:
+            logger.exception("Realtime AEC: AEC3 engine construction failed")
+            self._close_mic()
+            try:
+                ref.stop()
+            except Exception:
+                pass
+            return False
+
+        self._far_ref = ref
+        self._aec3_full_duplex = True
+        # Genuinely echo-free near-end -> true full-duplex (server VAD +
+        # interrupt_response own barge-in; no muting / energy heuristics).
+        self._half_duplex = False
+        # AEC3 removes echo in software: disable Speex so nothing double-cancels.
+        if self._aec is not None:
+            try:
+                self._aec.close()
+            except Exception:
+                pass
+            self._aec = None
+        logger.info(
+            "Realtime AEC: WebRTC AEC3 live — %s far-end reference @ %d Hz, "
+            "mic @ %d Hz, full-duplex barge-in (device='%s')",
+            "active-capture" if getattr(ref, "active_capture", False) else "app-fed",
+            _AEC3_RATE, self._mic_native_sr, getattr(ref, "device_name", "?"),
+        )
+        self._log_voice_event(
+            "aec_engine",
+            engine="webrtc_aec3",
+            reference="loopback" if getattr(ref, "active_capture", False) else "app_pcm",
+            aec_rate=_AEC3_RATE,
+            mic_rate=self._mic_native_sr,
+        )
+        return True
 
     def _on_os_aec_frames(self, pcm16: bytes) -> None:
         """Mic source feeder for the Windows Voice Capture DSP.
@@ -2521,6 +2752,59 @@ class RealtimeVoiceSession:
         np.clip(s, -32768.0, 32767.0, out=s)
         return s.astype(np.int16).tobytes()
 
+    def _aec3_gate_should_send(self, near_pcm24: bytes, far_pcm48: bytes) -> bool:
+        """Residual-echo gate for the AEC3 uplink.
+
+        Returns True if the cleaned near-end frame should be forwarded to the
+        server. While the assistant is playing, frames that merely sit at the
+        post-AEC echo-residual floor are withheld so leftover echo cannot trip
+        the server VAD into a phantom turn; genuine double-talk (clearly louder
+        than the residual floor) passes through immediately. When the assistant
+        is silent the gate is fully open, so normal user turns are untouched.
+        """
+        if not _AEC3_RESIDUAL_GATE_ENABLED:
+            return True
+        far_rms = self._pcm_rms(far_pcm48)
+        # Assistant effectively silent -> no echo risk; keep the gate wide open.
+        if far_rms < _AEC3_GATE_FAR_ACTIVE_RMS:
+            self._aec3_gate_open_until = 0.0
+            self._aec3_residual_floor = 0.0
+            if self._aec3_gate_preroll:
+                self._aec3_gate_preroll.clear()
+                self._aec3_gate_preroll_bytes = 0
+            return True
+        near_rms = self._pcm_rms(near_pcm24)
+        floor = self._aec3_residual_floor
+        threshold = max(_AEC3_GATE_MIN_RMS, floor * _AEC3_GATE_FLOOR_RATIO)
+        now = time.monotonic()
+        if near_rms >= threshold:
+            self._aec3_gate_open_until = now + _AEC3_GATE_HANGOVER_S
+            return True
+        if now < self._aec3_gate_open_until:
+            return True
+        # Residual echo only: seed/adapt the floor from real residual frames and
+        # withhold the frame (never seed the floor from a speech-level sample).
+        self._aec3_residual_floor = (
+            near_rms if floor <= 0.0 else (floor * 0.95) + (near_rms * 0.05)
+        )
+        self._aec3_gate_preroll.append(near_pcm24)
+        self._aec3_gate_preroll_bytes += len(near_pcm24)
+        budget = int(_REALTIME_RATE * 2 * _AEC3_GATE_PREROLL_S)
+        while self._aec3_gate_preroll_bytes > budget and len(self._aec3_gate_preroll) > 1:
+            dropped = self._aec3_gate_preroll.popleft()
+            self._aec3_gate_preroll_bytes -= len(dropped)
+        self._aec3_gate_suppressed += 1
+        if now - self._aec3_gate_last_log >= 2.0:
+            self._aec3_gate_last_log = now
+            self._log_voice_event(
+                "aec3_residual_gated",
+                near_rms=round(near_rms, 1),
+                far_rms=round(far_rms, 1),
+                threshold=round(threshold, 1),
+                suppressed=self._aec3_gate_suppressed,
+            )
+        return False
+
     def _drain_far(self, nbytes: int) -> None:
         """Drop ``nbytes`` from the FRONT of the AEC far-end ring.
 
@@ -2542,7 +2826,14 @@ class RealtimeVoiceSession:
         ws = self._ws
         loop = asyncio.get_running_loop()
         native_sr = self._mic_native_sr
-        if IS_DESKTOP and native_sr != _REALTIME_RATE:
+        if self._aec3_full_duplex:
+            # AEC3 path: near-end mic -> 48 kHz (engine rate), cleaned -> 24 kHz
+            # uplink. Anti-aliased resamplers (built once the capture rate is
+            # known); identity when the mic is already at 48 kHz.
+            if native_sr != _AEC3_RATE:
+                self._aec3_in_resampler = _AntiAliasResampler(native_sr, _AEC3_RATE)
+            self._aec3_out_resampler = _AntiAliasResampler(_AEC3_RATE, _REALTIME_RATE)
+        elif IS_DESKTOP and native_sr != _REALTIME_RATE:
             self._mic_resampler = _AntiAliasResampler(native_sr, _REALTIME_RATE)
         resampler = self._mic_resampler
 
@@ -2559,6 +2850,38 @@ class RealtimeVoiceSession:
             if not piece:
                 continue
             try:
+                # WebRTC AEC3 full-duplex path (preferred desktop echo engine).
+                # Cancel the assistant's echo in software against the real
+                # playback reference, then stream the clean near-end
+                # continuously — server VAD + interrupt_response own barge-in.
+                # No Speex, no mic muting, no energy heuristics. This is the
+                # ChatGPT/Meet-grade model and the whole point of AEC3.
+                if self._aec3_full_duplex:
+                    if self._aec3_in_resampler is not None:
+                        near48 = self._aec3_in_resampler.process(piece)
+                    else:
+                        near48 = piece
+                    near48 = self._apply_input_gain(near48)
+                    far48 = self._far_ref.read(len(near48)) if self._far_ref else b""
+                    cleaned48 = self._aec3.process(near48, far48)
+                    cleaned24 = (
+                        self._aec3_out_resampler.process(cleaned48)
+                        if self._aec3_out_resampler is not None else cleaned48
+                    )
+                    if cleaned24:
+                        # Residual-echo gate: withhold echo-only frames so AEC3
+                        # leftovers never trip the server VAD into a phantom
+                        # turn; pass genuine speech (+ preroll) straight through.
+                        if self._aec3_gate_should_send(cleaned24, far48):
+                            if self._aec3_gate_preroll:
+                                preroll = list(self._aec3_gate_preroll)
+                                self._aec3_gate_preroll.clear()
+                                self._aec3_gate_preroll_bytes = 0
+                                for pf in preroll:
+                                    await self._upload_resampled_audio(ws, pf)
+                            await self._upload_resampled_audio(ws, cleaned24)
+                    continue
+
                 if resampler is not None:
                     resampled = resampler.process(piece)
                 else:

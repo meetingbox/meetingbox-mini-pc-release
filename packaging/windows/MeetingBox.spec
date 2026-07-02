@@ -54,14 +54,37 @@ if _speexdsp_dll.is_file():
     datas += [(str(_speexdsp_dll), os.path.join("vendor", "windows"))]
 
 # Third-party packages that ship data / need full collection.
+#
+# ``pywebrtc_audio``  – genuine WebRTC AEC3 (native _webrtc_audio*.pyd). Our
+#   built-from-source wheel (pybind11<3); powers the preferred full-duplex echo
+#   path via webrtc_apm.py. collect_all grabs the package + its .pyd.
+# ``pyaudiowpatch``   – WASAPI loopback capture for the AEC far-end reference.
+#   Its native extension is the top-level ``_portaudiowpatch`` .pyd (pinned as a
+#   hidden import below so PyInstaller bundles it).
 binaries = []
 hiddenimports = []
-for pkg in ("vosk", "sounddevice", "_cffi_backend", "cffi"):
+for pkg in ("vosk", "sounddevice", "_cffi_backend", "cffi",
+            "pywebrtc_audio", "pyaudiowpatch"):
     try:
         d, b, h = collect_all(pkg)
         datas += d
         binaries += b
         hiddenimports += h
+    except Exception:
+        pass
+
+# Explicitly bundle the native extension modules for AEC3 + WASAPI loopback.
+# collect_all returns them only as hidden imports (not binaries), so pin the
+# actual ``.pyd`` files by path to guarantee they land in the payload:
+#   * pywebrtc_audio/_webrtc_audio*.pyd  -> inside the package dir
+#   * _portaudiowpatch*.pyd              -> top-level (PyAudioWPatch's C ext)
+import importlib.util as _ilu
+for _mod, _dest in (("pywebrtc_audio._webrtc_audio", "pywebrtc_audio"),
+                    ("_portaudiowpatch", ".")):
+    try:
+        _spec = _ilu.find_spec(_mod)
+        if _spec and _spec.origin and os.path.isfile(_spec.origin):
+            binaries += [(_spec.origin, _dest)]
     except Exception:
         pass
 
@@ -88,10 +111,21 @@ hiddenimports += [
     "tts_windows",
     "audio_output",
     # OS-grade AEC via the Windows Voice Capture DSP (lazy-imported inside
-    # RealtimeVoiceSession; drives comtypes COM/DMO directly). This is the
-    # single echo/barge-in solution on Windows.
+    # RealtimeVoiceSession; drives comtypes COM/DMO directly).
     "windows_aec",
     "windows_aec_dmo",
+    # Preferred desktop echo path: genuine WebRTC AEC3 + WASAPI loopback
+    # reference. All lazy-imported inside RealtimeVoiceSession, so pin them so
+    # static analysis can never drop them. ``_portaudiowpatch`` is PyAudioWPatch's
+    # top-level native extension; ``_webrtc_audio`` is the AEC3 .pyd.
+    "webrtc_apm",
+    "aec_reference",
+    "aec_reference_windows",
+    "aec_reference_macos",
+    "pywebrtc_audio",
+    "pywebrtc_audio._webrtc_audio",
+    "pyaudiowpatch",
+    "_portaudiowpatch",
     "google_signin",
     "mic_permission",
     "kivy.core.window.window_sdl2",
