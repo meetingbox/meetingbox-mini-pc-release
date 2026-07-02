@@ -466,6 +466,12 @@ _AEC3_RESIDUAL_GATE_ENABLED = (
 _AEC3_GATE_FAR_ACTIVE_RMS = _env_float(
     "REALTIME_AEC3_GATE_FAR_ACTIVE_RMS", 200.0, minimum=1.0
 )
+# Keep "assistant is still effectively playing" armed briefly after far-end RMS
+# dips below the active threshold. This avoids flicker around the tail and
+# blocks residual echo bursts that otherwise sneak through as one-token turns.
+_AEC3_GATE_FAR_ACTIVE_HANGOVER_S = _env_float(
+    "REALTIME_AEC3_GATE_FAR_ACTIVE_HANGOVER_S", 0.45, minimum=0.0, maximum=2.0
+)
 # Absolute near-end RMS floor a frame must clear to count as real speech while
 # the assistant is playing. Genuine speech is ~1500-5000; post-AEC echo residual
 # is far lower, so this cleanly separates them.
@@ -484,6 +490,13 @@ _AEC3_GATE_HANGOVER_S = _env_float(
 _AEC3_GATE_PREROLL_S = _env_float(
     "REALTIME_AEC3_GATE_PREROLL_S", 0.15, minimum=0.0, maximum=0.5
 )
+# If a tiny transcript slips through while assistant audio is still playing
+# (or in the immediate playback tail), treat it as likely echo-phantom and drop
+# it client-side before it can trigger a bogus assistant reply.
+_AEC3_PHANTOM_TRANSCRIPT_TAIL_S = _env_float(
+    "REALTIME_AEC3_PHANTOM_TRANSCRIPT_TAIL_S", 1.0, minimum=0.0, maximum=3.0
+)
+_AEC3_PHANTOM_SINGLE_WORDS = frozenset({"it", "the", "and", "a", "an", "to", "of", "uh", "um"})
 
 # Live on-screen captions WHILE the user speaks. OpenAI's input transcription
 # only runs AFTER end-of-turn (post-commit), so it can't show words mid-speech.
@@ -1049,6 +1062,7 @@ class RealtimeVoiceSession:
         self._aec3_out_resampler: _AntiAliasResampler | None = None  # 48k -> 24k
         # Residual-echo uplink gate state (AEC3 path).
         self._aec3_gate_open_until = 0.0
+        self._aec3_far_active_until = 0.0
         self._aec3_residual_floor = 0.0
         self._aec3_gate_preroll: deque[bytes] = deque()
         self._aec3_gate_preroll_bytes = 0
@@ -2764,9 +2778,14 @@ class RealtimeVoiceSession:
         """
         if not _AEC3_RESIDUAL_GATE_ENABLED:
             return True
+        now = time.monotonic()
         far_rms = self._pcm_rms(far_pcm48)
-        # Assistant effectively silent -> no echo risk; keep the gate wide open.
-        if far_rms < _AEC3_GATE_FAR_ACTIVE_RMS:
+        # Arm assistant-active when playback energy is present, then keep it
+        # armed briefly through the playback tail to avoid threshold flicker.
+        if far_rms >= _AEC3_GATE_FAR_ACTIVE_RMS:
+            self._aec3_far_active_until = now + _AEC3_GATE_FAR_ACTIVE_HANGOVER_S
+        if now >= self._aec3_far_active_until:
+            # Assistant effectively silent -> no echo risk; keep the gate open.
             self._aec3_gate_open_until = 0.0
             self._aec3_residual_floor = 0.0
             if self._aec3_gate_preroll:
@@ -2776,7 +2795,6 @@ class RealtimeVoiceSession:
         near_rms = self._pcm_rms(near_pcm24)
         floor = self._aec3_residual_floor
         threshold = max(_AEC3_GATE_MIN_RMS, floor * _AEC3_GATE_FLOOR_RATIO)
-        now = time.monotonic()
         if near_rms >= threshold:
             self._aec3_gate_open_until = now + _AEC3_GATE_HANGOVER_S
             return True
@@ -2804,6 +2822,31 @@ class RealtimeVoiceSession:
                 suppressed=self._aec3_gate_suppressed,
             )
         return False
+
+    def _should_drop_aec3_phantom_transcript(self, text: str) -> bool:
+        """Heuristic guard for tiny echo-only transcripts on AEC3 sessions.
+
+        AEC3 removes most echo, but on some laptop paths a tiny residual can
+        still trigger a server VAD micro-turn near assistant playback tail,
+        producing one-token transcripts like "." / "it" / "the". Drop only
+        those tiny fragments and only while assistant playback is still active
+        (or immediately after it).
+        """
+        spoken = (text or "").strip()
+        if not spoken:
+            return False
+        if not self._aec3_full_duplex:
+            return False
+        now = time.monotonic()
+        if now > (self._assistant_audio_play_until + _AEC3_PHANTOM_TRANSCRIPT_TAIL_S):
+            return False
+        norm = _normalize_words(spoken)
+        if not norm:
+            return True
+        words = norm.split()
+        if len(words) != 1:
+            return False
+        return words[0] in _AEC3_PHANTOM_SINGLE_WORDS
 
     def _drain_far(self, nbytes: int) -> None:
         """Drop ``nbytes`` from the FRONT of the AEC far-end ring.
@@ -3176,6 +3219,27 @@ class RealtimeVoiceSession:
                     if spoken and _is_prompt_echo(spoken):
                         logger.debug("Realtime: dropped prompt-echo phantom %r", spoken)
                         spoken = ""
+                    if spoken and self._should_drop_aec3_phantom_transcript(spoken):
+                        logger.info("Realtime: dropped probable AEC3 phantom %r", spoken)
+                        self._log_voice_event(
+                            "phantom_transcript_dropped",
+                            text=spoken,
+                            source="aec3_tail_guard",
+                        )
+                        spoken = ""
+                        # Best-effort: if the server already started forming a
+                        # response for this phantom micro-turn, stop it.
+                        try:
+                            await ws.send(json.dumps({"type": "response.cancel"}))
+                            self._log_voice_event(
+                                "response_cancel_sent",
+                                source="phantom_transcript_guard",
+                            )
+                        except Exception:
+                            logger.debug(
+                                "phantom transcript response.cancel failed",
+                                exc_info=True,
+                            )
                     if spoken:
                         logger.info("User said: %r", spoken)
                         self._log_voice_event(

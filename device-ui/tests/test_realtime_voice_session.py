@@ -301,3 +301,72 @@ def test_far_ref_slice_uses_most_recent_audio(monkeypatch):
     ref = session._far_ref_slice(len(new))
     ref_rms = session._pcm_rms(ref)
     assert ref_rms > 1500
+
+
+def test_aec3_gate_holds_far_tail_before_reopening(monkeypatch):
+    import realtime_voice_session as rtv
+
+    monkeypatch.setattr(rtv, "sd", None)
+    monkeypatch.setattr(rtv, "_AEC3_RESIDUAL_GATE_ENABLED", True)
+    monkeypatch.setattr(rtv, "_AEC3_GATE_FAR_ACTIVE_RMS", 200.0)
+    monkeypatch.setattr(rtv, "_AEC3_GATE_FAR_ACTIVE_HANGOVER_S", 0.45)
+    monkeypatch.setattr(rtv, "_AEC3_GATE_MIN_RMS", 550.0)
+    monkeypatch.setattr(rtv, "_AEC3_GATE_FLOOR_RATIO", 3.0)
+
+    now = {"t": 10.0}
+    monkeypatch.setattr(rtv.time, "monotonic", lambda: now["t"])
+
+    session = RealtimeVoiceSession(
+        client_secret="ek_test",
+        model="gpt-realtime-2",
+        backend_base_url="http://127.0.0.1:8000",
+        device_token="mbd_test",
+        on_session_end=lambda: None,
+        on_error=lambda _msg: None,
+        on_connected=lambda: None,
+    )
+
+    near_quiet = (np.ones(480, dtype=np.int16) * 10).tobytes()
+    far_loud = (np.ones(480, dtype=np.int16) * 400).tobytes()
+    far_tail = (np.ones(480, dtype=np.int16) * 20).tobytes()
+
+    # Assistant audio is active -> quiet frame is suppressed.
+    assert session._aec3_gate_should_send(near_quiet, far_loud) is False
+
+    # Far-end dipped below threshold, but still inside far-active hangover.
+    now["t"] = 10.2
+    assert session._aec3_gate_should_send(near_quiet, far_tail) is False
+
+    # After hangover expires, gate reopens immediately.
+    now["t"] = 10.7
+    assert session._aec3_gate_should_send(near_quiet, far_tail) is True
+
+
+def test_aec3_phantom_transcript_guard_drops_tiny_tail_fragments(monkeypatch):
+    import realtime_voice_session as rtv
+
+    monkeypatch.setattr(rtv, "sd", None)
+    monkeypatch.setattr(rtv, "_AEC3_PHANTOM_TRANSCRIPT_TAIL_S", 1.0)
+
+    now = {"t": 20.0}
+    monkeypatch.setattr(rtv.time, "monotonic", lambda: now["t"])
+
+    session = RealtimeVoiceSession(
+        client_secret="ek_test",
+        model="gpt-realtime-2",
+        backend_base_url="http://127.0.0.1:8000",
+        device_token="mbd_test",
+        on_session_end=lambda: None,
+        on_error=lambda _msg: None,
+        on_connected=lambda: None,
+    )
+    session._aec3_full_duplex = True
+    session._assistant_audio_play_until = 20.4
+
+    assert session._should_drop_aec3_phantom_transcript(".") is True
+    assert session._should_drop_aec3_phantom_transcript("the") is True
+    assert session._should_drop_aec3_phantom_transcript("next one") is False
+
+    # Outside assistant playback tail, keep transcripts untouched.
+    now["t"] = 22.0
+    assert session._should_drop_aec3_phantom_transcript(".") is False
