@@ -2556,11 +2556,15 @@ class RealtimeVoiceSession:
                 return
             self._far_ref_via_player = on_pcm is not None
             if on_pcm is not None:
-                # Silence cushion so mic-side scheduling jitter drains the
-                # cushion instead of underrunning the reference ring (an
-                # underrun inserts zeros that shift the far timeline).
+                # The reference is now fed at device pace: enable its
+                # ride-height control (underrun re-prime + overrun trim +
+                # starvation flag) and top the silence cushion up so mic-side
+                # scheduling jitter drains the cushion instead of underrunning
+                # the ring (an underrun inserts zeros that shift the far
+                # timeline).
                 try:
-                    far_ref.prime(80.0)
+                    far_ref.device_paced = True
+                    far_ref.prime()
                 except Exception:
                     pass
             self._win_player = player
@@ -3598,22 +3602,23 @@ class RealtimeVoiceSession:
                 self._aec3_gate_open_until = now + _AEC3_GATE_HANGOVER_S
             return True
 
-        # AEC-blind guard — LOOPBACK references only: the assistant is playing
-        # but the loopback capture has not caught up (onset lag / dropout ->
-        # far_rms ~ 0). With no reference signal AEC3 cannot subtract anything,
-        # so whatever the mic hears right now is uncancellable echo we cannot
-        # verify. Drop it outright so raw playback echo can never reach the
-        # server transcriber.
-        #
-        # The render-fed reference can never be blind: it receives the exact
-        # blocks the device renders, so far_rms ~ 0 during playback means the
-        # speaker is genuinely silent at this instant (a pause between TTS
-        # words) — mic energy then may be REAL user onset and must flow into
-        # the normal near-vs-residual logic below, not be dropped.
+        # AEC-blind guard: the assistant is playing but the reference has no
+        # signal (far_rms ~ 0). With no reference AEC3 cannot subtract
+        # anything, so whatever the mic hears right now is uncancellable echo
+        # we cannot verify. Drop it outright so raw playback echo can never
+        # reach the server transcriber. Two ways a reference goes blind:
+        #   * loopback captures (active_capture) lag playback onset or drop
+        #     out — always eligible;
+        #   * the render-fed ring just underran (consumer clock ran ahead of
+        #     the device tap) — eligible only while its starvation flag is
+        #     up. Outside starvation, render-fed far silence is ground truth
+        #     (a genuine pause between TTS words), and mic energy then may be
+        #     REAL user onset that must flow into the normal near-vs-residual
+        #     logic below, not be dropped.
         reference_live = far_rms >= _AEC3_GATE_FAR_ACTIVE_RMS
         reference_can_go_blind = bool(
             getattr(self._far_ref, "active_capture", False)
-        )
+        ) or bool(getattr(self._far_ref, "starved_recently", False))
         if playback_active and not reference_live and reference_can_go_blind:
             self._aec3_gate_consecutive = 0
             self._aec3_gate_suppressed += 1

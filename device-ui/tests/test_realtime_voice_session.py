@@ -1281,6 +1281,90 @@ def test_app_playback_reference_prime_feed_clear():
     assert ref.read(48000 * 2) == b""
 
 
+def test_app_playback_reference_ride_height_control():
+    """Device-paced mode: an underrun returns exact-length silence-padded
+    PCM, flags the reference starved, and restores the cushion; chronic
+    overrun snaps occupancy back to the cushion. Both keep the far/near
+    misalignment bounded so AEC3 can always re-converge."""
+    from aec_reference import AppPlaybackReference
+
+    ref = AppPlaybackReference(rate=48000, feed_rate=48000)
+    ref.device_paced = True
+    # Ring holds 10 ms but the consumer asks for 20 ms -> underrun.
+    ref.feed_playback((np.ones(480, dtype=np.int16) * 2000).tobytes())
+    out = ref.read(48000 * 2 // 50)  # 20 ms @ 48 kHz
+    assert len(out) == 48000 * 2 // 50  # exact-length, zero-padded
+    assert ref.starved_recently is True
+    assert ref.underruns == 1
+    # Cushion restored: the next cushion-sized read succeeds fully.
+    cushion_bytes = ref._ms_to_bytes(ref.CUSHION_MS)
+    assert len(ref.read(cushion_bytes)) == cushion_bytes
+    # Overrun: occupancy far beyond high water is trimmed back to cushion.
+    ref.feed_playback(b"\x00" * ref._ms_to_bytes(560.0))
+    ref.read(2)
+    assert ref._ring.occupancy() <= ref._ms_to_bytes(ref.CUSHION_MS)
+    assert ref.overruns == 1
+
+
+def test_app_playback_reference_fallback_feed_keeps_old_semantics():
+    """Without device pacing (aplay fallback feed at websocket pace) the ring
+    must keep its original behavior: short reads stay short, no starvation
+    flag, no occupancy trimming — occupancy legitimately swings with the
+    queued response there."""
+    from aec_reference import AppPlaybackReference
+
+    ref = AppPlaybackReference(rate=48000, feed_rate=48000)
+    ref.feed_playback((np.ones(480, dtype=np.int16) * 2000).tobytes())
+    out = ref.read(48000 * 2 // 50)
+    assert len(out) == 480 * 2  # short read, not padded
+    assert ref.starved_recently is False
+    assert ref.underruns == 0
+
+
+def test_aec3_gate_blind_drops_when_render_reference_starved(monkeypatch):
+    """A starved render-fed reference is blind — far silence no longer means
+    the speaker is quiet. During playback such frames are uncancellable and
+    must be withheld, exactly like a lagging loopback capture."""
+    import realtime_voice_session as rtv
+
+    monkeypatch.setattr(rtv, "sd", None)
+    monkeypatch.setattr(rtv, "_AEC3_RESIDUAL_GATE_ENABLED", True)
+    monkeypatch.setattr(rtv, "_AEC3_GATE_FAR_ACTIVE_RMS", 200.0)
+    monkeypatch.setattr(rtv, "_AEC3_GATE_MIN_RMS", 550.0)
+    monkeypatch.setattr(rtv, "_AEC3_GATE_CONSEC_FRAMES", 3)
+
+    now = {"t": 80.0}
+    monkeypatch.setattr(rtv.time, "monotonic", lambda: now["t"])
+
+    session = RealtimeVoiceSession(
+        client_secret="ek_test",
+        model="gpt-realtime-2",
+        backend_base_url="http://127.0.0.1:8000",
+        device_token="mbd_test",
+        on_session_end=lambda: None,
+        on_error=lambda _msg: None,
+        on_connected=lambda: None,
+    )
+
+    class _StarvedRenderRef:
+        active_capture = False
+        starved_recently = True
+
+    session._far_ref = _StarvedRenderRef()
+    session._state = "speaking"
+    far_silent = (np.zeros(480, dtype=np.int16)).tobytes()
+    near_loud = (np.ones(480, dtype=np.int16) * 3000).tobytes()
+    # Uncancellable playback-time energy: dropped, never opens the gate.
+    for _ in range(5):
+        assert session._aec3_gate_should_send(near_loud, far_silent) is False
+    assert session._aec3_gate_open_until == 0.0
+    # Reference recovers -> normal double-talk logic resumes.
+    session._far_ref.starved_recently = False
+    assert session._aec3_gate_should_send(near_loud, far_silent) is False
+    assert session._aec3_gate_should_send(near_loud, far_silent) is False
+    assert session._aec3_gate_should_send(near_loud, far_silent) is True
+
+
 def test_abort_aplay_flushes_render_fed_reference(monkeypatch):
     """A barge-in abort discards queued playback, so the reference audio for
     that never-played tail must be flushed too or it would misalign AEC3

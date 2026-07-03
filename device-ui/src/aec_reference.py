@@ -35,6 +35,7 @@ import logging
 import os
 import sys
 import threading
+import time
 from typing import Protocol, runtime_checkable
 
 import numpy as np
@@ -132,6 +133,16 @@ class _RefRing:
                 return bytes(self._buf)
             return bytes(self._buf[-nbytes:])
 
+    def occupancy(self) -> int:
+        with self._lock:
+            return len(self._buf)
+
+    def drop_front(self, nbytes: int) -> None:
+        if nbytes <= 0:
+            return
+        with self._lock:
+            del self._buf[:nbytes]
+
     def clear(self) -> None:
         with self._lock:
             self._buf.clear()
@@ -180,10 +191,32 @@ class AppPlaybackReference:
     volume slider), so it differs from the true acoustic output by a scalar
     gain. WebRTC AEC3 estimates the echo-path gain adaptively and its
     nonlinear residual suppressor cleans up the rest.
+
+    Ride-height control (device-paced mode): the tap produces at the OUTPUT
+    device clock while the mic pump consumes at the INPUT device clock — two
+    different crystals. Without correction, drift/scheduling jitter slowly
+    drains (or grows) the ring until every read underruns and the AEC sees a
+    silent far end while the speaker is loud, collapsing cancellation. When
+    ``device_paced`` is set, ``read()`` keeps the ring at a small target
+    cushion: an underrun immediately re-primes it (bounded, one-step
+    misalignment AEC3's delay estimator re-absorbs) and marks the reference
+    *starved* so the session's blind-guard can withhold uncancellable frames;
+    chronic overrun is trimmed back to the cushion for the same reason.
     """
 
     output_rate = REFERENCE_RATE
     active_capture = False
+
+    #: Target ring occupancy (ms). Consumer jitter drains this cushion
+    #: instead of underrunning; AEC3 absorbs it as constant extra delay.
+    CUSHION_MS = 80.0
+    #: Occupancy above which the (device-paced) ring snaps back to the
+    #: cushion: past this point the reference lags the mic beyond what the
+    #: delay estimator tracks, so cancellation is already lost — a bounded
+    #: re-alignment step is strictly better.
+    HIGH_WATER_MS = 450.0
+    #: How long a starvation event keeps the reference flagged unreliable.
+    STARVED_HOLD_S = 0.5
 
     def __init__(self, rate: int = REFERENCE_RATE, feed_rate: int = REFERENCE_RATE, **_ignored) -> None:
         self.output_rate = int(rate)
@@ -196,6 +229,21 @@ class AppPlaybackReference:
         self._ring = _RefRing(rate=self.output_rate, max_seconds=0.6)
         self.device_name = "app render feed (pre-volume)"
         self.last_error: str | None = None
+        # True once a device callback tap feeds this reference (real-time
+        # producer). Only then is ride-height control valid: the fallback
+        # feed (_play_delta on the aplay path) arrives at websocket pace,
+        # where occupancy legitimately swings with the queued response.
+        self.device_paced = False
+        self._cushion_bytes = self._ms_to_bytes(self.CUSHION_MS)
+        self._high_water_bytes = self._ms_to_bytes(self.HIGH_WATER_MS)
+        self._starved_until = 0.0
+        self.underruns = 0
+        self.overruns = 0
+        self._last_flow_log = 0.0
+
+    def _ms_to_bytes(self, ms: float) -> int:
+        n = int(self.output_rate * 2 * max(0.0, ms) / 1000.0)
+        return n - (n % 2)
 
     def start(self) -> bool:
         logger.info("Realtime AEC: app render-feed far-end reference active")
@@ -208,18 +256,32 @@ class AppPlaybackReference:
         """Drop buffered reference audio (e.g. after a barge-in abort)."""
         self._ring.clear()
 
-    def prime(self, ms: float) -> None:
-        """Pre-fill the ring with ``ms`` of silence.
+    def prime(self, ms: float | None = None) -> None:
+        """Top the ring up to ``ms`` (default: the cushion) of buffered audio.
 
         A small silence cushion means consumer-side scheduling jitter (the mic
         pump reads the reference in mic lockstep) drains the cushion instead
         of underrunning — underruns would insert zeros that permanently shift
         the reference timeline against the mic. The cushion is a constant
-        extra delay AEC3's estimator absorbs.
+        extra delay AEC3's estimator absorbs. Top-up semantics keep repeated
+        priming (player re-creation after a barge-in abort, underrun
+        recovery) from stacking cushions into ever-growing delay.
         """
-        n = int(self.output_rate * 2 * max(0.0, ms) / 1000.0)
-        if n > 0:
-            self._ring.append(b"\x00" * (n - (n % 2)))
+        target = self._ms_to_bytes(self.CUSHION_MS if ms is None else ms)
+        deficit = target - self._ring.occupancy()
+        deficit -= deficit % 2
+        if deficit > 0:
+            self._ring.append(b"\x00" * deficit)
+
+    @property
+    def starved_recently(self) -> bool:
+        """True shortly after an underrun: the reference just went blind.
+
+        While set, far-end silence cannot be trusted to mean "speaker quiet",
+        so the session's AEC-blind guard must withhold playback-time mic
+        frames exactly as it does for a lagging loopback capture.
+        """
+        return time.monotonic() < self._starved_until
 
     def feed_playback(self, pcm16: bytes) -> None:
         # The exact mono PCM being rendered (playback rate). Resample to the
@@ -233,7 +295,39 @@ class AppPlaybackReference:
             self._ring.append(to_mono(arr, 1, self._feed_rate, self.output_rate))
 
     def read(self, nbytes: int) -> bytes:
-        return self._ring.read(nbytes)
+        out = self._ring.read(nbytes)
+        if not self.device_paced:
+            return out
+        if len(out) < nbytes:
+            # Underrun: the consumer clock ran ahead of the producer. Return
+            # exact-length silence-padded PCM (keeps AEC 10 ms framing in
+            # lockstep), flag the reference unreliable, and restore the
+            # cushion so this is a single bounded step — not a permanent
+            # drift the AEC can never recover from.
+            self.underruns += 1
+            self._starved_until = time.monotonic() + self.STARVED_HOLD_S
+            out = out + b"\x00" * (nbytes - len(out))
+            self.prime()
+            self._log_flow("underrun")
+        else:
+            occ = self._ring.occupancy()
+            if occ > self._high_water_bytes:
+                # Chronic overrun: reference lags the mic beyond the delay
+                # estimator's reach. Snap back to the cushion.
+                self.overruns += 1
+                self._ring.drop_front(occ - self._cushion_bytes)
+                self._log_flow("overrun")
+        return out
+
+    def _log_flow(self, kind: str) -> None:
+        now = time.monotonic()
+        if now - self._last_flow_log < 5.0:
+            return
+        self._last_flow_log = now
+        logger.info(
+            "Realtime AEC: render-feed reference %s (underruns=%d overruns=%d)",
+            kind, self.underruns, self.overruns,
+        )
 
     def latest(self, nbytes: int) -> bytes:
         return self._ring.latest(nbytes)
