@@ -451,13 +451,11 @@ class VoiceSessionScreen(BaseScreen):
         )
         root.add_widget(self._transcript)
 
-        # 6 · Voice-state pill  (910, 17)  222 × 47  (always visible here) ──
-        self._voice_pill = _VoiceStatePill(
-            size_hint=(_sw(222), _sh(47)),
-            pos_hint={"x": _x(910), "y": _y(17, 47)},
-        )
-        self._voice_pill.opacity = 1.0   # override home-screen default of 0
-        root.add_widget(self._voice_pill)
+        # Voice-state pill: rendered exclusively by the global VoiceControlBar
+        # (see voice_control_bar.py) to keep size/position/font consistent
+        # across every screen and avoid a duplicate pill flashing before the
+        # global bar takes over. self._voice_pill stays None here on purpose;
+        # existing `if self._voice_pill:` guards below no-op safely.
 
         # (WiFi + battery indicators removed — not relevant for the desktop app.)
 

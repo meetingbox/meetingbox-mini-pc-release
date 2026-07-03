@@ -3189,7 +3189,9 @@ class MeetingBoxApp(App):
         self._refresh_voice_indicator()
         vcb = getattr(self, "_voice_control_bar", None)
         if vcb is not None:
-            Clock.schedule_once(lambda _dt, s=self._voice_runtime_state: vcb.notify_state(s), 0)
+            # Synchronous (not deferred a frame) so the pill pair appears the
+            # same frame the state changes, instead of one frame late.
+            vcb.notify_state(self._voice_runtime_state)
 
     def _voice_mark_post_realtime_wake_suppression(self) -> None:
         """Suppress the wake word for a beat after a Realtime session ends.

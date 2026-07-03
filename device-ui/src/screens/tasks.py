@@ -808,15 +808,12 @@ class TasksScreen(BaseScreen):
     # ── Top-right chrome: voice pill + wifi + battery ───────────────────────────
 
     def _build_chrome(self, root: FloatLayout) -> None:
-        # Hidden at idle; only revealed while a voice session is active.
-        self._voice_pill = _VoiceStatePill(**_ph(851.0, 17.0, 222.0, 47.0))
-        self._voice_pill.opacity = 0.0
-        try:
-            self._voice_pill.set_state_text("Listening")
-        except Exception:
-            pass
-        root.add_widget(self._voice_pill)
+        # Voice-state pill: rendered exclusively by the global VoiceControlBar
+        # (see voice_control_bar.py) for consistent size/position/font.
+        # self._voice_pill stays None here on purpose; existing
+        # `if self._voice_pill:` guards elsewhere no-op safely.
         # (WiFi + battery indicators removed — not relevant for the desktop app.)
+        return
 
     # ── Tab selection / styling ─────────────────────────────────────────────────
 

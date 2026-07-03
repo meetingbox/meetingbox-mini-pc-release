@@ -375,13 +375,10 @@ class SummaryReviewScreen(BaseScreen):
         self._scaled_labels.append((self.summary_scroll._label, AI_BODY_FS_RATIO))  # noqa: SLF001
         self._canvas.add_widget(self.summary_scroll)
 
-        # Voice-state pill — bottom-centre, shown while the agent is listening.
-        self._voice_pill = _VoiceStatePill(
-            size_hint=(222 / 1280, 47 / 720),
-            pos_hint={"center_x": 0.5, "y": 0.04},
-        )
-        self._voice_pill.opacity = 0.0
-        self._root.add_widget(self._voice_pill)
+        # Voice-state pill: rendered exclusively by the global VoiceControlBar
+        # (see voice_control_bar.py) for consistent size/position/font.
+        # self._voice_pill stays None here on purpose; existing
+        # `if self._voice_pill:` guards below no-op safely.
 
         self.add_widget(self._root)
         Clock.schedule_once(lambda _dt: self._on_root_resize(self._root, self._root.size), 0)

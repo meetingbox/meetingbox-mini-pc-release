@@ -340,35 +340,13 @@ class MorningBriefScreen(BaseScreen):
     # ── Top-right status cluster (wifi · battery · listening pill) ─────────────-
 
     def _build_status(self, root: FloatLayout) -> None:
-        # Listening pill (Frame "27" — 867,17 · 222×47)
-        pill = FloatLayout(**_ph(867, 17, 222, 47))
-        with pill.canvas.before:
-            Color(*_PILL_BG)
-            pr = RoundedRectangle(radius=[_sz(23.5)])
-        pill.bind(
-            pos=lambda w, v: setattr(pr, "pos", w.pos),
-            size=lambda w, v: setattr(pr, "size", w.size),
-        )
-        # purple dot (13+0,9+6 → 13,15 · 16.97)
-        dot = Widget(**_rel(13, 15, 16.97, 16.97, 222, 47))
-        with dot.canvas:
-            Color(*_HDR)
-            de = Ellipse(pos=dot.pos, size=dot.size)
-        dot.bind(
-            pos=lambda w, v: setattr(de, "pos", w.pos),
-            size=lambda w, v: setattr(de, "size", w.size),
-        )
-        pill.add_widget(dot)
-        pill.add_widget(_lbl(
-            "Listening", _F_SB, _ff(24.24), _PILL_TX, va="middle",
-            **_rel(42, 9, 110, 29, 222, 47)))
-        wave_src = _asset("icon_waveform.png")
-        if wave_src:
-            pill.add_widget(_img(wave_src, 222, 47, 170, 9, 39, 29))
-        root.add_widget(pill)
-        self._status_pill = pill
-
+        # Voice-state pill: rendered exclusively by the global VoiceControlBar
+        # (see voice_control_bar.py) for consistent size/position/font.
+        # This screen previously drew its own static "Listening" pill here
+        # (never tied to actual session state); removed to avoid a duplicate,
+        # inconsistent pill. self._status_pill is intentionally left unset.
         # (WiFi + battery indicators removed — not relevant for the desktop app.)
+        return
 
     # ── Card builder ───────────────────────────────────────────────────────────
 

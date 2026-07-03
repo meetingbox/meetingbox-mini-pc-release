@@ -525,13 +525,10 @@ class EmailDraftScreen(BaseScreen):
         root.add_widget(self._save_btn)
         root.add_widget(self._send_btn)
 
-        # 5 · Voice-state pill  (910, 17)  222 × 47
-        self._voice_pill = _VoiceStatePill(
-            size_hint=(_sw(222), _sh(47)),
-            pos_hint={"x": _x(910), "y": _y(17, 47)},
-        )
-        self._voice_pill.opacity = 1.0
-        root.add_widget(self._voice_pill)
+        # Voice-state pill: rendered exclusively by the global VoiceControlBar
+        # (see voice_control_bar.py) for consistent size/position/font.
+        # self._voice_pill stays None here on purpose; existing
+        # `if self._voice_pill:` guards below no-op safely.
 
         # (WiFi + battery indicators removed — not relevant for the desktop app.)
 

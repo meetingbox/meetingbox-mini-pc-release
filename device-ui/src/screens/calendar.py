@@ -299,53 +299,12 @@ class CalendarScreen(BaseScreen):
     # ── Status area (Listening pill + device status bar) ───────────────────────
 
     def _build_status_area(self, root: FloatLayout) -> None:
-        # Listening pill — Frame 27: 867,17  222×47  r=23.5 (fully rounded)
-        # Hidden at idle; revealed only while a voice session is active.
-        pill = FloatLayout(**_ph(867, 17, 222, 47))
-        pill.opacity = 0.0
-        self._pill = pill
-        r = 47.0 / 2 * _scale()
-        with pill.canvas.before:
-            Color(*_SHADOW)
-            sh = RoundedRectangle(radius=[r])
-            Color(*_PILL_BG)
-            bg = RoundedRectangle(radius=[r])
-
-        def _sync_pill(*_):
-            off = max(2.0, 5.0 * _scale())
-            sh.pos = (pill.x, pill.y - off)
-            sh.size = pill.size
-            sh.radius = [pill.height / 2]
-            bg.pos = pill.pos
-            bg.size = pill.size
-            bg.radius = [pill.height / 2]
-        pill.bind(pos=_sync_pill, size=_sync_pill)
-
-        # Pill-relative coords (pill is 222×47 in Figma).
-        PW, PH = 222.0, 47.0
-        # Purple status dot — pill-rel (13,15) 17×17
-        dot = Widget(**_rel(13, 15, 17, 17, PW, PH))
-        with dot.canvas:
-            self._pill_dot = Color(*_PURPLE)
-            _d = Ellipse(pos=dot.pos, size=dot.size)
-        dot.bind(pos=lambda w, v: setattr(_d, "pos", v),
-                 size=lambda w, v: setattr(_d, "size", v))
-        pill.add_widget(dot)
-
-        # "Listening" text — pill-rel (42,9) 110×29  SemiBold 24.24  #3A3B3D
-        self._pill_lbl = _lbl("Listening", _SB, _ff(24.24), _LISTEN_TXT,
-                              va="middle", **_rel(42, 9, 110, 29, PW, PH))
-        pill.add_widget(self._pill_lbl)
-
-        # Waveform icon — pill-rel (170,9) 39×29
-        wave_src = _asset("icon_listening_wave.png")
-        if wave_src:
-            self._pill_wave = Image(source=wave_src, fit_mode="contain",
-                                    **_rel(170, 9, 39, 29, PW, PH))
-            self._pill_wave.opacity = 0.45
-            pill.add_widget(self._pill_wave)
-
-        root.add_widget(pill)
+        # Voice-state pill: rendered exclusively by the global VoiceControlBar
+        # (see voice_control_bar.py) for consistent size/position/font.
+        # self._pill / self._pill_lbl / self._pill_dot / self._pill_wave stay
+        # None here on purpose; existing `if self._pill is not None:` etc.
+        # guards below no-op safely.
+        pass
 
         # Shared device status bar (wifi + battery), right-aligned top-right
         try:

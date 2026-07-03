@@ -307,10 +307,10 @@ class EmailsScreen(BaseScreen):
 
     def _build_status(self, root: FloatLayout) -> None:
         """Top-right status cluster matching Figma Group 207."""
-        # Listening pill  x=851  y=17  222×47
-        pill = _VoiceStatePill(**_ph(851, 17, 222, 47))
-        root.add_widget(pill)
-        self._voice_pill = pill
+        # Voice-state pill: rendered exclusively by the global VoiceControlBar
+        # (see voice_control_bar.py) for consistent size/position/font.
+        # self._voice_pill stays None here on purpose; existing
+        # `if self._voice_pill:` guards elsewhere no-op safely.
 
         # (WiFi + battery indicators removed — not relevant for the desktop app.)
 

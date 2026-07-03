@@ -529,13 +529,11 @@ class HomeScreen(BaseScreen):
                 keep_ratio=False,
             ))
 
-        # Voice-state pill  (867, 17)  222 × 47  (hidden by default) ─
+        # Voice-state pill: rendered exclusively by the global VoiceControlBar
+        # (see voice_control_bar.py) to keep size/position/font consistent
+        # across every screen. self._voice_pill stays None here on purpose;
+        # existing `if self._voice_pill:` guards below no-op safely.
         # (WiFi + battery indicators removed — not relevant for the desktop app.)
-        self._voice_pill = _VoiceStatePill(
-            size_hint=(_sw(222), _sh(47)),
-            pos_hint={"x": _x(867), "y": _y(17, 47)},
-        )
-        root.add_widget(self._voice_pill)
 
         # 5 · Date label  (553, 126)  189 × 51  43 px SemiBold ───────────
         #     Figma text: "Tue Apr 2"  →  live: display_now()

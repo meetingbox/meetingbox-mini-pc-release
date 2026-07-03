@@ -5,7 +5,14 @@ Shown whenever a realtime voice session is active; hidden at idle and on
 recording/processing screens (where the voice session is suspended).
 
 Layout (left → right):
-    [exit pill — Frame 22.png]  [Listening / Thinking / Talking pill + waveform]
+    [End Session pill]  [Listening / Thinking / Talking pill + waveform]
+
+Both pills are drawn to the exact same Figma spec (Meeting_1, node 1023:2065):
+the "End Session" pill is Group #1233:125 (222×47) and the voice-state pill is
+Frame "27" #1023:2068 (222×47) — identical bounding box, so both are rendered
+with the same vector drawing technique (no raster image) and share one
+Figma→display scale factor. This guarantees pixel-identical size/typography
+on every screen, regardless of which screen the overlay is shown over.
 
 The exit pill exits the current voice session and returns the user to the home
 screen.  Tapping it triggers a subtle scale-down press animation.
@@ -22,9 +29,8 @@ import math
 
 from kivy.animation import Animation
 from kivy.clock import Clock
-from kivy.core.image import Image as CoreImage
 from kivy.graphics import (
-    Color, Ellipse, PopMatrix, PushMatrix, RoundedRectangle, Scale,
+    Color, Ellipse, Line, PopMatrix, PushMatrix, RoundedRectangle, Scale,
 )
 from kivy.properties import NumericProperty
 from kivy.uix.behaviors import ButtonBehavior
@@ -33,7 +39,7 @@ from kivy.uix.floatlayout import FloatLayout
 from kivy.uix.label import Label
 from kivy.uix.widget import Widget
 
-from config import ASSETS_DIR, DISPLAY_WIDTH, DISPLAY_HEIGHT
+from config import DISPLAY_WIDTH, DISPLAY_HEIGHT
 
 logger = logging.getLogger(__name__)
 
@@ -47,6 +53,14 @@ _TEXT    = (0.227, 0.231, 0.239, 1.0)   # #3A3B3D
 _SHADOW  = (0.463, 0.506, 0.498, 0.18)
 _FONT_SB = "42dot-SB"
 
+# "End Session" pill visual constants (Figma Group #1233:125 / Frame #1233:126)
+_END_BG     = (0.957, 0.961, 0.969, 1.0)  # #F4F5F7
+_END_STROKE = (1.0, 1.0, 1.0, 0.85)       # approximates the white gradient stroke
+_END_SHADOW = (0.463, 0.506, 0.498, 0.3)  # rgba(118,129,127,0.3)
+_END_TEXT   = (0.208, 0.224, 0.231, 1.0)  # #35393B
+_END_ICON   = (0.996, 0.141, 0.0, 1.0)    # #FE2400
+_FONT_REG   = "42dot-Sans"
+
 # Screens where the bar must stay hidden (voice session suspended)
 _HIDDEN_SCREENS: frozenset[str] = frozenset({"recording", "processing"})
 
@@ -57,8 +71,9 @@ _PILL_W_FIG  = 222.0
 _PILL_H_FIG  = 47.0
 _PILL_GAP    = 8.0     # gap between exit pill and voice pill (Figma px)
 
-# Exit-pill image natural size  (236 × 61 px RGBA — measured at asset-copy time)
-_IMG_W, _IMG_H = 236.0, 61.0
+# "End Session" pill natural size (Figma Group #1233:125) — identical box to
+# the voice pill, so both pills always render at the same height/width.
+_END_W_FIG, _END_H_FIG = 222.0, 47.0
 
 
 def _scale() -> float:
@@ -211,32 +226,82 @@ class _VoicePill(FloatLayout):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Exit pill  (Frame 22.png rendered as-is, with a press scale animation)
+# End Session pill  (vector-drawn to the exact Figma spec — Group #1233:125)
 # ─────────────────────────────────────────────────────────────────────────────
-class _ExitPill(ButtonBehavior, Widget):
-    """Tappable image pill; tapping exits the voice session."""
+class _EndSessionPill(ButtonBehavior, FloatLayout):
+    """Light capsule with a red icon + "End Session" caption.
+
+    Drawn with the same vector technique as :class:`_VoicePill` (rather than a
+    raster PNG) so its rendered size and font always scale in lockstep with
+    the voice-state pill, on every screen and DPI.
+
+    Figma spec (Group #1233:125, 222×47):
+      • Frame #1233:126 — fill #F4F5F7, ~2px white stroke, radius = capsule,
+        shadow rgba(118,129,127,0.3)
+      • Red icon (#1233:129) — rel (27,16) 17×17, fill #FE2400
+      • "End Session" text (#1233:128) — rel (59,9) 137×30, 42dot Sans
+        Regular 25px, centered, #35393B
+    """
+
+    _PW, _PH = _END_W_FIG, _END_H_FIG
 
     btn_scale = NumericProperty(1.0)
 
-    def __init__(self, source: str, on_tap=None, **kw):
+    def __init__(self, on_tap=None, **kw):
         super().__init__(**kw)
         self._on_tap = on_tap
-        self._tex = None
-        try:
-            img = CoreImage(source)
-            self._tex = img.texture
-        except Exception as exc:
-            logger.warning("_ExitPill: could not load %s: %s", source, exc)
+        PW, PH = self._PW, self._PH
 
-        with self.canvas:
+        with self.canvas.before:
             PushMatrix()
             self._sc = Scale(1.0, 1.0, 1.0)
-            Color(1, 1, 1, 1)
-            from kivy.graphics import Rectangle
-            self._rect = Rectangle(pos=self.pos, size=self.size, texture=self._tex)
+            Color(*_END_SHADOW)
+            self._shad = RoundedRectangle(pos=(0, 0), size=(1, 1), radius=[24])
+            Color(*_END_BG)
+            self._bg = RoundedRectangle(pos=(0, 0), size=(1, 1), radius=[24])
+            self._stroke_color = Color(*_END_STROKE)
+            self._stroke = Line(rounded_rectangle=(0, 0, 0, 0, 24), width=2)
+        with self.canvas.after:
             PopMatrix()
+        self.bind(pos=self._draw_bg, size=self._draw_bg, btn_scale=self._sync_scale)
 
-        self.bind(pos=self._sync, size=self._sync, btn_scale=self._sync_scale)
+        icon = Widget(size_hint=(17 / PW, 17 / PH), pos_hint={"x": 27 / PW, "y": 16 / PH})
+        with icon.canvas:
+            Color(*_END_ICON)
+            self._icon_rect = RoundedRectangle(pos=icon.pos, size=icon.size, radius=[3])
+        icon.bind(
+            pos=lambda w, *_: setattr(self._icon_rect, "pos", w.pos),
+            size=lambda w, *_: setattr(self._icon_rect, "size", w.size),
+        )
+        self.add_widget(icon)
+
+        self._lbl = Label(
+            text="End Session",
+            font_name=_FONT_REG,
+            font_size=_ff(25),
+            color=_END_TEXT,
+            halign="center",
+            valign="middle",
+            size_hint=(137 / PW, 30 / PH),
+            pos_hint={"x": 59 / PW, "y": 9 / PH},
+        )
+        self._lbl.bind(size=self._lbl.setter("text_size"))
+        self.add_widget(self._lbl)
+
+    def _draw_bg(self, *_):
+        x, y = self.pos
+        w, h = self.size
+        if w <= 0 or h <= 0:
+            return
+        r = min(w, h) / 2
+        self._shad.pos    = (x + 1, y - 3)
+        self._shad.size   = (w, h + 3)
+        self._shad.radius = [r]
+        self._bg.pos    = (x, y)
+        self._bg.size   = (w, h)
+        self._bg.radius = [r]
+        self._stroke.rounded_rectangle = (x + 1, y + 1, w - 2, h - 2, max(2, r - 1))
+        self._sync_scale()
 
     def _sync_scale(self, *_):
         cx, cy = self.center
@@ -244,14 +309,9 @@ class _ExitPill(ButtonBehavior, Widget):
         self._sc.x = self.btn_scale
         self._sc.y = self.btn_scale
 
-    def _sync(self, *_):
-        self._rect.pos  = self.pos
-        self._rect.size = self.size
-        self._sync_scale()
-
     def on_press(self):
         Animation.cancel_all(self, "btn_scale")
-        Animation(btn_scale=0.88, duration=0.08).start(self)
+        Animation(btn_scale=0.96, duration=0.08).start(self)
 
     def on_release(self):
         Animation.cancel_all(self, "btn_scale")
@@ -295,7 +355,8 @@ class VoiceControlBar(FloatLayout):
         s = _scale()
 
         # ── Voice state pill ────────────────────────────────────────────────
-        # Use Figma voice-pill height as the shared reference across screens.
+        # Both pills share the identical 222×47 Figma bounding box, so a
+        # single reference height keeps them pixel-identical on every screen.
         common_h = round(_PILL_H_FIG * s)
         voice_h = common_h
         voice_w = round((_PILL_W_FIG / _PILL_H_FIG) * voice_h)
@@ -304,16 +365,13 @@ class VoiceControlBar(FloatLayout):
             size=(voice_w, voice_h),
         )
 
-        # ── Exit image pill ─────────────────────────────────────────────────
-        # Render the image at the same height as the voice pill, preserving aspect.
-        img_h  = common_h
-        img_w  = round(img_h * (_IMG_W / _IMG_H))
-        _src   = str(ASSETS_DIR / "frame22_exit.png")
-        self._exit_pill = _ExitPill(
-            source=_src,
+        # ── End Session pill (vector-drawn, same Figma box as the voice pill) ─
+        end_h = common_h
+        end_w = round((_END_W_FIG / _END_H_FIG) * end_h)
+        self._exit_pill = _EndSessionPill(
             on_tap=self._on_exit_tapped,
             size_hint=(None, None),
-            size=(img_w, img_h),
+            size=(end_w, end_h),
         )
 
         # ── Row container ───────────────────────────────────────────────────
@@ -322,7 +380,7 @@ class VoiceControlBar(FloatLayout):
             orientation="horizontal",
             spacing=gap,
             size_hint=(None, None),
-            size=(img_w + gap + voice_w, voice_h),
+            size=(end_w + gap + voice_w, voice_h),
         )
         self._row.add_widget(self._exit_pill)
         self._row.add_widget(self._voice_pill)
@@ -354,13 +412,14 @@ class VoiceControlBar(FloatLayout):
         # height, so both pills stay consistent across screens and DPI scales.
         common_h = max(1, round(_PILL_H_FIG * sa))
         voice_w = round((_PILL_W_FIG / _PILL_H_FIG) * common_h)
-        img_w = round(common_h * (_IMG_W / _IMG_H))
+        end_w = round((_END_W_FIG / _END_H_FIG) * common_h)
         gap = round(_PILL_GAP * sa)
         self._voice_pill.size = (voice_w, common_h)
-        self._exit_pill.size = (img_w, common_h)
+        self._exit_pill.size = (end_w, common_h)
         self._row.spacing = gap
-        self._row.size = (img_w + gap + voice_w, common_h)
+        self._row.size = (end_w + gap + voice_w, common_h)
         self._voice_pill._lbl.font_size = max(6, round(24.24 * sa))
+        self._exit_pill._lbl.font_size = max(6, round(25 * sa))
 
         # Right edge of the home-screen voice pill (Figma), as a fraction of W.
         right_px = (_PILL_X_FIG + _PILL_W_FIG) / _FW * W
@@ -421,7 +480,9 @@ class VoiceControlBar(FloatLayout):
     def _show(self) -> None:
         self._visible = True
         Animation.cancel_all(self, "opacity")
-        Animation(opacity=1.0, duration=0.25).start(self)
+        # Instant (no fade): both pills must appear together, at once, with
+        # no perceptible transition from a solo/legacy pill.
+        self.opacity = 1.0
         self._start_waveform()
 
     def _hide(self) -> None:
@@ -465,7 +526,7 @@ class VoiceControlBar(FloatLayout):
     # ── Local pill suppression (avoid double-render with legacy per-screen UI) ──
 
     def _suppress_current_screen_local_pill(self) -> None:
-        """Hide any screen-local `_voice_pill` while this global bar is active."""
+        """Hide any legacy screen-local listening pill while global bar is active."""
         if not self._visible:
             return
         app = self._app
@@ -478,10 +539,21 @@ class VoiceControlBar(FloatLayout):
             scr = sm.get_screen(sm.current)
         except Exception:
             return
-        pill = getattr(scr, "_voice_pill", None)
-        if pill is None:
+        # Legacy screens don't all use the same attribute name for their local
+        # listening pill; hide whichever variant exists.
+        hidden_any = False
+        for attr in ("_voice_pill", "_pill", "_status_pill"):
+            pill = getattr(scr, attr, None)
+            if pill is None:
+                continue
+            try:
+                pill.opacity = 0.0
+                hidden_any = True
+            except Exception:
+                logger.debug(
+                    "VoiceControlBar: failed to hide local pill '%s'",
+                    attr,
+                    exc_info=True,
+                )
+        if not hidden_any:
             return
-        try:
-            pill.opacity = 0.0
-        except Exception:
-            logger.debug("VoiceControlBar: failed to hide local voice pill", exc_info=True)
