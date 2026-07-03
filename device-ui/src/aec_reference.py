@@ -1,21 +1,28 @@
 """Far-end (playback) reference source for acoustic echo cancellation.
 
 The AEC engine needs to know what the speakers are actually emitting so it can
-subtract that echo from the microphone. The *only* part of the audio pipeline
-that differs by OS is WHERE that reference comes from:
+subtract that echo from the microphone.
 
-  * Windows -> WASAPI **loopback** capture of the real render endpoint. This is
-    the post-volume, post-mix signal the speaker actually plays, so the
-    reference is inherently correct at any volume and on any device.
-    See ``aec_reference_windows.py``.
-  * macOS   -> the app's own playback PCM (fed in by the session). macOS has no
-    first-class system-loopback API without a virtual device, and we already
-    have the exact bytes we send to the speaker, so we use those directly.
-    See ``aec_reference_macos.py``.
+The default reference on every desktop OS is the **render feed**: the exact
+PCM blocks our own playback callback hands to the audio device, fed at device
+pace (see :class:`AppPlaybackReference` + the ``on_pcm`` tap in
+``audio_output.PcmStreamPlayer``). This is the architecture Chrome / the
+ChatGPT desktop app use (WebRTC's ProcessReverseStream is fed the app's own
+playout): the reference can never go blind, is paced by the same device clock
+that produces the acoustic echo, and audio dropped by a barge-in abort is
+never fed. AEC3's adaptive delay estimator absorbs the output latency.
 
-Both implementations expose the same :class:`FarEndReference` interface, so the
-AEC engine and the mic pump never branch on platform — they just ask the
-reference for the most-recent far-end audio at the pipeline rate.
+Windows can alternatively capture the system mix via WASAPI **loopback**
+(``aec_reference_windows.py``, opt-in via ``REALTIME_AEC_REFERENCE=loopback``).
+Loopback also covers other apps' audio, but in production it proved unreliable
+as a realtime reference: its capture callbacks run on a different device clock
+than the mic consumer, and every consumer-side underrun inserts zeros that
+permanently shift the reference timeline — AEC3 then intermittently sees a
+silent far end while the speaker is loud ("reference blind") and cancellation
+collapses. The render feed has no such race.
+
+All implementations expose the same :class:`FarEndReference` interface, so the
+AEC engine and the mic pump never branch on platform.
 
 This module is import-safe on every OS: selecting a backend never imports the
 other OS's module, and each backend degrades to a no-op if its native audio
@@ -25,6 +32,7 @@ API is unavailable.
 from __future__ import annotations
 
 import logging
+import os
 import sys
 import threading
 from typing import Protocol, runtime_checkable
@@ -160,30 +168,102 @@ def to_mono_24k(pcm: np.ndarray, channels: int, src_rate: int) -> bytes:
     return to_mono(pcm, channels, src_rate, REFERENCE_RATE)
 
 
+class AppPlaybackReference:
+    """Passive far-end reference fed the app's own playback PCM (render feed).
+
+    The playback sink's device callback (or, as a fallback, the session's
+    playback path) hands us the exact mono PCM the speaker is being given, at
+    device pace. That is by construction the echo source, so it is the ideal
+    reference: never blind, never drifting relative to the rendered audio.
+
+    The reference is pre-volume (what we hand to the OS, before the system
+    volume slider), so it differs from the true acoustic output by a scalar
+    gain. WebRTC AEC3 estimates the echo-path gain adaptively and its
+    nonlinear residual suppressor cleans up the rest.
+    """
+
+    output_rate = REFERENCE_RATE
+    active_capture = False
+
+    def __init__(self, rate: int = REFERENCE_RATE, feed_rate: int = REFERENCE_RATE, **_ignored) -> None:
+        self.output_rate = int(rate)
+        # Rate of the PCM the session hands us (its playback rate = 24 kHz).
+        self._feed_rate = int(feed_rate)
+        # Shallow ring: the device tap produces in real time and the mic pump
+        # consumes in real time, so occupancy hovers at the primed cushion. A
+        # small cap means a stalled consumer trims quickly and misalignment is
+        # bounded to well under a second (AEC3 re-converges immediately).
+        self._ring = _RefRing(rate=self.output_rate, max_seconds=0.6)
+        self.device_name = "app render feed (pre-volume)"
+        self.last_error: str | None = None
+
+    def start(self) -> bool:
+        logger.info("Realtime AEC: app render-feed far-end reference active")
+        return True
+
+    def stop(self) -> None:
+        self._ring.clear()
+
+    def clear(self) -> None:
+        """Drop buffered reference audio (e.g. after a barge-in abort)."""
+        self._ring.clear()
+
+    def prime(self, ms: float) -> None:
+        """Pre-fill the ring with ``ms`` of silence.
+
+        A small silence cushion means consumer-side scheduling jitter (the mic
+        pump reads the reference in mic lockstep) drains the cushion instead
+        of underrunning — underruns would insert zeros that permanently shift
+        the reference timeline against the mic. The cushion is a constant
+        extra delay AEC3's estimator absorbs.
+        """
+        n = int(self.output_rate * 2 * max(0.0, ms) / 1000.0)
+        if n > 0:
+            self._ring.append(b"\x00" * (n - (n % 2)))
+
+    def feed_playback(self, pcm16: bytes) -> None:
+        # The exact mono PCM being rendered (playback rate). Resample to the
+        # AEC engine's rate so the far-end matches the near-end.
+        if not pcm16:
+            return
+        if self._feed_rate == self.output_rate:
+            self._ring.append(pcm16)
+        else:
+            arr = np.frombuffer(pcm16, dtype=np.int16)
+            self._ring.append(to_mono(arr, 1, self._feed_rate, self.output_rate))
+
+    def read(self, nbytes: int) -> bytes:
+        return self._ring.read(nbytes)
+
+    def latest(self, nbytes: int) -> bytes:
+        return self._ring.latest(nbytes)
+
+
 def create_reference(rate: int = REFERENCE_RATE, **kwargs) -> FarEndReference | None:
     """Return the correct far-end reference source for this OS, or ``None``.
 
     ``rate`` is the sample rate (Hz) the reference should produce, chosen by the
     AEC engine that consumes it (24 kHz for Speex, 48 kHz for WebRTC AEC3).
 
-    ``None`` means no OS-specific reference is available (e.g. Linux appliance,
-    or a Windows box where WASAPI loopback can't open); callers should fall
-    back to their existing playback-derived reference in that case.
+    Desktop default is the render feed (:class:`AppPlaybackReference`) — the
+    device-independent architecture Chrome/ChatGPT use. On Windows,
+    ``REALTIME_AEC_REFERENCE=loopback`` opts back into the WASAPI system-mix
+    capture (covers other apps' audio, but is prone to reference-blind races).
+
+    ``None`` means no reference is available (e.g. Linux appliance); callers
+    fall back to their existing playback-derived reference in that case.
     """
     if _IS_WIN:
-        try:
-            from aec_reference_windows import WasapiLoopbackReference
+        mode = (os.getenv("REALTIME_AEC_REFERENCE") or "render").strip().lower()
+        if mode == "loopback":
+            try:
+                from aec_reference_windows import WasapiLoopbackReference
 
-            return WasapiLoopbackReference(rate=rate, **kwargs)
-        except Exception:
-            logger.debug("WASAPI loopback reference unavailable", exc_info=True)
-            return None
+                return WasapiLoopbackReference(rate=rate, **kwargs)
+            except Exception:
+                logger.debug("WASAPI loopback reference unavailable", exc_info=True)
+                # Fall through to the render feed.
+        return AppPlaybackReference(rate=rate, **kwargs)
     if _IS_MAC:
-        try:
-            from aec_reference_macos import AppPlaybackReference
-
-            return AppPlaybackReference(rate=rate, **kwargs)
-        except Exception:
-            logger.debug("macOS playback reference unavailable", exc_info=True)
-            return None
+        return AppPlaybackReference(rate=rate, **kwargs)
     return None

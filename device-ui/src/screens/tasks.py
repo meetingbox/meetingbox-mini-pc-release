@@ -816,8 +816,7 @@ class TasksScreen(BaseScreen):
         except Exception:
             pass
         root.add_widget(self._voice_pill)
-        root.add_widget(_WifiIcon(**_ph(1109.0, 31.0, 29.0, 20.0)))
-        root.add_widget(_BatteryWidget(**_ph(1175.0, 30.0, 47.0, 21.0)))
+        # (WiFi + battery indicators removed — not relevant for the desktop app.)
 
     # ── Tab selection / styling ─────────────────────────────────────────────────
 

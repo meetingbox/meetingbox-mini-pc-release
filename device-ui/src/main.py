@@ -175,11 +175,14 @@ if _FULLSCREEN:
 else:
     # Desktop windowed: a normal decorated frame (title bar with minimize and
     # close), centered by the OS so the title bar is always on-screen and
-    # reachable, and resizable/movable like any standard Windows app.
+    # reachable, and movable like any standard Windows app. The window is
+    # NON-resizable: the UI is laid out against a fixed DISPLAY_WIDTH x
+    # DISPLAY_HEIGHT (the device 1260:800 aspect), so allowing free resize would
+    # stretch/distort the layout. Locking it preserves the device aspect ratio.
     Config.set('graphics', 'position', 'auto')
     Config.set('graphics', 'borderless', '0')
     Config.set('graphics', 'fullscreen', '0')
-    Config.set('graphics', 'resizable', '1')
+    Config.set('graphics', 'resizable', '0')
 Config.set('graphics', 'width', str(_W))
 Config.set('graphics', 'height', str(_H))
 Config.set('input', 'mouse', 'mouse,multitouch_on_demand')
@@ -882,6 +885,12 @@ class MeetingBoxApp(App):
         self.root_layout = None
         self._transcript_overlay = None
         self._pending_user_msg_id: str | None = None
+        self._current_user_msg_id: str | None = None
+        # Conversation item_id -> overlay bubble id. Transcript events carry
+        # the server's item_id, so text (and phantom rejections) always land
+        # on the bubble that belongs to that turn — even when transcription
+        # for turn N finishes after turn N+1 already started.
+        self._user_msg_by_item: dict[str, str] = {}
         self.voice_indicator = None
         self._voice_indicator_override = None
         self._voice_indicator_reset_ev = None
@@ -4947,6 +4956,8 @@ class MeetingBoxApp(App):
         self._realtime_mic_acquired = False
         self._realtime_connected_ok = False
         self._pending_user_msg_id = None
+        self._current_user_msg_id = None
+        self._user_msg_by_item.clear()
         # The grounded summary context lives only as long as this session; the
         # injected context dies with the websocket, so just reset local tracking
         # so the next session can re-ground on a freshly opened summary.
@@ -5423,29 +5434,59 @@ class MeetingBoxApp(App):
             # Update home say bar with a placeholder immediately
             self._schedule_say_bar_update("You", "…")
 
-        def _on_user_transcript(text: str, is_final: bool = True) -> None:
+        def _on_user_transcript_rejected(item_id: str = "") -> None:
+            # The turn's transcript was rejected as a phantom (echo/noise
+            # hallucination). Remove the turn's bubble — whether it is still
+            # the "…" placeholder or was already painted by streaming
+            # partials — so the rejected turn leaves no trace on screen.
+            overlay = self._transcript_overlay
+            bound = self._user_msg_by_item.pop(item_id, None) if item_id else None
+            pending = getattr(self, "_pending_user_msg_id", None)
+            if overlay is not None:
+                if bound:
+                    overlay.remove_message(bound)
+                if pending and pending != bound:
+                    overlay.remove_message(pending)
+            self._pending_user_msg_id = None
+            if bound and getattr(self, "_current_user_msg_id", None) == bound:
+                self._current_user_msg_id = None
+
+        def _on_user_transcript(
+            text: str, is_final: bool = True, item_id: str = ""
+        ) -> None:
             overlay = self._transcript_overlay
             if overlay is None:
                 return
+            bound = self._user_msg_by_item.get(item_id) if item_id else None
             pending = getattr(self, "_pending_user_msg_id", None)
             current = getattr(self, "_current_user_msg_id", None)
-            if pending:
+            if bound:
+                # This turn already has a bubble: update it in place, even if
+                # a newer turn's placeholder exists. A slow transcription for
+                # turn N must never leak into turn N+1's bubble.
+                overlay.update_user_message(bound, text)
+                msg_id = bound
+            elif pending:
                 # First transcript event for this utterance: replace the "…"
                 # placeholder and remember the bubble id for subsequent deltas.
                 overlay.update_user_message(pending, text)
                 msg_id = pending
                 self._pending_user_msg_id = None
                 self._current_user_msg_id = msg_id
-            elif current:
-                # Subsequent partial delta or the final .completed event:
-                # update the same bubble in place — never create a new one.
+            elif current and not item_id:
+                # Live caption partial (no item identity): update the active
+                # bubble in place — never create a new one.
                 overlay.update_user_message(current, text)
                 msg_id = current
             else:
-                # No placeholder and no active bubble (e.g. speech_stopped
-                # never fired): create a fresh bubble and track it.
+                # No placeholder and no bubble for this turn (e.g.
+                # speech_stopped never fired): create a fresh bubble.
                 msg_id = overlay.add_user_message(text)
                 self._current_user_msg_id = msg_id
+            if item_id:
+                self._user_msg_by_item[item_id] = msg_id
+                while len(self._user_msg_by_item) > 8:
+                    self._user_msg_by_item.pop(next(iter(self._user_msg_by_item)))
 
             # Also update home say bar / voice-session transcript with user text
             self._schedule_say_bar_update("You", text)
@@ -5607,6 +5648,7 @@ class MeetingBoxApp(App):
                 on_ai_transcript=_on_ai_transcript,
                 on_ai_transcript_delta=_on_ai_transcript_delta,
                 on_user_speech_stopped=_on_user_speech_stopped,
+                on_user_transcript_rejected=_on_user_transcript_rejected,
                 on_email_draft=self._on_email_draft_directive,
                 on_email_view=self._on_email_view_directive,
                 on_recipient_picker=self._on_recipient_picker_directive,

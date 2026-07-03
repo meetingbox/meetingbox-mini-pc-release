@@ -368,13 +368,7 @@ class MorningBriefScreen(BaseScreen):
         root.add_widget(pill)
         self._status_pill = pill
 
-        root.add_widget(LiveWifiIcon(
-            size_hint=(29 / FW, 20 / FH),
-            pos_hint={"x": 1125 / FW, "y": (FH - 31 - 20) / FH},
-        ))
-        batt_src = _asset("icon_battery.png")
-        if batt_src:
-            root.add_widget(_img(batt_src, FW, FH, 1191, 30, 47, 21))
+        # (WiFi + battery indicators removed — not relevant for the desktop app.)
 
     # ── Card builder ───────────────────────────────────────────────────────────
 

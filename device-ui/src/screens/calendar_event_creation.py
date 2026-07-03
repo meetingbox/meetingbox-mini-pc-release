@@ -462,20 +462,9 @@ class CalendarEventCreationScreen(BaseScreen):
         )
         root.add_widget(self._confirm_btn)
 
-        # ── 12. WiFi icon  abs(1109,31) 29×20 ─────────────────────────────────
-        root.add_widget(_WifiIcon(
-            size_hint=(_sw(29), _sh(20)),
-            pos_hint={"x": _x(1109), "y": _y(31, 20)},
-        ))
+        # (WiFi + battery indicators removed — not relevant for the desktop app.)
 
-        # ── 13. Battery indicator  abs(1175,30) 47×21 ─────────────────────────
-        self._battery = _BatteryWidget(
-            size_hint=(_sw(47), _sh(21)),
-            pos_hint={"x": _x(1175), "y": _y(30, 21)},
-        )
-        root.add_widget(self._battery)
-
-        # ── 14. Voice-state pill  abs(851,17) 222×47 ──────────────────────────
+        # ── Voice-state pill  abs(851,17) 222×47 ──────────────────────────
         self._voice_pill = _VoiceStatePill(
             size_hint=(_sw(222), _sh(47)),
             pos_hint={"x": _x(851), "y": _y(17, 47)},

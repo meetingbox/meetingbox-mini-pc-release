@@ -529,20 +529,8 @@ class HomeScreen(BaseScreen):
                 keep_ratio=False,
             ))
 
-        # 2 · WiFi icon  (1125, 31)  29 × 20 ─────────────────────────────
-        root.add_widget(LiveWifiIcon(
-            size_hint=(_sw(29), _sh(20)),
-            pos_hint={"x": _x(1125), "y": _y(31, 20)},
-        ))
-
-        # 3 · Battery indicator  (1191, 30)  47 × 21 ─────────────────────
-        self._battery = _BatteryWidget(
-            size_hint=(_sw(47), _sh(21)),
-            pos_hint={"x": _x(1191), "y": _y(30, 21)},
-        )
-        root.add_widget(self._battery)
-
-        # 4 · Voice-state pill  (867, 17)  222 × 47  (hidden by default) ─
+        # Voice-state pill  (867, 17)  222 × 47  (hidden by default) ─
+        # (WiFi + battery indicators removed — not relevant for the desktop app.)
         self._voice_pill = _VoiceStatePill(
             size_hint=(_sw(222), _sh(47)),
             pos_hint={"x": _x(867), "y": _y(17, 47)},

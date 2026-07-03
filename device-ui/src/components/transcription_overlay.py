@@ -399,6 +399,27 @@ class TranscriptionOverlay(FloatLayout):
         if self._compact_speaker.text == 'You':
             self._compact_label.text = corrected
 
+    def remove_message(self, msg_id: str) -> None:
+        """Remove a bubble (and its speaker label) from the transcript.
+
+        Used when a turn is rejected as a phantom after its placeholder
+        bubble was already painted — a rejected turn must leave no trace.
+        """
+        row = self._messages.pop(msg_id, None)
+        if row is None:
+            return
+        try:
+            children = self._chat_box.children  # newest-first
+            idx = children.index(row)
+            # The speaker label was added immediately before the row, so in
+            # the reversed children list it sits right after it.
+            label = children[idx + 1] if idx + 1 < len(children) else None
+            self._chat_box.remove_widget(row)
+            if label is not None and isinstance(label, _SpeakerLabel):
+                self._chat_box.remove_widget(label)
+        except Exception:
+            logger.debug("remove_message failed for %s", msg_id, exc_info=True)
+
     def set_compact(self, compact: bool):
         """Switch between full-screen and bottom-strip presentation."""
         if compact == self._compact:

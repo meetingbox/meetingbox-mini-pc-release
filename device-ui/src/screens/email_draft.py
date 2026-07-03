@@ -533,18 +533,7 @@ class EmailDraftScreen(BaseScreen):
         self._voice_pill.opacity = 1.0
         root.add_widget(self._voice_pill)
 
-        # 6 · WiFi icon  (1147, 31)  29 × 20
-        root.add_widget(_WifiIcon(
-            size_hint=(_sw(29), _sh(20)),
-            pos_hint={"x": _x(1147), "y": _y(31, 20)},
-        ))
-
-        # 7 · Battery  (1191, 30)  47 × 21
-        self._battery = _BatteryWidget(
-            size_hint=(_sw(47), _sh(21)),
-            pos_hint={"x": _x(1191), "y": _y(30, 21)},
-        )
-        root.add_widget(self._battery)
+        # (WiFi + battery indicators removed — not relevant for the desktop app.)
 
         self.add_widget(root)
 

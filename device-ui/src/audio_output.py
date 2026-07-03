@@ -123,10 +123,16 @@ class PcmStreamPlayer:
     """
 
     def __init__(self, sample_rate: int = 24000, channels: int = 1, device=None,
-                 fade_ms: float | None = None):
+                 fade_ms: float | None = None, on_pcm=None):
         self.sample_rate = int(sample_rate)
         self.channels = int(channels)
         self._device = _resolve_output_device(device)
+        # Render tap: called from the device callback with the exact PCM16
+        # block handed to the output device (post fade, zero-filled when the
+        # queue is dry). This is the ground-truth far-end reference for AEC —
+        # paced by the render device clock, including real silence, and never
+        # including audio that a barge-in abort dropped before it played.
+        self._on_pcm = on_pcm
         # Barge-in fade-out length. Cutting a PortAudio stream mid-waveform
         # (abort()) leaves the DAC at a non-zero sample; that step to zero is an
         # audible click/"scratch". Instead we ramp the last few ms to zero in
@@ -204,6 +210,7 @@ class PcmStreamPlayer:
             np.clip(gains, 0.0, 1.0, out=gains)
             block = (block.astype(np.float32) * gains[:, None]).astype(np.int16)
             outdata[:] = block
+            self._emit_tap(block)
             new_rem = fade_rem - frames
             if new_rem <= 0:
                 with self._buf_lock:
@@ -216,6 +223,16 @@ class PcmStreamPlayer:
             return
 
         outdata[:] = block
+        self._emit_tap(block)
+
+    def _emit_tap(self, block) -> None:
+        tap = self._on_pcm
+        if tap is None:
+            return
+        try:
+            tap(block.tobytes())
+        except Exception:  # noqa: BLE001 - never disturb the device callback
+            pass
 
     def write(self, pcm_bytes: bytes) -> None:
         if not pcm_bytes or not self._active:

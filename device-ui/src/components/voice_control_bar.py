@@ -328,21 +328,46 @@ class VoiceControlBar(FloatLayout):
         self._row.add_widget(self._voice_pill)
         self.add_widget(self._row)
 
-        # Position the row after the layout pass so Window size is known.
+        # Position the row after the layout pass so the surface size is known,
+        # and re-pin whenever the overlay is resized (the live Kivy surface can
+        # differ from the logical DISPLAY_WIDTH/HEIGHT under Windows DPI scaling).
         Clock.schedule_once(self._place_row, 0)
+        self.bind(size=self._place_row, pos=self._place_row)
 
     # ── Positioning ──────────────────────────────────────────────────────────
 
     def _place_row(self, *_):
-        """Pin the row's right edge to the same x as the home-screen voice pill's right edge."""
-        s = _scale()
-        # Right edge of the original voice pill in actual display pixels.
-        right_px = round((_PILL_X_FIG + _PILL_W_FIG) * s)
+        """Size + pin the row top-right, matching the home-screen voice pill.
+
+        Uses the overlay's ACTUAL size (the live Kivy surface) rather than the
+        logical DISPLAY_WIDTH/HEIGHT constants. Under Windows DPI scaling the
+        real surface is larger than the logical size, so computing absolute
+        pixel offsets from the constants pinned the row near screen center. The
+        rest of the UI positions off fractions of the live surface, so we do the
+        same here to land top-right on every DPI (and on the device at 1:1).
+        """
+        W = self.width if self.width > 1 else DISPLAY_WIDTH
+        H = self.height if self.height > 1 else DISPLAY_HEIGHT
+        sa = min(W / _FW, H / _FH)
+
+        # Re-derive sizes from the live surface so the pills match the device
+        # proportions regardless of DPI. Both pills share the exit-image height.
+        common_h = max(1, round(_IMG_H * sa))
+        voice_w = round((_PILL_W_FIG / _PILL_H_FIG) * common_h)
+        img_w = round(common_h * (_IMG_W / _IMG_H))
+        gap = round(_PILL_GAP * sa)
+        self._voice_pill.size = (voice_w, common_h)
+        self._exit_pill.size = (img_w, common_h)
+        self._row.spacing = gap
+        self._row.size = (img_w + gap + voice_w, common_h)
+        self._voice_pill._lbl.font_size = max(6, round(24.24 * sa))
+
+        # Right edge of the home-screen voice pill (Figma), as a fraction of W.
+        right_px = (_PILL_X_FIG + _PILL_W_FIG) / _FW * W
         # Top edge → Kivy y-from-bottom.
-        top_y_px = DISPLAY_HEIGHT - round(_PILL_Y_FIG * s)
-        row_h = self._row.height
+        top_y_px = H - (_PILL_Y_FIG / _FH * H)
         self._row.x = right_px - self._row.width
-        self._row.y = top_y_px - row_h
+        self._row.y = top_y_px - self._row.height
 
     # ── Touch pass-through ───────────────────────────────────────────────────
 

@@ -71,8 +71,9 @@ class DeviceStatusBar(FloatLayout):
         self._wifi_icon: LiveWifiIcon | None = None
         self._battery_icon: _BatteryIcon | None = None
         self._status_event = None
-        Clock.schedule_once(lambda _dt: self.refresh(), 0)
-        self._status_event = Clock.schedule_interval(lambda _dt: self.refresh(), 30.0)
+        # WiFi + battery indicators are not relevant for the desktop app, so the
+        # status bar renders nothing and does not poll hardware. Kept as an
+        # (empty) widget so the screens that embed it need no changes.
 
     def refresh(self) -> None:
         threading.Thread(target=self._fetch_status, daemon=True).start()

@@ -459,18 +459,7 @@ class VoiceSessionScreen(BaseScreen):
         self._voice_pill.opacity = 1.0   # override home-screen default of 0
         root.add_widget(self._voice_pill)
 
-        # 7 · WiFi icon  (1147, 31)  29 × 20  — drawn as canvas vectors ────────
-        root.add_widget(_WifiIcon(
-            size_hint=(_sw(29), _sh(20)),
-            pos_hint={"x": _x(1147), "y": _y(31, 20)},
-        ))
-
-        # 8 · Battery indicator  (1191, 30)  47 × 21 ─────────────────────────
-        self._battery = _BatteryWidget(
-            size_hint=(_sw(47), _sh(21)),
-            pos_hint={"x": _x(1191), "y": _y(30, 21)},
-        )
-        root.add_widget(self._battery)
+        # (WiFi + battery indicators removed — not relevant for the desktop app.)
 
         # 9 · Back button  (top-left, same row as pill) ───────────────────────
         back = _BackButton(
