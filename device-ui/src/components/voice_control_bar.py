@@ -57,7 +57,7 @@ _PILL_W_FIG  = 222.0
 _PILL_H_FIG  = 47.0
 _PILL_GAP    = 8.0     # gap between exit pill and voice pill (Figma px)
 
-# Image natural size  (236 × 61 px RGBA — measured at asset-copy time)
+# Exit-pill image natural size  (236 × 61 px RGBA — measured at asset-copy time)
 _IMG_W, _IMG_H = 236.0, 61.0
 
 
@@ -295,8 +295,8 @@ class VoiceControlBar(FloatLayout):
         s = _scale()
 
         # ── Voice state pill ────────────────────────────────────────────────
-        # Keep both pills at the same rendered height.
-        common_h = round(_IMG_H * s)
+        # Use Figma voice-pill height as the shared reference across screens.
+        common_h = round(_PILL_H_FIG * s)
         voice_h = common_h
         voice_w = round((_PILL_W_FIG / _PILL_H_FIG) * voice_h)
         self._voice_pill = _VoicePill(
@@ -350,9 +350,9 @@ class VoiceControlBar(FloatLayout):
         H = self.height if self.height > 1 else DISPLAY_HEIGHT
         sa = min(W / _FW, H / _FH)
 
-        # Re-derive sizes from the live surface so the pills match the device
-        # proportions regardless of DPI. Both pills share the exit-image height.
-        common_h = max(1, round(_IMG_H * sa))
+        # Re-derive sizes from the live surface using the same Figma reference
+        # height, so both pills stay consistent across screens and DPI scales.
+        common_h = max(1, round(_PILL_H_FIG * sa))
         voice_w = round((_PILL_W_FIG / _PILL_H_FIG) * common_h)
         img_w = round(common_h * (_IMG_W / _IMG_H))
         gap = round(_PILL_GAP * sa)
