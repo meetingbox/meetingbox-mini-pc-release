@@ -47,7 +47,7 @@ class SplashScreen(BaseScreen):
 
         # Logo text (centred)
         self.logo_label = Label(
-            text='MeetingBox AI',
+            text='Pepper AI',
             font_size=self.suf(36),
             bold=True,
             color=COLORS['white'],
@@ -84,7 +84,7 @@ class SplashScreen(BaseScreen):
                 # isn't stuck on a screen where every request silently fails.
                 run_async(self._advance_desktop_with_token_check())
             else:
-                self.goto('sign_in', transition='fade')
+                self.goto('onboarding_welcome', transition='fade')
             return
         if USE_MOCK_BACKEND:
             if self.app.needs_setup():

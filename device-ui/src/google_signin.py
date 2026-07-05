@@ -24,6 +24,7 @@ from __future__ import annotations
 import http.server
 import logging
 import threading
+import time
 import urllib.parse
 import webbrowser
 from typing import Callable, Optional
@@ -35,12 +36,17 @@ logger = logging.getLogger(__name__)
 # Time the user has to complete sign-in in the browser before we give up.
 DEFAULT_TIMEOUT_SECONDS = 300.0
 _AUTH_URL_TIMEOUT_SECONDS = 30.0
+# Transient DNS/network blips (e.g. a flaky router DNS returning
+# ``getaddrinfo failed``) shouldn't abort sign-in on the first try. Retry the
+# initial auth-url fetch a few times with a short linear backoff.
+_AUTH_URL_MAX_ATTEMPTS = 4
+_AUTH_URL_RETRY_BACKOFF = 0.8  # seconds, multiplied by the attempt number
 _CALLBACK_PATH = "/auth/callback"
 
 _SUCCESS_HTML = b"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>MeetingBox</title>
+<title>Pepper AI</title>
 <style>
   html,body{height:100%;margin:0}
   body{font-family:-apple-system,Segoe UI,Roboto,Arial,sans-serif;
@@ -53,16 +59,16 @@ _SUCCESS_HTML = b"""<!doctype html>
 <body><div class="card">
   <div class="tick">&#10003;</div>
   <h1>You're signed in</h1>
-  <p>Return to the MeetingBox app &mdash; you can close this tab.</p>
+  <p>Return to the Pepper AI app &mdash; you can close this tab.</p>
 </div></body></html>"""
 
 _ERROR_HTML = b"""<!doctype html>
-<html lang="en"><head><meta charset="utf-8"><title>MeetingBox</title>
+<html lang="en"><head><meta charset="utf-8"><title>Pepper AI</title>
 <style>body{font-family:-apple-system,Segoe UI,Roboto,Arial,sans-serif;
 background:#0b0d11;color:#fff;display:flex;height:100vh;align-items:center;
 justify-content:center;margin:0}.card{text-align:center}p{color:#9aa4b2}</style>
 </head><body><div class="card"><h1>Sign-in failed</h1>
-<p>Return to the MeetingBox app and try again.</p></div></body></html>"""
+<p>Return to the Pepper AI app and try again.</p></div></body></html>"""
 
 
 class SignInError(Exception):
@@ -140,18 +146,41 @@ def sign_in_with_google(
     server_thread.start()
 
     try:
-        try:
-            resp = httpx.get(
-                f"{base}/api/auth/google/auth-url",
-                headers={"Origin": origin, "Referer": origin + "/"},
-                timeout=_AUTH_URL_TIMEOUT_SECONDS,
-            )
-            resp.raise_for_status()
-            auth_url = str((resp.json() or {}).get("auth_url", "")).strip()
-        except httpx.HTTPError as exc:
-            raise SignInError(f"Could not reach the sign-in server: {exc}") from exc
-        except ValueError as exc:  # bad JSON
-            raise SignInError("Sign-in server returned an invalid response.") from exc
+        auth_url = ""
+        for attempt in range(1, _AUTH_URL_MAX_ATTEMPTS + 1):
+            try:
+                resp = httpx.get(
+                    f"{base}/api/auth/google/auth-url",
+                    headers={"Origin": origin, "Referer": origin + "/"},
+                    timeout=_AUTH_URL_TIMEOUT_SECONDS,
+                )
+                resp.raise_for_status()
+                auth_url = str((resp.json() or {}).get("auth_url", "")).strip()
+                break
+            except (
+                httpx.ConnectError,
+                httpx.ConnectTimeout,
+                httpx.ReadTimeout,
+                httpx.RemoteProtocolError,
+            ) as exc:
+                # Transient connectivity (DNS refused/timed out, dropped
+                # connection). Retry a few times before surfacing an error so a
+                # single blip doesn't force the user to start over.
+                logger.warning(
+                    "auth-url fetch attempt %d/%d failed (transient): %s",
+                    attempt, _AUTH_URL_MAX_ATTEMPTS, exc,
+                )
+                if attempt < _AUTH_URL_MAX_ATTEMPTS:
+                    time.sleep(_AUTH_URL_RETRY_BACKOFF * attempt)
+                    continue
+                raise SignInError(
+                    "Can't reach the sign-in server. Check your internet "
+                    "connection and try again."
+                ) from exc
+            except httpx.HTTPError as exc:
+                raise SignInError(f"Could not reach the sign-in server: {exc}") from exc
+            except ValueError as exc:  # bad JSON
+                raise SignInError("Sign-in server returned an invalid response.") from exc
 
         if not auth_url.lower().startswith(("http://", "https://")):
             raise SignInError("Sign-in server returned an invalid Google URL.")

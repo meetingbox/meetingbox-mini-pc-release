@@ -4232,7 +4232,16 @@ class RealtimeVoiceSession:
                     has_local_speech_evidence = self._has_interrupt_speech_evidence(
                         now_mono
                     )
-                    should_force_interrupt = (
+                    # OS-AEC full-duplex: the Windows Voice Capture DSP gives a
+                    # genuinely clean mic, and the residual-echo gate only lets
+                    # real speech reach the server — so a server speech_started
+                    # here IS the evidence. Trust it and stop playback instantly
+                    # (the phone/desktop full-duplex model). The local
+                    # speech-monitor evidence gate below is for the Speex/AEC3
+                    # paths, where residual echo can trip the server VAD; do not
+                    # let it defer a genuine OS-AEC barge-in (assistant would
+                    # otherwise finish its sentence before yielding).
+                    should_force_interrupt = self._os_aec_full_duplex or (
                         has_local_speech_evidence
                         and (
                             not self._half_duplex

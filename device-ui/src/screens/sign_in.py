@@ -28,6 +28,7 @@ from kivy.uix.widget import Widget
 import google_signin
 from async_helper import run_async
 from config import ASSETS_DIR, COLORS, FONT_SIZES, BACKEND_URL
+from platform_compat import bring_app_to_foreground
 from screens.base_screen import BaseScreen
 from setup_finalize import post_setup_complete_safe, write_local_setup_complete_marker
 
@@ -48,7 +49,7 @@ def _default_device_name() -> str:
         host = (socket.gethostname() or "").split(".")[0].strip()
     except Exception:
         host = ""
-    return f"MeetingBox - {host}" if host else "MeetingBox Desktop"
+    return f"Pepper AI - {host}" if host else "Pepper AI Desktop"
 
 
 class GoogleSignInButton(Button):
@@ -118,7 +119,7 @@ class SignInScreen(BaseScreen):
             root.add_widget(logo)
         else:
             logo = Label(
-                text="MeetingBox AI",
+                text="Pepper AI",
                 font_size=sf(FONT_SIZES["huge"]),
                 bold=True,
                 color=COLORS["white"],
@@ -128,7 +129,7 @@ class SignInScreen(BaseScreen):
             root.add_widget(logo)
 
         title = Label(
-            text="Sign in to get started",
+            text="Connect your Google account",
             font_size=sf(FONT_SIZES["title"]),
             bold=True,
             color=COLORS["white"],
@@ -141,7 +142,10 @@ class SignInScreen(BaseScreen):
         root.add_widget(title)
 
         subtitle = Label(
-            text="Sign in with Google and grant Gmail & Calendar access to activate this MeetingBox.",
+            text=(
+                "One step: sign in with Google and allow Gmail & Calendar "
+                "access so Pepper can manage your day."
+            ),
             font_size=sf(FONT_SIZES["body"]),
             color=COLORS["gray_300"],
             halign="center",
@@ -161,6 +165,23 @@ class SignInScreen(BaseScreen):
         btn_row.add_widget(self._google_btn)
         btn_row.add_widget(Widget(size_hint=(0.12, 1)))
         root.add_widget(btn_row)
+
+        root.add_widget(Widget(size_hint=(1, None), height=sv(10)))
+
+        # Staged progress: 1) Sign in  2) Connect Gmail & Calendar  3) Done.
+        self._stage = Label(
+            text="",
+            markup=True,
+            font_size=sf(FONT_SIZES["small"]),
+            color=COLORS["gray_400"],
+            halign="center",
+            valign="middle",
+            size_hint=(1, None),
+            height=sv(22),
+            opacity=0,
+        )
+        self._stage.bind(size=self._stage.setter("text_size"))
+        root.add_widget(self._stage)
 
         self._status = Label(
             text="",
@@ -182,8 +203,41 @@ class SignInScreen(BaseScreen):
     def on_enter(self):
         if not self._busy:
             self._set_status("")
+            self._set_stage(0)
             if self._google_btn:
                 self._google_btn.disabled = False
+
+    _STAGE_LABELS = ("Sign in", "Connect Gmail & Calendar", "Done")
+
+    def _set_stage(self, active: int):
+        """Render the 1-2-3 stepper; *active* is 1-based (0 hides it)."""
+        if not getattr(self, "_stage", None):
+            return
+        if active <= 0:
+            self._stage.opacity = 0
+            self._stage.text = ""
+            return
+        parts = []
+        for i, label in enumerate(self._STAGE_LABELS, start=1):
+            done = i < active
+            cur = i == active
+            if done:
+                parts.append(f"[color=34C759]{i}. {label} \u2713[/color]")
+            elif cur:
+                parts.append(f"[color=ffffff][b]{i}. {label}[/b][/color]")
+            else:
+                parts.append(f"[color=8e8e93]{i}. {label}[/color]")
+        self._stage.text = "     ".join(parts)
+        self._stage.opacity = 1
+
+    def _returned_to_app(self, status: str = ""):
+        """Raise the app window (post-browser) and optionally update the status."""
+        try:
+            bring_app_to_foreground()
+        except Exception:
+            pass
+        if status:
+            self._set_status(status)
 
     def _set_status(self, text: str, error: bool = False):
         if not self._status:
@@ -197,6 +251,7 @@ class SignInScreen(BaseScreen):
         self._busy = True
         if self._google_btn:
             self._google_btn.disabled = True
+        self._set_stage(1)
         self._set_status("Opening your browser to sign in with Google…")
 
         device_name = (getattr(self.app, "device_name", "") or "").strip() or _default_device_name()
@@ -217,8 +272,13 @@ class SignInScreen(BaseScreen):
                 )
                 return
 
+            # Account sign-in is done, but DON'T pull the app forward yet — the
+            # user still has the Gmail/Calendar consent to complete in the
+            # browser. Keep them in the browser flow; we only return to the app
+            # once that second step finishes (see _succeed).
             Clock.schedule_once(
-                lambda _dt: self._set_status("Activating this device…"), 0
+                lambda _dt: self._set_status("Signed in. Setting up your account…"),
+                0,
             )
             try:
                 data = await self.backend.finalize_google_signin(token, device_name)
@@ -263,12 +323,17 @@ class SignInScreen(BaseScreen):
             logger.warning("Could not get Google services consent URL: %s", exc)
             return
 
+        Clock.schedule_once(lambda _dt: self._set_stage(2), 0)
         Clock.schedule_once(
             lambda _dt: self._set_status(
-                "Opening your browser to allow Gmail & Calendar access…"
+                "Next, allow Gmail & Calendar access in your browser…"
             ),
             0,
         )
+        # Brief beat so the first login's success page isn't yanked away the
+        # instant it appears; the user stays in the browser and flows straight
+        # into the Gmail/Calendar consent.
+        await asyncio.sleep(0.5)
         try:
             webbrowser.open(auth_url, new=1, autoraise=True)
         except Exception:
@@ -313,5 +378,9 @@ class SignInScreen(BaseScreen):
             except Exception:
                 pass
             self.app._setup_poll = None
-        self._set_status("Signed in. Taking you home…")
-        self.goto("home", transition="fade")
+        self._set_stage(3)
+        # Consent is done (the browser was redirected to the hosted dashboard) —
+        # bring the app forward so the capabilities tour plays here, not behind
+        # the web page.
+        self._returned_to_app("You're connected. Let me show you what I can do…")
+        self.goto("onboarding_capabilities", transition="slide_left")

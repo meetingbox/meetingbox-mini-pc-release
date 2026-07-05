@@ -50,13 +50,13 @@ def main() -> None:
         fill=ACCENT,
     )
     draw.text(
-        (cx - 14, top + 14),
-        "M",
+        (cx - 13, top + 14),
+        "P",
         font=_font(46, bold=True),
         fill=(11, 11, 15, 255),
     )
 
-    _centered(draw, "MeetingBox AI", _font(40, bold=True), 210, WHITE)
+    _centered(draw, "Pepper AI", _font(40, bold=True), 210, WHITE)
     _centered(draw, "Starting\u2026", _font(20), 272, GRAY)
 
     img.save(OUT, "PNG")

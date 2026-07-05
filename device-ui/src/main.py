@@ -346,6 +346,9 @@ REALTIME_WARM_STANDBY = os.environ.get(
 # Boot-flow screens
 from screens.splash import SplashScreen
 from screens.sign_in import SignInScreen
+from screens.onboarding_welcome import OnboardingWelcomeScreen
+from screens.onboarding_capabilities import OnboardingCapabilitiesScreen
+from screens.onboarding_ready import OnboardingReadyScreen
 from screens.welcome import WelcomeScreen
 from screens.room_name import RoomNameScreen
 from screens.network_choice import NetworkChoiceScreen
@@ -544,7 +547,7 @@ def _recording_start_error_screen_args(exc: BaseException) -> tuple[str, str]:
     if _recording_start_transient_network(exc):
         return (
             "Cannot reach server",
-            "Could not connect to the MeetingBox backend. After switching networks (for "
+            "Could not connect to the Pepper AI backend. After switching networks (for "
             "example unplugging Ethernet and using Wi‑Fi), wait a few seconds, confirm this "
             "device can reach the server URL, then press TRY AGAIN. If it keeps failing, check "
             "BACKEND_URL in the configuration.",
@@ -762,7 +765,7 @@ def _pick_english_piper_model_path() -> str | None:
 
 class MeetingBoxApp(App):
     # Window title shown in the desktop title bar / taskbar.
-    title = "MeetingBox"
+    title = "Pepper AI"
     """
     Main Kivy application for the MeetingBox device UI.
 
@@ -866,6 +869,12 @@ class MeetingBoxApp(App):
         # old local Redis listener used.
         from audio_supervisor import maybe_create_from_env as _maybe_audio
         self._audio_supervisor = _maybe_audio(on_event=self._on_audio_supervisor_event)
+        # The capture child is started lazily the first time the home screen is
+        # reached (see ``_ensure_audio_capture_started``) so it never competes
+        # with the onboarding flow for the mic / startup CPU. Returning users
+        # (device token present) land on home immediately, so recording is
+        # unaffected.
+        self._audio_supervisor_started = False
 
         # Idle screen timeout (seconds; 0 = never).
         # Replaces the older display-off timer: instead of cutting the
@@ -1257,6 +1266,9 @@ class MeetingBoxApp(App):
         # Register ALL screens
         self.screen_manager.add_widget(SplashScreen(name='splash'))
         self.screen_manager.add_widget(SignInScreen(name='sign_in'))
+        self.screen_manager.add_widget(OnboardingWelcomeScreen(name='onboarding_welcome'))
+        self.screen_manager.add_widget(OnboardingCapabilitiesScreen(name='onboarding_capabilities'))
+        self.screen_manager.add_widget(OnboardingReadyScreen(name='onboarding_ready'))
         self.screen_manager.add_widget(WelcomeScreen(name='welcome'))
         self.screen_manager.add_widget(RoomNameScreen(name='room_name'))
         self.screen_manager.add_widget(NetworkChoiceScreen(name='network_choice'))
@@ -1688,11 +1700,9 @@ class MeetingBoxApp(App):
         # Hand off from the native boot splash to the live UI on the first frame.
         Clock.schedule_once(self._close_native_splash, 0)
         self._ui_cache_load_from_disk()
-        if self._audio_supervisor is not None:
-            try:
-                self._audio_supervisor.start()
-            except Exception:
-                logger.exception("Failed to start in-process audio supervisor")
+        # NOTE: the audio capture child is intentionally NOT started here. It is
+        # spawned on first entry to the home screen via
+        # ``_ensure_audio_capture_started`` so onboarding starts up cleanly.
         self.voice_assistant.start()
         self._sync_voice_assistant_state()
         if not USE_MOCK_BACKEND:
@@ -1751,6 +1761,22 @@ class MeetingBoxApp(App):
         self._ui_sync_event = Clock.schedule_interval(self._ui_cache_sync_tick, 5.0)
         Clock.schedule_once(lambda _dt: self._ui_cache_sync_tick(0), 1.6)
 
+    def _ensure_audio_capture_started(self):
+        """Start the in-process audio capture child once, on first home entry.
+
+        Deferred from ``on_start`` so the onboarding flow (welcome → sign-in →
+        capabilities → ready) is not competing with the recorder for the mic or
+        for startup CPU. Idempotent: safe to call on every home entry.
+        """
+        if self._audio_supervisor_started:
+            return
+        self._audio_supervisor_started = True
+        if self._audio_supervisor is not None:
+            try:
+                self._audio_supervisor.start()
+            except Exception:
+                logger.exception("Failed to start in-process audio supervisor")
+
     def _run_mic_permission_check(self, _dt):
         """Desktop: probe mic access off-thread; if blocked, guide the user to grant it.
 
@@ -1804,15 +1830,15 @@ class MeetingBoxApp(App):
 
         if status.state == mic_permission.STATUS_NO_DEVICE:
             title = "No microphone found"
-            msg = ("MeetingBox could not find a microphone. Plug one in (or enable your "
-                   "built-in mic), then restart MeetingBox to use voice and recording.")
+            msg = ("Pepper AI could not find a microphone. Plug one in (or enable your "
+                   "built-in mic), then restart Pepper AI to use voice and recording.")
             show_settings = False
         else:
             title = "Allow microphone access"
-            msg = ("MeetingBox needs your microphone for the voice assistant and meeting "
+            msg = ("Pepper AI needs your microphone for the voice assistant and meeting "
                    "recording. Windows is currently blocking microphone access for desktop "
                    "apps.\n\nClick \"Open Settings\", turn on \"Microphone access\" and "
-                   "\"Let desktop apps access your microphone\", then restart MeetingBox.")
+                   "\"Let desktop apps access your microphone\", then restart Pepper AI.")
             show_settings = True
 
         root = BoxLayout(orientation="vertical", padding=16, spacing=12)
@@ -2051,7 +2077,8 @@ class MeetingBoxApp(App):
             target = self._nav_stack.pop()
             # Skip non-core screens in stack when going back
             skip = {
-                'splash', 'sign_in', 'welcome', 'network_choice', 'wifi_setup',
+                'splash', 'sign_in', 'onboarding_welcome', 'onboarding_capabilities',
+                'onboarding_ready', 'welcome', 'network_choice', 'wifi_setup',
                 'wifi_connected', 'setup_progress', 'all_set', 'pair_device',
                 'meetingbox_ready',
             }
@@ -3100,6 +3127,10 @@ class MeetingBoxApp(App):
             return False
         blocked = {
             'splash',
+            'sign_in',
+            'onboarding_welcome',
+            'onboarding_capabilities',
+            'onboarding_ready',
             'welcome',
             'room_name',
             'network_choice',
@@ -6728,7 +6759,7 @@ class MeetingBoxApp(App):
             "restart_device", "power_off", "factory_reset",
         ):
             self._voice_reply(
-                "That's handled by your computer, not MeetingBox.",
+                "That's handled by your computer, not Pepper AI.",
                 duration=3.5,
             )
             return

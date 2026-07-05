@@ -690,6 +690,12 @@ class HomeScreen(BaseScreen):
     # ── Lifecycle ─────────────────────────────────────────────────────────────
 
     def on_enter(self):
+        # Start the audio capture child lazily the first time home is reached
+        # (deferred from app startup so onboarding boots cleanly).
+        try:
+            self.app._ensure_audio_capture_started()
+        except Exception:
+            pass
         # Reset any in-flight page swipe and the page translate.
         for pager in self._pagers():
             if pager is not None:

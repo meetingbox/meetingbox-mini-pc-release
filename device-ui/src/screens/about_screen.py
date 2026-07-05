@@ -76,7 +76,7 @@ class AboutScreen(BaseScreen):
             l.bind(width=lambda w, v: setattr(w, "text_size", (v, None)))
             return l
 
-        body.add_widget(lbl("MeetingBox", bold=True, size=FONT_SIZES.get("large", 18)))
+        body.add_widget(lbl("Pepper AI", bold=True, size=FONT_SIZES.get("large", 18)))
         body.add_widget(lbl(f"{_VERSION_LABEL} {_FIRMWARE}", color=COLORS["gray_300"]))
         body.add_widget(lbl(f"Dashboard: {DASHBOARD_URL}", color=COLORS["gray_400"]))
         body.add_widget(lbl("Support: support.meetingbox.com", color=COLORS["gray_400"]))

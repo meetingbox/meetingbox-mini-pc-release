@@ -146,7 +146,7 @@ class MeetingsScreen(BaseScreen):
 
     def _populate(self):
         self.meetings_container.clear_widgets()
-        self.hero_subtitle.text = f'{len(self.meetings)} recent meetings synced from MeetingBox memory.'
+        self.hero_subtitle.text = f'{len(self.meetings)} recent meetings synced from Pepper AI memory.'
         if not self.meetings:
             self._show_empty('No meetings yet. Start a recording from Home to build memory.')
             return

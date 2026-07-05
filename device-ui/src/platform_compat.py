@@ -98,3 +98,92 @@ def has_linux_audio_tools() -> bool:
     not spawn missing executables (which raise ``FileNotFoundError``).
     """
     return IS_LINUX
+
+
+def bring_app_to_foreground() -> bool:
+    """Raise and focus this process's main window (Windows only, best-effort).
+
+    Desktop OAuth sends the user out to the system browser; after they finish a
+    step (sign-in, or the Gmail/Calendar consent that redirects to the hosted
+    dashboard) the app is left behind another window. Call this to pull our own
+    window back to the front so the flow returns to the app instead of stranding
+    the user on a web page.
+
+    Returns True if a window was found and a foreground attempt was made. No-op
+    (returns False) on non-Windows or if anything goes wrong — never raises.
+
+    Note: ``ctypes`` argtypes/restypes are set explicitly because HWNDs are
+    64-bit pointers; without them ctypes would truncate handles on 64-bit
+    Windows and corrupt the calls.
+    """
+    if not IS_WINDOWS:
+        return False
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        user32 = ctypes.windll.user32
+        kernel32 = ctypes.windll.kernel32
+
+        user32.EnumWindows.argtypes = [ctypes.c_void_p, wintypes.LPARAM]
+        user32.IsWindowVisible.argtypes = [wintypes.HWND]
+        user32.GetWindowTextLengthW.argtypes = [wintypes.HWND]
+        user32.GetWindowThreadProcessId.argtypes = [
+            wintypes.HWND, ctypes.POINTER(wintypes.DWORD)
+        ]
+        user32.GetWindowThreadProcessId.restype = wintypes.DWORD
+        user32.GetForegroundWindow.restype = wintypes.HWND
+        user32.ShowWindow.argtypes = [wintypes.HWND, ctypes.c_int]
+        user32.BringWindowToTop.argtypes = [wintypes.HWND]
+        user32.SetForegroundWindow.argtypes = [wintypes.HWND]
+        user32.SetForegroundWindow.restype = wintypes.BOOL
+        user32.AttachThreadInput.argtypes = [
+            wintypes.DWORD, wintypes.DWORD, wintypes.BOOL
+        ]
+        kernel32.GetCurrentProcessId.restype = wintypes.DWORD
+        kernel32.GetCurrentThreadId.restype = wintypes.DWORD
+
+        our_pid = kernel32.GetCurrentProcessId()
+        found: list[int] = []
+
+        WNDENUMPROC = ctypes.WINFUNCTYPE(
+            wintypes.BOOL, wintypes.HWND, wintypes.LPARAM
+        )
+
+        def _enum(hwnd, _lparam):
+            try:
+                if not user32.IsWindowVisible(hwnd):
+                    return True
+                wpid = wintypes.DWORD()
+                user32.GetWindowThreadProcessId(hwnd, ctypes.byref(wpid))
+                if wpid.value == our_pid and user32.GetWindowTextLengthW(hwnd) > 0:
+                    found.append(hwnd)
+            except Exception:
+                pass
+            return True
+
+        user32.EnumWindows(WNDENUMPROC(_enum), 0)
+        if not found:
+            return False
+        hwnd = found[0]
+
+        SW_RESTORE = 9
+        user32.ShowWindow(hwnd, SW_RESTORE)
+
+        # Windows only lets the foreground thread reassign focus, so attach our
+        # input to the current foreground thread for the duration of the call.
+        fg = user32.GetForegroundWindow()
+        cur_tid = kernel32.GetCurrentThreadId()
+        fg_tid = user32.GetWindowThreadProcessId(fg, None) if fg else 0
+        attached = False
+        if fg_tid and fg_tid != cur_tid:
+            attached = bool(user32.AttachThreadInput(fg_tid, cur_tid, True))
+        try:
+            user32.BringWindowToTop(hwnd)
+            user32.SetForegroundWindow(hwnd)
+        finally:
+            if attached:
+                user32.AttachThreadInput(fg_tid, cur_tid, False)
+        return True
+    except Exception:
+        return False

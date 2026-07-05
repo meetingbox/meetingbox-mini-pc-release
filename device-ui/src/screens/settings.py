@@ -120,7 +120,7 @@ class SettingsScreen(BaseScreen):
 
         self.device_name_item = SettingsItem(
             title='Device Name',
-            subtitle='MeetingBox',
+            subtitle='Pepper AI',
             mode='arrow',
             on_press=lambda _: self._show_device_name_dialog(),
         )
@@ -895,7 +895,7 @@ class SettingsScreen(BaseScreen):
                     self.model_item.subtitle_label.text = (
                         f'{DEVICE_MODEL}\nSerial: {serial}')
                     self.uptime_item.subtitle_label.text = f'{up_d}d {up_h}h'
-                    name = info.get('device_name', 'MeetingBox')
+                    name = info.get('device_name', 'Pepper AI')
                     self.device_name_item.subtitle_label.text = name
                     self.app.device_name = name
 
@@ -1011,8 +1011,8 @@ class SettingsScreen(BaseScreen):
         dialog = TextInputDialog(
             title='Device Name',
             message='Enter a new name for this device.',
-            initial_value=self.device_name_item.subtitle_label.text or 'MeetingBox',
-            placeholder='MeetingBox',
+            initial_value=self.device_name_item.subtitle_label.text or 'Pepper AI',
+            placeholder='Pepper AI',
             on_confirm=self._apply_device_name,
         )
         self.add_widget(dialog)
@@ -1126,7 +1126,7 @@ class SettingsScreen(BaseScreen):
         self.add_widget(
             ModalDialog(
                 title='Send diagnostic report?',
-                message='The last 200 log lines will be sent to MeetingBox support.',
+                message='The last 200 log lines will be sent to Pepper AI support.',
                 confirm_text='SEND',
                 cancel_text='CANCEL',
                 on_confirm=self._execute_send_diag_report,
@@ -1230,7 +1230,7 @@ class SettingsScreen(BaseScreen):
     def _show_unpair_account_dialog(self):
         if _DESKTOP_BUILD:
             title = 'Sign out?'
-            message = ('This will disconnect your MeetingBox account from\n'
+            message = ('This will disconnect your Pepper AI account from\n'
                        'this computer. Gmail stays linked in the web dashboard.\n'
                        'You will sign in with Google again to reconnect.')
             confirm_text = 'SIGN OUT'
