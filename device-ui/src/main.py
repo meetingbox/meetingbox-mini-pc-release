@@ -179,8 +179,145 @@ def _env_display_int(name: str, default: int) -> int:
     return v
 
 
+def _env_display_float(name: str, default: float) -> float:
+    """Parse a float env (physical size / density); never raises, runs pre-config."""
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    s = str(raw).strip()
+    if not s:
+        return default
+    try:
+        return float(s)
+    except ValueError:
+        print(
+            f"[MeetingBox] WARNING: {name}={raw!r} is not a number; ignoring",
+            file=sys.stderr,
+            flush=True,
+        )
+        return default
+
+
+def _windows_system_scale() -> float:
+    """Windows display-scale factor of the primary monitor (1.0 = 100%, 1.5 = 150%)."""
+    try:
+        import ctypes
+
+        # GetDpiForSystem (Win10 1607+) returns the primary monitor's DPI.
+        dpi = ctypes.windll.user32.GetDpiForSystem()
+        if dpi and dpi > 0:
+            return dpi / 96.0
+    except Exception:
+        pass
+    return 1.0
+
+
+def _windows_display_ppcm():
+    """Best-effort pixel density (px per cm) to REQUEST from Kivy for a real size.
+
+    Two things stack on Windows:
+      * the monitor has a true physical density (from EDID), and
+      * Kivy's SDL2 window uses ALLOW_HIGHDPI, so it multiplies the requested
+        pixel size by the monitor's display-scale factor (100%/125%/150%/...).
+    To land a real, e.g. 15 cm window we must therefore request in *scale-
+    adjusted* pixels: physical_density / scale_factor (SDL then multiplies it
+    back up to the true physical pixels). Requires the process to be DPI-aware so
+    HORZRES/VERTRES are the true physical pixel counts. Returns (ppcm_x, ppcm_y)
+    or None when the physical size is unavailable or implausible.
+    """
+    if sys.platform != "win32":
+        return None
+    try:
+        import ctypes
+
+        user32 = ctypes.windll.user32
+        gdi32 = ctypes.windll.gdi32
+        hdc = user32.GetDC(0)
+        if not hdc:
+            return None
+        try:
+            HORZSIZE, VERTSIZE, HORZRES, VERTRES = 4, 6, 8, 10
+            w_mm = gdi32.GetDeviceCaps(hdc, HORZSIZE)
+            h_mm = gdi32.GetDeviceCaps(hdc, VERTSIZE)
+            w_px = gdi32.GetDeviceCaps(hdc, HORZRES)
+            h_px = gdi32.GetDeviceCaps(hdc, VERTRES)
+        finally:
+            user32.ReleaseDC(0, hdc)
+        if min(w_mm, h_mm, w_px, h_px) <= 0:
+            return None
+        ppcm_x = w_px / (w_mm / 10.0)
+        ppcm_y = h_px / (h_mm / 10.0)
+        # Real panels sit around 30–160 px/cm (≈76–406 PPI). Outside that the
+        # driver returned a bogus/assumed size — treat detection as failed.
+        if not (30.0 <= ppcm_x <= 160.0 and 30.0 <= ppcm_y <= 160.0):
+            return None
+        scale = _windows_system_scale()
+        if scale <= 0:
+            scale = 1.0
+        return (ppcm_x / scale, ppcm_y / scale)
+    except Exception:
+        return None
+
+
+def _physical_target_px(default_w: int, default_h: int):
+    """Window pixel size for the desired PHYSICAL size on Windows (windowed mode).
+
+    The device is a 7" 1260x800 panel (~15.01 cm x 9.53 cm). To look the same
+    physical size on any monitor regardless of resolution/density, convert the
+    target cm to pixels using that monitor's real pixel density.
+
+    Density resolution order:
+      1. DISPLAY_PPCM env (manual pixels-per-cm) — use when auto-detect is wrong.
+      2. Auto-detected physical density from the monitor's EDID.
+      3. Windows standard 96 DPI as a last resort (still physical-cm based, so it
+         never overflows the screen like a fixed pixel count would).
+    """
+    if sys.platform != "win32" or _FULLSCREEN:
+        return default_w, default_h
+    cm_w = _env_display_float("DISPLAY_PHYSICAL_WIDTH_CM", 15.01)
+    cm_h = _env_display_float("DISPLAY_PHYSICAL_HEIGHT_CM", 9.53)
+    if cm_w <= 0 or cm_h <= 0:
+        return default_w, default_h
+    # Density is expressed as the monitor's TRUE physical pixels-per-cm. Kivy's
+    # SDL2 window re-applies the display-scale factor, so divide it back out to
+    # get the pixel size to actually request (see _windows_display_ppcm).
+    ppcm_override = _env_display_float("DISPLAY_PPCM", 0.0)
+    if ppcm_override > 0:
+        scale = _windows_system_scale() or 1.0
+        ppcm_x = ppcm_y = ppcm_override / scale
+    else:
+        ppcm = _windows_display_ppcm()
+        if ppcm is not None:
+            ppcm_x, ppcm_y = ppcm
+        else:
+            ppcm_x = ppcm_y = 96.0 / 2.54
+            print(
+                "[MeetingBox] WARNING: physical display size unavailable; "
+                "assuming 96 DPI. If the window is the wrong size, set "
+                "DISPLAY_PPCM (pixels per cm) in device-ui.env.",
+                file=sys.stderr,
+                flush=True,
+            )
+    w = int(round(cm_w * ppcm_x))
+    h = int(round(cm_h * ppcm_y))
+    if w < 32 or h < 32:
+        return default_w, default_h
+    return w, h
+
+
 _W = _env_display_int("DISPLAY_WIDTH", 1260)
 _H = _env_display_int("DISPLAY_HEIGHT", 800)
+
+# Size the window to a fixed PHYSICAL size (default 15.01 cm x 9.53 cm — the 7"
+# device panel) instead of a fixed pixel count, so it measures the same on every
+# monitor. config.py reads DISPLAY_WIDTH/HEIGHT to scale the layout, so keep the
+# env in sync (config is imported later, ~L320) — the whole UI then scales to
+# the physical window instead of overflowing the screen.
+_pw, _ph = _physical_target_px(_W, _H)
+if (_pw, _ph) != (_W, _H):
+    _W, _H = _pw, _ph
+    os.environ["DISPLAY_WIDTH"] = str(_W)
+    os.environ["DISPLAY_HEIGHT"] = str(_H)
 
 Config.set('graphics', 'window_state', 'visible')
 if _FULLSCREEN:
@@ -338,7 +475,7 @@ from config import (
     WAKE_LOCAL_VOICE_ONLY,
 )
 
-from platform_compat import IS_DESKTOP
+from platform_compat import IS_DESKTOP, IS_WINDOWS
 from api_client import BackendClient
 from mock_backend import MockBackendClient
 from hardware import (
@@ -1425,6 +1562,29 @@ class MeetingBoxApp(App):
             logger.exception("VoiceControlBar failed to load")
             self._voice_control_bar = None
 
+        # Always-on-top Pepper navigation dock — Windows desktop companion only.
+        # On the Linux appliance / kiosk this is skipped entirely so the existing
+        # full-screen flow is untouched. The dock stays hidden until the app
+        # first reaches the home/ready state, then takes over as a floating dock.
+        self.dock_controller = None
+        if self._dock_enabled():
+            try:
+                from components.pepper_dock import DockController
+                self.dock_controller = DockController(app=self)
+                self.dock_controller.install()
+                self.screen_manager.bind(
+                    current=lambda _sm, name: self._dock_on_screen_change(name)
+                )
+            except Exception:
+                logger.exception("PepperDock failed to load")
+                self.dock_controller = None
+            # Launch automatically at Windows login so the dock is always present.
+            try:
+                import windows_autostart
+                windows_autostart.register(True)
+            except Exception:
+                logger.debug("windows_autostart registration failed", exc_info=True)
+
         # Quick pull-down panel — appliance control center (brightness, Wi-Fi/BT
         # radios, scan/connect, restart, power). On desktop the OS owns all of
         # this, so the panel and its swipe/handle/button triggers are omitted.
@@ -2061,6 +2221,25 @@ class MeetingBoxApp(App):
             and target not in self._SUMMARY_CTX_SCREENS
         ):
             self.end_summary_context_session()
+
+    def _dock_enabled(self) -> bool:
+        """True only for the Windows desktop companion (never the appliance)."""
+        if not (IS_WINDOWS and IS_DESKTOP) or FULLSCREEN:
+            return False
+        return os.getenv("MEETINGBOX_DOCK", "1") != "0"
+
+    def _dock_on_screen_change(self, name: str) -> None:
+        """Engage the floating dock on first reaching home; keep highlight synced."""
+        dc = getattr(self, "dock_controller", None)
+        if dc is None:
+            return
+        if not dc._engaged:
+            # Boot/onboarding runs in the normal window; the dock takes over the
+            # moment the app would otherwise land on the (now-unused) home screen.
+            if name == "home":
+                dc.engage()
+            return
+        dc.notify_screen(name)
 
     def goto_screen(self, screen_name: str, transition='fade'):
         """Navigate to *screen_name* with the specified transition."""

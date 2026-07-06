@@ -42,7 +42,6 @@ from kivy.uix.widget import Widget
 from components.live_wifi_icon import LiveWifiIcon
 from components.modal_dialog import ModalDialog
 from config import ASSETS_DIR, DISPLAY_HEIGHT, DISPLAY_WIDTH, display_now
-from page_swipe import PageSwipeController
 from screens.base_screen import BaseScreen
 
 logger = logging.getLogger(__name__)
@@ -292,16 +291,13 @@ class _MicButton(ButtonBehavior, Widget):
 class _HeyPepperPill(Widget):
     """Frosted-glass pill drawn entirely in canvas.
 
-    Figma spec: fill rgba(255,255,255,0.5), stroke rgba(255,255,255,0.6),
-    borderRadius 40 px, shadow 0 11 19 rgba(118,129,127,0.7).
+    Figma spec (node 1023:2042): fill rgba(255,255,255,0.5),
+    stroke rgba(255,255,255,0.6) 2 px, borderRadius 40 px, no drop shadow.
     """
 
     def __init__(self, **kw):
         super().__init__(**kw)
         with self.canvas:
-            # Shadow approximation (Kivy has no blur; use layered semi-transparent rects)
-            self._shc  = Color(*_SHADOW)
-            self._shad = RoundedRectangle(pos=(0, 0), size=(1, 1), radius=[44])
             # Fill: rgba(255,255,255,0.5)
             self._fillc = Color(*_HEY_FILL)
             self._fillr = RoundedRectangle(pos=(0, 0), size=(1, 1), radius=[40])
@@ -316,9 +312,6 @@ class _HeyPepperPill(Widget):
         if w <= 0 or h <= 0:
             return
         r = _ff(40)
-        self._shad.pos    = (x + 2, y - 9)
-        self._shad.size   = (w + 2, h + 12)
-        self._shad.radius = [r + 5]
         self._fillr.pos    = (x, y)
         self._fillr.size   = (w, h)
         self._fillr.radius = [r]
@@ -489,27 +482,11 @@ class HomeScreen(BaseScreen):
         self._summary_ready_popup: _SummaryPopupPill | None = None
         self._page_tx = None
         self._build_ui()
-        # Left-to-right reveal of the Start-Recording (READY) page, dragged
-        # directly under the finger like an adjacent iOS Home-Screen page.
-        self._fwd_pager = PageSwipeController(
-            self,
-            "recording",
-            direction=1,
-            prepare_dest=self._prepare_recording_ready,
-            commit=self._commit_to_recording_ready,
-            can_start=self._can_start_swipe,
-        )
-        # Right-to-left reveal of the Calendar page. Calendar sits to the *right*
-        # of Home (mirroring Start-Recording on the left), and Tasks sits to the
-        # right of Calendar — one continuous chain of adjacent pages.
-        self._cal_pager = PageSwipeController(
-            self,
-            "calendar",
-            direction=-1,
-            prepare_dest=self._prepare_adjacent,
-            commit=self._commit_to_calendar,
-            can_start=self._can_start_swipe,
-        )
+        # Swipe page-navigation removed: the always-on-top Pepper dock is now the
+        # primary navigation surface, so Home no longer reveals adjacent pages.
+        # ``_pagers()`` reads these via ``getattr(..., None)``, so leaving them
+        # unset cleanly disables both the forward (Start-Recording) and reverse
+        # (Calendar/Tasks) reveals while the rest of the screen keeps working.
 
     # ── Build ─────────────────────────────────────────────────────────────────
 
@@ -572,17 +549,17 @@ class HomeScreen(BaseScreen):
         )
         root.add_widget(hey_pill)
 
-        # 8 · Hey-Pepper text  (Figma: x+54 inside pill, 549 × 38, centred) ─
-        #     Figma: 32 px SemiBold, #3A3B3D, center
+        # 8 · Hey-Pepper text  (node 1023:2043) — 32 px SemiBold #3A3B3D,
+        #     centred on both axes inside the 657 × 78 pill.
         hey_lbl = Label(
-            text="Say 'Hey Pepper' to start a conversation",
+            text="Say ‘Hey Pepper’ to start a conversation",
             font_name=_FONT_SB,
             font_size=_ff(32),
             color=_TEXT,
             halign="center",
             valign="middle",
-            size_hint=(_sw(657), _sh(38)),
-            pos_hint={"x": _x(302), "y": _y(596 + 19, 38)},
+            size_hint=(_sw(657), _sh(78)),
+            pos_hint={"x": _x(302), "y": _y(596, 78)},
         )
         hey_lbl.bind(size=hey_lbl.setter("text_size"))
         root.add_widget(hey_lbl)
