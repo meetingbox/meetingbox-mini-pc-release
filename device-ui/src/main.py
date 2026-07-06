@@ -80,6 +80,24 @@ if getattr(sys, "frozen", False):
 
 from xauthority_util import display_refers_to_screen_zero, xauthority_list_has_display_zero
 
+# On Windows, an app that hasn't declared DPI awareness gets bitmap-stretched
+# by the OS to match the display's scale factor (100%/125%/150%/200%...).
+# That is why the window opened at the right pixel size (1260x800) on one
+# machine but looked a different physical size — and blurry, misaligned
+# widgets ("UI glitches") — on another with different display scaling. Must
+# run before SDL creates the window (i.e. before Kivy's Window is imported).
+if sys.platform == "win32":
+    try:
+        import ctypes
+        # PROCESS_PER_MONITOR_DPI_AWARE = 2 (Windows 8.1+): render at true
+        # pixels, no OS scaling of our window contents.
+        ctypes.windll.shcore.SetProcessDpiAwareness(2)
+    except Exception:
+        try:
+            ctypes.windll.user32.SetProcessDPIAware()
+        except Exception:
+            pass
+
 # Before importing Kivy: stable clipboard provider on Linux (see kivy_options).
 if sys.platform.startswith("linux"):
     os.environ.setdefault("KIVY_CLIPBOARD", "sdl2")
@@ -161,8 +179,8 @@ def _env_display_int(name: str, default: int) -> int:
     return v
 
 
-_W = _env_display_int("DISPLAY_WIDTH", 1024)
-_H = _env_display_int("DISPLAY_HEIGHT", 600)
+_W = _env_display_int("DISPLAY_WIDTH", 1260)
+_H = _env_display_int("DISPLAY_HEIGHT", 800)
 
 Config.set('graphics', 'window_state', 'visible')
 if _FULLSCREEN:
