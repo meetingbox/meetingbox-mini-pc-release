@@ -1457,34 +1457,41 @@ class MeetingBoxApp(App):
         self.screen_manager.add_widget(BriefingScreen(name='briefing'))
         self.screen_manager.add_widget(IdleScreen(name='idle'))
 
-        self.screen_manager.add_widget(SettingsScreen(name='settings'))
-        self.screen_manager.add_widget(AutoDeletePickerScreen(name='auto_delete_picker'))
-        self.screen_manager.add_widget(BrightnessPickerScreen(name='brightness_picker'))
-        self.screen_manager.add_widget(BrightnessSliderScreen(name='brightness_slider'))
-        self.screen_manager.add_widget(SpeechVolumePickerScreen(name='speech_volume_picker'))
-        self.screen_manager.add_widget(NotificationVolumePickerScreen(name='notification_volume_picker'))
-        self.screen_manager.add_widget(MicGainPickerScreen(name='mic_gain_picker'))
-        self.screen_manager.add_widget(IdleTimeoutPickerScreen(name='idle_timeout_picker'))
-        self.screen_manager.add_widget(MicTestScreen(name='mic_test'))
-        self.screen_manager.add_widget(UpdateCheckScreen(name='update_check'))
-        self.screen_manager.add_widget(UpdateInstallScreen(name='update_install'))
-        self.screen_manager.add_widget(UpdateChannelPickerScreen(name='update_channel_picker'))
-        self.screen_manager.add_widget(TimezonePickerScreen(name='timezone_picker'))
-        self.screen_manager.add_widget(AudioSinkPickerScreen(name='audio_output_picker'))
-        self.screen_manager.add_widget(AudioSourcePickerScreen(name='audio_input_picker'))
-        self.screen_manager.add_widget(WiFiForgetScreen(name='wifi_forget_screen'))
-        self.screen_manager.add_widget(BluetoothScreen(name='bluetooth_screen'))
-        self.screen_manager.add_widget(DateTimeScreen(name='datetime_screen'))
-        self.screen_manager.add_widget(StorageBreakdownScreen(name='storage_breakdown'))
-        self.screen_manager.add_widget(DiagnosticLogsScreen(name='diagnostic_logs'))
-        self.screen_manager.add_widget(AboutScreen(name='about_screen'))
-        self.screen_manager.add_widget(SendFeedbackScreen(name='send_feedback'))
-        self.screen_manager.add_widget(NotificationsSettingsScreen(name='notifications_settings'))
-        self.screen_manager.add_widget(SecuritySettingsScreen(name='security_settings'))
-        self.screen_manager.add_widget(IntegrationDetailScreen(name='integration_detail'))
-        self.screen_manager.add_widget(UsbInfoScreen(name='usb_info'))
-        self.screen_manager.add_widget(RoomLabelScreen(name='room_label_screen'))
-        self.screen_manager.add_widget(ConnectivityCheckScreen(name='connectivity_check'))
+        # Settings hub + its sub-screens are appliance-only. On the Windows/
+        # macOS desktop build the OS owns Wi-Fi, Bluetooth, audio devices,
+        # brightness, power, updates, etc., so the whole Settings tree is not
+        # registered. Every desktop path that could navigate here (status bar
+        # gear, briefing button, voice intents, realtime routes) is guarded
+        # accordingly. On the Linux appliance this block is unchanged.
+        if not IS_DESKTOP:
+            self.screen_manager.add_widget(SettingsScreen(name='settings'))
+            self.screen_manager.add_widget(AutoDeletePickerScreen(name='auto_delete_picker'))
+            self.screen_manager.add_widget(BrightnessPickerScreen(name='brightness_picker'))
+            self.screen_manager.add_widget(BrightnessSliderScreen(name='brightness_slider'))
+            self.screen_manager.add_widget(SpeechVolumePickerScreen(name='speech_volume_picker'))
+            self.screen_manager.add_widget(NotificationVolumePickerScreen(name='notification_volume_picker'))
+            self.screen_manager.add_widget(MicGainPickerScreen(name='mic_gain_picker'))
+            self.screen_manager.add_widget(IdleTimeoutPickerScreen(name='idle_timeout_picker'))
+            self.screen_manager.add_widget(MicTestScreen(name='mic_test'))
+            self.screen_manager.add_widget(UpdateCheckScreen(name='update_check'))
+            self.screen_manager.add_widget(UpdateInstallScreen(name='update_install'))
+            self.screen_manager.add_widget(UpdateChannelPickerScreen(name='update_channel_picker'))
+            self.screen_manager.add_widget(TimezonePickerScreen(name='timezone_picker'))
+            self.screen_manager.add_widget(AudioSinkPickerScreen(name='audio_output_picker'))
+            self.screen_manager.add_widget(AudioSourcePickerScreen(name='audio_input_picker'))
+            self.screen_manager.add_widget(WiFiForgetScreen(name='wifi_forget_screen'))
+            self.screen_manager.add_widget(BluetoothScreen(name='bluetooth_screen'))
+            self.screen_manager.add_widget(DateTimeScreen(name='datetime_screen'))
+            self.screen_manager.add_widget(StorageBreakdownScreen(name='storage_breakdown'))
+            self.screen_manager.add_widget(DiagnosticLogsScreen(name='diagnostic_logs'))
+            self.screen_manager.add_widget(AboutScreen(name='about_screen'))
+            self.screen_manager.add_widget(SendFeedbackScreen(name='send_feedback'))
+            self.screen_manager.add_widget(NotificationsSettingsScreen(name='notifications_settings'))
+            self.screen_manager.add_widget(SecuritySettingsScreen(name='security_settings'))
+            self.screen_manager.add_widget(IntegrationDetailScreen(name='integration_detail'))
+            self.screen_manager.add_widget(UsbInfoScreen(name='usb_info'))
+            self.screen_manager.add_widget(RoomLabelScreen(name='room_label_screen'))
+            self.screen_manager.add_widget(ConnectivityCheckScreen(name='connectivity_check'))
 
         self.screen_manager.add_widget(MeetingsScreen(name='meetings'))
         self.screen_manager.add_widget(MeetingDetailScreen(name='meeting_detail'))
@@ -1930,7 +1937,10 @@ class MeetingBoxApp(App):
             Clock.schedule_once(self._run_mic_permission_check, 3.0)
         # After boot-time API bursts settle, run connectivity / mic / model checks once.
         # A slightly later start avoids transient false-negatives during initial network churn.
-        Clock.schedule_once(self._run_startup_self_test_overlay, 8.0)
+        # Desktop (Windows/macOS) is a plain application: the OS owns the system,
+        # so the appliance boot self-test / system-check step is skipped there.
+        if not IS_DESKTOP:
+            Clock.schedule_once(self._run_startup_self_test_overlay, 8.0)
         # Cold-start prewarm for instant first-open calendar/emails.
         Clock.schedule_once(lambda _dt: run_async(self._ui_cache_bootstrap_async()), 0.8)
         # Centralized sync loop to keep caches hot across all screens.
@@ -2569,6 +2579,10 @@ class MeetingBoxApp(App):
             Clock.schedule_once(lambda _: screen.on_audio_level(level), 0)
 
     def on_mic_test_level(self, data):
+        # The mic_test screen is appliance-only (not registered on desktop).
+        # Ignore any stray backend level events when it isn't present.
+        if not self.screen_manager.has_screen('mic_test'):
+            return
         level_data = data if 'level' in data else data.get('data', {})
         level = float(level_data.get('level', 0.0) or 0.0)
         screen = self.screen_manager.get_screen('mic_test')
@@ -2655,6 +2669,10 @@ class MeetingBoxApp(App):
         Clock.schedule_once(_advance, 0)
 
     def on_update_progress(self, data):
+        # The update_install screen is appliance-only (not registered on
+        # desktop; desktop updates ship via the installer). Ignore stray events.
+        if not self.screen_manager.has_screen('update_install'):
+            return
         progress = data.get('progress', 0)
         stage = data.get('stage', '')
         eta = data.get('eta', 0)
@@ -3811,9 +3829,13 @@ class MeetingBoxApp(App):
             "meetings": ("meetings", "slide_left"),
             "tasks": ("tasks", "slide_left"),
             "morning_brief": ("morning_brief", "slide_left"),
-            "settings": ("settings", "slide_left"),
-            "mic_test": ("mic_test", "slide_left"),
         }
+        # Settings and mic_test screens are not registered on desktop, so never
+        # offer them as realtime navigation targets there (unknown keys return
+        # safely below). The appliance keeps them.
+        if not IS_DESKTOP:
+            routes["settings"] = ("settings", "slide_left")
+            routes["mic_test"] = ("mic_test", "slide_left")
         pair = routes.get(s)
         if not pair:
             return
@@ -6865,6 +6887,12 @@ class MeetingBoxApp(App):
             return
 
         if intent.name == "open_settings":
+            if IS_DESKTOP:
+                self._voice_reply(
+                    "Settings are managed in Windows and the web dashboard.",
+                    duration=3.5,
+                )
+                return
             self.goto_screen("settings", "slide_left")
             self._voice_reply("Opening settings.", duration=2.5)
             return
@@ -6907,6 +6935,12 @@ class MeetingBoxApp(App):
             return
 
         if intent.name == "test_microphone":
+            if IS_DESKTOP:
+                self._voice_reply(
+                    "Microphone settings are managed in Windows.",
+                    duration=3.5,
+                )
+                return
             self.goto_screen("mic_test", "slide_left")
             self._voice_reply("Opening microphone test.", duration=3.0)
             return
