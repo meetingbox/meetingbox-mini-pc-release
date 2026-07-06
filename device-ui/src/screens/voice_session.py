@@ -460,14 +460,18 @@ class VoiceSessionScreen(BaseScreen):
         # (WiFi + battery indicators removed — not relevant for the desktop app.)
 
         # 9 · Back button  (top-left, same row as pill) ───────────────────────
-        back = _BackButton(
-            on_tap=self._on_back,
-            size_hint=(_sw(140), _sh(47)),
-            pos_hint={"x": _x(20), "y": _y(17, 47)},
-        )
-        root.add_widget(back)
-        # The _BackButton widget renders via a child label that must be added:
-        root.add_widget(back._lbl)
+        # Omitted in the floating-dock companion: the dock is the only navigation
+        # surface there (tap the active icon / click away to dismiss).
+        from config import dock_companion_enabled
+        if not dock_companion_enabled():
+            back = _BackButton(
+                on_tap=self._on_back,
+                size_hint=(_sw(140), _sh(47)),
+                pos_hint={"x": _x(20), "y": _y(17, 47)},
+            )
+            root.add_widget(back)
+            # The _BackButton widget renders via a child label that must be added:
+            root.add_widget(back._lbl)
 
         self.add_widget(root)
 

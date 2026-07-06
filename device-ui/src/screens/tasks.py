@@ -1197,6 +1197,11 @@ class TasksScreen(BaseScreen):
     def _set_back_visible(self, visible: bool) -> None:
         if self._back_btn is None:
             return
+        # In the floating-dock companion the dock is the only navigation surface,
+        # so the back button is always suppressed.
+        from config import dock_companion_enabled
+        if dock_companion_enabled():
+            visible = False
         self._back_btn.opacity = 1.0 if visible else 0.0
         self._back_btn.disabled = not visible
 

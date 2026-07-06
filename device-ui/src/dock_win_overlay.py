@@ -118,6 +118,17 @@ def _configure_argtypes() -> None:
     u.GetCursorPos.argtypes = [ctypes.POINTER(wintypes.POINT)]
     u.GetAsyncKeyState.restype = ctypes.c_short
     u.GetAsyncKeyState.argtypes = [ctypes.c_int]
+    u.EnumWindows.restype = wintypes.BOOL
+    u.EnumWindows.argtypes = [ctypes.c_void_p, wintypes.LPARAM]
+    u.GetWindowThreadProcessId.restype = wintypes.DWORD
+    u.GetWindowThreadProcessId.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.DWORD)]
+    u.IsWindowVisible.restype = wintypes.BOOL
+    u.IsWindowVisible.argtypes = [wintypes.HWND]
+    u.GetWindowRect.restype = wintypes.BOOL
+    u.GetWindowRect.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.RECT)]
+    u.GetDC.restype = wintypes.HDC
+    u.GetDC.argtypes = [wintypes.HWND]
+    u.ReleaseDC.argtypes = [wintypes.HWND, wintypes.HDC]
 
 
 _argtypes_ready = False
@@ -140,6 +151,136 @@ def find_hwnd(title: str) -> int:
     except Exception:
         logger.debug("find_hwnd failed", exc_info=True)
         return 0
+
+
+_EnumWindowsProc = ctypes.WINFUNCTYPE(
+    wintypes.BOOL, wintypes.HWND, wintypes.LPARAM
+) if IS_WINDOWS else None
+
+
+def find_own_hwnd() -> int:
+    """Return this process's own top-level SDL window HWND (0 if not found).
+
+    Far more reliable than :func:`find_hwnd`: Kivy/SDL can override the window
+    title after we set it, so a title lookup often misses. We instead enumerate
+    top-level windows and return the first visible one that belongs to our PID.
+    """
+    if not IS_WINDOWS:
+        return 0
+    try:
+        _ensure_argtypes()
+        u = _user32()
+        k = ctypes.windll.kernel32
+        our_pid = int(k.GetCurrentProcessId())
+        found: list[int] = []
+
+        def _cb(hwnd, _lparam):
+            pid = wintypes.DWORD(0)
+            u.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+            if int(pid.value) == our_pid and u.IsWindowVisible(hwnd):
+                r = wintypes.RECT()
+                if u.GetWindowRect(hwnd, ctypes.byref(r)):
+                    if (r.right - r.left) > 0 and (r.bottom - r.top) > 0:
+                        found.append(int(hwnd))
+                        return False  # stop enumeration
+            return True
+
+        u.EnumWindows(_EnumWindowsProc(_cb), 0)
+        return found[0] if found else 0
+    except Exception:
+        logger.debug("find_own_hwnd failed", exc_info=True)
+        return 0
+
+
+def system_scale() -> float:
+    """Primary monitor display-scale factor (1.0 = 96 DPI, 1.5 = 150%, …)."""
+    if not IS_WINDOWS:
+        return 1.0
+    try:
+        _ensure_argtypes()
+        u = _user32()
+        dc = u.GetDC(0)
+        try:
+            dpi = ctypes.windll.gdi32.GetDeviceCaps(dc, 88)  # LOGPIXELSX
+        finally:
+            u.ReleaseDC(0, dc)
+        if dpi and dpi > 0:
+            return float(dpi) / 96.0
+    except Exception:
+        logger.debug("system_scale failed", exc_info=True)
+    return 1.0
+
+
+def physical_ppcm() -> Optional[tuple[float, float]]:
+    """Primary monitor TRUE physical pixels-per-cm from EDID, or None.
+
+    Uses the monitor's real image size (millimetres) recorded in its EDID —
+    independent of the Windows display-scale setting — so a target expressed in
+    centimetres renders at that real-world size on any screen.
+    """
+    if not IS_WINDOWS:
+        return None
+    try:
+        _ensure_argtypes()
+        u = _user32()
+        res_w = int(u.GetSystemMetrics(0))   # SM_CXSCREEN (physical, DPI-aware)
+        res_h = int(u.GetSystemMetrics(1))   # SM_CYSCREEN
+        size = _edid_image_mm()
+        if size is None or res_w <= 0 or res_h <= 0:
+            return None
+        mm_w, mm_h = size
+        if mm_w <= 0 or mm_h <= 0:
+            return None
+        return (res_w / (mm_w / 10.0), res_h / (mm_h / 10.0))
+    except Exception:
+        logger.debug("physical_ppcm failed", exc_info=True)
+        return None
+
+
+def _edid_image_mm() -> Optional[tuple[int, int]]:
+    """Read the active monitor's physical image size (mm) from its EDID."""
+    try:
+        import winreg
+    except Exception:
+        return None
+    try:
+        base = r"SYSTEM\CurrentControlSet\Enum\DISPLAY"
+        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, base) as root:
+            i = 0
+            while True:
+                try:
+                    model = winreg.EnumKey(root, i)
+                except OSError:
+                    break
+                i += 1
+                with winreg.OpenKey(root, model) as mk:
+                    j = 0
+                    while True:
+                        try:
+                            inst = winreg.EnumKey(mk, j)
+                        except OSError:
+                            break
+                        j += 1
+                        try:
+                            dp = model + "\\" + inst + "\\Device Parameters"
+                            with winreg.OpenKey(root, dp) as dk:
+                                edid, _t = winreg.QueryValueEx(dk, "EDID")
+                        except OSError:
+                            continue
+                        if not edid or len(edid) < 69:
+                            continue
+                        # First detailed timing descriptor (bytes 54-71): image
+                        # size in mm is bytes 66/67 with the high nibbles in 68.
+                        mm_w = ((edid[68] & 0xF0) << 4) | edid[66]
+                        mm_h = ((edid[68] & 0x0F) << 8) | edid[67]
+                        if mm_w > 0 and mm_h > 0:
+                            return (mm_w, mm_h)
+                        # Fallback: bytes 21/22 hold max image size in whole cm.
+                        if edid[21] > 0 and edid[22] > 0:
+                            return (edid[21] * 10, edid[22] * 10)
+    except Exception:
+        logger.debug("_edid_image_mm failed", exc_info=True)
+    return None
 
 
 def virtual_screen_rect() -> tuple[int, int, int, int]:

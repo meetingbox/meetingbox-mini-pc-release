@@ -214,6 +214,22 @@ TARGET_FPS = int(os.getenv('TARGET_FPS', '30'))
 # Fullscreen mode (set FULLSCREEN=0 for windowed dev mode)
 FULLSCREEN = os.getenv('FULLSCREEN', '0') == '1'
 
+
+def dock_companion_enabled() -> bool:
+    """True when running as the Windows floating-dock desktop companion.
+
+    In that mode the dock is the only navigation surface, so the per-screen
+    back buttons are removed (screens are summoned/dismissed via the dock).
+    """
+    try:
+        from platform_compat import IS_DESKTOP, IS_WINDOWS
+    except Exception:
+        return False
+    return bool(
+        IS_WINDOWS and IS_DESKTOP and not FULLSCREEN
+        and os.getenv("MEETINGBOX_DOCK", "1") != "0"
+    )
+
 # ============================================================================
 # DISPLAY CLOCK (wall time in UI — default India Standard Time)
 # ============================================================================
