@@ -46,6 +46,11 @@ WizardStyle=modern
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 PrivilegesRequired=admin
+; Both apps auto-start at login, so they're running during an upgrade. Close
+; them automatically (Restart Manager) instead of showing the "files in use"
+; prompt, and don't let Setup relaunch them (the Finish page / auto-start do).
+CloseApplications=force
+RestartApplications=no
 ; Show the EULA and require acceptance before install proceeds.
 LicenseFile=EULA.rtf
 ; Sign the installer AND its uninstaller with the "meetingbox" sign tool, but

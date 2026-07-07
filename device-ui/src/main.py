@@ -308,16 +308,51 @@ def _physical_target_px(default_w: int, default_h: int):
 _W = _env_display_int("DISPLAY_WIDTH", 1260)
 _H = _env_display_int("DISPLAY_HEIGHT", 800)
 
-# Size the window to a fixed PHYSICAL size (default 15.01 cm x 9.53 cm — the 7"
-# device panel) instead of a fixed pixel count, so it measures the same on every
-# monitor. config.py reads DISPLAY_WIDTH/HEIGHT to scale the layout, so keep the
-# env in sync (config is imported later, ~L320) — the whole UI then scales to
-# the physical window instead of overflowing the screen.
-_pw, _ph = _physical_target_px(_W, _H)
-if (_pw, _ph) != (_W, _H):
-    _W, _H = _pw, _ph
+
+def _windows_workarea_px():
+    """Usable desktop area (excludes the taskbar) in real pixels, or None."""
+    if sys.platform != "win32":
+        return None
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        rect = wintypes.RECT()
+        # SPI_GETWORKAREA = 0x0030 — primary monitor area minus the taskbar.
+        if ctypes.windll.user32.SystemParametersInfoW(0x0030, 0, ctypes.byref(rect), 0):
+            return rect.right - rect.left, rect.bottom - rect.top
+    except Exception:
+        pass
+    return None
+
+
+if sys.platform == "win32" and not _FULLSCREEN:
+    # Windows desktop: use a fixed, laptop-friendly window instead of physical-cm
+    # sizing. The monitor density auto-detect can misfire on some PCs and request
+    # a window taller than the screen (title bar / bottom controls end up
+    # off-screen, looking like it took over the whole display). A fixed size is
+    # predictable; DISPLAY_WIDTH/HEIGHT in device-ui.env set it (default 1120x680).
+    # Clamp to the work area so it always fits, even on small displays. config.py
+    # reads DISPLAY_WIDTH/HEIGHT (imported later) to scale the layout to this size.
+    _W = _env_display_int("DISPLAY_WIDTH", 1120)
+    _H = _env_display_int("DISPLAY_HEIGHT", 680)
+    _wa = _windows_workarea_px()
+    if _wa:
+        _wa_w, _wa_h = _wa
+        # Leave room for the window title bar (~48px) so it never clips.
+        _W = min(_W, max(640, _wa_w - 40))
+        _H = min(_H, max(400, _wa_h - 48))
     os.environ["DISPLAY_WIDTH"] = str(_W)
     os.environ["DISPLAY_HEIGHT"] = str(_H)
+else:
+    # Non-Windows desktop (e.g. macOS) keeps the fixed PHYSICAL-size behaviour
+    # (default 15.01 cm x 9.53 cm — the 7" device panel) so it measures the same
+    # on every monitor. The Linux appliance runs FULLSCREEN and is unaffected.
+    _pw, _ph = _physical_target_px(_W, _H)
+    if (_pw, _ph) != (_W, _H):
+        _W, _H = _pw, _ph
+        os.environ["DISPLAY_WIDTH"] = str(_W)
+        os.environ["DISPLAY_HEIGHT"] = str(_H)
 
 Config.set('graphics', 'window_state', 'visible')
 if _FULLSCREEN:
