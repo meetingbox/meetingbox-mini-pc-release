@@ -152,3 +152,25 @@ function VCRedistNeeded(): Boolean;
 begin
   Result := (not VCRedistInstalled()) and FileExists(ExpandConstant('{tmp}\{#VCRedist}'));
 end;
+
+{ --- Clean uninstall: stop the running apps first ---------------------------
+  Both apps auto-start and run in the background (the dashboard sits in the
+  tray), so at uninstall time they're almost always running. CloseApplications
+  only applies during install, so without this the processes keep running in
+  Task Manager after uninstall and their locked files are left behind. Kill the
+  companion (and its audio child, via /T) and the dashboard before files are
+  removed. taskkill returns non-zero when a process isn't running, which is
+  fine and ignored. }
+procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
+var
+  ResultCode: Integer;
+begin
+  if CurUninstallStep = usUninstall then
+  begin
+    Exec(ExpandConstant('{sys}\taskkill.exe'),
+      '/F /T /IM "{#MyAppExeName}" /IM "meetingbox-audio.exe" /IM "{#MyDashExeName}"',
+      '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+    { Give Windows a moment to release the file handles before deletion. }
+    Sleep(700);
+  end;
+end;
