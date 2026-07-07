@@ -69,18 +69,100 @@ Kivy are normal (those providers don't exist on a headless build machine).
 
 ---
 
-## Optional: build the installer (`MeetingBoxSetup.exe`)
+## Build the Dashboard app (Tauri + WebView2)
 
-The Inno Setup script expects the bundle at `packaging\windows\dist\MeetingBox`
-(the default `--distpath` above), so just run:
+The installer bundles a **second app** — the MeetingBox Dashboard, a Tauri v2 +
+WebView2 shell around the React SPA (`frontend/`). This requires the **full
+monorepo checkout** (both `frontend/` and `mini-pc/` present), not just the
+mini-pc release repo.
+
+Extra prerequisites (build machine only):
+- **Node.js + npm** (already used by the frontend).
+- **Rust** (stable, `x86_64-pc-windows-msvc`) with the **Visual Studio C++ Build
+  Tools** — <https://www.rust-lang.org/tools/install>.
+- Edge **WebView2** runtime is only needed on the *run* machine (the installer
+  provisions it; see below).
 
 ```powershell
-& "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" packaging\windows\MeetingBox.iss
+cd frontend
+npm ci
+npm run tauri:build     # builds the SPA (--mode desktop, win. backend) + compiles the exe
 ```
 
-**Output:** `packaging\windows\Output\MeetingBoxSetup.exe`. It installs the
-bundle into Program Files, seeds `%PROGRAMDATA%\MeetingBox\device-ui.env`
-(only if absent), and creates Start Menu / optional desktop shortcuts.
+**Output:** `frontend\src-tauri\target\release\MeetingBoxDashboard.exe` — a single
+self-contained exe (WebView2 is a shared system runtime). This is the exact path
+`MeetingBox.iss` copies into `{app}\Dashboard\`.
+
+> The desktop SPA build reads `frontend\.env.desktop` (points at
+> `https://win.meetingboxai.lucratechsol.com`), so it does **not** affect the
+> normal web-dashboard build (`npm run build`).
+
+### WebView2 runtime bootstrapper
+Download the Evergreen bootstrapper and place it next to `MeetingBox.iss` as
+`MicrosoftEdgeWebview2Setup.exe`
+(<https://developer.microsoft.com/microsoft-edge/webview2/>). The installer runs
+it silently **only if** the runtime is missing. (Optional: drop `vc_redist.x64.exe`
+there too if a clean-VM test shows the target lacks the VC++ runtime.)
+
+---
+
+## Code-sign the executables
+
+For distribution without SmartScreen / "unknown publisher" / AV warnings, all
+three exes must be Authenticode-signed with an **EV** (or OV) code-signing
+certificate. EV certs live on a hardware token; its middleware prompts for the
+PIN. Run **after** building the appliance and dashboard, **before** ISCC:
+
+```powershell
+# Auto-select the code-signing cert on the token, SHA-256 + RFC3161 timestamp:
+powershell -ExecutionPolicy Bypass -File packaging\windows\sign.ps1
+# or select by thumbprint:
+#   packaging\windows\sign.ps1 -Thumbprint <SHA1_THUMBPRINT>
+```
+
+This signs `MeetingBox.exe`, `meetingbox-audio.exe`, and `MeetingBoxDashboard.exe`.
+
+The **installer and its uninstaller** are signed by Inno Setup itself via the
+`SignTool=meetingbox` / `SignedUninstaller=yes` directives in `MeetingBox.iss`.
+These are guarded by `#ifdef SIGN`, so pass `/DSIGN` to enable them and register
+the "meetingbox" sign tool (or define it via *Tools > Configure Sign Tools* in
+the Inno IDE):
+
+```powershell
+& "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" /DSIGN `
+  /Ssigntool="signtool.exe sign /fd SHA256 /tr http://timestamp.digicert.com /td SHA256 /a $f" `
+  packaging\windows\MeetingBox.iss
+```
+
+> For an **unsigned local test build**, just omit `/DSIGN` — ISCC compiles the
+> installer without requiring a sign tool.
+
+---
+
+## Build the unified installer (`MeetingBoxSetup.exe`)
+
+The Inno Setup script now bundles **both apps**. Full build order:
+
+1. Appliance: PyInstaller → `packaging\windows\dist\MeetingBox\` (step above).
+2. Dashboard: `npm run tauri:build` → `MeetingBoxDashboard.exe` (step above).
+3. Stage `MicrosoftEdgeWebview2Setup.exe` next to `MeetingBox.iss`.
+4. Sign all three exes: `packaging\windows\sign.ps1`.
+5. Compile (and sign) the installer:
+
+```powershell
+& "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" /DSIGN `
+  /Ssigntool="signtool.exe sign /fd SHA256 /tr http://timestamp.digicert.com /td SHA256 /a $f" `
+  packaging\windows\MeetingBox.iss
+```
+
+(Omit `/DSIGN` for an unsigned local test build.)
+
+**Output:** `packaging\windows\Output\MeetingBoxSetup.exe`. It installs both apps
+into Program Files (`{app}` + `{app}\Dashboard`), ensures the WebView2 runtime,
+seeds `%PROGRAMDATA%\MeetingBox\device-ui.env` (only if absent), shows the EULA,
+installs `THIRD-PARTY-NOTICES.txt`, creates Start Menu / optional desktop
+shortcuts for both apps, and (opt-out) registers both to auto-start at login
+(the dashboard starts minimized to the tray).
 
 ---
 
@@ -109,3 +191,39 @@ Control), an unsigned `MeetingBox.exe` may be blocked
 (*"An Application Control policy has blocked this file"*). For distribution to
 such machines the executables need to be **code-signed**, or the policy must
 allow them. This is a Windows security-policy issue, not a build problem.
+
+---
+
+## Verify on clean Windows 10/11 VMs
+
+Run this checklist on **clean** VMs (no Python / Rust / dev tools) with the
+**signed** `MeetingBoxSetup.exe`:
+
+- [ ] **SmartScreen / publisher:** no "unknown publisher" block; UAC prompt shows
+      *Lucratech Solutions*. Signed installer + all three exes.
+- [ ] **Antivirus:** installer and both apps pass common AV (incl. an env with
+      HTTPS inspection). No quarantine.
+- [ ] **EULA:** the license page appears and must be accepted before install.
+- [ ] **WebView2:** on a VM without the runtime, the installer auto-installs it;
+      on a VM that already has it, it is skipped.
+- [ ] **Install layout:** `…\MeetingBox\MeetingBox.exe`, `meetingbox-audio.exe`,
+      `…\MeetingBox\Dashboard\MeetingBoxDashboard.exe`, `THIRD-PARTY-NOTICES.txt`,
+      Start Menu links for both apps + Third-party notices.
+- [ ] **Auto-start:** after reboot/sign-in, the companion launches and the
+      dashboard appears in the tray (minimized). Unchecking the Startup task at
+      install removes both `HKLM…\Run` entries.
+- [ ] **Dashboard theme:** light + purple, visually consistent with the
+      companion across Home / Calendar / Meetings / Tasks / Emails / Assistant /
+      Settings (spot-fix any leftover hardcoded navy values found here).
+- [ ] **Dashboard consent gate:** first login shows the EULA/Privacy/recording
+      consent step and blocks until accepted; not shown again afterwards.
+- [ ] **Backend flows:** dashboard sign-in + companion voice/recording work
+      against `https://win.meetingboxai.lucratechsol.com`.
+- [ ] **Tray behavior:** closing the dashboard window hides to tray; tray
+      left-click / "Open Dashboard" restores it; "Quit" exits. Relaunch focuses
+      the existing window (single instance).
+- [ ] **Upgrade & uninstall:** re-running the installer upgrades in place;
+      uninstall removes both apps (incl. `Dashboard\`), the Run entries, and the
+      signed uninstaller runs cleanly.
+- [ ] **Companion regression:** onboarding, voice, and recording behave exactly
+      as before — only the exe metadata/signature changed.

@@ -225,6 +225,12 @@ audio_pyz = PYZ(audio_a.pure, audio_a.zipped_data, cipher=block_cipher)
 _icon = REPO_ROOT / "packaging" / "windows" / "meetingbox.ico"
 icon_arg = str(_icon) if _icon.is_file() else None
 
+# Version resources (publisher / version shown in file Properties + UAC prompt).
+_version_file = REPO_ROOT / "packaging" / "windows" / "version_info.txt"
+version_arg = str(_version_file) if _version_file.is_file() else None
+_version_file_audio = REPO_ROOT / "packaging" / "windows" / "version_info_audio.txt"
+version_arg_audio = str(_version_file_audio) if _version_file_audio.is_file() else None
+
 # Native splash shown instantly by the bootloader while the Kivy UI loads, so
 # the user sees branded feedback immediately instead of a blank delay.
 _splash_img = REPO_ROOT / "packaging" / "windows" / "splash.png"
@@ -253,6 +259,7 @@ ui_exe = EXE(
     console=False,
     disable_windowed_traceback=False,
     icon=icon_arg,
+    version=version_arg,
 )
 
 audio_exe = EXE(
@@ -268,6 +275,7 @@ audio_exe = EXE(
     console=True,
     disable_windowed_traceback=False,
     icon=icon_arg,
+    version=version_arg_audio,
 )
 
 _splash_binaries = [ui_splash.binaries] if ui_splash is not None else []

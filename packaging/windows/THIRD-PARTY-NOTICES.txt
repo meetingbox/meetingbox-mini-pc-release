@@ -1,0 +1,73 @@
+MeetingBox for Windows - Third-Party Software Notices
+=====================================================
+
+MeetingBox for Windows includes third-party open-source software, listed below
+with their licenses. Full license texts are available at the linked project
+pages. This list was generated from the actual dependency manifests
+(pip-licenses / license-checker) for version 1.0.0.
+
+License-compliance note: PyInstaller is GPLv2 *with a special exception for its
+bootloader* that expressly permits distributing frozen applications under any
+license; no other GPL-licensed component is shipped. All other components are
+under permissive licenses (MIT / BSD / Apache-2.0 / MPL-2.0 / zlib / PSF).
+
+Companion app (Python runtime bundle)
+-------------------------------------
+Kivy 2.3.1                      MIT License              https://kivy.org
+kivy-deps.angle / glew          MIT License              https://kivy.org
+kivy_deps.sdl2                  zlib License             https://kivy.org
+Kivy-Garden                     MIT License
+PyInstaller 6.x (bootloader)    GPLv2 with linking exception  https://pyinstaller.org
+numpy                           BSD-3-Clause (and 0BSD/MIT/Zlib/CC0 parts)  https://numpy.org
+vosk                            Apache-2.0               https://github.com/alphacep/vosk-api
+websockets                      BSD-3-Clause             https://github.com/python-websockets/websockets
+httpx / httpcore / h11 / anyio  BSD-3-Clause / MIT       https://www.encode.io
+requests / urllib3 / idna /
+charset-normalizer              Apache-2.0 / MIT / BSD-3-Clause
+certifi                         MPL-2.0                  https://github.com/certifi/python-certifi
+sounddevice                     MIT License              https://github.com/spatialaudio/python-sounddevice
+PyAudio                         MIT License              https://people.csail.mit.edu/hubert/pyaudio
+PyAudioWPatch                   Apache-2.0               https://github.com/s0d3s/PyAudioWPatch
+webrtcvad-wheels                MIT License              https://github.com/daanzu/py-webrtcvad-wheels
+Speex DSP (libspeexdsp)         BSD-3-Clause             https://www.speex.org
+Pillow                          MIT-CMU                  https://python-pillow.github.io
+qrcode                          BSD License              https://github.com/lincolnloop/python-qrcode
+pyttsx3                         MPL-2.0                  https://github.com/nateshmbhat/pyttsx3
+comtypes                        MIT License              https://github.com/enthought/comtypes
+pywin32 / pywin32-ctypes        PSF License / BSD-3-Clause  https://github.com/mhammond/pywin32
+psutil                          BSD-3-Clause             https://github.com/giampaolo/psutil
+PyYAML                          MIT License              https://pyyaml.org
+aiofiles                        Apache-2.0               https://github.com/Tinche/aiofiles
+python-dateutil / six           Apache-2.0 + BSD / MIT
+cffi / pycparser                MIT / BSD-3-Clause
+srt                             MIT License              https://github.com/cdown/srt
+filetype                        MIT License              https://github.com/h2non/filetype.py
+tqdm                            MPL-2.0 + MIT            https://tqdm.github.io
+colorama                        BSD License              https://github.com/tartley/colorama
+typing_extensions               PSF-2.0                  https://github.com/python/typing_extensions
+tzdata                          Apache-2.0               https://github.com/python/tzdata
+
+Dashboard app (React SPA + Tauri shell)
+---------------------------------------
+React / ReactDOM / scheduler    MIT License              https://react.dev
+React Router                    MIT License              https://github.com/remix-run/react-router
+@headlessui/react               MIT License              https://github.com/tailwindlabs/headlessui
+@heroicons/react                MIT License              https://github.com/tailwindlabs/heroicons
+@tanstack/react-virtual         MIT License              https://github.com/TanStack/virtual
+axios / follow-redirects        MIT License              https://github.com/axios/axios
+react-hot-toast / goober        MIT License              https://github.com/timolins/react-hot-toast
+zustand                         MIT License              https://github.com/pmndrs/zustand
+date-fns                        MIT License              https://github.com/date-fns/date-fns
+clsx                            MIT License              https://github.com/lukeed/clsx
+Tailwind CSS (build-time)       MIT License              https://tailwindcss.com
+Vite (build-time)               MIT License              https://vitejs.dev
+Tauri / WRY / TAO               MIT OR Apache-2.0        https://tauri.app
+tauri-plugin-single-instance    MIT OR Apache-2.0        https://tauri.app
+42dot Sans font                 SIL Open Font License 1.1  https://42dot.ai
+
+Runtime provisioned separately (not redistributed)
+--------------------------------------------------
+Microsoft Edge WebView2 Runtime and the Microsoft Visual C++ Redistributable
+are installed from Microsoft's own distributables under Microsoft's license
+terms; they are provisioned at install time, not redistributed inside this
+package.
