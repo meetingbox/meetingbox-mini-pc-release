@@ -1,8 +1,14 @@
 # Building MeetingBox for Windows
 
-This produces the Windows desktop build of the MeetingBox appliance: a single
-application folder containing `MeetingBox.exe` (the Kivy UI) and its bundled
-audio-capture child `meetingbox-audio.exe`, plus a shared `_internal\` payload.
+**Release overview (install layout, upgrade/uninstall, SmartScreen, QA):**
+[WINDOWS_DESKTOP.md](WINDOWS_DESKTOP.md).
+
+This produces the Windows desktop build of the MeetingBox **companion** (PyInstaller
+one-dir) and bundles it with the **dashboard** (Tauri) into a single Inno Setup
+installer (`MeetingBoxSetup.exe`).
+
+The companion folder contains `MeetingBox.exe` (Kivy UI), its bundled
+audio-capture child `meetingbox-audio.exe`, and a shared `_internal\` payload.
 
 > **Why two .exe files?** This mirrors the Docker appliance exactly. In
 > `docker-compose.yml` there is one `device-ui` container that runs
@@ -164,6 +170,33 @@ installs `THIRD-PARTY-NOTICES.txt`, creates Start Menu / optional desktop
 shortcuts for both apps, and (opt-out) registers both to auto-start at login
 (the dashboard starts minimized to the tray).
 
+### Install, upgrade, and uninstall (behavior)
+
+| Action | Behavior |
+|--------|----------|
+| **First install** | EULA → files to `%ProgramFiles%\MeetingBox\` + config seed to `%ProgramData%\MeetingBox\` |
+| **Re-run installer** | Same `AppId` → **in-place upgrade** (one entry in Settings → Apps) |
+| **Apps running during upgrade** | `CloseApplications=force` closes companion + dashboard (no “files in use” dialog) |
+| **Uninstall** | `CurUninstallStepChanged` runs `taskkill` on `MeetingBox.exe`, `meetingbox-audio.exe`, and `MeetingBoxDashboard.exe` before deleting files |
+| **Config after uninstall** | `%ProgramData%\MeetingBox\device-ui.env` is kept (`uninsneveruninstall`) |
+
+Companion window on Windows desktop: fixed **1120×680** (see `device-ui.env`), clamped to the usable desktop area in `main.py`.
+
+### SmartScreen
+
+Unsigned builds (ISCC without `/DSIGN`) trigger **“Windows protected your PC”** after
+download. Sign all exes + installer before publishing; prefer an **EV** certificate.
+See [WINDOWS_DESKTOP.md](WINDOWS_DESKTOP.md).
+
+### Regenerate the Word release guide
+
+```powershell
+python packaging\windows\generate_windows_docx.py
+```
+
+Writes `packaging\windows\MeetingBox_Windows.docx` and updates
+`Desktop\MeetingBox Windows.docx` when that path is writable.
+
 ---
 
 ## Running the build
@@ -212,9 +245,10 @@ Run this checklist on **clean** VMs (no Python / Rust / dev tools) with the
 - [ ] **Auto-start:** after reboot/sign-in, the companion launches and the
       dashboard appears in the tray (minimized). Unchecking the Startup task at
       install removes both `HKLM…\Run` entries.
-- [ ] **Dashboard theme:** light + purple, visually consistent with the
-      companion across Home / Calendar / Meetings / Tasks / Emails / Assistant /
-      Settings (spot-fix any leftover hardcoded navy values found here).
+- [ ] **Dashboard theme:** light + periwinkle (`#7b61ff`), consistent with the
+      companion across Home / Calendar / Meetings / Tasks / Emails / Assistant
+      (Settings is web-only; hidden on Windows companion).
+- [ ] **Companion window:** 1120×680 fits 1366×768; title bar and controls on-screen.
 - [ ] **Dashboard consent gate:** first login shows the EULA/Privacy/recording
       consent step and blocks until accepted; not shown again afterwards.
 - [ ] **Backend flows:** dashboard sign-in + companion voice/recording work
@@ -222,8 +256,8 @@ Run this checklist on **clean** VMs (no Python / Rust / dev tools) with the
 - [ ] **Tray behavior:** closing the dashboard window hides to tray; tray
       left-click / "Open Dashboard" restores it; "Quit" exits. Relaunch focuses
       the existing window (single instance).
-- [ ] **Upgrade & uninstall:** re-running the installer upgrades in place;
-      uninstall removes both apps (incl. `Dashboard\`), the Run entries, and the
-      signed uninstaller runs cleanly.
+- [ ] **Upgrade & uninstall:** re-running the installer upgrades in place with
+      running apps closed automatically; uninstall leaves **no** MeetingBox
+      processes in Task Manager; Run entries removed when startup task was used.
 - [ ] **Companion regression:** onboarding, voice, and recording behave exactly
       as before — only the exe metadata/signature changed.

@@ -24,6 +24,16 @@ This folder contains everything that normally runs on the **meeting room device*
 | `scripts/revert-xinit-no-gdm.sh` | Restore GDM / graphical target |
 | `kiosk-desktop/meetingbox-kiosk.desktop` | GDM “MeetingBox Kiosk” session |
 | `kiosk-desktop/xinitrc-meetingbox` | `startx` script when GDM is off |
+| `packaging/windows/` | **Windows desktop** — PyInstaller companion, Tauri dashboard, Inno installer |
+
+## Windows desktop (not the Linux appliance)
+
+The Windows port ships as **`MeetingBoxSetup.exe`** (companion + dashboard, one
+installer). Build and signing: **`packaging/windows/BUILD.md`**. Install layout,
+upgrade/uninstall, and SmartScreen: **`packaging/windows/WINDOWS_DESKTOP.md`**.
+
+Backend for Windows builds: **`https://win.meetingboxai.lucratechsol.com`** (see
+`packaging/windows/device-ui.env` and `frontend/.env.desktop` in a full monorepo).
 
 ## Quick start (mini PC only)
 
