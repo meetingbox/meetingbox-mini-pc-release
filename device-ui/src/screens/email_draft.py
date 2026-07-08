@@ -729,13 +729,14 @@ class EmailDraftScreen(BaseScreen):
                         pass
 
     def genie_target(self, action: str):
-        """Window-coord sink point: top-right corner for Send, else the CTA."""
+        """Sink point in Window coords: panel top-right for Send, else the CTA."""
+        from components.email_genie import panel_top_right
         if action == "send":
-            return (float(Window.width), float(Window.height))
+            return panel_top_right(self.app)
         btn = self._action_btn(action)
         if btn is not None:
             return tuple(btn.to_window(btn.center_x, btn.center_y))
-        return (float(Window.width), float(Window.height))
+        return panel_top_right(self.app)
 
     # ── Auto-return to home on terminal state ─────────────────────────────────
 

@@ -420,6 +420,14 @@ class VoiceControlBar(FloatLayout):
                 rect = None
             if rect:
                 ox, oy, W, H = rect
+            else:
+                # Dock mode but the floating panel is closed: NEVER fall back to
+                # full-desktop coords (that pins the pills outside the panel,
+                # between the dock and the panel). Hide instead; reanchor() will
+                # re-place them when the panel reopens.
+                if self._visible:
+                    self._hide()
+                return
         sa = min(W / _FW, H / _FH)
 
         # Re-derive sizes from the live surface using the same Figma reference
