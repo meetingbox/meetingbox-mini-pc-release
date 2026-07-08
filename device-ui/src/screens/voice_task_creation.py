@@ -550,13 +550,14 @@ class VoiceTaskCreationScreen(BaseScreen):
             return None
 
     def genie_target(self, action: str):
-        """Top-right corner for Confirm; the Discard CTA otherwise."""
+        """Panel top-right corner for Confirm; the Discard CTA otherwise."""
+        from components.email_genie import panel_top_right
         if action == "send":
-            return (float(Window.width), float(Window.height))
+            return panel_top_right(self.app)
         btn = self._action_btn(action)
         if btn is not None:
             return tuple(btn.to_window(btn.center_x, btn.center_y))
-        return (float(Window.width), float(Window.height))
+        return panel_top_right(self.app)
 
     # ── Lifecycle ─────────────────────────────────────────────────────────────
 

@@ -1134,6 +1134,12 @@ class MeetingBoxApp(App):
         self._warm_voice_session = None
         self._warm_voice_pending = False
         self._realtime_session_pending = False
+        # Monotonic token bumped on every session end/cold-start request. Async
+        # session-mint coroutines capture the epoch when they start and abort if
+        # it changed by the time they resolve, so an in-flight mint that was
+        # requested BEFORE the user tapped End Session can never restart the mic
+        # after teardown.
+        self._realtime_session_epoch = 0
         self._realtime_session_start_monotonic = None
         self._realtime_connected_ok = False
         self._wake_hide_ev = None        # ClockEvent that resets home after wake timeout
@@ -3668,6 +3674,18 @@ class MeetingBoxApp(App):
         Refreshes the home listening animation and hide timer so Realtime failures
         or API fallbacks do not collapse the UI after a fraction of a second.
         """
+        # In dock mode a spoken "Hey Pepper" wake must surface the same voice
+        # page the logo tap opens (which auto-opens the dock panel via
+        # notify_screen), so the local/Vosk fallback path uses the identical
+        # dock choreography as the realtime path (_kick_realtime) and the manual
+        # tap. Without this, a local-mode wake leaves the panel on whatever
+        # screen was last shown.
+        dc = getattr(self, "dock_controller", None)
+        if dc is not None and getattr(dc, "_engaged", False):
+            try:
+                self.goto_screen("voice_session", transition="fade")
+            except Exception:
+                logger.debug("dock local-wake → voice_session nav failed", exc_info=True)
         try:
             self.voice_assistant.simulate_wake()
         except Exception:
@@ -5258,6 +5276,10 @@ class MeetingBoxApp(App):
         # the wake suppression never armed — the conversation tail / room echo
         # was instantly misheard as the wake phrase and re-opened a session
         # right after the user said goodbye.
+        # Invalidate any session-mint coroutine that was requested before this
+        # teardown so it cannot schedule _run_realtime_voice_session (and thus
+        # re-open the mic) after the user has ended the session.
+        self._realtime_session_epoch = getattr(self, "_realtime_session_epoch", 0) + 1
         started = getattr(self, "_realtime_session_start_monotonic", None)
         connected = getattr(self, "_realtime_connected_ok", False)
         self._realtime_mic_acquired = False
@@ -5388,6 +5410,16 @@ class MeetingBoxApp(App):
         sess = self._warm_voice_session
         if sess is None or not getattr(sess, "is_held", None) or not sess.is_held():
             return False
+        # Singleton invariant: a warm promotion must never run alongside an
+        # existing active session. End the incumbent first so exactly ONE
+        # session ever owns the mic / STT / TTS / websocket.
+        if self._realtime_voice_session is not None:
+            logger.info("Ending prior Realtime session before promoting warm standby")
+            self._end_realtime_voice_session()
+        # Consume the one-shot launch permit here too, so a later stray
+        # _start_realtime_voice_session() cannot spin up a second session after
+        # this warm activation.
+        self._realtime_launch_permitted = False
         self._warm_voice_session = None
         self._realtime_voice_session = sess
         self._realtime_session_pending = False
@@ -5442,6 +5474,7 @@ class MeetingBoxApp(App):
             return
 
         self._realtime_session_pending = True
+        launch_epoch = getattr(self, "_realtime_session_epoch", 0)
 
         self._set_voice_indicator_override(
             "wake",
@@ -5499,6 +5532,13 @@ class MeetingBoxApp(App):
                     lambda _dt: self._begin_local_voice_command_session(), 5.6
                 )
                 return
+            # If the session was ended (or superseded) while the mint was in
+            # flight, drop the result instead of starting a session the user no
+            # longer wants (prevents the mic re-opening after End Session).
+            if getattr(self, "_realtime_session_epoch", 0) != launch_epoch:
+                logger.info("Realtime mint resolved after session end; discarding")
+                self._realtime_session_pending = False
+                return
             Clock.schedule_once(lambda _dt, d=data: self._run_realtime_voice_session(d), 0)
 
         run_async(_go())
@@ -5512,6 +5552,17 @@ class MeetingBoxApp(App):
                 return
         else:
             self._realtime_session_pending = False
+            # Singleton invariant: a cold start supersedes any warm standby.
+            # Stop the held warm session first so we never end up with two live
+            # realtime sockets (warm still connecting + this cold session).
+            warm = self._warm_voice_session
+            if warm is not None:
+                self._warm_voice_session = None
+                self._warm_voice_pending = False
+                try:
+                    warm.stop()
+                except Exception:
+                    logger.debug("stop warm standby before cold start failed", exc_info=True)
         if self.recording_state.get("active"):
             if prewarm:
                 return
@@ -5549,6 +5600,20 @@ class MeetingBoxApp(App):
             return
         tok = get_device_auth_token().strip()
 
+        # Session identity for stale-callback gating. All callbacks below capture
+        # this box; once the session object is constructed it is stored here.
+        # A callback only acts while its owning session is still the app's
+        # current active/warm session — so a superseded or torn-down session can
+        # neither drive the UI (duplicate-agent symptom) nor tear down the live
+        # session (stale-end / "won't end" symptom).
+        sess_box: dict = {"s": None}
+
+        def _is_my_session() -> bool:
+            s = sess_box.get("s")
+            if s is None:
+                return True  # pre-construction window; allow
+            return s is self._realtime_voice_session or s is self._warm_voice_session
+
         def _before_realtime_mic() -> None:
             # Run from Realtime asyncio thread — do NOT block on Kivy Clock/Event:
             # schedule_once + threading.Event.wait is unreliable across threads on
@@ -5579,7 +5644,27 @@ class MeetingBoxApp(App):
             # If the session ended unexpectedly (WS dropped, OpenAI hit the
             # ~15-60 min hard session cap), immediately start a fresh session
             # so the user doesn't have to re-say the wake word mid-thought.
-            sess = self._realtime_voice_session or self._warm_voice_session
+            own = sess_box.get("s")
+            # Stale-session guard: if the session that just ended is no longer
+            # the app's active/warm session, it was already superseded/torn
+            # down. It must NOT run _end_realtime_voice_session (that would kill
+            # whatever session is current now). Just re-arm a warm standby if
+            # nothing is live.
+            is_current = (
+                own is None
+                or own is self._realtime_voice_session
+                or own is self._warm_voice_session
+            )
+            if not is_current:
+                def _reprewarm_if_idle(_dt, _s=own):
+                    if self._warm_voice_session is _s:
+                        self._warm_voice_session = None
+                    if (self._realtime_voice_session is None
+                            and self._warm_voice_session is None):
+                        self._schedule_voice_prewarm(delay=0.2)
+                Clock.schedule_once(_reprewarm_if_idle, 0)
+                return
+            sess = own or self._realtime_voice_session or self._warm_voice_session
             activated = True
             unexpected = False
             try:
@@ -5635,13 +5720,20 @@ class MeetingBoxApp(App):
             Clock.schedule_once(_after_end, 0)
 
         def _err(msg: str) -> None:
+            if not _is_my_session():
+                logger.debug("Realtime error from stale session ignored: %s", msg)
+                return
             logger.error("Realtime voice error: %s", msg)
             # Do not hide home listening here — session end + local fallback restore the UI.
             Clock.schedule_once(lambda _dt: self._end_realtime_voice_session(), 0)
 
         def _on_rt_connected() -> None:
+            if not _is_my_session():
+                return
             # Vosk is paused from on_before_open_mic right before ALSA opens for Realtime.
             def _ui(_dt):
+                if not _is_my_session():
+                    return
                 self._realtime_connected_ok = True
                 # Cancel the wake-word timeout timer — the session owns the UI now
                 if self._wake_hide_ev is not None:
@@ -5666,6 +5758,8 @@ class MeetingBoxApp(App):
             Clock.schedule_once(_ui, 0)
 
         def _on_rt_state(state: str) -> None:
+            if not _is_my_session():
+                return
             self._set_voice_runtime_state(state)
             if getattr(self, "_voice_control_bar", None) is not None:
                 # Global overlay is the single source of truth for pill state.
@@ -5713,6 +5807,8 @@ class MeetingBoxApp(App):
         # of waiting ~1-2s for transcription. The placeholder is then
         # replaced in place when the real transcript / partial deltas arrive.
         def _on_user_speech_stopped() -> None:
+            if not _is_my_session():
+                return
             overlay = self._transcript_overlay
             if overlay is None:
                 return
@@ -5726,6 +5822,8 @@ class MeetingBoxApp(App):
             self._schedule_say_bar_update("You", "…")
 
         def _on_user_transcript_rejected(item_id: str = "") -> None:
+            if not _is_my_session():
+                return
             # The turn's transcript was rejected as a phantom (echo/noise
             # hallucination). Remove the turn's bubble — whether it is still
             # the "…" placeholder or was already painted by streaming
@@ -5745,6 +5843,8 @@ class MeetingBoxApp(App):
         def _on_user_transcript(
             text: str, is_final: bool = True, item_id: str = ""
         ) -> None:
+            if not _is_my_session():
+                return
             overlay = self._transcript_overlay
             if overlay is None:
                 return
@@ -5899,6 +5999,8 @@ class MeetingBoxApp(App):
             threading.Thread(target=_correct_and_update, daemon=True).start()
 
         def _on_ai_transcript(text: str) -> None:
+            if not _is_my_session():
+                return
             # Final transcript at end-of-response. By now the streaming
             # delta callback has already created and populated the AI
             # bubble — there's nothing more to do unless streaming was
@@ -5912,6 +6014,8 @@ class MeetingBoxApp(App):
                 overlay.add_ai_message(text)
 
         def _on_ai_transcript_delta(item_id: str, accumulated: str) -> None:
+            if not _is_my_session():
+                return
             overlay = self._transcript_overlay
             if overlay is None:
                 return
@@ -5952,6 +6056,9 @@ class MeetingBoxApp(App):
                 brief_data_provider=self._voice_brief_facts,
                 prewarm=prewarm,
             )
+            # Bind session identity BEFORE start() so any early callback is
+            # correctly attributed to this session for the stale-callback guard.
+            sess_box["s"] = sess
             if prewarm:
                 # Held in standby: do NOT touch the active-session pointer or UI.
                 # It connects + runs session.update and waits for activate().

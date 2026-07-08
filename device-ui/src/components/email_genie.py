@@ -98,6 +98,34 @@ def _fs(px: float) -> int:
 
 
 # ──────────────────────────────────────────────────────────────────────────────
+# Panel coordinate space
+#
+# In Windows desktop-overlay mode the Kivy Window spans the whole virtual
+# desktop (e.g. 1920x1080) while the visible device panel is only a floating
+# sub-rectangle. Every animation/overlay MUST target this sub-rect so nothing
+# ever renders outside the panel bezel. This is the single source of truth for
+# that rect; it falls back to the full Window in appliance/full-screen mode.
+# ──────────────────────────────────────────────────────────────────────────────
+def panel_rect(app) -> tuple[float, float, float, float]:
+    """Device-panel rect ``(x, y, w, h)`` in Window coords."""
+    dc = getattr(app, "dock_controller", None) if app is not None else None
+    if dc is not None:
+        try:
+            r = dc.panel_rect_for_overlay()
+        except Exception:
+            r = None
+        if r:
+            return (float(r[0]), float(r[1]), float(r[2]), float(r[3]))
+    return (0.0, 0.0, float(Window.width), float(Window.height))
+
+
+def panel_top_right(app) -> tuple[float, float]:
+    """Top-right corner of the device panel in Window coords (Kivy y-up)."""
+    px, py, pw, ph = panel_rect(app)
+    return (px + pw, py + ph)
+
+
+# ──────────────────────────────────────────────────────────────────────────────
 # CSS-accurate cubic-bezier easing  (P0=(0,0), P3=(1,1))
 # ──────────────────────────────────────────────────────────────────────────────
 def cubic_bezier(p1x: float, p1y: float, p2x: float, p2y: float):
@@ -476,7 +504,7 @@ class _ConfirmToast(Widget):
     point and clamped to the screen. Fades in → holds → fades out."""
 
     def __init__(self, text: str, point, show_check: bool = True,
-                 accent=_C_SEND, **kw):
+                 accent=_C_SEND, bounds=None, **kw):
         super().__init__(size_hint=(None, None), **kw)
         self.opacity = 0.0
         pad_x = _fs(34)
@@ -495,8 +523,16 @@ class _ConfirmToast(Widget):
         width = pad_x * 2 + (check_d + gap if show_check else 0.0) + lw
         self.size = (width, height)
         cx, cy = float(point[0]), float(point[1])
-        x = min(max(cx - width / 2.0, _fs(16)), Window.width - width - _fs(16))
-        y = min(max(cy - height / 2.0, _fs(16)), Window.height - height - _fs(16))
+        # Clamp inside the device panel (falls back to the full Window) so the
+        # toast can never escape the panel bezel.
+        if bounds:
+            bx, by, bw, bh = (float(bounds[0]), float(bounds[1]),
+                              float(bounds[2]), float(bounds[3]))
+        else:
+            bx, by, bw, bh = 0.0, 0.0, float(Window.width), float(Window.height)
+        pad = _fs(16)
+        x = min(max(cx - width / 2.0, bx + pad), bx + bw - width - pad)
+        y = min(max(cy - height / 2.0, by + pad), by + bh - height - pad)
         self.pos = (x, y)
 
         r = height / 2.0
@@ -776,17 +812,23 @@ def _completion(app, action: str, target, completion: dict) -> None:
     if not text:
         return
 
+    # Everything is anchored to the device-panel rect (not the full desktop) so
+    # the confirmation never renders outside the floating panel.
+    px, py, pw, ph = panel_rect(app)
     if action == "send":
-        # Top-right corner, where a confirmed/sent item leaves the interface.
-        point = (Window.width * 0.84, Window.height * 0.84)
+        # Top-right of the panel, where a confirmed/sent item leaves the UI.
+        point = (px + pw * 0.84, py + ph * 0.84)
     else:
         # Near the CTA the card sank into.
         try:
             point = (float(target[0]), float(target[1]) + _fs(70))
         except Exception:
-            point = (Window.width / 2.0, Window.height / 2.0)
+            point = (px + pw / 2.0, py + ph / 2.0)
 
-    toast = _ConfirmToast(text, point, show_check=bool(show_check), accent=_C_SEND)
+    toast = _ConfirmToast(
+        text, point, show_check=bool(show_check), accent=_C_SEND,
+        bounds=(px, py, pw, ph),
+    )
     root.add_widget(toast)
 
     def _remove():
