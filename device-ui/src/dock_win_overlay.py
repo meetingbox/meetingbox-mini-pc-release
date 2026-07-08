@@ -62,6 +62,15 @@ SWP_NOACTIVATE = 0x0010
 SWP_SHOWWINDOW = 0x0040
 SWP_FRAMECHANGED = 0x0020
 
+RDW_INVALIDATE = 0x0001
+RDW_ERASE = 0x0004
+RDW_FRAME = 0x0400
+RDW_UPDATENOW = 0x0100
+RDW_ALLCHILDREN = 0x0080
+
+SW_HIDE = 0
+SW_SHOWNA = 8  # show in current state without activating / stealing focus
+
 SM_XVIRTUALSCREEN = 76
 SM_YVIRTUALSCREEN = 77
 SM_CXVIRTUALSCREEN = 78
@@ -129,6 +138,12 @@ def _configure_argtypes() -> None:
     u.GetDC.restype = wintypes.HDC
     u.GetDC.argtypes = [wintypes.HWND]
     u.ReleaseDC.argtypes = [wintypes.HWND, wintypes.HDC]
+    u.RedrawWindow.restype = wintypes.BOOL
+    u.RedrawWindow.argtypes = [
+        wintypes.HWND, ctypes.c_void_p, wintypes.HRGN, wintypes.UINT,
+    ]
+    u.ShowWindow.restype = wintypes.BOOL
+    u.ShowWindow.argtypes = [wintypes.HWND, ctypes.c_int]
 
 
 _argtypes_ready = False
@@ -377,6 +392,87 @@ def _enable_dwm_alpha(hwnd: int) -> None:
         gdi.DeleteObject(region)
     except Exception:
         logger.debug("DwmEnableBlurBehindWindow failed", exc_info=True)
+
+
+def nudge_recomposite(hwnd: int) -> None:
+    """Force DWM to re-read the overlay's per-pixel alpha channel.
+
+    After :func:`make_overlay` enables the DWM alpha trick, the compositor keeps
+    presenting the previous *opaque* frame until some window event forces a
+    recomposition — which is why the whole screen shows black right after engage
+    and only clears once the user clicks (that click is the event that triggers
+    recomposition). A tiny size nudge (shrink 1px, then restore to the full
+    virtual desktop) generates that event immediately, so the desktop shows
+    through on first engage without any interaction.
+    """
+    if not IS_WINDOWS or not hwnd:
+        return
+    try:
+        _ensure_argtypes()
+        u = _user32()
+        x, y, w, h = virtual_screen_rect()
+        if w <= 1 or h <= 1:
+            return
+        u.SetWindowPos(
+            hwnd, _HWND_TOPMOST, x, y, w - 1, h - 1,
+            SWP_NOACTIVATE | SWP_FRAMECHANGED,
+        )
+        u.SetWindowPos(
+            hwnd, _HWND_TOPMOST, x, y, w, h,
+            SWP_NOACTIVATE | SWP_FRAMECHANGED,
+        )
+    except Exception:
+        logger.debug("nudge_recomposite failed", exc_info=True)
+
+
+def refresh_alpha(hwnd: int) -> None:
+    """Aggressively make DWM honour the overlay's transparency.
+
+    A size nudge alone sometimes isn't enough on the very first engage (the
+    whole desktop stays black until the user clicks). This re-asserts the DWM
+    alpha (re-issuing the glass-frame + empty blur region *after* real GL
+    content exists), nudges the window, and forces a full non-client + client
+    repaint — the combination of events a stray click would otherwise trigger.
+    """
+    if not IS_WINDOWS or not hwnd:
+        return
+    try:
+        _ensure_argtypes()
+        _enable_dwm_alpha(hwnd)
+        nudge_recomposite(hwnd)
+        _user32().RedrawWindow(
+            hwnd, None, None,
+            RDW_INVALIDATE | RDW_ERASE | RDW_FRAME | RDW_UPDATENOW | RDW_ALLCHILDREN,
+        )
+    except Exception:
+        logger.debug("refresh_alpha failed", exc_info=True)
+
+
+def hard_recomposite(hwnd: int) -> None:
+    """Force DWM to fully rebuild the overlay's redirection surface.
+
+    The soft refreshes (SetWindowPos nudge / RedrawWindow) don't always shake
+    the compositor out of showing the stale opaque (black) first frame on the
+    ANGLE/Direct3D backend — the desktop stays black until the user clicks.
+    Hiding then re-showing the window (without activating it) tears down and
+    recreates the DWM surface, which reliably makes the per-pixel alpha take
+    effect, then we re-pin it full-screen top-most and re-assert the alpha.
+    """
+    if not IS_WINDOWS or not hwnd:
+        return
+    try:
+        _ensure_argtypes()
+        u = _user32()
+        u.ShowWindow(hwnd, SW_HIDE)
+        u.ShowWindow(hwnd, SW_SHOWNA)
+        x, y, w, h = virtual_screen_rect()
+        u.SetWindowPos(
+            hwnd, _HWND_TOPMOST, x, y, w, h,
+            SWP_NOACTIVATE | SWP_SHOWWINDOW | SWP_FRAMECHANGED,
+        )
+        _enable_dwm_alpha(hwnd)
+    except Exception:
+        logger.debug("hard_recomposite failed", exc_info=True)
 
 
 def reassert_topmost(hwnd: int) -> None:

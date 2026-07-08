@@ -210,8 +210,10 @@ class SignInScreen(BaseScreen):
             except Exception:
                 pass
             self.app._setup_poll = None
-        self._returned_to_app("You're connected. Let me show you what I can do...")
-        self.goto("onboarding_capabilities", transition="slide_left")
+        # Onboarding is handled by the Dashboard, so go straight to home once
+        # paired instead of running the companion's capabilities/ready tour.
+        self._returned_to_app("You're connected.")
+        self.goto("home", transition="slide_left")
 
     def _returned_to_app(self, status: str = ""):
         try:

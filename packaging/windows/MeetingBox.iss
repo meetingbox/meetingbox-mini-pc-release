@@ -21,6 +21,10 @@
 #define MyDashName "MeetingBox Dashboard"
 #define MyDashExeName "MeetingBoxDashboard.exe"
 #define DashSrcDir "..\..\..\frontend\src-tauri\target\release"
+; Brand logo (Group.png -> multi-size .ico). Shipped into {app} and used as the
+; explicit shortcut / uninstall icon so branding never depends on whatever icon
+; the exe happens to have embedded (or on a stale Windows icon cache).
+#define BrandIcon "..\..\..\frontend\src-tauri\icons\icon.ico"
 ; Edge WebView2 Evergreen bootstrapper (place next to this script before ISCC).
 #define WebView2Bootstrapper "MicrosoftEdgeWebview2Setup.exe"
 ; Optional VC++ 2015-2022 x64 redistributable (bundle only if the clean-VM test
@@ -39,7 +43,9 @@ DisableProgramGroupPage=yes
 OutputDir=Output
 OutputBaseFilename=MeetingBoxSetup
 SetupIconFile=meetingbox.ico
-UninstallDisplayIcon={app}\{#MyAppExeName}
+; Programs & Features / uninstall icon: use the bundled brand .ico so the entry
+; always shows the MeetingBox logo, independent of the exe's embedded icon.
+UninstallDisplayIcon={app}\MeetingBox.ico
 Compression=lzma2
 SolidCompression=yes
 WizardStyle=modern
@@ -93,6 +99,8 @@ Source: "{#VCRedist}"; DestDir: "{tmp}"; Flags: deleteafterinstall skipifsourced
 Source: "THIRD-PARTY-NOTICES.txt"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
 ; Per-machine config seed (only copied if it does not already exist).
 Source: "device-ui.env"; DestDir: "{commonappdata}\MeetingBox"; Flags: onlyifdoesntexist uninsneveruninstall
+; Brand logo used as the explicit shortcut / uninstall icon.
+Source: "{#BrandIcon}"; DestDir: "{app}"; DestName: "MeetingBox.ico"; Flags: ignoreversion skipifsourcedoesntexist
 
 [Dirs]
 Name: "{commonappdata}\MeetingBox"; Permissions: users-modify
@@ -100,11 +108,11 @@ Name: "{commonappdata}\MeetingBox"; Permissions: users-modify
 [Icons]
 ; Single entry point: the Dashboard is the primary app (it launches the
 ; companion itself), so there is exactly ONE shortcut named "MeetingBox".
-Name: "{group}\{#MyAppName}"; Filename: "{app}\Dashboard\{#MyDashExeName}"; WorkingDir: "{app}\Dashboard"
+Name: "{group}\{#MyAppName}"; Filename: "{app}\Dashboard\{#MyDashExeName}"; WorkingDir: "{app}\Dashboard"; IconFilename: "{app}\MeetingBox.ico"
 Name: "{group}\Edit MeetingBox configuration"; Filename: "notepad.exe"; Parameters: """{commonappdata}\MeetingBox\device-ui.env"""
 Name: "{group}\Third-party notices"; Filename: "{app}\THIRD-PARTY-NOTICES.txt"
 Name: "{group}\{cm:UninstallProgram,{#MyAppName}}"; Filename: "{uninstallexe}"
-Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\Dashboard\{#MyDashExeName}"; WorkingDir: "{app}\Dashboard"; Tasks: desktopicon
+Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\Dashboard\{#MyDashExeName}"; WorkingDir: "{app}\Dashboard"; IconFilename: "{app}\MeetingBox.ico"; Tasks: desktopicon
 
 [Run]
 ; Provision the Edge WebView2 runtime (needed by the dashboard) only if absent.

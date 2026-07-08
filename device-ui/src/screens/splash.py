@@ -110,7 +110,10 @@ class SplashScreen(BaseScreen):
                 # isn't stuck on a screen where every request silently fails.
                 run_async(self._advance_desktop_with_token_check())
             else:
-                self.goto('onboarding_welcome', transition='fade')
+                # Onboarding lives entirely in the Dashboard app now, so the
+                # companion skips its own welcome/capabilities/ready tour and
+                # goes straight to the "waiting for Dashboard sign-in" screen.
+                self.goto('sign_in', transition='fade')
             return
         if USE_MOCK_BACKEND:
             if self.app.needs_setup():

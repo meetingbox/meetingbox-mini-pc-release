@@ -1621,6 +1621,18 @@ class MeetingBoxApp(App):
         # full-screen flow is untouched. The dock stays hidden until the app
         # first reaches the home/ready state, then takes over as a floating dock.
         self.dock_controller = None
+        # Whether the companion started ALREADY paired (a saved device token
+        # exists at launch). The floating overlay is only engaged in that case —
+        # a normal reopen via the Dashboard, which composites cleanly. On the
+        # very first launch after Dashboard sign-in the device pairs mid-session
+        # and engaging the transparent overlay then races the WebView2
+        # compositor, leaving the desktop black until a click; so that first
+        # session stays a normal window and the dock takes over on the next
+        # launch (which is now "already paired").
+        try:
+            self._paired_at_startup = bool((get_device_auth_token() or '').strip())
+        except Exception:
+            self._paired_at_startup = False
         if self._dock_enabled():
             try:
                 from components.pepper_dock import DockController
@@ -2011,6 +2023,26 @@ class MeetingBoxApp(App):
             tok = get_device_auth_token().strip()
             if tok:
                 self.backend.set_device_auth_header(tok)
+        # Desktop companion: skip the branded "Pepper AI" splash entirely. The
+        # Dashboard is the branded entry point, so the companion lands directly
+        # on the right screen. Done here — before the first frame is drawn — so
+        # the splash is never rendered; NoTransition avoids a visible fade from
+        # it. The Linux appliance keeps its splash (untouched).
+        if IS_DESKTOP and not USE_MOCK_BACKEND and self.screen_manager is not None:
+            from kivy.uix.screenmanager import NoTransition
+            self._apply_dashboard_logout_signal_at_boot()
+            has_token = bool((get_device_auth_token() or '').strip())
+            prev_transition = self.screen_manager.transition
+            self.screen_manager.transition = NoTransition()
+            self.screen_manager.current = 'home' if has_token else 'sign_in'
+            self.screen_manager.transition = prev_transition
+            if has_token:
+                # Verify the token in the background (the splash used to gate on
+                # this); drop back to sign-in only if it's been revoked/expired.
+                Clock.schedule_once(
+                    lambda _dt: run_async(self._validate_desktop_token_async()),
+                    0.5,
+                )
         # Defer only until Kivy/async loop are up; reach API quickly after boot/restart.
         Clock.schedule_once(self._check_backend, 0.35)
         # Idle + home both consume weather; start the singleton refresh loop
@@ -2365,11 +2397,75 @@ class MeetingBoxApp(App):
             return
         if not dc._engaged:
             # Boot/onboarding runs in the normal window; the dock takes over the
-            # moment the app would otherwise land on the (now-unused) home screen.
-            if name == "home":
-                dc.engage()
+            # moment the app would otherwise land on the (now-unused) home screen
+            # — but ONLY if we started already paired (a clean reopen). On the
+            # first launch after Dashboard sign-in the device pairs mid-session,
+            # and engaging the transparent overlay then leaves the whole desktop
+            # black until a click; so we stay a normal window this session and
+            # the dock engages on the next (already-paired) launch instead.
+            if name == "home" and getattr(self, "_paired_at_startup", False):
+                # The desktop companion skips its own splash and lands on 'home'
+                # immediately at boot, so the window may not have painted a frame
+                # yet. The dock is a per-pixel-transparent layered window that DWM
+                # must composite; engaging before that first frame leaves the
+                # desktop black until a click. The splash used to provide this
+                # warm-up delay, so defer the very first engage to keep it.
+                if getattr(self, "_dock_first_engage_done", False):
+                    dc.engage()
+                else:
+                    self._dock_first_engage_done = True
+                    Clock.schedule_once(lambda _dt: dc.engage(), 2.0)
             return
         dc.notify_screen(name)
+
+    def _apply_dashboard_logout_signal_at_boot(self) -> None:
+        """Desktop: honor a logout the Dashboard queued before we started.
+
+        Mirrors the guard the splash used to run: if a logout signal is present
+        at launch, forget the stale device token so the companion shows the
+        sign-in handoff instead of skipping straight to home."""
+        try:
+            from config import clear_dashboard_logout_signal
+            if read_dashboard_logout_signal():
+                clear_stored_device_auth_token()
+                clear_dashboard_logout_signal()
+                try:
+                    self.backend.set_device_auth_header(None)
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+    async def _validate_desktop_token_async(self) -> None:
+        """Desktop: re-validate the saved device token after boot.
+
+        The splash used to gate 'home' on this check; since the splash is now
+        skipped on desktop we land on home optimistically and verify in the
+        background, dropping back to sign-in only if the token is truly dead
+        ('unknown'/offline keeps the token so a network blip never forces a
+        re-login)."""
+        try:
+            status = await self.backend.validate_device_token()
+        except Exception:
+            status = 'unknown'
+        if status != 'invalid':
+            return
+
+        def _go(_clk):
+            if not (self.screen_manager
+                    and self.screen_manager.current == 'home'):
+                return
+            try:
+                clear_stored_device_auth_token()
+            except Exception:
+                pass
+            try:
+                self.backend.set_device_auth_header(None)
+            except Exception:
+                pass
+            self.goto_screen('sign_in', transition='fade')
+
+        Clock.schedule_once(_go, 0)
 
     def goto_screen(self, screen_name: str, transition='fade'):
         """Navigate to *screen_name* with the specified transition."""

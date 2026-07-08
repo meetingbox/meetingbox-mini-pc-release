@@ -494,6 +494,24 @@ class DockController:
                 "PepperDock: overlay engaged (hwnd=%s, Window.size=%s, vrect=%s)",
                 hwnd, tuple(Window.size), self._vrect,
             )
+            # The DWM compositor keeps showing the last opaque frame until a
+            # window event forces it to honour the new per-pixel alpha, so the
+            # desktop appears black until the user's first click. Re-assert the
+            # alpha + force a Kivy repaint several times over the first few
+            # seconds (once real GL content exists) so it clears on its own on
+            # first engage, with no interaction needed.
+            for _kick in (0.1, 0.35, 0.7, 1.2, 2.0):
+                Clock.schedule_once(
+                    lambda *_a: winov.refresh_alpha(self._hwnd), _kick
+                )
+            # Soft refreshes don't always clear the stale opaque (black) first
+            # frame on the ANGLE/D3D backend, so once a frame has been drawn do
+            # a hard hide->show recomposition (what the user's click effectively
+            # does). Two attempts cover slow first-paint.
+            for _hard in (0.5, 1.5):
+                Clock.schedule_once(
+                    lambda *_a: winov.hard_recomposite(self._hwnd), _hard
+                )
         except Exception:
             logger.exception("PepperDock: overlay setup failed")
 
@@ -763,6 +781,17 @@ class DockController:
             self._topmost_accum = 0.0
             winov.reassert_topmost(self._hwnd)
 
+        # A window-level modal dialog (mic-permission, signed-out warning, ...) is
+        # mounted on root_layout OUTSIDE the dock/panel rects. If the overlay is
+        # left click-through, its button clicks reach whatever app sits under the
+        # transparent overlay instead of the dialog, so it looks "frozen." While
+        # any modal is open, keep the whole overlay interactive (and skip the
+        # hover/collapse logic) so the dialog receives its clicks.
+        if self._modal_open():
+            self._set_click_through(False)
+            self._btn_prev = winov.left_button_down()
+            return
+
         cur = winov.get_cursor_pos()
         if cur is None:
             return
@@ -796,6 +825,24 @@ class DockController:
 
         self._set_click_through(not interactive)
         self._btn_prev = btn
+
+    def _modal_open(self) -> bool:
+        """True while a ModalDialog is mounted on the app root.
+
+        Checked by name to avoid an import cycle. Such dialogs cover the window
+        and must capture the mouse, so the overlay cannot be click-through while
+        one is showing.
+        """
+        root = getattr(self.app, "root_layout", None)
+        if root is None:
+            return False
+        try:
+            for child in root.children:
+                if type(child).__name__ == "ModalDialog":
+                    return True
+        except Exception:
+            return False
+        return False
 
     def _set_click_through(self, value: bool) -> None:
         """Push the click-through bit to Win32 only when it actually changes.
