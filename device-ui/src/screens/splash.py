@@ -86,6 +86,24 @@ class SplashScreen(BaseScreen):
         # is replaced by an on-device Google sign-in. If we already hold a device
         # token go straight home; otherwise show the sign-in step.
         if not sys.platform.startswith('linux'):
+            # If the Dashboard signalled a logout before this companion started
+            # (or the token is left over from a previous account), forget the
+            # stale device token so we don't skip the sign-in handoff.
+            try:
+                from config import (
+                    read_dashboard_logout_signal,
+                    clear_dashboard_logout_signal,
+                    clear_stored_device_auth_token,
+                )
+                if read_dashboard_logout_signal():
+                    clear_stored_device_auth_token()
+                    clear_dashboard_logout_signal()
+                    try:
+                        self.backend.set_device_auth_header(None)
+                    except Exception:
+                        pass
+            except Exception:
+                pass
             if (get_device_auth_token() or '').strip():
                 # We have a saved token, but it may have expired or been revoked.
                 # Verify it against the backend before landing on home so the user

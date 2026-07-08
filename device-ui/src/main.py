@@ -517,6 +517,8 @@ from config import (
     setup_complete_marker_paths_for_read,
     get_device_auth_token,
     clear_stored_device_auth_token,
+    read_dashboard_logout_signal,
+    clear_dashboard_logout_signal,
     WAKE_LOCAL_VOICE_ONLY,
 )
 
@@ -1630,12 +1632,15 @@ class MeetingBoxApp(App):
             except Exception:
                 logger.exception("PepperDock failed to load")
                 self.dock_controller = None
-            # Launch automatically at Windows login so the dock is always present.
+            # Auto-start is owned by the Dashboard (single entry point: its
+            # installer Run entry launches it, and it spawns this companion).
+            # register(False) also removes the stale HKCU entry left by
+            # older builds that self-registered here.
             try:
                 import windows_autostart
-                windows_autostart.register(True)
+                windows_autostart.register(False)
             except Exception:
-                logger.debug("windows_autostart registration failed", exc_info=True)
+                logger.debug("windows_autostart unregistration failed", exc_info=True)
 
         # Quick pull-down panel — appliance control center (brightness, Wi-Fi/BT
         # radios, scan/connect, restart, power). On desktop the OS owns all of
@@ -1905,6 +1910,72 @@ class MeetingBoxApp(App):
         except Exception as e:
             logger.debug("Pairing check skipped: %s", e)
 
+    def _dashboard_logout_watch(self, _dt):
+        """Desktop only: close the companion when the Dashboard signs out.
+
+        The Dashboard writes a logout signal on sign-out. We honor an
+        in-progress meeting by deferring the close while on a recording/
+        processing screen, then warn the user and exit once it is safe.
+        """
+        if not (self._pending_dashboard_logout or read_dashboard_logout_signal()):
+            return
+        self._pending_dashboard_logout = True
+        cur = self.screen_manager.current if self.screen_manager is not None else ""
+        if cur in _PAIRING_UNPAIR_DEFER_SCREENS:
+            # Meeting in progress: let it finish and upload before closing.
+            return
+        # Stop the poll so the warning + exit runs exactly once.
+        if getattr(self, "_dashboard_logout_poll", None) is not None:
+            try:
+                self._dashboard_logout_poll.cancel()
+            except Exception:
+                pass
+            self._dashboard_logout_poll = None
+        self._close_for_dashboard_logout()
+
+    def _close_for_dashboard_logout(self):
+        """Warn that the Dashboard signed out, drop the device token, then exit."""
+        logger.info("Dashboard signed out - closing companion")
+        try:
+            clear_stored_device_auth_token()
+        except Exception:
+            logger.debug("token clear on dashboard logout failed", exc_info=True)
+        try:
+            self.backend.set_device_auth_header(None)
+        except Exception:
+            pass
+        # The signal has been consumed; remove it so the next launch is clean.
+        try:
+            clear_dashboard_logout_signal()
+        except Exception:
+            logger.debug("logout signal clear failed", exc_info=True)
+
+        def _exit(_dt):
+            App.get_running_app().stop()
+
+        try:
+            # Use the app's themed overlay dialog (not a raw Kivy Popup, which
+            # renders with Kivy's default chrome and dims the whole window).
+            from components.modal_dialog import ModalDialog
+
+            dialog = ModalDialog(
+                title="Signed out",
+                message=(
+                    "You signed out on the MeetingBox Dashboard.\n\n"
+                    "MeetingBox will now close. Sign in again on the Dashboard "
+                    "to reconnect this companion."
+                ),
+                confirm_text="Close",
+                cancel_text="",
+                on_confirm=lambda: _exit(0),
+            )
+            self.root_layout.add_widget(dialog)
+            # Failsafe: if the user never clicks, close shortly anyway.
+            Clock.schedule_once(_exit, 8.0)
+        except Exception:
+            logger.exception("logout warning dialog failed; exiting")
+            Clock.schedule_once(_exit, 0)
+
     # ==================================================================
     # APP LIFECYCLE
     # ==================================================================
@@ -1975,6 +2046,15 @@ class MeetingBoxApp(App):
                 self._metrics_push = None
         else:
             self._metrics_push = None
+
+        # Desktop port only: follow the Dashboard's auth. When the user signs out
+        # on the Dashboard it drops a logout signal; this poll closes the
+        # companion (waiting until an in-progress meeting finishes first).
+        self._pending_dashboard_logout = False
+        self._dashboard_logout_poll = None
+        if IS_DESKTOP and not USE_MOCK_BACKEND:
+            self._dashboard_logout_poll = Clock.schedule_interval(
+                self._dashboard_logout_watch, 2.5)
 
         # Desktop port only: actively check/request OS microphone permission early
         # (Windows/macOS gate desktop-app mic access behind privacy switches).
@@ -2052,11 +2132,9 @@ class MeetingBoxApp(App):
         """Modal explaining the mic issue with a one-click jump to OS settings."""
         try:
             import mic_permission
-            from kivy.uix.popup import Popup
-            from kivy.uix.boxlayout import BoxLayout
-            from kivy.uix.label import Label
-            from components.button import PrimaryButton
-            from config import FONT_SIZES
+            # Use the app's themed overlay dialog (not a raw Kivy Popup, which
+            # renders with Kivy's default chrome and dims the whole window).
+            from components.modal_dialog import ModalDialog
         except Exception:
             logger.exception("could not build mic permission popup")
             return
@@ -2074,25 +2152,22 @@ class MeetingBoxApp(App):
                    "\"Let desktop apps access your microphone\", then restart Pepper AI.")
             show_settings = True
 
-        root = BoxLayout(orientation="vertical", padding=16, spacing=12)
-        body = Label(text=msg, halign="left", valign="top", font_size=FONT_SIZES["small"] + 2)
-        body.bind(size=lambda w, *_: setattr(w, "text_size", (w.width, None)))
-        root.add_widget(body)
-
-        btn_row = BoxLayout(orientation="horizontal", size_hint=(1, None), height=52, spacing=10)
-        popup = Popup(title=title, content=root, size_hint=(0.86, 0.6), auto_dismiss=True)
-
         if show_settings:
-            open_btn = PrimaryButton(text="Open Settings", font_size=FONT_SIZES["medium"])
-            open_btn.bind(on_release=lambda *_: mic_permission.open_privacy_settings())
-            btn_row.add_widget(open_btn)
-
-        close_btn = PrimaryButton(text="Continue", font_size=FONT_SIZES["medium"])
-        close_btn.bind(on_release=lambda *_: popup.dismiss())
-        btn_row.add_widget(close_btn)
-        root.add_widget(btn_row)
-
-        popup.open()
+            dialog = ModalDialog(
+                title=title,
+                message=msg,
+                confirm_text="Open Settings",
+                cancel_text="Continue",
+                on_confirm=lambda: mic_permission.open_privacy_settings(),
+            )
+        else:
+            dialog = ModalDialog(
+                title=title,
+                message=msg,
+                confirm_text="Continue",
+                cancel_text="",
+            )
+        self.root_layout.add_widget(dialog)
 
     def _run_startup_self_test_overlay(self, _dt):
         """Boot-time self-test modal (disable with MEETINGBOX_STARTUP_SELF_TEST=0)."""

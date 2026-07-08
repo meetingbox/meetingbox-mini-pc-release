@@ -715,6 +715,69 @@ def get_device_auth_token() -> str:
     return (DEVICE_AUTH_TOKEN or "").strip()
 
 
+# Shared sign-in handoff (Windows desktop): the Dashboard app writes the signed-in
+# user JWT here so the companion can self-pair without its own login UI.
+DASHBOARD_SESSION_FILE_NAME = 'dashboard_session.json'
+
+
+def read_dashboard_session_jwt() -> str:
+    """Return the user JWT the Dashboard shared for sign-in, or '' if none.
+
+    The Dashboard (Tauri) writes ``dashboard_session.json`` ({"jwt": "...","ts": N})
+    into the same config dir the companion uses for its device token. Best-effort:
+    any read/parse error yields an empty string (companion just keeps waiting).
+    """
+    import json
+    for d in _device_token_storage_dirs():
+        path = d / DASHBOARD_SESSION_FILE_NAME
+        try:
+            if path.is_file():
+                data = json.loads(path.read_text(encoding='utf-8-sig'))
+                jwt = (data.get('jwt') if isinstance(data, dict) else '') or ''
+                jwt = jwt.strip()
+                if jwt:
+                    return jwt
+        except (OSError, ValueError):
+            continue
+    return ''
+
+
+def has_dashboard_session() -> bool:
+    """True if a shared Dashboard session file exists (used for logout detection)."""
+    for d in _device_token_storage_dirs():
+        try:
+            if (d / DASHBOARD_SESSION_FILE_NAME).is_file():
+                return True
+        except OSError:
+            continue
+    return False
+
+
+# Logout handoff (Windows desktop): the Dashboard writes this marker when the
+# user signs out so a running companion closes itself gracefully.
+DASHBOARD_LOGOUT_SIGNAL_FILE_NAME = 'dashboard_logout.signal'
+
+
+def read_dashboard_logout_signal() -> bool:
+    """True if the Dashboard signalled a logout (companion should close)."""
+    for d in _device_token_storage_dirs():
+        try:
+            if (d / DASHBOARD_LOGOUT_SIGNAL_FILE_NAME).is_file():
+                return True
+        except OSError:
+            continue
+    return False
+
+
+def clear_dashboard_logout_signal() -> None:
+    """Remove the logout marker from every config root (best-effort)."""
+    for d in _device_token_storage_dirs():
+        try:
+            (d / DASHBOARD_LOGOUT_SIGNAL_FILE_NAME).unlink(missing_ok=True)
+        except OSError:
+            continue
+
+
 def clear_stored_device_auth_token(*, revoked: bool = True) -> None:
     """Remove persisted mbd_ token and suppress stale env fallback after revoke."""
     for d in _device_token_storage_dirs():

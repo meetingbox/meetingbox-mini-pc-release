@@ -67,16 +67,16 @@ SignedUninstaller=yes
 Name: "english"; MessagesFile: "compiler:Default.isl"
 
 [Tasks]
-Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
-; Checked by default: register both apps to start at login (opt-out).
-Name: "startupicon"; Description: "Automatically start MeetingBox and the Dashboard when I sign in to Windows"; GroupDescription: "Startup:"
+Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"
+; Checked by default: register the app to start at login (opt-out).
+Name: "startupicon"; Description: "Automatically start MeetingBox when I sign in to Windows"; GroupDescription: "Startup:"
 
 [Registry]
-; Login auto-start for both apps (per-machine; installer runs as admin). The
-; dashboard starts with --minimized so it sits in the notification-area tray.
-; Both values are removed on uninstall. This keeps auto-start out of the
-; companion's own code (windows_autostart.py is left untouched).
-Root: HKLM; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: string; ValueName: "MeetingBox"; ValueData: """{app}\{#MyAppExeName}"""; Flags: uninsdeletevalue; Tasks: startupicon
+; Login auto-start (per-machine; installer runs as admin). Only the Dashboard
+; is registered: it is the primary app and spawns the companion itself.
+; --minimized keeps it in the notification-area tray. Removed on uninstall.
+; Stale value from older installs ("MeetingBox" -> companion) is deleted.
+Root: HKLM; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: none; ValueName: "MeetingBox"; Flags: deletevalue
 Root: HKLM; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: string; ValueName: "MeetingBoxDashboard"; ValueData: """{app}\Dashboard\{#MyDashExeName}"" --minimized"; Flags: uninsdeletevalue; Tasks: startupicon
 
 [Files]
@@ -98,21 +98,21 @@ Source: "device-ui.env"; DestDir: "{commonappdata}\MeetingBox"; Flags: onlyifdoe
 Name: "{commonappdata}\MeetingBox"; Permissions: users-modify
 
 [Icons]
-Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; WorkingDir: "{app}"
-Name: "{group}\{#MyDashName}"; Filename: "{app}\Dashboard\{#MyDashExeName}"; WorkingDir: "{app}\Dashboard"
+; Single entry point: the Dashboard is the primary app (it launches the
+; companion itself), so there is exactly ONE shortcut named "MeetingBox".
+Name: "{group}\{#MyAppName}"; Filename: "{app}\Dashboard\{#MyDashExeName}"; WorkingDir: "{app}\Dashboard"
 Name: "{group}\Edit MeetingBox configuration"; Filename: "notepad.exe"; Parameters: """{commonappdata}\MeetingBox\device-ui.env"""
 Name: "{group}\Third-party notices"; Filename: "{app}\THIRD-PARTY-NOTICES.txt"
 Name: "{group}\{cm:UninstallProgram,{#MyAppName}}"; Filename: "{uninstallexe}"
-Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; WorkingDir: "{app}"; Tasks: desktopicon
-Name: "{autodesktop}\{#MyDashName}"; Filename: "{app}\Dashboard\{#MyDashExeName}"; WorkingDir: "{app}\Dashboard"; Tasks: desktopicon
+Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\Dashboard\{#MyDashExeName}"; WorkingDir: "{app}\Dashboard"; Tasks: desktopicon
 
 [Run]
 ; Provision the Edge WebView2 runtime (needed by the dashboard) only if absent.
 Filename: "{tmp}\{#WebView2Bootstrapper}"; Parameters: "/silent /install"; StatusMsg: "Installing Microsoft Edge WebView2 runtime..."; Flags: waituntilterminated; Check: WebView2Needed
 ; Install the VC++ runtime only if bundled and not already present.
 Filename: "{tmp}\{#VCRedist}"; Parameters: "/install /quiet /norestart"; StatusMsg: "Installing Visual C++ runtime..."; Flags: waituntilterminated; Check: VCRedistNeeded
-Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#MyAppName}}"; Flags: nowait postinstall skipifsilent
-Filename: "{app}\Dashboard\{#MyDashExeName}"; Description: "Launch {#MyDashName}"; Flags: nowait postinstall skipifsilent
+; Launch only the Dashboard: it spawns the companion itself.
+Filename: "{app}\Dashboard\{#MyDashExeName}"; Description: "{cm:LaunchProgram,{#MyAppName}}"; Flags: nowait postinstall skipifsilent
 
 [UninstallDelete]
 Type: filesandordirs; Name: "{app}\_internal"
