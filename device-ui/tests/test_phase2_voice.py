@@ -72,12 +72,12 @@ def test_wake_phrase_fuzzy_match():
     from voice_assistant import VoiceCommandInterpreter
 
     interp = VoiceCommandInterpreter(
-        wake_phrase="hey pepper",
+        wake_phrase="hey nexa",
         start_commands=["start recording"],
     )
-    assert interp.heard_wake_phrase("hey pepper") is True
-    # Small-model slips should still wake (fuzzy >= 0.77).
-    assert interp.heard_wake_phrase("hey peppr") is True
+    assert interp.heard_wake_phrase("hey nexa") is True
+    # Small-model slips should still wake (explicit token set covers variants).
+    assert interp.heard_wake_phrase("hey nexus") is True
     # Unrelated speech must not wake.
     assert interp.heard_wake_phrase("what is the weather today") is False
 

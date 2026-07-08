@@ -26,8 +26,8 @@ from components.button import PrimaryButton
 CARDS = [
     (
         "\U0001F399",  # studio microphone
-        "Just say \u201cHey Pepper\u201d",
-        "Just say \u201cHey Pepper\u201d and I'll listen \u2014 hands-free, anytime.",
+        "Just say \u201cHey Nexa\u201d",
+        "Just say \u201cHey Nexa\u201d and I'll listen \u2014 hands-free, anytime.",
     ),
     (
         "\U0001F4C5",  # calendar

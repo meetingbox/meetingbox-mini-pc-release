@@ -707,8 +707,8 @@ class SettingsScreen(BaseScreen):
         vra = getattr(self.app, "voice_realtime_assistant", False)
         self.voice_realtime_item.toggle.active = bool(vra)
         self._refresh_voice_realtime_subtitle()
-        wk = getattr(self.app, "voice_wake_phrase_display", "hey buddy")
-        self.wake_phrase_item.subtitle_label.text = (wk or "hey buddy").lower()
+        wk = getattr(self.app, "voice_wake_phrase_display", "hey nexa")
+        self.wake_phrase_item.subtitle_label.text = (wk or "hey nexa").lower()
         try:
             sv = int(getattr(self.app, "assistant_speech_volume", 85))
         except (TypeError, ValueError):
@@ -956,11 +956,11 @@ class SettingsScreen(BaseScreen):
                         if isinstance(vra, str):
                             vra = str(vra).strip().lower() in ("1", "true", "yes", "on")
                         self.voice_realtime_item.toggle.active = bool(vra)
-                        wk = (settings.get("voice_wake_phrase") or "hey buddy").strip().lower()
+                        wk = (settings.get("voice_wake_phrase") or "hey nexa").strip().lower()
                         self.wake_phrase_item.subtitle_label.text = wk
                         self.app.voice_realtime_assistant = bool(vra)
                         self.app.voice_wake_phrase_display = (
-                            wk[:1].upper() + wk[1:] if wk else "Hey buddy"
+                            wk[:1].upper() + wk[1:] if wk else "Hey nexa"
                         )
                         if hasattr(self.app, "voice_assistant") and self.app.voice_assistant:
                             self.app.voice_assistant.apply_server_settings(
@@ -1199,17 +1199,17 @@ class SettingsScreen(BaseScreen):
     def _show_wake_phrase_dialog(self):
         dialog = TextInputDialog(
             title='Wake phrase',
-            message='Phrase to wake the assistant (spoken naturally, e.g. hey buddy).',
-            initial_value=self.wake_phrase_item.subtitle_label.text or 'hey buddy',
-            placeholder='hey buddy',
+            message='Phrase to wake the assistant (spoken naturally, e.g. hey nexa).',
+            initial_value=self.wake_phrase_item.subtitle_label.text or 'hey nexa',
+            placeholder='hey nexa',
             on_confirm=self._apply_wake_phrase,
         )
         self.add_widget(dialog)
 
     def _apply_wake_phrase(self, value: str):
-        wk = (value or '').strip().lower() or 'hey buddy'
+        wk = (value or '').strip().lower() or 'hey nexa'
         self.wake_phrase_item.subtitle_label.text = wk
-        disp = wk[:1].upper() + wk[1:] if wk else 'Hey buddy'
+        disp = wk[:1].upper() + wk[1:] if wk else 'Hey nexa'
         self.app.voice_wake_phrase_display = disp
         if hasattr(self.app, "voice_assistant") and self.app.voice_assistant:
             self.app.voice_assistant.apply_server_settings(wake_phrase=wk)

@@ -17,7 +17,7 @@ from kivy.uix.widget import Widget
 from screens.base_screen import BaseScreen
 from config import COLORS, FONT_SIZES
 
-READY_LINE = "You're all set. I'm ready whenever you are \u2014 just say Hey Pepper."
+READY_LINE = "You're all set. I'm ready whenever you are \u2014 just say Hey Nexa."
 AUTO_HOME_DELAY = 4.5  # seconds before auto-advancing to home
 
 

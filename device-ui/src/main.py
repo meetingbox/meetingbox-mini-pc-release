@@ -792,7 +792,7 @@ def _post_realtime_session_wake_guard_seconds() -> float:
     Historically this was 2.5s because, without echo cancellation, the
     conversation tail + room echo were routinely misheard by Vosk as the wake
     phrase. The Windows OS-AEC now removes the assistant's own voice at the
-    source, and the wake matcher requires a "hey"+"pepper" structure, so the
+    source, and the wake matcher requires a "hey"+"nexa" structure, so the
     false re-wake risk is low. Keep only a short guard so the user can
     re-engage almost immediately after a session ends."""
     raw = (os.getenv("MEETINGBOX_POST_REALTIME_WAKE_GUARD_SEC") or "").strip()
@@ -1150,8 +1150,8 @@ class MeetingBoxApp(App):
         self.voice_realtime_assistant = False
         # Sync interpreter to the product default immediately so wake works
         # before async device-settings load.
-        self.voice_wake_phrase_display = "Hey Pepper"
-        self.voice_assistant.apply_server_settings(wake_phrase="hey pepper")
+        self.voice_wake_phrase_display = "Hey Nexa"
+        self.voice_assistant.apply_server_settings(wake_phrase="hey nexa")
         self.voice_assistant_enabled = True
         self.assistant_speech_volume = 85
         # Realtime may only start when _handle_voice_wake_phrase sets this True (one-shot).
@@ -2336,8 +2336,8 @@ class MeetingBoxApp(App):
                     vae = str(vae).strip().lower() in ("1", "true", "yes", "on")
                 self.voice_assistant_enabled = bool(vae)
 
-                vwp = (settings.get("voice_wake_phrase") or "hey pepper").strip().lower() or "hey pepper"
-                self.voice_wake_phrase_display = vwp[:1].upper() + vwp[1:] if vwp else "Hey Pepper"
+                vwp = (settings.get("voice_wake_phrase") or "hey nexa").strip().lower() or "hey nexa"
+                self.voice_wake_phrase_display = vwp[:1].upper() + vwp[1:] if vwp else "Hey Nexa"
                 try:
                     sv = settings.get("assistant_speech_volume", 85)
                     if isinstance(sv, str):
@@ -3639,7 +3639,7 @@ class MeetingBoxApp(App):
                 self.voice_indicator.set_state("speaking", "Speaking…")
             return
         if self.voice_assistant.available and self._voice_assistant_should_listen():
-            wkd = getattr(self, "voice_wake_phrase_display", None) or "Hey Pepper"
+            wkd = getattr(self, "voice_wake_phrase_display", None) or "Hey Nexa"
             self.voice_indicator.set_state("idle", f'Say "{wkd}"')
             return
         self.voice_indicator.set_state("hidden")
@@ -3742,7 +3742,7 @@ class MeetingBoxApp(App):
         self._realtime_launch_permitted = False
 
         timeout = max(2.0, self.voice_assistant.command_timeout_seconds)
-        lbl = getattr(self, "voice_wake_phrase_display", "Hey Pepper") or "Hey Pepper"
+        lbl = getattr(self, "voice_wake_phrase_display", "Hey Nexa") or "Hey Nexa"
         try:
             _logging.getLogger(__name__).info(
                 "VOICE_EVENT %s",
@@ -3794,7 +3794,7 @@ class MeetingBoxApp(App):
             self._realtime_reconnect_count = 0  # fresh wake — reset reconnect budget
 
             def _kick_realtime(_dt):
-                # In dock mode a spoken "Hey Pepper" wake must surface the same
+                # In dock mode a spoken "Hey Nexa" wake must surface the same
                 # voice page the logo opens; otherwise the panel keeps showing
                 # whatever screen was last open (e.g. Calendar). Navigating to
                 # voice_session also auto-opens the dock panel (notify_screen).
@@ -3845,7 +3845,7 @@ class MeetingBoxApp(App):
         Refreshes the home listening animation and hide timer so Realtime failures
         or API fallbacks do not collapse the UI after a fraction of a second.
         """
-        # In dock mode a spoken "Hey Pepper" wake must surface the same voice
+        # In dock mode a spoken "Hey Nexa" wake must surface the same voice
         # page the logo tap opens (which auto-opens the dock panel via
         # notify_screen), so the local/Vosk fallback path uses the identical
         # dock choreography as the realtime path (_kick_realtime) and the manual
@@ -5879,7 +5879,7 @@ class MeetingBoxApp(App):
                     # user to the home screen ("yes I'm listening" out of
                     # nowhere). Re-arm a WARM STANDBY instead: the session is
                     # reconnected in the background and held silent until the
-                    # next "Hey Pepper", so the next wake is still instant but
+                    # next "Hey Nexa", so the next wake is still instant but
                     # the mic never goes live on its own.
                     logger.info(
                         "Realtime session ended unexpectedly; re-arming warm "

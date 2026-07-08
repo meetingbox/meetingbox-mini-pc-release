@@ -33,7 +33,7 @@ class MockBackendClient:
             'idle_screen_timeout': '30',
             'privacy_mode': False,
             'auto_record': False,
-            'voice_wake_phrase': 'hey buddy',
+            'voice_wake_phrase': 'hey nexa',
             'voice_assistant_enabled': True,
             'voice_realtime_assistant': False,
             'assistant_speech_volume': 85,

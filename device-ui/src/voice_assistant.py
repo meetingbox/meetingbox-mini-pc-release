@@ -1,7 +1,7 @@
 """
 Local wake-word voice control for the device UI.
 
-Listens for a configurable wake phrase (default: "hey pepper"), then accepts
+Listens for a configurable wake phrase (default: "hey nexa"), then accepts
 follow-up commands covering meetings, navigation, device controls, and a small
 confirmation flow for destructive actions.
 """
@@ -193,6 +193,14 @@ _PEPPER_TOKENS = frozenset({
     "pepar", "peppr", "pehper", "peppie", "peppah", "peppar", "peppe",
     "peppa", "pepah",
 })
+# Tokens the Vosk small model / accents commonly produce for "nexa" (not an
+# everyday English word, so it is often mis-transcribed toward "next"/"nexus").
+# As with pepper above, matching an explicit set lets us wake on the first try
+# across accents / recognizer slips.
+_NEXA_TOKENS = frozenset({
+    "nexa", "nexus", "next", "necks", "neksa", "necksa", "nexo", "nexar",
+    "nexer", "nexah", "necksah", "nexxa", "nexsa", "annexa",
+})
 
 
 def _token_close(tok: str, target: str, threshold: float) -> bool:
@@ -346,15 +354,17 @@ class VoiceCommandInterpreter:
         self.confirmation_timeout_seconds = max(2.0, confirmation_timeout_seconds)
         self._intent_specs = _build_intent_specs(start_commands)
         # Wake sensitivity. The Vosk small model mis-transcribes accented
-        # "Hey Pepper" into nearby words ("hey peppa", "hey paper", "hey pepe"),
+        # "Hey Nexa" into nearby words ("hey nexus", "hey next", "hey necks"),
         # which a strict whole-phrase similarity rejected. We instead match
         # structurally: a "hey"-like token immediately followed by a
-        # "pepper"-like token. This wakes on the first try across accents while
-        # NOT waking on the everyday word "pepper" spoken without a "hey".
+        # "nexa"-like token. This wakes on the first try across accents while
+        # NOT waking on the everyday word spoken without a "hey".
         parts = self.wake_phrase.split()
         self._wake_prefix = parts[0] if parts else "hey"
         self._wake_keyword = parts[-1] if parts else self.wake_phrase
-        if self._wake_keyword == "pepper":
+        if self._wake_keyword == "nexa":
+            self._keyword_tokens = _NEXA_TOKENS
+        elif self._wake_keyword == "pepper":
             self._keyword_tokens = _PEPPER_TOKENS
         else:
             self._keyword_tokens = frozenset({self._wake_keyword})
@@ -387,9 +397,9 @@ class VoiceCommandInterpreter:
 
     def _heard_wake_phrase(self, text: str) -> bool:
         # Structural match: a "hey"-like token IMMEDIATELY followed by a
-        # "pepper"-like token. Robust to accents / small-model errors
-        # ("hey peppa", "hey paper", "hey pepe") yet won't fire on a bare
-        # "pepper" said mid-conversation.
+        # "nexa"-like token. Robust to accents / small-model errors
+        # ("hey nexus", "hey next", "hey necks") yet won't fire on a bare
+        # keyword said mid-conversation.
         norm = _normalize_text(text)
         if not norm:
             return False
@@ -530,7 +540,7 @@ class VoiceAssistant:
         self._on_amplitude = on_amplitude
         self._on_conversation_turn = on_conversation_turn
         self.enabled = _env_flag("VOICE_ASSISTANT_ENABLED", True)
-        self.wake_phrase = (os.getenv("VOICE_ASSISTANT_WAKE_PHRASE") or "hey pepper").strip() or "hey pepper"
+        self.wake_phrase = (os.getenv("VOICE_ASSISTANT_WAKE_PHRASE") or "hey nexa").strip() or "hey nexa"
         self.start_commands = [
             cmd.strip()
             for cmd in (

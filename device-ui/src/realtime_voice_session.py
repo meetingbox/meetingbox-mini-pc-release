@@ -3162,7 +3162,7 @@ class RealtimeVoiceSession:
 
                 # Suppress mic uplink briefly so the room echo of the wake
                 # phrase decays before audio reaches OpenAI.  Without this,
-                # the VAD fires on the garbled "Hey Pepper" echo and the model
+                # the VAD fires on the garbled "Hey Nexa" echo and the model
                 # responds with a confused phrase ("I can't catch on to that")
                 # before the proper wake greeting even plays.
                 _wake_echo_settle_s = float(
