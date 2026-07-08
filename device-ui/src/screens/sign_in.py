@@ -42,7 +42,7 @@ def _default_device_name() -> str:
         host = (socket.gethostname() or "").split(".")[0].strip()
     except Exception:
         host = ""
-    return f"Pepper AI - {host}" if host else "Pepper AI Desktop"
+    return f"Nexa AI - {host}" if host else "Nexa AI Desktop"
 
 
 class SignInScreen(BaseScreen):
@@ -72,7 +72,7 @@ class SignInScreen(BaseScreen):
             root.add_widget(logo)
         else:
             logo = Label(
-                text="MeetingBox",
+                text="Nexa AI",
                 font_size=sf(FONT_SIZES["huge"]),
                 bold=True,
                 color=COLORS["white"],
@@ -82,7 +82,7 @@ class SignInScreen(BaseScreen):
             root.add_widget(logo)
 
         title = Label(
-            text="Sign in from the MeetingBox Dashboard",
+            text="Sign in from the Nexa AI Dashboard",
             font_size=sf(FONT_SIZES["title"]),
             bold=True,
             color=COLORS["white"],
@@ -96,7 +96,7 @@ class SignInScreen(BaseScreen):
 
         subtitle = Label(
             text=(
-                "Open the MeetingBox Dashboard and sign in with Google. "
+                "Open the Nexa AI Dashboard and sign in with Google. "
                 "This companion connects automatically once you do."
             ),
             font_size=sf(FONT_SIZES["body"]),

@@ -200,6 +200,29 @@ _PEPPER_TOKENS = frozenset({
 _NEXA_TOKENS = frozenset({
     "nexa", "nexus", "next", "necks", "neksa", "necksa", "nexo", "nexar",
     "nexer", "nexah", "necksah", "nexxa", "nexsa", "annexa",
+    # Real transcriptions the Vosk small model emits for the second half of
+    # "hey nexa" (it lacks the word in its vocabulary). Observed live:
+    # "hey nick", "hey nexus", "hey mixer", etc. The mandatory "hey" prefix
+    # guard keeps these from false-waking on the common name "nick" or the
+    # word "mixer" said mid-conversation.
+    "nick", "nik", "nic", "nix", "knick", "knicks", "nex", "nexi", "nexen",
+    "mixer", "nixie", "mix", "nixy", "nixey",
+})
+# The Vosk small model frequently MERGES the whole phrase "hey nexa" into a
+# single token — observed live: "hynix", "phoenix", "henrik". A two-token
+# "hey"+keyword match can never catch those, so we also wake on these merged
+# whole-phrase tokens (they are distinctive enough to rarely occur otherwise).
+_NEXA_MERGED_TOKENS = frozenset({
+    "hynix", "hynex", "hinnick", "phoenix", "henrik", "henrick", "henriks",
+    "hennick", "hendrix",
+})
+# When "hey nexa" is said FAST the recognizer often drops a filler between the
+# two words ("hey AN accent", "he MAKES mixer"). We allow ONE intervening word
+# before a *distinctive* nexa token so those still wake — but NOT before common
+# words like "next" (that would false-wake on "hey the next meeting").
+_NEXA_FILLER_OK_TOKENS = frozenset({
+    "nick", "nexus", "nexa", "nixie", "mix", "mixer", "accent",
+    "nex", "nexi", "nexen", "nexo", "nixy", "nixey",
 })
 
 
@@ -364,10 +387,16 @@ class VoiceCommandInterpreter:
         self._wake_keyword = parts[-1] if parts else self.wake_phrase
         if self._wake_keyword == "nexa":
             self._keyword_tokens = _NEXA_TOKENS
+            self._merged_tokens = _NEXA_MERGED_TOKENS
+            self._filler_ok_tokens = _NEXA_FILLER_OK_TOKENS
         elif self._wake_keyword == "pepper":
             self._keyword_tokens = _PEPPER_TOKENS
+            self._merged_tokens = frozenset()
+            self._filler_ok_tokens = frozenset()
         else:
             self._keyword_tokens = frozenset({self._wake_keyword})
+            self._merged_tokens = frozenset()
+            self._filler_ok_tokens = frozenset()
         # Fuzzy bar for the keyword token (lower = easier wake / more false
         # wakes). The explicit token set above already covers common variants;
         # this catches additional near-misses. Env-tunable.
@@ -406,9 +435,27 @@ class VoiceCommandInterpreter:
         if self.wake_phrase and self.wake_phrase in norm:
             return True
         words = norm.split()
-        for i in range(len(words) - 1):
-            if self._is_prefix_token(words[i]) and self._is_keyword_token(words[i + 1]):
+        n = len(words)
+        for i in range(n):
+            if not self._is_prefix_token(words[i]):
+                continue
+            # "hey" immediately followed by a nexa-like token.
+            if i + 1 < n and self._is_keyword_token(words[i + 1]):
                 return True
+            # Fast speech drops a filler ("hey AN accent"): allow ONE gap word
+            # before a *distinctive* nexa token only.
+            if (
+                self._filler_ok_tokens
+                and i + 2 < n
+                and words[i + 2] in self._filler_ok_tokens
+            ):
+                return True
+        # Single-token merged whole-phrase forms ("hynix", "phoenix", ...) that
+        # the recognizer emits when it collapses "hey nexa" into one word.
+        if self._merged_tokens:
+            for w in words:
+                if w in self._merged_tokens:
+                    return True
         return False
 
     def _is_prefix_token(self, w: str) -> bool:

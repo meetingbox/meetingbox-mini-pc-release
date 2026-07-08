@@ -120,7 +120,7 @@ class PairDeviceScreen(BaseScreen):
         else:
             header.add_widget(Widget(size_hint=(None, 1), width=8))
         brand = Label(
-            text="MeetingBox",
+            text="Nexa AI",
             font_size=self.suf(FONT_SIZES["title"]),
             bold=True,
             color=COLORS["white"],
@@ -146,7 +146,7 @@ class PairDeviceScreen(BaseScreen):
         body.bind(minimum_height=body.setter("height"))
 
         title = Label(
-            text="Link this MeetingBox",
+            text="Link this Nexa AI",
             font_size=self.suf(FONT_SIZES["huge"]),
             bold=True,
             color=COLORS["white"],

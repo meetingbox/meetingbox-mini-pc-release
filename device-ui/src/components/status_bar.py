@@ -70,7 +70,7 @@ class StatusBar(BoxLayout):
     """
 
     def __init__(self, status_text='READY', status_color=None,
-                 device_name='MeetingBox', pulsing=False,
+                 device_name='Nexa AI', pulsing=False,
                  show_settings=True, back_button=False, on_back=None,
                  **kwargs):
 

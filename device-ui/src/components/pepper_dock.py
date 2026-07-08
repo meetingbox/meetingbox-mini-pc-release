@@ -364,7 +364,7 @@ class PepperDock(FloatLayout):
 class DockController:
     """Owns the dock widget, the overlay window, and the interaction machine."""
 
-    _WINDOW_TITLE = "MeetingBox Pepper Dock"
+    _WINDOW_TITLE = "Nexa Dock"
 
     # screen_name → (dock key). Only these four ever highlight.
     _SCREEN_TO_KEY = {

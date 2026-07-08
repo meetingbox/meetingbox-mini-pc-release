@@ -28,7 +28,7 @@ _TZ_ROWS = [
 
 class TimezonePickerScreen(PickerBaseScreen):
     _title = "Timezone"
-    _description = "Applies on the MeetingBox host via timedatectl when permitted."
+    _description = "Applies on the Nexa host via timedatectl when permitted."
     _options = _TZ_ROWS
     _setting_key = "timezone"
     _default = "UTC"

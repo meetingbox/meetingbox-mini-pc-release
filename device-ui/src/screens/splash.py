@@ -47,7 +47,7 @@ class SplashScreen(BaseScreen):
 
         # Logo text (centred)
         self.logo_label = Label(
-            text='Pepper AI',
+            text='Nexa AI',
             font_size=self.suf(36),
             bold=True,
             color=COLORS['white'],

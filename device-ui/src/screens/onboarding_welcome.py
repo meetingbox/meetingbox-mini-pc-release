@@ -27,7 +27,7 @@ from components.button import PrimaryButton
 WELCOME_DIR = ASSETS_DIR / "welcome"
 LOGO_PATH = str(WELCOME_DIR / "LOGO.png")
 
-GREETING = "Hi, I'm Pepper, your AI executive assistant."
+GREETING = "Hi, I'm Nexa, your AI executive assistant."
 SUBLINE = "Let's get you started."
 
 
@@ -63,7 +63,7 @@ class OnboardingWelcomeScreen(BaseScreen):
             )
         else:
             self.brand = Label(
-                text="Pepper AI",
+                text="Nexa AI",
                 font_size=sf(FONT_SIZES["title"]),
                 bold=True,
                 color=COLORS["blue"],

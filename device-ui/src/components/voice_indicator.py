@@ -96,7 +96,7 @@ class VoiceAssistantIndicator(BoxLayout):
 
         text_col = BoxLayout(orientation="vertical", spacing=_suv(2))
         self.title_label = Label(
-            text="Pepper",
+            text="Nexa",
             font_size=_suf(FONT_SIZES["small"] + 1),
             color=COLORS["white"],
             bold=True,
@@ -182,7 +182,7 @@ class VoiceAssistantIndicator(BoxLayout):
             )
         elif state == "speaking":
             self._bg_color.rgba = (0.07, 0.15, 0.11, 0.96)
-            self.title_label.text = "Pepper"
+            self.title_label.text = "Nexa"
             self.subtitle_label.text = message or "Meeting start"
             self._set_palette(COLORS["green"])
             anim = Animation(glow_alpha=0.34, pulse_scale=1.20, duration=0.30) + Animation(

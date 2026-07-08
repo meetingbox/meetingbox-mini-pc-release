@@ -42,7 +42,7 @@ class NetworkChoiceScreen(BaseScreen):
 
         card = BoxLayout(orientation='vertical', padding=[sv(20), sv(18)], spacing=sv(12))
         self.attach_card_bg(card, radius=sv(28), color=(0.10, 0.15, 0.24, 0.88))
-        subtitle = Label(text='Use Wi‑Fi, or skip if this MeetingBox already has working wired Ethernet.', font_size=sf(FONT_SIZES['body']), color=COLORS['gray_300'], halign='left', valign='top', size_hint=(1, None), height=sv(52))
+        subtitle = Label(text='Use Wi‑Fi, or skip if this Nexa AI already has working wired Ethernet.', font_size=sf(FONT_SIZES['body']), color=COLORS['gray_300'], halign='left', valign='top', size_hint=(1, None), height=sv(52))
         subtitle.bind(size=subtitle.setter('text_size'))
         card.add_widget(subtitle)
         self._hint_label = Label(text='', font_size=sf(FONT_SIZES['small']), color=COLORS['green'], halign='left', valign='middle', size_hint=(1, None), height=sv(34))
@@ -89,7 +89,7 @@ class NetworkChoiceScreen(BaseScreen):
 
             def _done(*_a):
                 if not ok:
-                    self.add_widget(ModalDialog(title='Cannot reach MeetingBox', message='Check the cable, router, and backend, then try again or use Wi‑Fi.', confirm_text='OK', cancel_text=''))
+                    self.add_widget(ModalDialog(title='Cannot reach Nexa AI', message='Check the cable, router, and backend, then try again or use Wi‑Fi.', confirm_text='OK', cancel_text=''))
                     return
                 self.app.setup_network_is_ethernet = True
                 self.app.connected_wifi_ssid = 'Wired Ethernet'

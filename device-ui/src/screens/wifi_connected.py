@@ -68,7 +68,7 @@ class WiFiConnectedScreen(BaseScreen):
             header.add_widget(Widget(size_hint=(None, 1), width=8))
 
         brand = Label(
-            text="MeetingBox",
+            text="Nexa AI",
             font_size=self.suf(FONT_SIZES["title"]),
             bold=True,
             color=COLORS["white"],
@@ -97,7 +97,7 @@ class WiFiConnectedScreen(BaseScreen):
         root.add_widget(self._title_lbl)
 
         self._subtitle_lbl = Label(
-            text="Your MeetingBox is now connected and ready to use.",
+            text="Your Nexa AI is now connected and ready to use.",
             font_size=self.suf(FONT_SIZES["body"]),
             color=COLORS["gray_400"],
             halign="center",
@@ -244,7 +244,7 @@ class WiFiConnectedScreen(BaseScreen):
                 self._title_lbl.text = "You're connected"
             if self._subtitle_lbl is not None:
                 self._subtitle_lbl.text = (
-                    "Your MeetingBox is now connected and ready to use."
+                    "Your Nexa AI is now connected and ready to use."
                 )
             if self._icon is not None:
                 self._icon.text = "📶✓"

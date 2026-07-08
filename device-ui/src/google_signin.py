@@ -46,7 +46,7 @@ _CALLBACK_PATH = "/auth/callback"
 _SUCCESS_HTML = b"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Pepper AI</title>
+<title>Nexa AI</title>
 <style>
   html,body{height:100%;margin:0}
   body{font-family:-apple-system,Segoe UI,Roboto,Arial,sans-serif;
@@ -59,16 +59,16 @@ _SUCCESS_HTML = b"""<!doctype html>
 <body><div class="card">
   <div class="tick">&#10003;</div>
   <h1>You're signed in</h1>
-  <p>Return to the Pepper AI app &mdash; you can close this tab.</p>
+  <p>Return to the Nexa AI app &mdash; you can close this tab.</p>
 </div></body></html>"""
 
 _ERROR_HTML = b"""<!doctype html>
-<html lang="en"><head><meta charset="utf-8"><title>Pepper AI</title>
+<html lang="en"><head><meta charset="utf-8"><title>Nexa AI</title>
 <style>body{font-family:-apple-system,Segoe UI,Roboto,Arial,sans-serif;
 background:#0b0d11;color:#fff;display:flex;height:100vh;align-items:center;
 justify-content:center;margin:0}.card{text-align:center}p{color:#9aa4b2}</style>
 </head><body><div class="card"><h1>Sign-in failed</h1>
-<p>Return to the Pepper AI app and try again.</p></div></body></html>"""
+<p>Return to the Nexa AI app and try again.</p></div></body></html>"""
 
 
 class SignInError(Exception):

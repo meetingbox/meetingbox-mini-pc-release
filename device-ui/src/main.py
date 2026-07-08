@@ -749,7 +749,7 @@ def _recording_start_error_screen_args(exc: BaseException) -> tuple[str, str]:
     if _recording_start_transient_network(exc):
         return (
             "Cannot reach server",
-            "Could not connect to the Pepper AI backend. After switching networks (for "
+            "Could not connect to the Nexa AI backend. After switching networks (for "
             "example unplugging Ethernet and using Wi‑Fi), wait a few seconds, confirm this "
             "device can reach the server URL, then press TRY AGAIN. If it keeps failing, check "
             "BACKEND_URL in the configuration.",
@@ -967,7 +967,7 @@ def _pick_english_piper_model_path() -> str | None:
 
 class MeetingBoxApp(App):
     # Window title shown in the desktop title bar / taskbar.
-    title = "Pepper AI"
+    title = "Nexa AI"
     """
     Main Kivy application for the MeetingBox device UI.
 
@@ -1012,7 +1012,7 @@ class MeetingBoxApp(App):
         # arrived before navigation to `processing`.
         self._transcription_done_for_session = None
         self.privacy_mode = DEFAULT_PRIVACY_MODE
-        self.device_name = 'MeetingBox'
+        self.device_name = 'Nexa AI'
         self.auto_record = False
         self.setup_language = 'English (US)'
         self.current_user_id = None
@@ -1979,8 +1979,8 @@ class MeetingBoxApp(App):
             dialog = ModalDialog(
                 title="Signed out",
                 message=(
-                    "You signed out on the MeetingBox Dashboard.\n\n"
-                    "MeetingBox will now close. Sign in again on the Dashboard "
+                    "You signed out on the Nexa AI Dashboard.\n\n"
+                    "Nexa AI will now close. Sign in again on the Dashboard "
                     "to reconnect this companion."
                 ),
                 confirm_text="Close",
@@ -2179,15 +2179,15 @@ class MeetingBoxApp(App):
 
         if status.state == mic_permission.STATUS_NO_DEVICE:
             title = "No microphone found"
-            msg = ("Pepper AI could not find a microphone. Plug one in (or enable your "
-                   "built-in mic), then restart Pepper AI to use voice and recording.")
+            msg = ("Nexa AI could not find a microphone. Plug one in (or enable your "
+                   "built-in mic), then restart Nexa AI to use voice and recording.")
             show_settings = False
         else:
             title = "Allow microphone access"
-            msg = ("Pepper AI needs your microphone for the voice assistant and meeting "
+            msg = ("Nexa AI needs your microphone for the voice assistant and meeting "
                    "recording. Windows is currently blocking microphone access for desktop "
                    "apps.\n\nClick \"Open Settings\", turn on \"Microphone access\" and "
-                   "\"Let desktop apps access your microphone\", then restart Pepper AI.")
+                   "\"Let desktop apps access your microphone\", then restart Nexa AI.")
             show_settings = True
 
         if show_settings:
@@ -2311,7 +2311,7 @@ class MeetingBoxApp(App):
                 return
             try:
                 settings = await self.backend.get_settings()
-                name = settings.get('device_name', 'MeetingBox')
+                name = settings.get('device_name', 'Nexa AI')
                 if name:
                     self.device_name = name
                     logger.info("Device name loaded: %s", name)
@@ -7307,7 +7307,7 @@ class MeetingBoxApp(App):
             "restart_device", "power_off", "factory_reset",
         ):
             self._voice_reply(
-                "That's handled by your computer, not Pepper AI.",
+                "That's handled by your computer, not Nexa AI.",
                 duration=3.5,
             )
             return
