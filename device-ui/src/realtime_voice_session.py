@@ -149,6 +149,44 @@ def _env_int(name: str, default: int, *, minimum: int | None = None, maximum: in
 _REALTIME_WS_HOST = "api.openai.com"
 _REALTIME_RATE = 24000
 
+# --- Uplink codec (mic -> server bandwidth) -------------------------------
+# The mic/AEC pipeline runs at 24 kHz PCM16 internally, but that is ~512 kbps
+# on the wire (base64'd), which is more sustained UPSTREAM than many real
+# connections can carry. When the uplink can't keep up, mic frames back up,
+# the server hears silence, and it closes the session on a keepalive timeout
+# (observed repeatedly during continuous email dictation on a ~0.4-1.1 Mbps
+# link). G.711 mu-law at 8 kHz is ~64 kbps (~6x smaller after base64) — the
+# standard low-bandwidth voice codec (telephone quality) — and fits in even a
+# marginal upstream with headroom. The DOWNLINK (assistant voice) is
+# unaffected and stays full quality. Only the mic->server leg is transcoded,
+# and only at the final wire step: AEC, live captions and the speech-evidence
+# monitor all still see the full 24 kHz audio.
+#   REALTIME_UPLINK_CODEC=g711_ulaw  # g711_ulaw (default) | pcm16
+# Deployments with guaranteed bandwidth can set pcm16 for pristine uplink.
+_REALTIME_UPLINK_CODEC = (
+    os.environ.get("REALTIME_UPLINK_CODEC", "g711_ulaw") or "g711_ulaw"
+).strip().lower()
+_G711_RATE = 8000
+
+# G.711 encoding uses the stdlib ``audioop`` (present in CPython 3.11; the
+# drop-in ``audioop-lts`` package restores it on 3.13+). We deliberately do NOT
+# hand-roll a mu-law encoder: it must be bit-exact with what the server's
+# decoder expects or speech comes through garbled, and matching audioop's
+# 16->14-bit handling exactly is error-prone. When audioop is unavailable we
+# simply keep the PCM16 uplink (correct, just higher bandwidth) rather than
+# risk sending mis-encoded audio.
+try:
+    import audioop as _audioop  # type: ignore
+except Exception:  # pragma: no cover - only on 3.13+ without audioop-lts
+    _audioop = None
+
+
+def _pcm16_to_ulaw(pcm16: bytes) -> bytes:
+    """Encode 16-bit mono PCM to G.711 mu-law bytes (1 byte/sample)."""
+    if not pcm16 or _audioop is None:
+        return b""
+    return _audioop.lin2ulaw(pcm16, 2)
+
 # Mic chunk duration. Smaller chunks help the server VAD see speech edges
 # sooner, but 5 ms (200 callbacks/s at 48 kHz capture) overwhelms the
 # asyncio executor on this hardware and produces persistent PortAudio
@@ -171,9 +209,71 @@ _APLAY_BUFFER_TIME_US = "70000"
 # response.created event arrives so we never silence a fresh response.
 _BARGE_IN_SUPPRESS_AUDIO_S = 0.4
 
+# A barge-in only means something while the assistant is ACTUALLY speaking.
+# In OS-AEC full-duplex we trust the server VAD, but the server re-fires
+# speech_started on the user's own trailing speech / residual-echo tail right
+# after each pause — with no audio playing. Forcing an interrupt for that
+# cancels the freshly-requested reply before it can speak, which is what makes
+# long dictation crawl (each pause commits a turn, the next syllable kills the
+# response). Require this much queued assistant audio before a server VAD blip
+# is allowed to force-cancel; below it there is nothing to barge into.
+_BARGE_IN_MIN_PLAYBACK_S = _env_float(
+    "REALTIME_BARGE_IN_MIN_PLAYBACK_S", 0.25, minimum=0.0, maximum=2.0
+)
+
+# After WE send response.create, the server takes up to ~1-2 s to acknowledge
+# with response.created (which is what sets _response_in_progress). During that
+# gap the response IS in flight but no flag reflects it yet, so a stray server
+# speech_started would be mis-read as "nothing to protect" and cancel the reply
+# before it ever speaks. Treat a freshly-requested response as protected for
+# this window; the assistant isn't audible yet, so a genuine barge-in loses
+# nothing (it re-interrupts once real audio starts).
+_RESPONSE_CREATE_PROTECT_S = 2.5
+
+# A response can stop streaming without ever sending response.done (e.g. the
+# realtime stream degrades / the proxy socket flaps mid-turn). _state then
+# stays "speaking" forever, which (a) keeps the AEC3 residual gate armed so
+# every mic frame is suppressed (the user is never heard) and (b) freezes the
+# UI pill on "talking". If assistant audio has fully drained and nothing has
+# extended it for this long while still "speaking", treat the turn as finished
+# so the mic reopens and the pill recovers. Comfortably longer than any natural
+# inter-sentence gap (audio playback keeps _assistant_audio_play_until ahead).
+_RESPONSE_STALL_RECOVERY_S = 4.0
+
 # Close the session if the user is silent (and we're not speaking) for
 # this many seconds. Matches the previous behavior.
 _SESSION_IDLE_CLOSE_S = 40.0
+
+# --- Dead-link (half-open connection) detection ---------------------------
+# A flaky uplink can lose its INBOUND half while the outbound half stays up:
+# TCP keeps ACKing our audio (frames flow, sends are fast) but OpenAI's events
+# never arrive. The WS ping/pong CANNOT catch this quickly — OpenAI legitimately
+# delays protocol pongs 5-15 s+ while generating, which is why ping_timeout had
+# to be raised to 120 s (a shorter timeout false-closed healthy mid-response
+# sessions). So a dead inbound link previously sat undetected for ~60 s until the
+# network itself reaped the zombie socket, stranding the user mid-conversation.
+#
+# The correct liveness signal is INBOUND DATA FLOW, not pings: a live-but-busy
+# server streams audio/transcription deltas continuously (sub-second), so
+# "time since the last server event" stays fresh; only a truly dead link goes
+# fully silent. We flag the link dead when we have been actively streaming mic
+# audio (so the server owes us SOMETHING — at minimum a speech_started) yet have
+# received nothing for this long. Guarded so a legitimate long dictation (server
+# already acked speech_started; a single utterance emits no further events until
+# speech_stopped) is never mistaken for a dead link — except past the hard cap,
+# which catches a link that dies mid-utterance so speech_stopped never comes.
+_DEAD_LINK_RECV_SILENCE_S = max(
+    3.0, float(os.environ.get("REALTIME_DEAD_LINK_S", "8") or "8")
+)
+_DEAD_LINK_HARD_S = max(_DEAD_LINK_RECV_SILENCE_S + 5.0, 30.0)
+# Inbound silence alone is NOT proof of a dead link: a silent user produces the
+# exact same signature (uplink trickling frames, server with nothing to say).
+# So when a silence threshold trips, VERIFY with a protocol ping before killing
+# the session — a healthy idle link pongs in well under a second; only a truly
+# dead link stays mute. Generous timeout because OpenAI can delay pongs several
+# seconds under load (though mid-generation the deltas keep recv_silence fresh,
+# so we rarely probe then).
+_DEAD_LINK_PING_TIMEOUT_S = 10.0
 
 # ── Device-driven morning-brief carousel walkthrough ───────────────────────
 # The Realtime model batches its navigate_device_ui calls (all three at once)
@@ -440,17 +540,23 @@ _LOCAL_BARGE_IN_SPIKE_ECHO_MAX_REF_RATIO = _env_float(
 _LOCAL_BARGE_IN_MIN_FRAMES = _env_int("REALTIME_BARGE_IN_MIN_FRAMES", 2, minimum=1, maximum=10)
 _LOCAL_BARGE_IN_PREROLL_S = _env_float("REALTIME_BARGE_IN_PREROLL_S", 0.18, minimum=0.0, maximum=0.5)
 
-# --- OS-grade acoustic echo cancellation (the single Windows solution) --------
+# --- OS-grade acoustic echo cancellation (Windows Voice Capture DSP) ----------
 # Drive the Windows "Voice Capture DSP" (CWMAudioAEC). It captures the mic AND
 # references the system render itself, returning a clean, echo-cancelled 16 kHz
-# mono stream — the desktop equivalent of the hardware AEC phone assistants use.
-# When live it becomes the mic source and we run true FULL-DUPLEX barge-in:
-# stream the cancelled mic continuously and let the server VAD +
-# interrupt_response handle interruption. Windows-only; on the Linux appliance
-# (and any box where the DSP is unavailable) the Speex + local barge-in path
-# below is used instead.
+# mono stream. When live it becomes the mic SOURCE (source mode) instead of our
+# own PortAudio input stream.
+#
+# OFF by default (opt-in via REALTIME_OS_AEC=1). Source mode only emits mic
+# frames while the OS render clock ticks — we keep it clocking with a silent
+# "keep-alive" render stream — but under the playback start/stop churn of a real
+# session that clock stalls and the DSP stops delivering frames, so the mic goes
+# permanently deaf (observed: peak_rms collapses to ~48, then 60 s+ of zero
+# frames, then the realtime socket closes on a 90 s server-silence timeout).
+# The shipping EXE never used this path; it captured with a normal PortAudio
+# input stream (below), which delivers frames continuously regardless of
+# playback. Keep the DSP available for opt-in only.
 _OS_AEC_ENABLED = (
-    os.environ.get("REALTIME_OS_AEC", "1").strip().lower()
+    os.environ.get("REALTIME_OS_AEC", "0").strip().lower()
     not in ("0", "false", "no", "off", "")
 )
 
@@ -474,16 +580,19 @@ _PREFER_OS_AEC = (
 
 # Genuine WebRTC AEC3 (the echo canceller Chrome/Meet/Discord use) driven off a
 # real playback reference: WASAPI loopback on Windows, the app's own PCM on
-# macOS (see aec_reference.py). This is the PREFERRED desktop echo path — it is
-# device- and volume-agnostic (loopback is the post-mix speaker signal) and its
-# nonlinear residual suppressor gives full-duplex barge-in without muting or
-# energy heuristics. When live it becomes the mic-processing engine and we run
-# true full-duplex, superseding the OS DSP and Speex paths. Disable via
-# REALTIME_WEBRTC_AEC=0. AEC3 only accepts 16/32/48 kHz; we run it at 48 kHz
-# (loopback's native rate) and downsample the cleaned near-end to the 24 kHz
-# uplink.
+# macOS (see aec_reference.py). AEC3 only accepts 16/32/48 kHz; we run it at
+# 48 kHz (loopback's native rate) and downsample the cleaned near-end to the
+# 24 kHz uplink.
+#
+# OFF by default on desktop (opt-in via REALTIME_WEBRTC_AEC=1). The shipping
+# EXE — the fast, interactive build the product baselines against — used the
+# plain PortAudio mic + Speex AEC + local barge-in path below, NOT AEC3. Making
+# AEC3 the default engine (commit 457929e) raised the barge-in evidence bar so
+# normal-volume speech over a coupled laptop speaker/mic no longer interrupted,
+# which is the regression this restores. AEC3 remains available for opt-in
+# experiments but is no longer the default mic-processing engine.
 _WEBRTC_AEC_ENABLED = (
-    os.environ.get("REALTIME_WEBRTC_AEC", "1").strip().lower()
+    os.environ.get("REALTIME_WEBRTC_AEC", "0").strip().lower()
     not in ("0", "false", "no", "off", "")
 )
 _AEC3_RATE = 48000
@@ -661,8 +770,23 @@ _REALTIME_LIVE_CAPTION = (
 # observes the single uplink choke point, so it protects the OS-DSP, AEC3,
 # Speex and raw-mic paths identically, while the assistant is speaking AND
 # while it is idle. Disable via REALTIME_TURN_EVIDENCE=0.
+#
+# DESKTOP DEFAULT: OFF. The shipping Windows EXE — the fast, interactive
+# baseline the product is measured against — ran the server-driven model
+# (semantic_vad with create_response AND interrupt_response both true): the
+# server detected end-of-turn and generated the reply automatically. The
+# client-authority evidence layer (a manual response.create per turn plus
+# phantom excision) was added after the EXE and regressed responsiveness — when
+# the per-turn response.create stalls, the model never replies, the uplink goes
+# quiet, and the server closes the socket on a silence timeout mid-task
+# (observed: draft an email, ask for a change, then 75 s of dead air and a
+# server close). Half-duplex mic-muting during playback + Speex AEC already
+# suppress the echo phantoms this layer was built to catch, so on desktop we
+# default back to the EXE's server-driven turn-taking. The appliance (far-field
+# USB array, no chassis coupling) keeps the evidence layer on. Opt back in on
+# desktop with REALTIME_TURN_EVIDENCE=1.
 _TURN_EVIDENCE_ENABLED = (
-    os.environ.get("REALTIME_TURN_EVIDENCE", "1").strip().lower()
+    os.environ.get("REALTIME_TURN_EVIDENCE", "0" if IS_DESKTOP else "1").strip().lower()
     not in ("0", "false", "no", "off", "")
 )
 # Absolute RMS a frame must reach to ever count as speech. Deliberately LOW
@@ -1435,10 +1559,31 @@ class RealtimeVoiceSession:
         self._connected_fired = False
         self._user_ended = False
 
-        # Mic input
-        self._audio_q: queue.Queue[bytes | None] = queue.Queue(maxsize=400)
+        # Mic input.
+        # Buffer only ~2 s of mic audio (drop-oldest when full — see
+        # _mic_callback). A deeper buffer (the old 8 s) is actively harmful for
+        # a realtime stream: when the uplink briefly can't keep up it lets the
+        # backlog snowball into a multi-second STALE burst that never catches
+        # up, so the server hears a growing gap and closes the session. Keeping
+        # the queue shallow means a slow link drops the oldest frames and we
+        # always send near-live audio.
+        self._audio_q: queue.Queue[bytes | None] = queue.Queue(maxsize=100)
         self._mic_stream = None
         self._mic_native_sr = _REALTIME_RATE
+        # Uplink transcode (24 kHz PCM16 internal -> G.711 mu-law 8 kHz on the
+        # wire) when REALTIME_UPLINK_CODEC=g711_ulaw. Stateful anti-alias
+        # downsampler, created once per session; None when sending raw PCM16.
+        _g711_requested = _REALTIME_UPLINK_CODEC in ("g711_ulaw", "g711", "pcmu", "ulaw")
+        self._uplink_g711 = _g711_requested and _audioop is not None
+        if _g711_requested and _audioop is None:
+            logger.warning(
+                "Realtime uplink: g711_ulaw requested but 'audioop' is "
+                "unavailable (Python 3.13+ without audioop-lts) — falling back "
+                "to PCM16 uplink (higher bandwidth)."
+            )
+        self._uplink_resampler: _AntiAliasResampler | None = (
+            _AntiAliasResampler(_REALTIME_RATE, _G711_RATE) if self._uplink_g711 else None
+        )
         # Anti-aliased desktop downsampler (built lazily in _pump_mic once the
         # actual capture rate is known). None on the appliance / when no
         # resampling is needed.
@@ -1665,6 +1810,38 @@ class RealtimeVoiceSession:
         # State exposed to the UI / idle watchdog
         self._state = "idle"            # idle | listening | thinking | speaking
         self._response_in_progress = False
+        # True while a server-side tool call's HTTP round-trip is in flight
+        # (_handle_response_done -> invoke_realtime_tool_sync). During that
+        # window the OpenAI server legitimately sends NOTHING (it is waiting
+        # for our function_call_output), the recv loop is blocked awaiting the
+        # tool result (so _last_server_event_at freezes), and pongs are known
+        # to be slow — the dead-link watchdog must not treat this as a dead
+        # socket (a 30s+ assistant_intent email send would be killed mid-write).
+        self._tool_roundtrip_active = False
+        # response.done handling (which includes the tool HTTP round-trip) runs
+        # as a background task, NOT inline in _recv_loop: a slow tool call
+        # (36s assistant_intent email send) would otherwise block frame
+        # consumption, fill the websocket read buffer, pause the library's
+        # reader, leave the server's keepalive pings unanswered and get the
+        # connection killed BY OPENAI mid-send. The lock serializes handlers
+        # so tool outputs are still delivered in response order.
+        self._response_done_tasks: set = set()
+        self._response_done_lock = asyncio.Lock()
+        # Monotonic time we last sent response.create (see
+        # _RESPONSE_CREATE_PROTECT_S). Guards the create->created ack gap.
+        self._response_requested_at = 0.0
+        # Monotonic time we last received ANY frame from the realtime WS.
+        # Used to quantify mid-session stalls (loop starvation vs a truly
+        # silent server) in the close-reason log and the loop-lag heartbeat.
+        self._last_server_event_at = time.monotonic()
+        # --- Uplink-health diagnostics (see _loop_lag_monitor heartbeat) ------
+        # Distinguish the three stall classes we cannot tell apart from the
+        # existing logs: (a) event loop blocked, (b) outbound WS send stalled
+        # (network/backpressure — frames pile up in _audio_q, pongs can't go
+        # out -> server ping-timeout), (c) mic callback died (queue goes dry).
+        self._frames_sent = 0
+        self._last_frame_sent_at = time.monotonic()
+        self._max_send_dt = 0.0
         self._active_audio_item_id: str | None = None
         self._active_audio_content_index = 0
         self._last_activity_monotonic = time.monotonic()
@@ -3015,6 +3192,7 @@ class RealtimeVoiceSession:
                 # against the idle budget (safety net for cold sessions).
                 self._touch()
                 idle_task = asyncio.create_task(self._idle_watchdog())
+                lag_task = asyncio.create_task(self._loop_lag_monitor())
 
                 # Warm session just woken: greet only after the local wake-word
                 # mic has been released and the Realtime mic is open. Speaking
@@ -3033,8 +3211,15 @@ class RealtimeVoiceSession:
                         pass
                     pump_task.cancel()
                     idle_task.cancel()
+                    lag_task.cancel()
+                    # In-flight response.done handlers (tool round-trips) die
+                    # with the session — their ws is closed anyway.
+                    done_tasks = list(self._response_done_tasks)
+                    for t in done_tasks:
+                        t.cancel()
                     await asyncio.gather(
-                        pump_task, idle_task, return_exceptions=True
+                        pump_task, idle_task, lag_task, *done_tasks,
+                        return_exceptions=True,
                     )
 
         except Exception as e:
@@ -3429,11 +3614,32 @@ class RealtimeVoiceSession:
                 self._caption_q.put_nowait(resampled)
             except queue.Full:
                 pass
-        payload = base64.b64encode(resampled).decode("ascii")
+        # Transcode to the wire codec at the very last step. AEC, captions and
+        # the speech monitor above all consumed the full 24 kHz PCM16; only the
+        # bytes we actually upload are shrunk (G.711 mu-law 8 kHz ~= 1/6 the
+        # PCM16 bitrate), so a marginal upstream can sustain continuous speech.
+        if self._uplink_g711 and self._uplink_resampler is not None:
+            wire_bytes = _pcm16_to_ulaw(self._uplink_resampler.process(resampled))
+        else:
+            wire_bytes = resampled
+        if not wire_bytes:
+            return
+        payload = base64.b64encode(wire_bytes).decode("ascii")
+        _send_t0 = time.monotonic()
         await ws.send(json.dumps({
             "type": "input_audio_buffer.append",
             "audio": payload,
         }))
+        _send_dt = time.monotonic() - _send_t0
+        self._frames_sent += 1
+        self._last_frame_sent_at = time.monotonic()
+        if _send_dt > self._max_send_dt:
+            self._max_send_dt = _send_dt
+        if _send_dt > 1.0:
+            logger.warning(
+                "Realtime uplink send stalled %.1fs (network/backpressure — "
+                "WS keepalive + audio uplink at risk)", _send_dt,
+            )
         self._touch()
 
     # ------------------------------------------------------------------
@@ -3871,6 +4077,7 @@ class RealtimeVoiceSession:
             self._response_in_progress
             or self.audio_playback_remaining_s() > 0.05
             or self._state == "speaking"
+            or (now - self._response_requested_at) < _RESPONSE_CREATE_PROTECT_S
         )
         if not protecting_output:
             return True
@@ -4120,13 +4327,173 @@ class RealtimeVoiceSession:
     # Idle watchdog
     # ------------------------------------------------------------------
 
+    async def _loop_lag_monitor(self) -> None:
+        """Measure event-loop responsiveness on the realtime-voice thread.
+
+        This loop also services the WebSocket keepalive (ping/pong) and streams
+        mic audio. If a plain ``asyncio.sleep(1.0)`` returns significantly late,
+        the loop is being starved of CPU/GIL time — the prime suspect for
+        mid-session stalls (pings ACK late -> server drops us; uplink frames
+        stall -> the model hears silence). Logs only on significant lag so the
+        signal is unambiguous when correlating with a stall/close.
+        """
+        interval = 1.0
+        _hb_accum = 0.0
+        _hb_last_frames = self._frames_sent
+        while not self._stop.is_set():
+            t0 = time.monotonic()
+            await asyncio.sleep(interval)
+            lag = (time.monotonic() - t0) - interval
+            if lag >= 0.4:
+                logger.warning(
+                    "Realtime loop lag: sleep(%.1fs) overran by %.2fs "
+                    "(event loop starved — WS keepalive/audio uplink at risk)",
+                    interval, lag,
+                )
+            # Periodic uplink-health heartbeat. Because this coroutine shares the
+            # loop with the WS keepalive and the mic pump, its steady ticking
+            # PROVES the loop is alive. The deltas then localize any stall:
+            #   * frames advancing + server events stale  -> receive/server stall
+            #   * frames frozen + queue GROWING            -> outbound send stall
+            #   * frames frozen + queue EMPTY              -> mic callback died
+            _hb_accum += interval + max(0.0, lag)
+            if _hb_accum >= 8.0:
+                now = time.monotonic()
+                sent = self._frames_sent
+                try:
+                    qdepth = self._audio_q.qsize()
+                except Exception:
+                    qdepth = -1
+                logger.info(
+                    "Realtime uplink heartbeat: frames=%d (+%d/%.0fs) q=%d "
+                    "last_send=%.1fs ago last_server_evt=%.1fs ago "
+                    "max_send_dt=%.2fs state=%s",
+                    sent, sent - _hb_last_frames, _hb_accum, qdepth,
+                    now - self._last_frame_sent_at,
+                    now - self._last_server_event_at,
+                    self._max_send_dt, self._state,
+                )
+                _hb_accum = 0.0
+                _hb_last_frames = sent
+                self._max_send_dt = 0.0
+
     async def _idle_watchdog(self) -> None:
         ws = self._ws
         if ws is None:
             return
         while not self._stop.is_set():
             await asyncio.sleep(1.0)
+
+            # ---- Dead inbound link (half-open socket) ---------------------
+            # We are actively streaming mic audio but the server has returned
+            # NOTHING (no deltas, no VAD, no acks) for too long -> the inbound
+            # half of the socket is dead. Reconnect immediately instead of
+            # streaming into the void until the network reaps the zombie (~60 s).
+            # Closing as UNEXPECTED (we do NOT set _user_ended) lets the
+            # session-end handler re-arm the warm standby.
+            now = time.monotonic()
+            recv_silence = now - self._last_server_event_at
+            uplink_active = (now - self._last_frame_sent_at) <= 2.0
+            # `_caption_active` is True only between a server speech_started and
+            # its speech_stopped: during that window a long single utterance
+            # (dictation) legitimately produces no further server events, so we
+            # suppress the fast trip and rely on the hard cap.
+            in_acked_utterance = self._caption_active
+            # A tool call's HTTP round-trip is another known-quiet window: the
+            # server is waiting for OUR function_call_output, so it owes us no
+            # events at all (and the recv loop is blocked awaiting the tool
+            # result, freezing _last_server_event_at). A slow backend write
+            # (e.g. assistant_intent email send taking 30s+) must never be
+            # mistaken for a dead socket — suppress the check entirely; the
+            # tool HTTP call has its own 90s timeout bounding this window.
+            dead_link = (
+                uplink_active
+                and not self._tool_roundtrip_active
+                and (
+                    recv_silence >= _DEAD_LINK_HARD_S
+                    or (
+                        recv_silence >= _DEAD_LINK_RECV_SILENCE_S
+                        and not in_acked_utterance
+                    )
+                )
+            )
+            if dead_link:
+                # Silence threshold tripped — but that alone is only a
+                # suspicion (a user quietly thinking between turns looks
+                # identical). Confirm with a ws ping: pong -> link is alive,
+                # the silence is legitimate; no pong -> genuinely dead.
+                link_alive = False
+                try:
+                    pong_waiter = await ws.ping()
+                    await asyncio.wait_for(
+                        pong_waiter, timeout=_DEAD_LINK_PING_TIMEOUT_S
+                    )
+                    link_alive = True
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    link_alive = False
+                if link_alive:
+                    # Treat the pong as a server liveness event so the
+                    # detector re-arms (next probe only after another full
+                    # silence threshold) instead of ping-spamming every tick.
+                    self._last_server_event_at = time.monotonic()
+                    logger.debug(
+                        "Realtime: dead-link suspicion after %.1fs of server "
+                        "silence — ping verified link alive; not reconnecting.",
+                        recv_silence,
+                    )
+                    continue
+                # Recompute after the ping wait so the logged numbers reflect
+                # the moment of the decision (not up to 10s stale/negative).
+                now = time.monotonic()
+                recv_silence = now - self._last_server_event_at
+                logger.warning(
+                    "Realtime: inbound link dead — no server event for %.1fs and "
+                    "ping unanswered for %.1fs while uplink active "
+                    "(last_send=%.1fs ago, state=%s). Reconnecting.",
+                    recv_silence, _DEAD_LINK_PING_TIMEOUT_S,
+                    now - self._last_frame_sent_at, self._state,
+                )
+                self._log_voice_event(
+                    "dead_link_reconnect",
+                    recv_silence=round(recv_silence, 1),
+                    ping_timeout=_DEAD_LINK_PING_TIMEOUT_S,
+                    in_utterance=in_acked_utterance,
+                    state=self._state,
+                )
+                # Leave _user_ended False so this counts as an unexpected drop
+                # and the app re-arms a warm standby (wake word to resume).
+                self._stop.set()
+                try:
+                    await ws.close()
+                except Exception:
+                    pass
+                break
+
             if self._state == "speaking" or self._response_in_progress:
+                # Stall recovery: if we're still "speaking" but the assistant
+                # audio has fully drained and nothing has extended it for a
+                # grace period, the response stopped streaming without a
+                # response.done. Unstick the state so the AEC3 gate reopens
+                # (mic works again) and the UI pill leaves "talking"; a healthy
+                # response always flips to "listening" via response.*.done long
+                # before this fires.
+                if (
+                    self._state == "speaking"
+                    and self.audio_playback_remaining_s() <= 0.05
+                    and (time.monotonic() - self._assistant_audio_play_until)
+                    >= _RESPONSE_STALL_RECOVERY_S
+                ):
+                    self._log_voice_event(
+                        "response_stall_recovered",
+                        drained_for=round(
+                            time.monotonic() - self._assistant_audio_play_until, 1
+                        ),
+                    )
+                    self._response_in_progress = False
+                    self._response_requested_at = 0.0
+                    self._emit_state("listening")
                 continue
             idle_for = time.monotonic() - self._last_activity_monotonic
             if idle_for >= _SESSION_IDLE_CLOSE_S:
@@ -4150,6 +4517,7 @@ class RealtimeVoiceSession:
             async for raw in ws:
                 if self._stop.is_set():
                     break
+                self._last_server_event_at = time.monotonic()
                 try:
                     if isinstance(raw, (bytes, bytearray)):
                         raw = raw.decode("utf-8")
@@ -4241,11 +4609,27 @@ class RealtimeVoiceSession:
                     # paths, where residual echo can trip the server VAD; do not
                     # let it defer a genuine OS-AEC barge-in (assistant would
                     # otherwise finish its sentence before yielding).
-                    should_force_interrupt = self._os_aec_full_duplex or (
-                        has_local_speech_evidence
-                        and (
-                            not self._half_duplex
-                            or (now_mono - self._barge_in_last_cancel_at) <= 0.9
+                    # OS-AEC full-duplex trusts the server VAD as barge-in
+                    # evidence — but only as a genuine barge-in, i.e. while the
+                    # assistant is actually speaking. If nothing is queued for
+                    # the speaker, a server speech_started is the user's own
+                    # turn (or a residual-echo / trailing-speech VAD re-trigger),
+                    # NOT an interrupt; cancelling the just-requested reply for
+                    # it kills responses before they can speak and makes long
+                    # dictation crawl. Below the playback floor, fall through to
+                    # the local-evidence gate (which also honors the
+                    # response-create protection window).
+                    assistant_speaking = (
+                        self.audio_playback_remaining_s() > _BARGE_IN_MIN_PLAYBACK_S
+                    )
+                    should_force_interrupt = (
+                        (self._os_aec_full_duplex and assistant_speaking)
+                        or (
+                            has_local_speech_evidence
+                            and (
+                                not self._half_duplex
+                                or (now_mono - self._barge_in_last_cancel_at) <= 0.9
+                            )
                         )
                     )
                     if should_force_interrupt:
@@ -4359,6 +4743,7 @@ class RealtimeVoiceSession:
                             # (create_response is off server-side).
                             try:
                                 await ws.send(json.dumps({"type": "response.create"}))
+                                self._response_requested_at = time.monotonic()
                                 self._log_voice_event(
                                     "response_create_sent",
                                     source="turn_commit_evidence",
@@ -4673,8 +5058,18 @@ class RealtimeVoiceSession:
                     if leftover:
                         logger.info("AI said (flushed from deltas): %r", leftover)
                         self._emit_ai_transcript(leftover)
-                    await self._handle_response_done(ws, msg)
+                    # Run the handler (tool HTTP round-trips can take 30s+) in
+                    # the background so this recv loop keeps draining frames:
+                    # blocking here pauses the websocket reader once its buffer
+                    # fills, the server's keepalive pings go unanswered, and
+                    # OpenAI drops the connection mid-tool-call.
+                    task = asyncio.create_task(
+                        self._run_response_done_handler(ws, msg)
+                    )
+                    self._response_done_tasks.add(task)
+                    task.add_done_callback(self._response_done_tasks.discard)
                     self._response_in_progress = False
+                    self._response_requested_at = 0.0
                     self._active_audio_item_id = None
                     self._active_audio_content_index = 0
                     # _play_delta already extended the mute window to cover
@@ -4706,8 +5101,21 @@ class RealtimeVoiceSession:
                     # WS itself and surface via _async_main's except.
                     logger.warning("Realtime server (non-fatal) error: %s", em)
 
-        except websockets.ConnectionClosed:
-            logger.info("Realtime WebSocket closed by server")
+        except websockets.ConnectionClosed as e:
+            # Capture WHY the socket died — a 1011 (keepalive/internal) or an
+            # abnormal 1006 points at a starved event loop / dropped pings,
+            # whereas a clean 1000 is a normal server close. Without this the
+            # root cause of mid-session stalls is invisible.
+            rcvd = getattr(e, "rcvd", None)
+            sent = getattr(e, "sent", None)
+            code = getattr(rcvd, "code", None) if rcvd else getattr(e, "code", None)
+            reason = getattr(rcvd, "reason", None) if rcvd else getattr(e, "reason", None)
+            since_recv = round(time.monotonic() - self._last_server_event_at, 1)
+            logger.info(
+                "Realtime WebSocket closed by server (code=%s reason=%r sent=%s "
+                "silent_for=%ss)",
+                code, reason, sent, since_recv,
+            )
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -4861,6 +5269,16 @@ class RealtimeVoiceSession:
         audio_input: dict = {
             "transcription": transcription_cfg,
         }
+        # Tell the server which codec the mic leg uses. The ephemeral session is
+        # minted as 24 kHz PCM16; when we transcode the uplink to G.711 mu-law
+        # (REALTIME_UPLINK_CODEC=g711_ulaw) the server MUST be told or it will
+        # misdecode the bytes as PCM16 (garbled speech / no transcript). The
+        # downlink/output format is left untouched (full-quality assistant
+        # voice). Format keys follow the GA realtime schema.
+        if self._uplink_g711:
+            audio_input["format"] = {"type": "audio/pcmu"}
+        else:
+            audio_input["format"] = {"type": "audio/pcm", "rate": _REALTIME_RATE}
         # Client-authority turn-taking: when the local speech-evidence layer is
         # live, the server VAD is demoted to a pure audio segmenter. It must
         # neither auto-create responses nor auto-interrupt playback, because it
@@ -4882,9 +5300,13 @@ class RealtimeVoiceSession:
         # The appliance keeps its semantic_vad behavior unless overridden.
         td_mode = _REALTIME_TURN_DETECTION
         if td_mode == "auto":
-            # Desktop (Windows): energy-based server_vad — focused on the active
-            # talker, ignores sub-threshold ambient. Appliance keeps semantic.
-            td_mode = "server_vad" if IS_DESKTOP else "semantic"
+            # Desktop (Windows): semantic end-of-turn detection — the natural,
+            # low-latency turn-taking the shipping EXE used. (The energy-based
+            # server_vad experiment felt laggier on coupled laptop mics and,
+            # paired with the client-authority layer, could strand the uplink.)
+            # Appliance keeps semantic too. Force energy-based detection
+            # explicitly with REALTIME_TURN_DETECTION=server_vad.
+            td_mode = "semantic_vad" if IS_DESKTOP else "semantic"
         turn_detection = None
         if td_mode == "server_vad":
             turn_detection = {
@@ -4935,6 +5357,7 @@ class RealtimeVoiceSession:
                 interrupt_response=interrupt_response,
                 client_authority=client_authority,
                 half_duplex=self._half_duplex,
+                uplink_codec=("g711_ulaw" if self._uplink_g711 else "pcm16"),
             )
         except Exception:
             logger.warning("Realtime session.update failed", exc_info=True)
@@ -4942,6 +5365,21 @@ class RealtimeVoiceSession:
     # ------------------------------------------------------------------
     # Tool round-trip on response.done
     # ------------------------------------------------------------------
+
+    async def _run_response_done_handler(self, ws, msg: dict) -> None:
+        """Background wrapper for _handle_response_done (spawned by _recv_loop).
+
+        The lock keeps handlers strictly ordered if a second response.done
+        arrives while a slow tool round-trip is still in flight; exceptions
+        are logged here because nothing awaits this task directly.
+        """
+        try:
+            async with self._response_done_lock:
+                await self._handle_response_done(ws, msg)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("Realtime: response.done handler failed")
 
     async def _handle_response_done(self, ws, msg: dict) -> None:
         response = msg.get("response") or {}
@@ -5007,13 +5445,17 @@ class RealtimeVoiceSession:
                 "Realtime tool invoke: name=%s call_id=%s args=%s",
                 name, call_id, args[:200],
             )
-            out = await asyncio.get_running_loop().run_in_executor(
-                None,
-                lambda _b=self._backend_base_url, _t=self._device_token,
-                       _c=call_id, _n=name, _a=args: invoke_realtime_tool_sync(
-                    _b, _t, call_id=_c, name=_n, arguments=_a,
-                ),
-            )
+            self._tool_roundtrip_active = True
+            try:
+                out = await asyncio.get_running_loop().run_in_executor(
+                    None,
+                    lambda _b=self._backend_base_url, _t=self._device_token,
+                           _c=call_id, _n=name, _a=args: invoke_realtime_tool_sync(
+                        _b, _t, call_id=_c, name=_n, arguments=_a,
+                    ),
+                )
+            finally:
+                self._tool_roundtrip_active = False
             logger.info("Realtime tool result: name=%s out_len=%d", name, len(out or ""))
 
             model_out = out

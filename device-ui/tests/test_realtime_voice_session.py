@@ -1414,3 +1414,76 @@ def test_pcm_stream_player_render_tap_receives_device_blocks():
     player._callback(out, 240, None, None)
     assert len(fed) == 2
     assert np.abs(np.frombuffer(fed[1], dtype=np.int16)).max() == 0
+
+
+def test_default_desktop_echo_engines_off_matches_exe(monkeypatch):
+    """Regression guard for the "mic goes deaf" fix.
+
+    The shipping EXE captured the mic with a plain PortAudio input stream +
+    Speex AEC + local barge-in. Two later engines regressed responsiveness on
+    coupled laptop mics: WebRTC AEC3 (raised the barge-in bar) and the Windows
+    Voice Capture DSP (source-mode capture that stalls and leaves the mic deaf).
+    Both must be OFF by default so a stock desktop launch lands back on the
+    reliable EXE path; they stay opt-in behind their env flags.
+    """
+    import importlib
+
+    import realtime_voice_session as rtv
+
+    for var in ("REALTIME_OS_AEC", "REALTIME_WEBRTC_AEC", "REALTIME_PREFER_OS_AEC"):
+        monkeypatch.delenv(var, raising=False)
+    try:
+        reloaded = importlib.reload(rtv)
+        assert reloaded._OS_AEC_ENABLED is False
+        assert reloaded._WEBRTC_AEC_ENABLED is False
+        assert reloaded._PREFER_OS_AEC is False
+        # Opt-in still works: setting the flag re-enables the engine.
+        monkeypatch.setenv("REALTIME_OS_AEC", "1")
+        reloaded = importlib.reload(rtv)
+        assert reloaded._OS_AEC_ENABLED is True
+    finally:
+        # Restore the module to the ambient (unset) environment for later tests.
+        for var in ("REALTIME_OS_AEC", "REALTIME_WEBRTC_AEC", "REALTIME_PREFER_OS_AEC"):
+            monkeypatch.delenv(var, raising=False)
+        importlib.reload(rtv)
+
+
+def test_default_desktop_turn_taking_is_server_driven_like_exe(monkeypatch):
+    """Regression guard for the "slow / stops responding / closes early" fix.
+
+    The shipping EXE ran the server-driven turn model: semantic_vad with
+    create_response AND interrupt_response both true, so the server detected
+    end-of-turn and generated the reply automatically. The client-authority
+    evidence layer added afterwards (a manual per-turn response.create + phantom
+    excision) regressed responsiveness — a stalled response.create left the
+    model silent until the server closed the session on a silence timeout. On
+    desktop the evidence layer must default OFF so a stock launch lands back on
+    the EXE's server-driven path; it stays opt-in behind REALTIME_TURN_EVIDENCE.
+    (This test runs on desktop, where IS_DESKTOP is True.)
+    """
+    import importlib
+
+    import realtime_voice_session as rtv
+
+    if not rtv.IS_DESKTOP:
+        import pytest
+
+        pytest.skip("desktop-only default")
+
+    for var in ("REALTIME_TURN_EVIDENCE", "REALTIME_TURN_DETECTION"):
+        monkeypatch.delenv(var, raising=False)
+    try:
+        reloaded = importlib.reload(rtv)
+        # Evidence layer (client authority) OFF -> server owns turn-taking, so
+        # create_response/interrupt_response are both true (the EXE config).
+        assert reloaded._TURN_EVIDENCE_ENABLED is False
+        # "auto" turn detection resolves to semantic_vad on desktop (EXE model).
+        assert reloaded._REALTIME_TURN_DETECTION == "auto"
+        # Opt back in still works.
+        monkeypatch.setenv("REALTIME_TURN_EVIDENCE", "1")
+        reloaded = importlib.reload(rtv)
+        assert reloaded._TURN_EVIDENCE_ENABLED is True
+    finally:
+        for var in ("REALTIME_TURN_EVIDENCE", "REALTIME_TURN_DETECTION"):
+            monkeypatch.delenv(var, raising=False)
+        importlib.reload(rtv)

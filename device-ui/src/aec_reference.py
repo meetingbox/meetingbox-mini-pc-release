@@ -209,6 +209,9 @@ class AppPlaybackReference:
 
     #: Target ring occupancy (ms). Consumer jitter drains this cushion
     #: instead of underrunning; AEC3 absorbs it as constant extra delay.
+    #: Kept shallow: a deeper cushion adds echo-path delay that can push the
+    #: far-end reference out of AEC3's delay-estimator sweet spot and leak
+    #: Pepper's own voice into the mic. Override via REALTIME_AEC_CUSHION_MS.
     CUSHION_MS = 80.0
     #: Occupancy above which the (device-paced) ring snaps back to the
     #: cushion: past this point the reference lags the mic beyond what the
@@ -234,6 +237,15 @@ class AppPlaybackReference:
         # feed (_play_delta on the aplay path) arrives at websocket pace,
         # where occupancy legitimately swings with the queued response.
         self.device_paced = False
+        # Allow tuning the ride-height without a code change (deeper cushion =
+        # more jitter tolerance at the cost of a little extra echo-path delay).
+        try:
+            self.CUSHION_MS = float(os.getenv("REALTIME_AEC_CUSHION_MS", self.CUSHION_MS))
+            self.HIGH_WATER_MS = float(
+                os.getenv("REALTIME_AEC_HIGH_WATER_MS", self.HIGH_WATER_MS)
+            )
+        except (TypeError, ValueError):
+            pass
         self._cushion_bytes = self._ms_to_bytes(self.CUSHION_MS)
         self._high_water_bytes = self._ms_to_bytes(self.HIGH_WATER_MS)
         self._starved_until = 0.0

@@ -1,7 +1,7 @@
-('C:\\Users\\vivek\\meetingbox\\mini-pc\\device-ui\\.venv\\share\\glew\\bin',
+('C:\\Users\\vivek\\meetingbox\\mini-pc\\.venv\\share\\glew\\bin',
  None,
  [],
  'DATA',
  [('glew32.dll',
-   'C:\\Users\\vivek\\meetingbox\\mini-pc\\device-ui\\.venv\\share\\glew\\bin\\glew32.dll',
+   'C:\\Users\\vivek\\meetingbox\\mini-pc\\.venv\\share\\glew\\bin\\glew32.dll',
    'DATA')])

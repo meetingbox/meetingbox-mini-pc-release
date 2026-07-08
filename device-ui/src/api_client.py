@@ -1510,8 +1510,17 @@ class BackendClient:
                         except json.JSONDecodeError:
                             continue
 
-            except ConnectionClosed:
-                logger.warning("WebSocket closed, reconnecting…")
+            except ConnectionClosed as e:
+                rcvd = getattr(e, "rcvd", None)
+                sent = getattr(e, "sent", None)
+                code = getattr(rcvd, "code", None) if rcvd else getattr(e, "code", None)
+                reason = (
+                    getattr(rcvd, "reason", None) if rcvd else getattr(e, "reason", None)
+                )
+                logger.warning(
+                    "WebSocket closed (code=%s reason=%r sent=%s), reconnecting…",
+                    code, reason, sent,
+                )
                 self.ws_connection = None
                 await self._handle_reconnect()
             except Exception as e:

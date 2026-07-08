@@ -406,6 +406,20 @@ class VoiceControlBar(FloatLayout):
         """
         W = self.width if self.width > 1 else DISPLAY_WIDTH
         H = self.height if self.height > 1 else DISPLAY_HEIGHT
+        ox = oy = 0.0
+        # Dock companion: anchor the pills INSIDE the floating 7" panel instead
+        # of the full desktop window. Otherwise they pin to the screen's top edge
+        # (outside the panel) and overlap the floating dock. The panel shares the
+        # same 1260x800 design canvas, so the Figma math below places them
+        # identically, just scaled to the panel.
+        dc = getattr(self._app, "dock_controller", None)
+        if dc is not None:
+            try:
+                rect = dc.panel_rect_for_overlay()
+            except Exception:
+                rect = None
+            if rect:
+                ox, oy, W, H = rect
         sa = min(W / _FW, H / _FH)
 
         # Re-derive sizes from the live surface using the same Figma reference
@@ -421,12 +435,41 @@ class VoiceControlBar(FloatLayout):
         self._voice_pill._lbl.font_size = max(6, round(24.24 * sa))
         self._exit_pill._lbl.font_size = max(6, round(25 * sa))
 
-        # Right edge of the home-screen voice pill (Figma), as a fraction of W.
-        right_px = (_PILL_X_FIG + _PILL_W_FIG) / _FW * W
+        # Right edge of the home-screen voice pill (Figma), as a fraction of W,
+        # offset by the frame origin (0,0 for full window; panel corner in dock).
+        right_px = ox + (_PILL_X_FIG + _PILL_W_FIG) / _FW * W
         # Top edge → Kivy y-from-bottom.
-        top_y_px = H - (_PILL_Y_FIG / _FH * H)
+        top_y_px = oy + H - (_PILL_Y_FIG / _FH * H)
         self._row.x = right_px - self._row.width
         self._row.y = top_y_px - self._row.height
+
+    def reanchor(self) -> None:
+        """Re-evaluate visibility + re-pin the pill row.
+
+        Called by the dock whenever its floating panel opens, moves, or closes.
+        Re-running ``_refresh`` first lets the pills appear the moment the panel
+        opens even if the voice state went active before the panel did (the
+        screen-change and dock-state updates race on startup), and hides them
+        again the moment the panel closes.
+        """
+        self._refresh()
+        if self._visible:
+            self._place_row()
+
+    def _dock_without_panel(self) -> bool:
+        """True in Windows dock mode while the floating 7" panel is closed.
+
+        In that state there is no panel to anchor to, so showing the pills would
+        pin them to the top-right of the whole desktop overlay (outside the app).
+        The pills must stay hidden until the panel is open again.
+        """
+        dc = getattr(self._app, "dock_controller", None)
+        if dc is None:
+            return False
+        try:
+            return dc.panel_rect_for_overlay() is None
+        except Exception:
+            return False
 
     # ── Touch pass-through ───────────────────────────────────────────────────
 
@@ -470,7 +513,7 @@ class VoiceControlBar(FloatLayout):
     def _refresh(self) -> None:
         active       = self._state not in ("idle", "")
         hidden_screen = self._screen in _HIDDEN_SCREENS
-        should_show  = active and not hidden_screen
+        should_show  = active and not hidden_screen and not self._dock_without_panel()
 
         if should_show and not self._visible:
             self._show()
@@ -480,6 +523,9 @@ class VoiceControlBar(FloatLayout):
     def _show(self) -> None:
         self._visible = True
         Animation.cancel_all(self, "opacity")
+        # Re-anchor now: in dock mode the 7" panel may have opened after this bar
+        # was created, so the panel rect is only known at show time.
+        self._place_row()
         # Instant (no fade): both pills must appear together, at once, with
         # no perceptible transition from a solo/legacy pill.
         self.opacity = 1.0

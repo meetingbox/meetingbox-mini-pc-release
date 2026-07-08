@@ -31,7 +31,10 @@ from typing import Callable, Optional
 from kivy.animation import Animation
 from kivy.clock import Clock
 from kivy.core.window import Window
-from kivy.graphics import Color, Ellipse, Line, RoundedRectangle
+from kivy.graphics import (
+    Color, Ellipse, Line, RoundedRectangle,
+    StencilPush, StencilUse, StencilUnUse, StencilPop,
+)
 from kivy.properties import NumericProperty
 from kivy.uix.behaviors import ButtonBehavior
 from kivy.uix.floatlayout import FloatLayout
@@ -163,9 +166,53 @@ class _IconButton(ButtonBehavior, Image):
         self.keep_ratio = True
         self.mipmap = True
 
+    def on_touch_down(self, touch):
+        # An invisible glyph must never intercept a tap meant for the widget
+        # beneath it. The collapsed logo stays full-size over the pill centre,
+        # so while the dock is expanded it would otherwise swallow taps landing
+        # on the Record / Voice icons (which sit under it), leaving only the
+        # outer Tasks / Calendar icons working.
+        if self.opacity <= 0.05:
+            return False
+        return super().on_touch_down(touch)
+
     def on_release(self):
         if self._on_tap:
             self._on_tap(self._key)
+
+
+class _RoundedClip(FloatLayout):
+    """Clips its children to a rounded rectangle (rounded panel corners).
+
+    The overlay window is per-pixel transparent, so clipping the summoned screen
+    to a rounded rect makes the corners show the desktop through — matching the
+    soft-cornered panel in the motion reference.
+    """
+
+    def __init__(self, radius: float = 28.0, **kw):
+        super().__init__(**kw)
+        self._radius = float(radius)
+        with self.canvas.before:
+            StencilPush()
+            self._mask = RoundedRectangle(pos=self.pos, size=self.size,
+                                          radius=[self._radius])
+            StencilUse()
+        with self.canvas.after:
+            StencilUnUse()
+            self._mask_end = RoundedRectangle(pos=self.pos, size=self.size,
+                                              radius=[self._radius])
+            StencilPop()
+        self.bind(pos=self._sync, size=self._sync)
+
+    def set_radius(self, radius: float) -> None:
+        self._radius = float(radius)
+        self._sync()
+
+    def _sync(self, *_):
+        for m in (self._mask, self._mask_end):
+            m.pos = self.pos
+            m.size = self.size
+            m.radius = [self._radius]
 
 
 class PepperDock(FloatLayout):
@@ -341,9 +388,18 @@ class DockController:
         # 7" panel surface: the ScreenManager rendered inside a scaling holder so
         # it is a true physical size regardless of monitor resolution/density.
         self._holder: Optional[ScatterLayout] = None
+        self._clip: Optional[_RoundedClip] = None
         self._surface_scale = 1.0
+        # Physical 7" panel footprint in true device pixels (set in _layout_surface).
+        self._panel_w = float(DISPLAY_WIDTH)
+        self._panel_h = float(DISPLAY_HEIGHT)
         # Drag-to-park state (the dock only slides along the top edge).
         self._btn_prev = False
+        # Last click-through value pushed to Win32. The cursor poll used to call
+        # SetWindowLongPtrW every tick (60x/s) even when the value never changed;
+        # that constant Win32 traffic on the shared GIL starves the realtime
+        # voice thread. Only push on an actual transition now.
+        self._click_through_state: Optional[bool] = None
         self._maybe_drag = False
         self._drag_active = False
         self._drag_start = (0.0, 0.0)
@@ -387,7 +443,10 @@ class DockController:
         self.dock.set_active(None)
         self._start_breathing()
         if self._poll_ev is None:
-            self._poll_ev = Clock.schedule_interval(self._poll, 1.0 / 60.0)
+            # 30 Hz is plenty for hover/drag tracking and halves the per-frame
+            # Win32 + Python work this timer imposes on the shared GIL (which
+            # the realtime-voice WebSocket thread competes with).
+            self._poll_ev = Clock.schedule_interval(self._poll, 1.0 / 30.0)
 
     def _start_breathing(self) -> None:
         """Gentle, endless idle pulse for the collapsed logo (calm presence)."""
@@ -439,48 +498,63 @@ class DockController:
             logger.exception("PepperDock: overlay setup failed")
 
     def _layout_surface(self) -> None:
-        """Render the ScreenManager as a real-physical-size 7" panel.
+        """Render the ScreenManager at native physical-size for a crisp 7" panel.
 
-        The overlay window's Kivy coordinates are the monitor's *physical* pixels,
-        while the screens are laid out against the logical ``DISPLAY_WIDTH`` design.
-        We therefore wrap the ScreenManager in a ScatterLayout scaled so the panel
-        measures exactly 15.01 x 9.53 cm on-screen (a 7" panel), preserving the
-        design pixel-for-pixel — just magnified — so fonts/spacing stay correct.
+        The overlay window's Kivy coordinates are the monitor's *physical* pixels.
+        We size the ScreenManager to the true 7" pixel target (15.01 x 9.53 cm at
+        the monitor's density) and keep the holder scale at 1.0, so the screens
+        render pixel-for-pixel with no magnification (the previous approach built
+        the screens at DISPLAY_WIDTH and up-scaled ~1.5x, which blurred all text).
+        Corners are clipped to a rounded rect so the panel matches the mock.
         """
         sm = getattr(self.app, "screen_manager", None)
         root = getattr(self.app, "root_layout", None)
         if sm is None or root is None:
             return
 
-        # Scale = target physical pixels / design pixels. Prefer the monitor's
-        # true density (EDID); fall back to the display-scale factor.
+        # True physical-pixel target. Prefer the monitor's real density (EDID);
+        # fall back to the display-scale factor applied to the design size.
         ppcm = winov.physical_ppcm()
-        if ppcm and DISPLAY_WIDTH > 0:
-            self._surface_scale = (_PANEL_CM_W * ppcm[0]) / float(DISPLAY_WIDTH)
+        if ppcm:
+            self._panel_w = float(_PANEL_CM_W * ppcm[0])
+            self._panel_h = float(_PANEL_CM_H * ppcm[1])
         else:
-            self._surface_scale = winov.system_scale() or 1.0
+            s = winov.system_scale() or 1.0
+            self._panel_w = float(DISPLAY_WIDTH) * s
+            self._panel_h = float(DISPLAY_HEIGHT) * s
+        self._surface_scale = 1.0
+        radius = max(12.0, min(self._panel_w, self._panel_h) * 0.045)
 
         sm.size_hint = (None, None)
-        sm.size = (DISPLAY_WIDTH, DISPLAY_HEIGHT)
+        sm.size = (self._panel_w, self._panel_h)
         sm.pos = (0, 0)
 
         if self._holder is None:
             holder = ScatterLayout(
                 size_hint=(None, None),
-                size=(DISPLAY_WIDTH, DISPLAY_HEIGHT),
+                size=(self._panel_w, self._panel_h),
                 do_rotation=False,
                 do_scale=False,
                 do_translation=False,
                 auto_bring_to_front=False,
             )
+            clip = _RoundedClip(radius=radius, size_hint=(None, None),
+                                size=(self._panel_w, self._panel_h), pos=(0, 0))
             try:
                 root.remove_widget(sm)
             except Exception:
                 pass
-            holder.add_widget(sm)
+            clip.add_widget(sm)
+            holder.add_widget(clip)
             # Keep the panel behind the dock and other overlays (back of the stack).
             root.add_widget(holder, index=len(root.children))
             self._holder = holder
+            self._clip = clip
+        else:
+            self._holder.size = (self._panel_w, self._panel_h)
+            if self._clip is not None:
+                self._clip.size = (self._panel_w, self._panel_h)
+                self._clip.set_radius(radius)
 
         self._holder.scale = self._surface_scale
         self._reposition_surface()
@@ -491,8 +565,7 @@ class DockController:
     def _panel_px(self) -> tuple[float, float]:
         # Full-scale footprint (the ScatterLayout scales about its centre during
         # the open/close animation, so the centred position stays valid).
-        s = self._surface_scale
-        return (DISPLAY_WIDTH * s, DISPLAY_HEIGHT * s)
+        return (self._panel_w, self._panel_h)
 
     def _reposition_surface(self, *_):
         if self._holder is None:
@@ -504,6 +577,18 @@ class DockController:
         center_x = max(pw / 2.0, min(cx, Window.width - pw / 2.0))
         # ScatterLayout scales about its centre, so position by centre.
         self._holder.center = (center_x, top - ph / 2.0)
+        # Keep the voice Listening / End-Session pills pinned inside the panel as
+        # it moves (drag-to-park), so they never drift onto the bare desktop.
+        self._reanchor_voice_bar()
+
+    def _reanchor_voice_bar(self) -> None:
+        bar = getattr(self.app, "_voice_control_bar", None)
+        if bar is None:
+            return
+        try:
+            bar.reanchor()
+        except Exception:
+            logger.debug("PepperDock: voice bar reanchor failed", exc_info=True)
 
     # ── surface visibility (scale + fade, per the motion mock) ────────────────
     def _show_surface(self) -> None:
@@ -568,6 +653,7 @@ class DockController:
         if self.state != "expanded":
             self._animate_expand()
         self.state = "screen_open"
+        self._reanchor_voice_bar()
 
         if key == "record":
             self._open_recording_ready()
@@ -593,6 +679,17 @@ class DockController:
 
     def _activate_voice(self) -> None:
         app = self.app
+        # Open the dedicated voice-session page in the panel FIRST. This is the
+        # app's canonical voice surface — the cloud model itself navigates back
+        # to "voice_session" after every tool action (navigate_device_ui), and
+        # its transcript is shown by the global transcription overlay. Without
+        # this the panel just keeps showing whatever screen was last open (e.g.
+        # Calendar) with the voice pills on top, and the user never sees the
+        # conversation.
+        try:
+            app.goto_screen("voice_session", transition="fade")
+        except Exception:
+            logger.debug("PepperDock: goto voice_session failed", exc_info=True)
         va = getattr(app, "voice_assistant", None)
         try:
             if va is not None and getattr(va, "available", False):
@@ -600,10 +697,6 @@ class DockController:
             app._handle_voice_wake_phrase("")
         except Exception:
             logger.exception("PepperDock: voice activation failed")
-            try:
-                app.goto_screen("voice_session", transition="fade")
-            except Exception:
-                pass
 
     # ── interaction: expand / collapse ────────────────────────────────────────
     def _animate_expand(self) -> None:
@@ -620,7 +713,18 @@ class DockController:
             self._animate_expand()
 
     def collapse(self) -> None:
-        """Collapse to the lone floating logo and hide any open surface."""
+        """Collapse to the lone floating logo and hide any open surface.
+
+        Collapsing is a UI gesture (click-away or re-tapping the icon) and must
+        NEVER end a live voice session. The fast EXE baseline had no dock: a
+        session ran until the model called end_session or the user explicitly
+        ended it. Tearing the session down here fired the 30 Hz poll's
+        collapse() on ANY click outside the small dock surface — e.g. tapping
+        "Discard" on the email-draft screen or a recipient in the picker — which
+        killed sessions mid-task and made the app feel like it "stopped
+        responding." Hide the surface and re-anchor the voice pill instead;
+        leave the session running.
+        """
         if self.state in ("hidden", "collapsed"):
             return
         self.state = "collapsed"
@@ -628,6 +732,10 @@ class DockController:
         self._animate_collapse()
         self._hide_surface()
         self._update_pulse()
+        # Ensure the voice pills hide with the panel even if no realtime session
+        # object was attached (state-only pill): re-evaluating with the panel now
+        # closed drives the bar's dock-without-panel guard to hide it.
+        self._reanchor_voice_bar()
 
     # ── active highlight sync (navigation + wake word) ────────────────────────
     def notify_screen(self, screen_name: str) -> None:
@@ -643,6 +751,7 @@ class DockController:
             self._show_surface()
             self.state = "screen_open"
             self._animate_expand()
+        self._reanchor_voice_bar()
         self._update_pulse()
 
     # ── per-frame cursor polling (hover / click-through / click-away) ──────────
@@ -665,7 +774,7 @@ class DockController:
         # Drag-to-park takes precedence: while dragging, the dock stays interactive
         # and no hover/collapse logic runs.
         if self._handle_drag(kx, ky, btn):
-            winov.set_click_through(self._hwnd, False)
+            self._set_click_through(False)
             self._btn_prev = btn
             return
 
@@ -685,8 +794,20 @@ class DockController:
             if btn and not interactive:
                 self.collapse()
 
-        winov.set_click_through(self._hwnd, not interactive)
+        self._set_click_through(not interactive)
         self._btn_prev = btn
+
+    def _set_click_through(self, value: bool) -> None:
+        """Push the click-through bit to Win32 only when it actually changes.
+
+        Toggling WS_EX_TRANSPARENT via SetWindowLongPtrW every poll tick is
+        needless GIL-holding Win32 traffic; the realtime-voice thread needs
+        that time to service the WebSocket keepalive.
+        """
+        if value == self._click_through_state:
+            return
+        self._click_through_state = value
+        winov.set_click_through(self._hwnd, value)
 
     # ── drag-to-park (top edge only) ──────────────────────────────────────────
     def _handle_drag(self, kx: float, ky: float, btn: bool) -> bool:
@@ -754,6 +875,21 @@ class DockController:
             return (0, 0, 0, 0)
         pw, ph = self._panel_px()
         return (self._holder.x, self._holder.y, pw, ph)
+
+    def panel_rect_for_overlay(self) -> Optional[tuple[float, float, float, float]]:
+        """Panel rect (x, y, w, h) in Window coords for anchoring window-level
+        overlay UI (the voice Listening / End-Session pills) *inside* the
+        floating 7" panel. Returns None while the panel is closed so callers fall
+        back to full-window placement (the appliance/full-screen flow is
+        unaffected)."""
+        # Geometry (x/y/size) is set the instant the panel opens; only its
+        # opacity animates in. Gate on state + holder presence, NOT opacity, so
+        # the pills anchor correctly even during the open fade.
+        if (not self._engaged
+                or self.state != "screen_open"
+                or self._holder is None):
+            return None
+        return self._surface_rect()
 
     @staticmethod
     def _point_in(x: float, y: float, rect: tuple[float, float, float, float]) -> bool:

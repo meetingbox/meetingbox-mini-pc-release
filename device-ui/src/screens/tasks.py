@@ -688,9 +688,13 @@ class TasksScreen(BaseScreen):
         self._back_btn = back
         root.add_widget(back)
 
-        # "Tasks" title — black, 42dot Bold 40
+        # "Tasks" title — black, 42dot Bold 40. When the back button is
+        # suppressed (floating-dock companion) pull the title to the left margin
+        # so it aligns with the content instead of leaving an awkward gap.
+        from config import dock_companion_enabled
+        _title_x = 40.0 if dock_companion_enabled() else 98.0
         root.add_widget(_lbl("Tasks", _F_BOLD, _ff(40), _TITLE_BLK, bold=True,
-                             ha="left", va="middle", **_ph(98.0, 88.0, 320.0, 48.0)))
+                             ha="left", va="middle", **_ph(_title_x, 88.0, 320.0, 48.0)))
 
     # ── Tab bar  (Figma 29,170 1202×69 #DFDFDF r38) ─────────────────────────────
 

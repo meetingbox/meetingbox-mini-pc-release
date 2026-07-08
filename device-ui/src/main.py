@@ -373,6 +373,16 @@ else:
     Config.set('graphics', 'borderless', '0')
     Config.set('graphics', 'fullscreen', '0')
     Config.set('graphics', 'resizable', '0')
+    # Desktop dock runs as an always-on-top, per-pixel-transparent layered
+    # window that DWM must recomposite every frame. At the default 60 fps this
+    # continuous composition (driven by the endless dock breathing/listening
+    # animations) saturates the render path and jitters the background audio
+    # thread, which shows up as AEC render-feed underruns → the echo canceller
+    # withholds mic frames → the user's speech arrives choppy and gets dropped
+    # ("heard me but said nothing"). Halving the frame rate roughly halves that
+    # composition load; 30 fps is still smooth for this UI. Override with
+    # MEETINGBOX_MAXFPS if needed.
+    Config.set('graphics', 'maxfps', os.getenv('MEETINGBOX_MAXFPS', '30'))
 Config.set('graphics', 'width', str(_W))
 Config.set('graphics', 'height', str(_H))
 Config.set('input', 'mouse', 'mouse,multitouch_on_demand')
@@ -3607,6 +3617,16 @@ class MeetingBoxApp(App):
             self._realtime_reconnect_count = 0  # fresh wake — reset reconnect budget
 
             def _kick_realtime(_dt):
+                # In dock mode a spoken "Hey Pepper" wake must surface the same
+                # voice page the logo opens; otherwise the panel keeps showing
+                # whatever screen was last open (e.g. Calendar). Navigating to
+                # voice_session also auto-opens the dock panel (notify_screen).
+                dc = getattr(self, "dock_controller", None)
+                if dc is not None and getattr(dc, "_engaged", False):
+                    try:
+                        self.goto_screen("voice_session", transition="fade")
+                    except Exception:
+                        logger.debug("dock wake → voice_session nav failed", exc_info=True)
                 self._show_home_listening_after_wake()
                 # Instant path: if a pre-warmed session is held in standby,
                 # just activate it (no mint, no connect, no greeting). Falls
@@ -5596,37 +5616,21 @@ class MeetingBoxApp(App):
             def _after_end(_dt):
                 self._end_realtime_voice_session()
                 if unexpected:
-                    # Only auto-reconnect once per wake-word event.  If the
-                    # reconnect session also ends unexpectedly we fall back to
-                    # wake listening rather than looping forever and locking
-                    # the mic away from the wake listener.
-                    reconnect_count = getattr(self, "_realtime_reconnect_count", 0)
-                    if reconnect_count < 1:
-                        self._realtime_reconnect_count = reconnect_count + 1
-                        logger.info("Realtime session ended unexpectedly; auto-reconnecting (attempt %d).", reconnect_count + 1)
-                        # Re-arm the launch permission (normally set by the
-                        # wake word) so the reconnect bypasses the arming check.
-                        self._realtime_launch_permitted = True
-
-                        def _reconnect(_dt2):
-                            try:
-                                self._start_realtime_voice_session()
-                            except Exception:
-                                logger.exception("Realtime auto-reconnect failed")
-
-                        Clock.schedule_once(_reconnect, 0.3)
-                    else:
-                        self._realtime_reconnect_count = 0
-                        logger.info(
-                            "Realtime session ended unexpectedly after reconnect attempt; "
-                            "returning to wake listening."
-                        )
-                        self._schedule_voice_prewarm(delay=0.2)
-                else:
-                    # Clean end of a conversation — re-arm a warm standby
-                    # session so the NEXT wake word is instant again.
-                    self._realtime_reconnect_count = 0
-                    self._schedule_voice_prewarm(delay=0.2)
+                    # An unexpected drop (network stall, OpenAI session cap)
+                    # must NOT silently re-open a LIVE, hot-mic session. Doing
+                    # so made the assistant answer ambient speech with no wake
+                    # word after a network-induced close had already dumped the
+                    # user to the home screen ("yes I'm listening" out of
+                    # nowhere). Re-arm a WARM STANDBY instead: the session is
+                    # reconnected in the background and held silent until the
+                    # next "Hey Pepper", so the next wake is still instant but
+                    # the mic never goes live on its own.
+                    logger.info(
+                        "Realtime session ended unexpectedly; re-arming warm "
+                        "standby (wake word required to resume)."
+                    )
+                self._realtime_reconnect_count = 0
+                self._schedule_voice_prewarm(delay=0.2)
 
             Clock.schedule_once(_after_end, 0)
 

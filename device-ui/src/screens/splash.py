@@ -74,6 +74,14 @@ class SplashScreen(BaseScreen):
 
     def _advance(self, _dt):
         """Move to next screen based on setup state (server marker is authoritative)."""
+        # TEMP (UI testing): skip the desktop login/pairing flow and land on Home
+        # so the floating dock + panels can be exercised without a paired device.
+        # Gated behind an env var (off by default) — launch with
+        # MEETINGBOX_SKIP_LOGIN=1 to enable. Remove once pairing is verified.
+        import os
+        if os.getenv("MEETINGBOX_SKIP_LOGIN") == "1":
+            self.goto('home', transition='fade')
+            return
         # Desktop (Windows/macOS): the appliance pairing-code + Wi-Fi onboarding
         # is replaced by an on-device Google sign-in. If we already hold a device
         # token go straight home; otherwise show the sign-in step.

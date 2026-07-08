@@ -28,4 +28,6 @@ device-ui/data/
 
 # Ad-hoc debug captures
 _screenshot_*.png
+_*.log
+build_out.txt
 _winrun*.log
