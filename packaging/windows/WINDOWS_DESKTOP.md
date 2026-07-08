@@ -84,6 +84,10 @@ The companion uses the **device pairing token** (`device-ui.env` / API client). 
 
 ## Build order (summary)
 
+**One command:** `powershell -ExecutionPolicy Bypass -File mini-pc\packaging\windows\build-all.ps1`
+
+Or manually:
+
 1. PyInstaller → `packaging\windows\dist\MeetingBox\`
 2. `cd frontend && npm run tauri:build` → `MeetingBoxDashboard.exe`
 3. Stage `MicrosoftEdgeWebview2Setup.exe` next to `MeetingBox.iss`

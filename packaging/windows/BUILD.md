@@ -40,7 +40,27 @@ py -3.11 --version
 
 ---
 
-## Build commands (PowerShell)
+## One command (full monorepo)
+
+From any folder, with **Python 3.11**, **Node**, **Rust**, and **Inno Setup 6** installed:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File C:\meetingbox\meetingbox\mini-pc\packaging\windows\build-all.ps1
+```
+
+**Output:** `mini-pc\packaging\windows\Output\MeetingBoxSetup.exe`
+
+```powershell
+# Reuse an existing dashboard exe (faster):
+build-all.ps1 -SkipDashboard
+
+# Sign exes + installer (needs code-signing cert on this machine):
+build-all.ps1 -Sign
+```
+
+---
+
+## Build commands (PowerShell, step by step)
 
 Run from wherever you want the source checkout to live.
 
