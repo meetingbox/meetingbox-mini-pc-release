@@ -2042,6 +2042,11 @@ class MeetingBoxApp(App):
             self.screen_manager.transition = NoTransition()
             self.screen_manager.current = 'home' if has_token else 'sign_in'
             self.screen_manager.transition = prev_transition
+            # This boot shortcut sets screen_manager.current directly instead of
+            # going through goto_screen(), which is what normally re-evaluates the
+            # wake-listener pause state for the new screen. Sync it explicitly so
+            # the voice assistant actually starts listening once we land on home.
+            self._sync_voice_assistant_state()
             if has_token:
                 # Verify the token in the background (the splash used to gate on
                 # this); drop back to sign-in only if it's been revoked/expired.
