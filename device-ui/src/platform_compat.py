@@ -33,14 +33,16 @@ TAP_OR_CLICK = "Click" if IS_DESKTOP else "Tap"
 tap_or_click = "click" if IS_DESKTOP else "tap"
 
 # Product name used for per-user data directories on desktop OSes.
-_APP_DIR_NAME = "MeetingBox"
+_APP_DIR_NAME = "Nexa"
+_LEGACY_APP_DIR_NAME = "MeetingBox"
 
 
 def app_user_data_dir() -> Path | None:
     """Return the per-user writable data root for desktop installs.
 
-    * Windows: ``%LOCALAPPDATA%\\MeetingBox`` (falls back to ``~/MeetingBox``).
-    * macOS:   ``~/Library/Application Support/MeetingBox``.
+    * Windows: ``%LOCALAPPDATA%\\Nexa`` (falls back to legacy ``MeetingBox``
+      if that folder already exists, then to ``~/Nexa``).
+    * macOS:   ``~/Library/Application Support/Nexa`` (legacy MeetingBox fallback).
     * Linux:   ``None`` — the Linux appliance keeps its existing behaviour of
       preferring ``/data/config`` (Docker volume) and the in-tree
       ``BASE_DIR/data`` fallback, so this returns ``None`` to avoid changing
@@ -51,10 +53,18 @@ def app_user_data_dir() -> Path | None:
     if IS_WINDOWS:
         base = os.environ.get("LOCALAPPDATA") or os.environ.get("APPDATA")
         if base:
-            return Path(base) / _APP_DIR_NAME
+            nexa = Path(base) / _APP_DIR_NAME
+            legacy = Path(base) / _LEGACY_APP_DIR_NAME
+            if nexa.exists() or not legacy.exists():
+                return nexa
+            return legacy
         return Path.home() / _APP_DIR_NAME
     if IS_MACOS:
-        return Path.home() / "Library" / "Application Support" / _APP_DIR_NAME
+        nexa = Path.home() / "Library" / "Application Support" / _APP_DIR_NAME
+        legacy = Path.home() / "Library" / "Application Support" / _LEGACY_APP_DIR_NAME
+        if nexa.exists() or not legacy.exists():
+            return nexa
+        return legacy
     return None
 
 

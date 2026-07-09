@@ -996,7 +996,11 @@ class DockController:
     # ── parked-position persistence ───────────────────────────────────────────
     @staticmethod
     def _park_store_path() -> Path:
-        base = Path(os.getenv("LOCALAPPDATA", str(Path.home()))) / "MeetingBox" / "data" / "config"
+        base = Path(os.getenv("LOCALAPPDATA", str(Path.home()))) / "Nexa" / "data" / "config"
+        if not base.exists():
+            legacy = Path(os.getenv("LOCALAPPDATA", str(Path.home()))) / "MeetingBox" / "data" / "config"
+            if legacy.exists():
+                base = legacy
         return base / "dock.json"
 
     def _load_park(self) -> float:

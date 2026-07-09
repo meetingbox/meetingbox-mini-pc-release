@@ -1,8 +1,8 @@
-# Build companion + dashboard + MeetingBoxSetup.exe (full monorepo).
+# Build companion + dashboard + NexaSetup.exe (full monorepo).
 # Usage (from anywhere):
 #   powershell -ExecutionPolicy Bypass -File C:\meetingbox\meetingbox\mini-pc\packaging\windows\build-all.ps1
 # Options:
-#   -SkipDashboard   Skip npm/tauri (reuse existing MeetingBoxDashboard.exe)
+#   -SkipDashboard   Skip npm/tauri (reuse existing NexaDashboard.exe)
 #   -Sign            Run sign.ps1 and ISCC with /DSIGN (requires code-signing cert)
 
 param(
@@ -37,9 +37,11 @@ if (-not (Test-Path $VenvPy)) {
 Write-Host "=== 1/3 Companion (PyInstaller) ===" -ForegroundColor Cyan
 Push-Location $MiniPc
 & $VenvPy -m pip install -q -r device-ui\requirements.txt -r packaging\windows\requirements-build.txt
-Get-Process MeetingBox, meetingbox-audio -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
-$dist = Join-Path $WinPack "dist\MeetingBox"
-if (Test-Path $dist) { Remove-Item -Recurse -Force $dist -ErrorAction SilentlyContinue }
+Get-Process Nexa, nexa-audio, MeetingBox, meetingbox-audio -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+foreach ($old in @("dist\Nexa", "dist\MeetingBox")) {
+    $dist = Join-Path $WinPack $old
+    if (Test-Path $dist) { Remove-Item -Recurse -Force $dist -ErrorAction SilentlyContinue }
+}
 & $VenvPy -m PyInstaller packaging\windows\MeetingBox.spec --noconfirm `
     --distpath packaging\windows\dist --workpath packaging\windows\build
 if ($LASTEXITCODE -ne 0) { Pop-Location; exit $LASTEXITCODE }
@@ -58,7 +60,7 @@ if (-not $SkipDashboard) {
     Write-Host "=== 2/3 Dashboard skipped (-SkipDashboard) ===" -ForegroundColor Yellow
 }
 
-$DashExe = Join-Path $Frontend "src-tauri\target\release\MeetingBoxDashboard.exe"
+$DashExe = Join-Path $Frontend "src-tauri\target\release\NexaDashboard.exe"
 if (-not (Test-Path $DashExe)) {
     throw "Missing $DashExe - build dashboard or remove -SkipDashboard."
 }
@@ -88,7 +90,7 @@ $code = $LASTEXITCODE
 Pop-Location
 if ($code -ne 0) { exit $code }
 
-$Out = Join-Path $WinPack "Output\MeetingBoxSetup.exe"
+$Out = Join-Path $WinPack "Output\NexaSetup.exe"
 Write-Host ""
 Write-Host "Done: $Out" -ForegroundColor Green
 if (Test-Path $Out) {

@@ -20,7 +20,7 @@ import platform_compat
 logger = logging.getLogger(__name__)
 
 _RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
-_VALUE_NAME = "MeetingBoxPepper"
+_VALUE_NAME = "Nexa"
 
 
 def _launch_command() -> str | None:

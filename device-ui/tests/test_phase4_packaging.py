@@ -85,13 +85,13 @@ def test_audio_config_resolver_prefers_env(monkeypatch, tmp_path):
 
 
 @pytest.mark.skipif(
-    not (REPO_ROOT / "packaging" / "windows" / "dist" / "MeetingBox" / "MeetingBox.exe").exists(),
+    not (REPO_ROOT / "packaging" / "windows" / "dist" / "Nexa" / "Nexa.exe").exists(),
     reason="packaged dist not built",
 )
 def test_built_dist_has_both_exes_and_payload():
-    dist = REPO_ROOT / "packaging" / "windows" / "dist" / "MeetingBox"
-    assert (dist / "MeetingBox.exe").is_file()
-    assert (dist / "meetingbox-audio.exe").is_file()
+    dist = REPO_ROOT / "packaging" / "windows" / "dist" / "Nexa"
+    assert (dist / "Nexa.exe").is_file()
+    assert (dist / "nexa-audio.exe").is_file()
     internal = dist / "_internal"
     assert (internal / "device-ui.env").is_file()
     assert (internal / "config.yaml").is_file()

@@ -1760,7 +1760,31 @@ class MeetingBoxApp(App):
         if not IS_DESKTOP:
             Clock.schedule_once(lambda *_: self._ensure_window_visible(), 0.3)
 
-        logger.info("UI built – starting on splash screen")
+        # Desktop companion: pick the real entry screen HERE — at the end of
+        # build(), after every screen-change binding above is wired — so the
+        # FIRST painted frame is already 'home'/'sign_in' and the branded
+        # splash never flashes. (Choosing it in on_start was too late: the
+        # window painted one splash frame first.) Linux appliance keeps splash.
+        self._desktop_boot_has_token = False
+        if IS_DESKTOP and not USE_MOCK_BACKEND:
+            from kivy.uix.screenmanager import NoTransition
+            self._apply_dashboard_logout_signal_at_boot()
+            _boot_tok = (get_device_auth_token() or '').strip()
+            if _boot_tok:
+                self.backend.set_device_auth_header(_boot_tok)
+            self._desktop_boot_has_token = bool(_boot_tok)
+            _prev_tr = self.screen_manager.transition
+            self.screen_manager.transition = NoTransition()
+            self.screen_manager.current = (
+                'home' if self._desktop_boot_has_token else 'sign_in'
+            )
+            self.screen_manager.transition = _prev_tr
+            logger.info(
+                "UI built – desktop entry screen: %s",
+                self.screen_manager.current,
+            )
+        else:
+            logger.info("UI built – starting on splash screen")
         return self.root_layout
 
     def _ensure_window_visible(self):
@@ -2069,27 +2093,12 @@ class MeetingBoxApp(App):
             tok = get_device_auth_token().strip()
             if tok:
                 self.backend.set_device_auth_header(tok)
-        # Desktop companion: skip the branded "Pepper AI" splash entirely. The
-        # Dashboard is the branded entry point, so the companion lands directly
-        # on the right screen. Done here — before the first frame is drawn — so
-        # the splash is never rendered; NoTransition avoids a visible fade from
-        # it. The Linux appliance keeps its splash (untouched).
+        # Desktop companion: entry screen was already chosen in build() so the
+        # splash never flashes. Here we only sync wake listening and verify a
+        # persisted token in the background. Linux appliance is untouched.
         if IS_DESKTOP and not USE_MOCK_BACKEND and self.screen_manager is not None:
-            from kivy.uix.screenmanager import NoTransition
-            self._apply_dashboard_logout_signal_at_boot()
-            has_token = bool((get_device_auth_token() or '').strip())
-            prev_transition = self.screen_manager.transition
-            self.screen_manager.transition = NoTransition()
-            self.screen_manager.current = 'home' if has_token else 'sign_in'
-            self.screen_manager.transition = prev_transition
-            # This boot shortcut sets screen_manager.current directly instead of
-            # going through goto_screen(), which is what normally re-evaluates the
-            # wake-listener pause state for the new screen. Sync it explicitly so
-            # the voice assistant actually starts listening once we land on home.
             self._sync_voice_assistant_state()
-            if has_token:
-                # Verify the token in the background (the splash used to gate on
-                # this); drop back to sign-in only if it's been revoked/expired.
+            if getattr(self, '_desktop_boot_has_token', False):
                 Clock.schedule_once(
                     lambda _dt: run_async(self._validate_desktop_token_async()),
                     0.5,
@@ -2447,25 +2456,17 @@ class MeetingBoxApp(App):
         if dc is None:
             return
         if not dc._engaged:
-            # Boot/onboarding runs in the normal window; the dock takes over the
-            # moment the app would otherwise land on the (now-unused) home screen
-            # — but ONLY if we started already paired (a clean reopen). On the
-            # first launch after Dashboard sign-in the device pairs mid-session,
-            # and engaging the transparent overlay then leaves the whole desktop
-            # black until a click; so we stay a normal window this session and
-            # the dock engages on the next (already-paired) launch instead.
-            if name == "home" and getattr(self, "_paired_at_startup", False):
-                # The desktop companion skips its own splash and lands on 'home'
-                # immediately at boot, so the window may not have painted a frame
-                # yet. The dock is a per-pixel-transparent layered window that DWM
-                # must composite; engaging before that first frame leaves the
-                # desktop black until a click. The splash used to provide this
-                # warm-up delay, so defer the very first engage to keep it.
+            # Desktop: as soon as we reach home (boot with a saved token OR
+            # right after Dashboard sign-in pairs the companion), switch to the
+            # floating dock bubble — never leave the full branded home window
+            # on screen. A short defer lets one frame paint so DWM can composite
+            # the transparent overlay cleanly.
+            if name == "home":
                 if getattr(self, "_dock_first_engage_done", False):
                     dc.engage()
                 else:
                     self._dock_first_engage_done = True
-                    Clock.schedule_once(lambda _dt: dc.engage(), 2.0)
+                    Clock.schedule_once(lambda _dt: dc.engage(), 0.35)
             return
         dc.notify_screen(name)
 

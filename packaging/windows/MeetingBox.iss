@@ -1,25 +1,26 @@
-; Inno Setup script for the MeetingBox Windows desktop port.
+; Inno Setup script for the Nexa Windows desktop port.
 ; Build with:
 ;   "%ProgramFiles(x86)%\Inno Setup 6\ISCC.exe" packaging\windows\MeetingBox.iss
-; Produces: packaging\windows\Output\MeetingBoxSetup.exe
+; Produces: packaging\windows\Output\NexaSetup.exe
 ;
-; Installs the PyInstaller one-dir payload (MeetingBox.exe + meetingbox-audio.exe
+; Installs the PyInstaller one-dir payload (Nexa.exe + nexa-audio.exe
 ; + _internal\) into Program Files, seeds a per-machine device-ui.env under
-; %PROGRAMDATA%\MeetingBox (only if absent, so upgrades keep the user's edits),
+; %PROGRAMDATA%\Nexa (only if absent, so upgrades keep the user's edits),
 ; and creates Start Menu / optional desktop shortcuts.
 
-#define MyAppName "MeetingBox"
+#define MyAppName "Nexa"
 #define MyAppVersion "1.0.0"
-#define MyAppPublisher "Lucratech Solutions"
-#define MyAppExeName "MeetingBox.exe"
-#define MyAppURL "https://meetingboxai.lucratechsol.com/"
+#define MyAppPublisher "Nexa"
+#define MyAppExeName "Nexa.exe"
+#define MyAppURL "https://win.meetingboxai.lucratechsol.com/"
 
-; --- Second app: the MeetingBox Dashboard (Tauri + WebView2) ---------------
+; --- Second app: the Nexa Dashboard (Tauri + WebView2) ---------------
 ; Built separately (see BUILD.md): `npm run tauri:build` in the frontend produces
 ; this single self-contained exe. Path is relative to this .iss file
 ; (mini-pc\packaging\windows -> repo root -> frontend\...).
-#define MyDashName "MeetingBox Dashboard"
-#define MyDashExeName "MeetingBoxDashboard.exe"
+#define MyDashName "Nexa Dashboard"
+#define MyDashExeName "NexaDashboard.exe"
+#define MyAudioExeName "nexa-audio.exe"
 #define DashSrcDir "..\..\..\frontend\src-tauri\target\release"
 ; Brand logo (Group.png -> multi-size .ico). Shipped into {app} and used as the
 ; explicit shortcut / uninstall icon so branding never depends on whatever icon
@@ -32,6 +33,7 @@
 #define VCRedist "vc_redist.x64.exe"
 
 [Setup]
+; Keep AppId stable so Windows treats this as an upgrade of the same product.
 AppId={{8B6E2C44-2E2C-49A2-9C9F-7F2E1B3A6D11}
 AppName={#MyAppName}
 AppVersion={#MyAppVersion}
@@ -41,22 +43,25 @@ DefaultDirName={autopf}\{#MyAppName}
 DefaultGroupName={#MyAppName}
 DisableProgramGroupPage=yes
 OutputDir=Output
-OutputBaseFilename=MeetingBoxSetup
+OutputBaseFilename=NexaSetup
 SetupIconFile=meetingbox.ico
 ; Programs & Features / uninstall icon: use the bundled brand .ico so the entry
-; always shows the MeetingBox logo, independent of the exe's embedded icon.
-UninstallDisplayIcon={app}\MeetingBox.ico
+; always shows the Nexa logo, independent of the exe's embedded icon.
+UninstallDisplayIcon={app}\Nexa.ico
 Compression=lzma2
 SolidCompression=yes
 WizardStyle=modern
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 PrivilegesRequired=admin
-; Both apps auto-start at login, so they're running during an upgrade. Close
-; them automatically (Restart Manager) instead of showing the "files in use"
-; prompt, and don't let Setup relaunch them (the Finish page / auto-start do).
-CloseApplications=force
+; Same AppId = in-place upgrade of an existing Nexa / MeetingBox install.
+; Do NOT use CloseApplications=force: that still shows Restart Manager's
+; "Preparing to Install / close these applications" page (with Nexa Dashboard
+; listed). Instead we silently taskkill our processes in PrepareToInstall
+; before any files are copied — the normal silent-upgrade pattern.
+CloseApplications=no
 RestartApplications=no
+UsePreviousAppDir=yes
 ; Show the EULA and require acceptance before install proceeds.
 LicenseFile=EULA.rtf
 ; Sign the installer AND its uninstaller with the "meetingbox" sign tool, but
@@ -75,20 +80,21 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 [Tasks]
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"
 ; Checked by default: register the app to start at login (opt-out).
-Name: "startupicon"; Description: "Automatically start MeetingBox when I sign in to Windows"; GroupDescription: "Startup:"
+Name: "startupicon"; Description: "Automatically start Nexa when I sign in to Windows"; GroupDescription: "Startup:"
 
 [Registry]
 ; Login auto-start (per-machine; installer runs as admin). Only the Dashboard
 ; is registered: it is the primary app and spawns the companion itself.
 ; --minimized keeps it in the notification-area tray. Removed on uninstall.
-; Stale value from older installs ("MeetingBox" -> companion) is deleted.
+; Stale values from older MeetingBox installs are deleted.
 Root: HKLM; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: none; ValueName: "MeetingBox"; Flags: deletevalue
-Root: HKLM; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: string; ValueName: "MeetingBoxDashboard"; ValueData: """{app}\Dashboard\{#MyDashExeName}"" --minimized"; Flags: uninsdeletevalue; Tasks: startupicon
+Root: HKLM; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: none; ValueName: "MeetingBoxDashboard"; Flags: deletevalue
+Root: HKLM; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: string; ValueName: "NexaDashboard"; ValueData: """{app}\Dashboard\{#MyDashExeName}"" --minimized"; Flags: uninsdeletevalue; Tasks: startupicon
 
 [Files]
-; The entire PyInstaller one-dir output (the MeetingBox companion app).
-Source: "dist\MeetingBox\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
-; The MeetingBox Dashboard desktop app (single Tauri exe) into its own subfolder.
+; The entire PyInstaller one-dir output (the Nexa companion app).
+Source: "dist\Nexa\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+; The Nexa Dashboard desktop app (single Tauri exe) into its own subfolder.
 Source: "{#DashSrcDir}\{#MyDashExeName}"; DestDir: "{app}\Dashboard"; Flags: ignoreversion
 ; Edge WebView2 Evergreen bootstrapper — staged to {tmp}, run only if the runtime
 ; is missing (see [Run] + WebView2Needed), then deleted.
@@ -98,21 +104,21 @@ Source: "{#VCRedist}"; DestDir: "{tmp}"; Flags: deleteafterinstall skipifsourced
 ; Open-source third-party license notices (OSS compliance).
 Source: "THIRD-PARTY-NOTICES.txt"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
 ; Per-machine config seed (only copied if it does not already exist).
-Source: "device-ui.env"; DestDir: "{commonappdata}\MeetingBox"; Flags: onlyifdoesntexist uninsneveruninstall
+Source: "device-ui.env"; DestDir: "{commonappdata}\Nexa"; Flags: onlyifdoesntexist uninsneveruninstall
 ; Brand logo used as the explicit shortcut / uninstall icon.
-Source: "{#BrandIcon}"; DestDir: "{app}"; DestName: "MeetingBox.ico"; Flags: ignoreversion skipifsourcedoesntexist
+Source: "{#BrandIcon}"; DestDir: "{app}"; DestName: "Nexa.ico"; Flags: ignoreversion skipifsourcedoesntexist
 
 [Dirs]
-Name: "{commonappdata}\MeetingBox"; Permissions: users-modify
+Name: "{commonappdata}\Nexa"; Permissions: users-modify
 
 [Icons]
 ; Single entry point: the Dashboard is the primary app (it launches the
-; companion itself), so there is exactly ONE shortcut named "MeetingBox".
-Name: "{group}\{#MyAppName}"; Filename: "{app}\Dashboard\{#MyDashExeName}"; WorkingDir: "{app}\Dashboard"; IconFilename: "{app}\MeetingBox.ico"
-Name: "{group}\Edit MeetingBox configuration"; Filename: "notepad.exe"; Parameters: """{commonappdata}\MeetingBox\device-ui.env"""
+; companion itself), so there is exactly ONE shortcut named "Nexa".
+Name: "{group}\{#MyAppName}"; Filename: "{app}\Dashboard\{#MyDashExeName}"; WorkingDir: "{app}\Dashboard"; IconFilename: "{app}\Nexa.ico"
+Name: "{group}\Edit Nexa configuration"; Filename: "notepad.exe"; Parameters: """{commonappdata}\Nexa\device-ui.env"""
 Name: "{group}\Third-party notices"; Filename: "{app}\THIRD-PARTY-NOTICES.txt"
 Name: "{group}\{cm:UninstallProgram,{#MyAppName}}"; Filename: "{uninstallexe}"
-Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\Dashboard\{#MyDashExeName}"; WorkingDir: "{app}\Dashboard"; IconFilename: "{app}\MeetingBox.ico"; Tasks: desktopicon
+Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\Dashboard\{#MyDashExeName}"; WorkingDir: "{app}\Dashboard"; IconFilename: "{app}\Nexa.ico"; Tasks: desktopicon
 
 [Run]
 ; Provision the Edge WebView2 runtime (needed by the dashboard) only if absent.
@@ -127,6 +133,28 @@ Type: filesandordirs; Name: "{app}\_internal"
 Type: filesandordirs; Name: "{app}\Dashboard"
 
 [Code]
+// Stop our apps so upgrades/uninstalls never hit "files in use".
+// Dashboard + companion lock exes under the install dir; Restart Manager's
+// CloseApplications dialog is what the user saw. Kill by image name instead.
+procedure KillNexaProcesses;
+var
+  ResultCode: Integer;
+begin
+  Exec(ExpandConstant('{sys}\taskkill.exe'),
+    '/F /T /IM "{#MyAppExeName}" /IM "{#MyAudioExeName}" /IM "{#MyDashExeName}" /IM "MeetingBox.exe" /IM "meetingbox-audio.exe" /IM "MeetingBoxDashboard.exe"',
+    '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  // Give Windows a moment to release file handles before Setup copies over them.
+  Sleep(800);
+end;
+
+function PrepareToInstall(var NeedsRestart: Boolean): String;
+begin
+  // After wizard, before [Files] — clear locks for in-place upgrade silently.
+  NeedsRestart := False;
+  KillNexaProcesses;
+  Result := '';
+end;
+
 { --- Edge WebView2 runtime detection (Evergreen client GUID) --- }
 function WebView2Installed(): Boolean;
 var
@@ -161,24 +189,9 @@ begin
   Result := (not VCRedistInstalled()) and FileExists(ExpandConstant('{tmp}\{#VCRedist}'));
 end;
 
-{ --- Clean uninstall: stop the running apps first ---------------------------
-  Both apps auto-start and run in the background (the dashboard sits in the
-  tray), so at uninstall time they're almost always running. CloseApplications
-  only applies during install, so without this the processes keep running in
-  Task Manager after uninstall and their locked files are left behind. Kill the
-  companion (and its audio child, via /T) and the dashboard before files are
-  removed. taskkill returns non-zero when a process isn't running, which is
-  fine and ignored. }
+// Clean uninstall: stop running apps first (CloseApplications is install-only).
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
-var
-  ResultCode: Integer;
 begin
   if CurUninstallStep = usUninstall then
-  begin
-    Exec(ExpandConstant('{sys}\taskkill.exe'),
-      '/F /T /IM "{#MyAppExeName}" /IM "meetingbox-audio.exe" /IM "{#MyDashExeName}"',
-      '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
-    { Give Windows a moment to release the file handles before deletion. }
-    Sleep(700);
-  end;
+    KillNexaProcesses;
 end;
