@@ -2488,6 +2488,59 @@ class MeetingBoxApp(App):
         except Exception:
             pass
 
+    def complete_first_pairing(self) -> None:
+        """Land on the paired UI right after the Dashboard sign-in handoff.
+
+        On the Windows dock companion the whole UI (content scale + floating
+        dock) is fixed at process start from whether a device token already
+        exists. Pairing just happened mid-session, so THIS process is still laid
+        out for the unpaired full window; navigating to home in place shows the
+        old, wrongly-scaled layout until the next launch. So relaunch ONCE — the
+        fresh process comes up already paired and renders the dock UI correctly,
+        exactly as a manual quit + reopen does. Everything else (appliance, mock,
+        or a session that already started paired) just goes home in place.
+        """
+        already_relaunched = (
+            (os.environ.get("MEETINGBOX_RELAUNCHED") or "").strip() == "1"
+        )
+        if (IS_DESKTOP and self._dock_enabled()
+                and not getattr(self, "_paired_at_startup", False)
+                and not already_relaunched
+                and self._relaunch_fresh_process()):
+            return  # this instance is stopping; the fresh one takes over
+        self.goto_screen('home', 'none')
+
+    def _relaunch_fresh_process(self) -> bool:
+        """Start a fresh copy of this app, then stop this one. Returns success.
+
+        Releases the single-instance mutex first so the new process can take it,
+        and tags the child so it can never trigger another relaunch (no loop).
+        """
+        try:
+            from single_instance import release as _release_instance
+            _release_instance(getattr(self, "_single_instance_handle", None))
+            self._single_instance_handle = None
+        except Exception:
+            logger.debug("relaunch: releasing single-instance lock failed",
+                         exc_info=True)
+        child_env = dict(os.environ)
+        child_env["MEETINGBOX_RELAUNCHED"] = "1"
+        try:
+            # DETACHED_PROCESS (0x8) so the new UI survives this process exiting.
+            creationflags = 0x00000008 if sys.platform.startswith("win") else 0
+            subprocess.Popen(
+                [sys.executable],
+                env=child_env,
+                close_fds=True,
+                creationflags=creationflags,
+            )
+        except Exception:
+            logger.exception("relaunch after pairing failed; staying in place")
+            return False
+        # Give the child a moment to spawn, then stop this instance.
+        Clock.schedule_once(lambda *_: self.stop(), 0.3)
+        return True
+
     async def _validate_desktop_token_async(self) -> None:
         """Desktop: re-validate the saved device token after boot.
 

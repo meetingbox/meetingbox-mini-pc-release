@@ -215,7 +215,14 @@ class SignInScreen(BaseScreen):
         # NoTransition: avoid a visible slide of the full home window before the
         # floating dock engages (desktop companion).
         self._returned_to_app("You're connected.")
-        self.goto("home", transition="none")
+        # Desktop dock companion pairs mid-session; it needs a fresh (already
+        # paired) process to render the dock UI at the right scale. The app
+        # decides whether to relaunch or just go home in place.
+        complete = getattr(self.app, "complete_first_pairing", None)
+        if callable(complete):
+            complete()
+        else:
+            self.goto("home", transition="none")
 
     def _returned_to_app(self, status: str = ""):
         try:
