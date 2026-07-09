@@ -57,7 +57,16 @@ _HIGHLIGHT = (0.929, 0.902, 0.976, 1.0)      # soft lavender behind active icon
 # Rendered dock scale (Figma capsule is tiny within its 1260px artboard; scale it
 # up to a comfortable, menu-bar-like size on a full desktop). Reduced 25% from the
 # original 1.55 per design feedback — the dock should feel light, not chunky.
-_SCALE = 1.1625
+#
+# _BASE_SCALE is the design multiplier tuned against the 1260x800 reference
+# panel. The rendered _SCALE additionally tracks the actual panel scale
+# (ui_scale.figma_scale()) so the dock stays a constant PHYSICAL size that
+# matches the 7" panel on every monitor — exactly like the panel content. Was a
+# fixed pixel size before, which looked correct on the design laptop but grew
+# oversized on lower-density monitors. apply_display_scale() recomputes these
+# from the live panel scale just before the dock is built.
+_BASE_SCALE = 1.1625
+_SCALE = _BASE_SCALE
 PILL_W = _FIG_PILL_W * _SCALE
 PILL_H = _FIG_PILL_H * _SCALE
 LOGO_D = PILL_H * 1.06                        # idle badge diameter
@@ -66,6 +75,35 @@ _GAP = 12.0                                   # gap between dock strip and 7" pa
 _RADIUS = 76.278 * _SCALE
 _BORDER_W = 2.0 * _SCALE
 _HL_D = 54.0 * _SCALE                          # highlight circle diameter
+
+
+def apply_display_scale() -> None:
+    """Recompute dock geometry for this monitor's panel scale.
+
+    Called once before the dock widget is built. Multiplies the design sizes by
+    ``ui_scale.figma_scale()`` (the same factor the 7" panel and its content use)
+    so the dock is a constant physical size across displays and PPIs instead of a
+    fixed pixel size. Every dock geometry reference reads these module globals
+    (live or at widget construction), so recomputing them here is sufficient.
+    """
+    global _SCALE, PILL_W, PILL_H, LOGO_D, _TOP_MARGIN, _GAP, _RADIUS, _BORDER_W, _HL_D
+    try:
+        import ui_scale
+        k = ui_scale.figma_scale()
+    except Exception:
+        logger.debug("apply_display_scale: ui_scale unavailable", exc_info=True)
+        k = 1.0
+    if not (k and k > 0):
+        k = 1.0
+    _SCALE = _BASE_SCALE * k
+    PILL_W = _FIG_PILL_W * _SCALE
+    PILL_H = _FIG_PILL_H * _SCALE
+    LOGO_D = PILL_H * 1.06
+    _TOP_MARGIN = 16.0 * k
+    _GAP = 12.0 * k
+    _RADIUS = 76.278 * _SCALE
+    _BORDER_W = 2.0 * _SCALE
+    _HL_D = 54.0 * _SCALE
 
 # Physical size of the summoned screen ("7 inch": 15.01 cm x 9.53 cm). Rendered at
 # the monitor's true pixel density so it is that real-world size on any display.
@@ -393,6 +431,9 @@ class DockController:
 
     def __init__(self, app):
         self.app = app
+        # Size the dock to this monitor's panel scale (constant physical size)
+        # BEFORE constructing the widget, which reads the geometry constants.
+        apply_display_scale()
         self.dock = PepperDock(on_tap=self._on_icon)
         self.dock.opacity = 0.0
         self.state = "hidden"           # hidden | collapsed | expanded | screen_open
