@@ -95,6 +95,7 @@ _C_LABEL    = (0.427, 0.282, 0.800, 1.0)   # #6D48CC  To/Cc/Subject labels
 _C_SEP      = (0.620, 0.620, 0.620, 1.0)   # #9E9E9E  separator lines
 _C_CHIP_BG  = (0.925, 0.925, 0.925, 1.0)   # #ECECEC  chip background
 _C_CHIP_TXT = (0.208, 0.224, 0.231, 1.0)   # #35393B  chip text
+_C_VALUE_TXT = (0.208, 0.224, 0.231, 1.0)  # #35393B  inline field value text
 _C_BODY_TXT = (0.184, 0.184, 0.184, 1.0)   # #2F2F2F  body text
 _C_PH_TXT   = (0.620, 0.620, 0.620, 0.70)  # placeholder text
 
@@ -205,44 +206,42 @@ class _FieldRow(BoxLayout):
         )
         self.add_widget(self._lbl)
 
-        # Chip container scrolls horizontally if many chips
-        self._chip_box = BoxLayout(
-            orientation="horizontal",
-            size_hint=(None, 1),
-            spacing=_ff(12),
-            padding=[0, _ff(12), 0, _ff(12)],
-        )
-        self._chip_box.bind(minimum_width=self._chip_box.setter("width"))
-
-        self._scroll = ScrollView(
-            do_scroll_x=True,
-            do_scroll_y=False,
-            bar_width=0,
-            size_hint=(1, 1),
-        )
-        self._scroll.add_widget(self._chip_box)
-        self.add_widget(self._scroll)
-
-        # Placeholder shown when no chips
-        self._placeholder = Label(
+        # Value: a single inline text run (Figma has no chips — the label is
+        # followed by plain text on the same line). Scrolls horizontally if it
+        # overflows so long recipient lists / subjects stay readable.
+        self._value = Label(
             text="…",
             font_name=_FONT_MD,
             font_size=_ff(32),
             color=_C_PH_TXT,
             halign="left",
             valign="middle",
+            size_hint=(None, 1),
+        )
+        # texture_size → width keeps the run as wide as its content (single line);
+        # (None, height) text_size disables wrapping while allowing valign centring.
+        self._value.bind(
+            texture_size=lambda l, ts: setattr(l, "width", ts[0]),
+            height=lambda l, h: setattr(l, "text_size", (None, h)),
+        )
+        self._scroll = ScrollView(
+            do_scroll_x=True,
+            do_scroll_y=False,
+            bar_width=0,
             size_hint=(1, 1),
         )
-        self._placeholder.bind(size=self._placeholder.setter("text_size"))
-        self._chip_box.add_widget(self._placeholder)
+        self._scroll.add_widget(self._value)
+        self.add_widget(self._scroll)
 
     def set_chips(self, texts: list[str]) -> None:
-        self._chip_box.clear_widgets()
-        if not texts:
-            self._chip_box.add_widget(self._placeholder)
-            return
-        for t in texts:
-            self._chip_box.add_widget(_Chip(t))
+        """Render the field value as a single inline text run (Figma style)."""
+        vals = [t for t in (texts or []) if t]
+        if not vals:
+            self._value.text  = "…"
+            self._value.color = _C_PH_TXT
+        else:
+            self._value.text  = ", ".join(vals)
+            self._value.color = _C_VALUE_TXT
 
 
 # ──────────────────────────────────────────────────────────────────────────────

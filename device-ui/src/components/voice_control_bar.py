@@ -407,25 +407,19 @@ class VoiceControlBar(FloatLayout):
         """
         W = self.width if self.width > 1 else DISPLAY_WIDTH
         H = self.height if self.height > 1 else DISPLAY_HEIGHT
-        ox = oy = 0.0
-        # Dock companion: anchor the pills INSIDE the floating 7" panel instead
-        # of the full desktop window. Otherwise they pin to the screen's top edge
-        # (outside the panel) and overlap the floating dock. The panel shares the
-        # same 1260x800 design canvas, so the Figma math below places them
-        # identically, just scaled to the panel.
+        # Dock companion: this overlay is re-parented INTO the floating 7" panel
+        # (see DockController._attach_overlays_to_panel), so self.size IS the
+        # panel and the Figma fractions below land inside it on every monitor —
+        # no per-device anchor math. Until that re-parent has happened (panel not
+        # built yet), NEVER position against the bare desktop: hide and wait for
+        # the dock to reanchor us once the panel is open.
         dc = getattr(self._app, "dock_controller", None)
         if dc is not None:
             try:
-                rect = dc.panel_rect_for_overlay()
+                host = dc.overlay_host()
             except Exception:
-                rect = None
-            if rect:
-                ox, oy, W, H = rect
-            else:
-                # Dock mode but the floating panel is closed: NEVER fall back to
-                # full-desktop coords (that pins the pills outside the panel,
-                # between the dock and the panel). Hide instead; reanchor() will
-                # re-place them when the panel reopens.
+                host = None
+            if host is None or self.parent is not host:
                 if self._visible:
                     self._hide()
                 return
@@ -444,11 +438,11 @@ class VoiceControlBar(FloatLayout):
         self._voice_pill._lbl.font_size = max(6, round(24.24 * sa))
         self._exit_pill._lbl.font_size = max(6, round(25 * sa))
 
-        # Right edge of the home-screen voice pill (Figma), as a fraction of W,
-        # offset by the frame origin (0,0 for full window; panel corner in dock).
-        right_px = ox + (_PILL_X_FIG + _PILL_W_FIG) / _FW * W
+        # Right edge of the home-screen voice pill (Figma), as a fraction of the
+        # surface width (the panel in dock mode, the window on the appliance).
+        right_px = (_PILL_X_FIG + _PILL_W_FIG) / _FW * W
         # Top edge → Kivy y-from-bottom.
-        top_y_px = oy + H - (_PILL_Y_FIG / _FH * H)
+        top_y_px = H - (_PILL_Y_FIG / _FH * H)
         self._row.x = right_px - self._row.width
         self._row.y = top_y_px - self._row.height
 

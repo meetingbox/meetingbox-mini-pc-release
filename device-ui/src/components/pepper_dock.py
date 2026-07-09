@@ -633,10 +633,50 @@ class DockController:
                 self._clip.set_radius(radius)
 
         self._holder.scale = self._surface_scale
+        # Pull window-level overlays (recipient picker, voice pills, transcription)
+        # INSIDE the panel so they can never render on the bare desktop.
+        self._attach_overlays_to_panel()
         self._reposition_surface()
         self._holder.opacity = 0.0
         self._holder.disabled = True
         Window.bind(size=lambda *_: self._reposition_surface())
+
+    def overlay_host(self):
+        """Widget that window-level overlays (dialogs, pickers, pills) should be
+        parented to so they stay INSIDE the floating 7" panel.
+
+        Returns the rounded-clip panel container once the dock has built its
+        surface, else ``None`` (callers fall back to ``root_layout`` — the
+        appliance/full-screen flow, where the window already IS the panel)."""
+        return self._clip
+
+    def _attach_overlays_to_panel(self) -> None:
+        """Re-parent the app's persistent window-level overlays into the panel
+        clip, sized to fill it. They then move/scale/clip with the panel and can
+        never appear outside it (between the panel and the floating dock) on any
+        monitor — the previous per-device anchor math is no longer relied upon.
+
+        On the Linux appliance there is no dock, so this never runs and the
+        overlays stay on the full-screen root (which already IS the panel)."""
+        clip = self._clip
+        if clip is None:
+            return
+        app = self.app
+        # Order matters: later children draw on top. Pills below the modal
+        # recipient picker; the picker (modal) on top.
+        for attr in ("_transcript_overlay", "_voice_control_bar", "_recipient_overlay"):
+            w = getattr(app, attr, None)
+            if w is None or w.parent is clip:
+                continue
+            try:
+                if w.parent is not None:
+                    w.parent.remove_widget(w)
+                w.size_hint = (1, 1)
+                w.pos_hint = {"x": 0, "y": 0}
+                w.pos = (0, 0)
+                clip.add_widget(w)
+            except Exception:
+                logger.exception("PepperDock: could not attach %s to panel", attr)
 
     def _panel_px(self) -> tuple[float, float]:
         # Full-scale footprint (the ScatterLayout scales about its centre during
