@@ -451,12 +451,22 @@ class VoiceTaskCreationScreen(BaseScreen):
         description: str | None = None,
         due_date: str | None = None,
     ) -> None:
-        """Populate the card with pre-filled voice data."""
+        """Populate the card with pre-filled voice data.
+
+        The title may arrive empty on the first (progressive) call — show a muted
+        placeholder so the card doesn't look broken while the agent is still
+        collecting the task details.
+        """
         if self._task_lbl is not None:
             body = (title or "").strip()
             if description and description.strip():
                 body = f"{body}\n{description.strip()}" if body else description.strip()
-            self._task_lbl.text = body
+            if body:
+                self._task_lbl.text = body
+                self._task_lbl.color = _TEXT_DARK
+            else:
+                self._task_lbl.text = "Listening…"
+                self._task_lbl.color = _TEXT_MUTED
 
         if self._date_lbl is not None:
             if due_date and due_date.strip():

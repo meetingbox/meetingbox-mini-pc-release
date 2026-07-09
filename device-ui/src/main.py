@@ -4121,12 +4121,9 @@ class MeetingBoxApp(App):
             "tasks": ("tasks", "slide_left"),
             "morning_brief": ("morning_brief", "slide_left"),
         }
-        # Settings and mic_test screens are not registered on desktop, so never
-        # offer them as realtime navigation targets there (unknown keys return
-        # safely below). The appliance keeps them.
-        if not IS_DESKTOP:
-            routes["settings"] = ("settings", "slide_left")
-            routes["mic_test"] = ("mic_test", "slide_left")
+        # The agent must NEVER navigate to Settings or the mic test on any build
+        # (appliance or desktop) — they are deliberately omitted from the route
+        # table so unknown keys fall through and return safely below.
         pair = routes.get(s)
         if not pair:
             return
@@ -4169,10 +4166,22 @@ class MeetingBoxApp(App):
             except Exception:
                 logger.exception("Failed to set calendar target_date")
 
-        if name == "tasks" and target_tab:
+        if name == "tasks":
             try:
                 tsk = self.screen_manager.get_screen("tasks")
-                tsk.set_active_tab(target_tab)
+                if self.screen_manager.current == "tasks":
+                    # Already on the Tasks screen — assigning the same screen to
+                    # screen_manager.current does NOT re-fire on_enter, so a voice
+                    # edit (rename / complete / reschedule) would leave the list
+                    # showing stale rows. Apply any requested tab, then re-run
+                    # on_enter directly to force an immediate re-fetch so the
+                    # change appears at once (no need to switch section/day).
+                    if target_tab:
+                        tsk.set_active_tab(target_tab)
+                    tsk.on_enter()
+                    return
+                if target_tab:
+                    tsk.set_active_tab(target_tab)
             except Exception:
                 logger.exception("Failed to set tasks target_tab")
 
@@ -4487,14 +4496,17 @@ class MeetingBoxApp(App):
             logger.exception("Failed to render email view directive")
 
     def _on_task_creation_directive(self, task: dict) -> None:
-        """Navigate to the voice task creation screen with pre-filled data."""
+        """Navigate to the voice task creation screen with pre-filled data.
+
+        Opens progressively (like the calendar event card): the title MAY be
+        empty on the first call so the screen appears the instant the flow
+        begins, then fills in as the agent collects the title/date live.
+        """
         if not isinstance(task, dict):
             return
         title       = str(task.get("title")       or "").strip()
         description = str(task.get("description") or "").strip() or None
         due_date    = str(task.get("due_date")    or "").strip() or None
-        if not title:
-            return
         self._pending_task_data = {"title": title, "description": description, "due_date": due_date}
         try:
             sm = getattr(self, "screen_manager", None)

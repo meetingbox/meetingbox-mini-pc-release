@@ -853,6 +853,27 @@ class DockController:
         # closed drives the bar's dock-without-panel guard to hide it.
         self._reanchor_voice_bar()
 
+    def _end_voice_session_if_active(self) -> None:
+        """End a live Realtime voice session, if one is running.
+
+        Called on a genuine desktop click-away so the mic and cloud model stop
+        immediately and the *next* logo tap starts a brand-new session (rather
+        than re-surfacing the still-running one)."""
+        app = self.app
+        if app is None:
+            return
+        has_session = (
+            getattr(app, "_realtime_voice_session", None) is not None
+            or getattr(app, "_realtime_session_pending", False)
+        )
+        if not has_session:
+            return
+        try:
+            app._end_realtime_voice_session()
+        except Exception:
+            logger.debug("PepperDock: end voice session on click-away failed",
+                         exc_info=True)
+
     # ── active highlight sync (navigation + wake word) ────────────────────────
     def notify_screen(self, screen_name: str) -> None:
         if not self._engaged:
@@ -919,6 +940,13 @@ class DockController:
             in_surface = self._point_in(kx, ky, self._surface_rect())
             interactive = in_pill or in_surface
             if btn and not interactive:
+                # Tapping the bare desktop (outside the pill and the panel) is an
+                # explicit "I'm done" gesture: end any live voice/audio session
+                # immediately so the mic + model stop, then collapse to the logo.
+                # All in-app UI (recipient picker, voice pills, transcript, every
+                # screen) lives INSIDE the panel surface, so this only fires for a
+                # genuine desktop click — never for a mid-task in-panel tap.
+                self._end_voice_session_if_active()
                 self.collapse()
 
         self._set_click_through(not interactive)
