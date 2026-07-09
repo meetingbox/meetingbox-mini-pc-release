@@ -177,17 +177,26 @@ class _Chip(BoxLayout):
 class _FieldRow(BoxLayout):
     """Horizontal row: label + horizontally scrollable chip area."""
 
-    _ROW_H = _ff(82)
-
     def __init__(self, label_text: str, label_width: float | None = None, **kw):
+        # Compute the row height HERE (widget-creation time), NOT as a class-level
+        # constant. Class attributes evaluate at import time — before the dock
+        # companion has measured the physical 7" panel and called
+        # ui_scale.set_effective_display_size() — so a frozen _ff(82) is scaled
+        # against the stale config-display size while the fonts/padding below
+        # (built in __init__, after the panel is known) use the live panel scale.
+        # On the design laptop the two scales coincide, but on other monitors they
+        # diverge and the rows get stretched apart. Computing per-instance locks
+        # the row height to the same scale as its text on every display.
+        row_h = _ff(82)
         super().__init__(
             orientation="horizontal",
             size_hint=(1, None),
-            height=self._ROW_H,
+            height=row_h,
             padding=[_ff(25), 0],
             spacing=_ff(16),
             **kw,
         )
+        self.row_h = row_h
         self._lbl = Label(
             text=label_text,
             font_name=_FONT_SB,
@@ -632,7 +641,7 @@ class EmailDraftScreen(BaseScreen):
         cc = self._fields["cc"]
         if self._row_cc and self._sep_cc:
             if cc:
-                self._row_cc.height  = _FieldRow._ROW_H
+                self._row_cc.height  = self._row_cc.row_h
                 self._row_cc.opacity = 1
                 self._sep_cc.height  = 1
                 self._sep_cc.opacity = 1
