@@ -1,4 +1,4 @@
-# PyInstaller version resource for meetingbox-audio.exe (the audio-capture child).
+# PyInstaller version resource for nexa-audio.exe (the audio-capture child).
 VSVersionInfo(
   ffi=FixedFileInfo(
     filevers=(1, 0, 0, 0),
@@ -16,13 +16,13 @@ VSVersionInfo(
         StringTable(
           '040904B0',
           [
-            StringStruct('CompanyName', 'Lucratech Solutions'),
-            StringStruct('FileDescription', 'MeetingBox Audio Capture'),
+            StringStruct('CompanyName', 'Nexa'),
+            StringStruct('FileDescription', 'Nexa Audio Capture'),
             StringStruct('FileVersion', '1.0.0.0'),
-            StringStruct('InternalName', 'meetingbox-audio'),
-            StringStruct('LegalCopyright', 'Copyright (C) Lucratech Solutions'),
-            StringStruct('OriginalFilename', 'meetingbox-audio.exe'),
-            StringStruct('ProductName', 'MeetingBox'),
+            StringStruct('InternalName', 'nexa-audio'),
+            StringStruct('LegalCopyright', 'Copyright (C) Nexa'),
+            StringStruct('OriginalFilename', 'nexa-audio.exe'),
+            StringStruct('ProductName', 'Nexa'),
             StringStruct('ProductVersion', '1.0.0.0')
           ]
         )

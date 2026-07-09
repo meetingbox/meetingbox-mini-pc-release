@@ -1,4 +1,4 @@
-# PyInstaller version resource for MeetingBox.exe (the Kivy UI).
+# PyInstaller version resource for Nexa.exe (the Kivy UI).
 # Keep the version in sync with MeetingBox.iss (MyAppVersion) and tauri.conf.json.
 VSVersionInfo(
   ffi=FixedFileInfo(
@@ -17,13 +17,13 @@ VSVersionInfo(
         StringTable(
           '040904B0',
           [
-            StringStruct('CompanyName', 'Lucratech Solutions'),
-            StringStruct('FileDescription', 'MeetingBox'),
+            StringStruct('CompanyName', 'Nexa'),
+            StringStruct('FileDescription', 'Nexa'),
             StringStruct('FileVersion', '1.0.0.0'),
-            StringStruct('InternalName', 'MeetingBox'),
-            StringStruct('LegalCopyright', 'Copyright (C) Lucratech Solutions'),
-            StringStruct('OriginalFilename', 'MeetingBox.exe'),
-            StringStruct('ProductName', 'MeetingBox'),
+            StringStruct('InternalName', 'Nexa'),
+            StringStruct('LegalCopyright', 'Copyright (C) Nexa'),
+            StringStruct('OriginalFilename', 'Nexa.exe'),
+            StringStruct('ProductName', 'Nexa'),
             StringStruct('ProductVersion', '1.0.0.0')
           ]
         )

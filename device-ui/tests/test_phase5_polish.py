@@ -58,4 +58,4 @@ def test_spec_references_icon_and_both_entrypoints():
     assert "main.py" in spec
     assert "audio_capture.py" in spec
     assert "meetingbox.ico" in spec
-    assert "meetingbox-audio" in spec
+    assert "nexa-audio" in spec

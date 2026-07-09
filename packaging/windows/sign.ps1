@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-  Authenticode-signs the three MeetingBox executables with an EV (or OV)
+  Authenticode-signs the three Nexa executables with an EV (or OV)
   code-signing certificate using signtool (SHA-256 + RFC3161 timestamp).
 
 .DESCRIPTION
@@ -23,7 +23,7 @@
   RFC3161 timestamp server. Defaults to DigiCert.
 
 .PARAMETER Files
-  Explicit list of files to sign. Defaults to the three MeetingBox exes.
+  Explicit list of files to sign. Defaults to the three Nexa exes.
 
 .EXAMPLE
   # Auto-select the only code-signing cert on the token:
@@ -64,9 +64,9 @@ Write-Host "Using signtool: $signtool"
 
 if (-not $Files -or $Files.Count -eq 0) {
   $Files = @(
-    (Join-Path $here 'dist\MeetingBox\MeetingBox.exe'),
-    (Join-Path $here 'dist\MeetingBox\meetingbox-audio.exe'),
-    (Join-Path $here '..\..\..\frontend\src-tauri\target\release\MeetingBoxDashboard.exe')
+    (Join-Path $here 'dist\Nexa\Nexa.exe'),
+    (Join-Path $here 'dist\Nexa\nexa-audio.exe'),
+    (Join-Path $here '..\..\..\frontend\src-tauri\target\release\NexaDashboard.exe')
   )
 }
 

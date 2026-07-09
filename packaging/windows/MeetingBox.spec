@@ -3,10 +3,10 @@
 
 Builds TWO one-dir executables that share a single ``_internal`` payload:
 
-  * ``MeetingBox.exe``        – the Kivy UI (entry: device-ui/src/main.py)
-  * ``meetingbox-audio.exe``  – the audio capture child (entry: audio/audio_capture.py)
+  * ``Nexa.exe``        – the Kivy UI (entry: device-ui/src/main.py)
+  * ``nexa-audio.exe``  – the audio capture child (entry: audio/audio_capture.py)
 
-The UI's ``audio_supervisor`` launches ``meetingbox-audio.exe`` as a sibling
+The UI's ``audio_supervisor`` launches ``nexa-audio.exe`` as a sibling
 process (it cannot run ``audio_capture.py`` as a script once frozen, because
 ``sys.executable`` is the UI binary).
 
@@ -217,7 +217,7 @@ audio_a = Analysis(
     noarchive=False,
 )
 
-MERGE((ui_a, "MeetingBox", "MeetingBox"), (audio_a, "meetingbox-audio", "meetingbox-audio"))
+MERGE((ui_a, "Nexa", "Nexa"), (audio_a, "nexa-audio", "nexa-audio"))
 
 ui_pyz = PYZ(ui_a.pure, ui_a.zipped_data, cipher=block_cipher)
 audio_pyz = PYZ(audio_a.pure, audio_a.zipped_data, cipher=block_cipher)
@@ -231,18 +231,11 @@ version_arg = str(_version_file) if _version_file.is_file() else None
 _version_file_audio = REPO_ROOT / "packaging" / "windows" / "version_info_audio.txt"
 version_arg_audio = str(_version_file_audio) if _version_file_audio.is_file() else None
 
-# Native splash shown instantly by the bootloader while the Kivy UI loads, so
-# the user sees branded feedback immediately instead of a blank delay.
-_splash_img = REPO_ROOT / "packaging" / "windows" / "splash.png"
+# No native bootloader splash for the desktop companion. The Dashboard is the
+# branded entry point (it launches this companion), so a separate always-on-top
+# splash window here just flashes over the desktop before the Kivy UI / dock
+# appears. Leaving ``ui_splash`` as None means the bootloader shows nothing.
 ui_splash = None
-if _splash_img.is_file():
-    ui_splash = Splash(
-        str(_splash_img),
-        binaries=ui_a.binaries,
-        datas=ui_a.datas,
-        text_pos=None,
-        always_on_top=True,
-    )
 
 _ui_exe_extra = [ui_splash] if ui_splash is not None else []
 ui_exe = EXE(
@@ -251,7 +244,7 @@ ui_exe = EXE(
     *_ui_exe_extra,
     [],
     exclude_binaries=True,
-    name="MeetingBox",
+    name="Nexa",
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -267,7 +260,7 @@ audio_exe = EXE(
     audio_a.scripts,
     [],
     exclude_binaries=True,
-    name="meetingbox-audio",
+    name="nexa-audio",
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -293,5 +286,5 @@ coll = COLLECT(
     strip=False,
     upx=False,
     upx_exclude=[],
-    name="MeetingBox",
+    name="Nexa",
 )

@@ -40,16 +40,22 @@ def _truthy(value: Optional[str]) -> bool:
 
 
 def _resolve_frozen_audio_exe() -> Optional[Path]:
-    """In a PyInstaller build, return the sibling ``meetingbox-audio(.exe)``.
+    """In a PyInstaller build, return the sibling ``nexa-audio(.exe)``.
 
     When frozen, ``sys.executable`` is the UI binary (not a Python interpreter),
     so we cannot run ``audio_capture.py`` as a script. The installer ships a
     second one-file binary next to the UI that runs the audio capture loop.
+    Legacy ``meetingbox-audio`` names are still accepted during upgrades.
     """
     if not getattr(sys, "frozen", False):
         return None
     exe_dir = Path(sys.executable).resolve().parent
-    names = ["meetingbox-audio.exe", "meetingbox-audio"]
+    names = [
+        "nexa-audio.exe",
+        "nexa-audio",
+        "meetingbox-audio.exe",
+        "meetingbox-audio",
+    ]
     for n in names:
         cand = exe_dir / n
         if cand.is_file():

@@ -212,8 +212,10 @@ class SignInScreen(BaseScreen):
             self.app._setup_poll = None
         # Onboarding is handled by the Dashboard, so go straight to home once
         # paired instead of running the companion's capabilities/ready tour.
+        # NoTransition: avoid a visible slide of the full home window before the
+        # floating dock engages (desktop companion).
         self._returned_to_app("You're connected.")
-        self.goto("home", transition="slide_left")
+        self.goto("home", transition="none")
 
     def _returned_to_app(self, status: str = ""):
         try:

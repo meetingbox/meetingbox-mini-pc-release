@@ -43,9 +43,10 @@ def _candidate_paths() -> list[Path]:
         paths.append(here.parent.parent / _ENV_FILE_NAME)
         paths.append(here.parent.parent.parent / _ENV_FILE_NAME)
 
-    # Machine-wide config dir on Windows.
+    # Machine-wide config dir on Windows (Nexa first, legacy MeetingBox fallback).
     program_data = os.environ.get("PROGRAMDATA")
     if program_data:
+        paths.append(Path(program_data) / "Nexa" / _ENV_FILE_NAME)
         paths.append(Path(program_data) / "MeetingBox" / _ENV_FILE_NAME)
 
     # Last-resort: the copy bundled inside the PyInstaller payload (sys._MEIPASS).
