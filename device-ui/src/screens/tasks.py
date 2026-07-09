@@ -143,7 +143,8 @@ def _ph(fx: float, fy: float, fw: float, fh: float) -> dict:
 
 def _ff(fs: float) -> int:
     """Scale a Figma pixel value by the display scale factor → int px."""
-    scale = min(DISPLAY_WIDTH / FW, DISPLAY_HEIGHT / FH)
+    import ui_scale
+    scale = ui_scale.scale_for(FW, FH)
     return max(6, round(fs * scale))
 
 

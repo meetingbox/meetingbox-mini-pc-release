@@ -95,7 +95,8 @@ def _ph(fx: float, fy: float, fw: float, fh: float) -> dict:
 
 
 def _ff(fs: float) -> int:
-    scale = min(DISPLAY_WIDTH / FW, DISPLAY_HEIGHT / FH)
+    import ui_scale
+    scale = ui_scale.scale_for(FW, FH)
     return max(6, round(fs * scale))
 
 
@@ -108,7 +109,8 @@ def _rel(fx: float, fy: float, fw: float, fh: float, pw: float, ph: float) -> di
 
 
 def _scale() -> float:
-    return min(DISPLAY_WIDTH / FW, DISPLAY_HEIGHT / FH)
+    import ui_scale
+    return ui_scale.scale_for(FW, FH)
 
 
 def _lbl(text: str, font: str, size: int, color: tuple, *, bold: bool = False,

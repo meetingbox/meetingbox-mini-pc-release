@@ -1161,9 +1161,23 @@ class MeetingBoxApp(App):
         # tracks which summary the voice agent is currently grounded on.
         self._pending_summary_context: tuple[str, str] | None = None
         self._active_summary_meeting_id: str | None = None
-        # Number of consecutive auto-reconnects since the last user-triggered wake.
-        # Capped at 1 so a runaway reconnect loop doesn't block the wake listener.
+        # Number of consecutive auto-reconnects since the last successful user
+        # turn. Bounded by _realtime_max_resume_attempts so a genuinely dead
+        # network falls back to wake-word standby instead of looping forever.
         self._realtime_reconnect_count = 0
+        # Seamless-resume state: a rolling transcript of the current conversation
+        # so that if the realtime socket drops mid-conversation we can reconnect
+        # and re-seed the model with context (no wake word required). Cleared when
+        # the conversation genuinely ends (fresh wake / farewell / idle / resume
+        # budget exhausted) — NOT on the teardown that precedes a resume.
+        self._voice_history: list[dict] = []
+        self._last_user_turn_monotonic = 0.0
+        self._realtime_max_resume_attempts = int(
+            os.environ.get("REALTIME_MAX_RESUME_ATTEMPTS", "5") or "5"
+        )
+        self._realtime_resume_window_s = float(
+            os.environ.get("REALTIME_RESUME_WINDOW_S", "180") or "180"
+        )
         # Which email field the current recipient picker is resolving ("to"/"cc"/"bcc").
         self._picker_current_field = "to"
         # Queue recipient-pickers so ambiguous contacts resolve strictly one-at-a-time.
@@ -1470,6 +1484,32 @@ class MeetingBoxApp(App):
             transition=FadeTransition(duration=TRANSITION_DURATION['fade']))
         self.screen_manager.size_hint = (1, 1)
         self.root_layout.add_widget(self.screen_manager)
+
+        # Unify content scaling with the surface the screens will actually render
+        # into. In the Windows floating-dock companion the 7" panel is drawn at a
+        # physical centimetre size, so its pixel dimensions depend on the monitor's
+        # true density — text/icons must scale to THAT, not to the fixed
+        # DISPLAY_WIDTH/HEIGHT, or they look oversized on lower-density monitors.
+        # Must run before the screens below are built (Kivy fixes font sizes at
+        # widget-creation time). Only when the dock will engage this session (i.e.
+        # already paired); otherwise the app is a normal DISPLAY_WIDTH window and
+        # the default scale is correct.
+        try:
+            paired_at_startup = bool((get_device_auth_token() or '').strip())
+        except Exception:
+            paired_at_startup = False
+        self._paired_at_startup = paired_at_startup
+        if self._dock_enabled() and paired_at_startup:
+            try:
+                import ui_scale
+                from components.pepper_dock import dock_panel_px
+                pw, ph = dock_panel_px()
+                ui_scale.set_effective_display_size(pw, ph)
+                logger.info(
+                    "UI scale: dock panel surface %.0fx%.0f px "
+                    "(figma scale %.3f)", pw, ph, ui_scale.figma_scale())
+            except Exception:
+                logger.exception("ui_scale early setup failed")
 
         # Register ALL screens
         self.screen_manager.add_widget(SplashScreen(name='splash'))
@@ -3797,6 +3837,7 @@ class MeetingBoxApp(App):
         ):
             self._realtime_launch_permitted = True
             self._realtime_reconnect_count = 0  # fresh wake — reset reconnect budget
+            self._voice_history.clear()  # a fresh wake starts a brand-new conversation
 
             def _kick_realtime(_dt):
                 # In dock mode a spoken "Hey Nexa" wake must surface the same
@@ -5533,6 +5574,96 @@ class MeetingBoxApp(App):
     # Warm-standby Realtime session (instant wake response)
     # ------------------------------------------------------------------
 
+    def _record_voice_turn(self, role: str, key: str, text: str) -> None:
+        """Append/replace a turn in the rolling conversation history used to
+        re-seed a reconnected session. Same (role,key) updates in place so a
+        streaming assistant turn or a corrected user turn doesn't duplicate."""
+        text = (text or "").strip()
+        if not text:
+            return
+        hist = self._voice_history
+        if hist and hist[-1].get("role") == role and hist[-1].get("key") == key:
+            hist[-1]["text"] = text
+        else:
+            hist.append({"role": role, "key": key, "text": text})
+            if len(hist) > 16:
+                del hist[: len(hist) - 16]
+
+    def _build_voice_history_prompt(self) -> str:
+        """Render the recent conversation as a system-context prompt injected
+        into a reconnected session so the model continues seamlessly."""
+        lines = []
+        for turn in self._voice_history[-12:]:
+            t = (turn.get("text") or "").strip()
+            if not t:
+                continue
+            who = "User" if turn.get("role") == "user" else "Assistant"
+            lines.append(f"{who}: {t}")
+        if not lines:
+            return ""
+        return (
+            "The realtime voice connection briefly dropped and has now "
+            "reconnected. This is the SAME ongoing conversation — do not "
+            "reintroduce yourself or greet the user again. If your previous "
+            "answer was cut off by the drop, finish it concisely. "
+            "Conversation so far:\n" + "\n".join(lines)
+        )
+
+    def _should_resume_after_drop(self) -> bool:
+        """True when an involuntary drop happened during a live conversation and
+        we should reconnect + continue WITHOUT a wake word. Idle drops and a
+        genuinely dead network (budget exhausted) fall back to warm standby so a
+        hot mic never re-opens on its own to answer ambient speech."""
+        if not (
+            getattr(self, "voice_realtime_assistant", False)
+            and REALTIME_VOICE_IMPLEMENTED
+            and not USE_MOCK_BACKEND
+            and not WAKE_LOCAL_VOICE_ONLY
+        ):
+            return False
+        if not get_device_auth_token().strip():
+            return False
+        if self.recording_state.get("active"):
+            return False
+        if not self._voice_history:
+            return False
+        if self._realtime_reconnect_count >= self._realtime_max_resume_attempts:
+            return False
+        last = getattr(self, "_last_user_turn_monotonic", 0.0)
+        if last <= 0.0 or (time.monotonic() - last) > self._realtime_resume_window_s:
+            return False
+        return True
+
+    def _resume_realtime_after_drop(self) -> None:
+        """Reconnect a dropped conversation and continue it with context, no wake
+        word. Uses exponential backoff so a flaky link retries sanely; the resume
+        budget resets on the next successful user turn (see _on_user_transcript),
+        so a network that recovers between turns keeps working indefinitely."""
+        self._realtime_reconnect_count += 1
+        n = self._realtime_reconnect_count
+        delay = min(0.4 * (2 ** (n - 1)), 6.0)
+        logger.info(
+            "Realtime dropped mid-conversation — auto-resuming (attempt %d/%d) "
+            "in %.1fs", n, self._realtime_max_resume_attempts, delay,
+        )
+        try:
+            self._set_voice_indicator_override("wake", "Reconnecting…", duration=None)
+        except Exception:
+            logger.debug("resume indicator override failed", exc_info=True)
+        hist = self._build_voice_history_prompt()
+        if hist:
+            resume_greeting = (
+                "The connection dropped for a moment and is back. In ONE short "
+                "sentence let the user know you're back, then continue: if your "
+                "previous answer was interrupted, finish it concisely; otherwise "
+                "wait for the user."
+            )
+            self._pending_summary_context = (hist, resume_greeting)
+        self._realtime_launch_permitted = True
+        Clock.schedule_once(
+            lambda _dt: self._start_realtime_voice_session(), delay
+        )
+
     def _schedule_voice_prewarm(self, delay: float = 0.5) -> None:
         """Schedule a warm-standby Realtime session to connect (idempotent)."""
         if not REALTIME_WARM_STANDBY:
@@ -5876,21 +6007,28 @@ class MeetingBoxApp(App):
 
             def _after_end(_dt):
                 self._end_realtime_voice_session()
+                # Seamless resume: an involuntary drop DURING a live conversation
+                # reconnects and continues WITHOUT a wake word so a Wi-Fi/network
+                # blip never resets the user mid-thought. The hot-mic safety
+                # concern below only applies to IDLE drops, so _should_resume_
+                # after_drop() gates on a recent user turn + a bounded retry
+                # budget; everything else falls back to warm standby.
+                if unexpected and self._should_resume_after_drop():
+                    self._resume_realtime_after_drop()
+                    return
                 if unexpected:
-                    # An unexpected drop (network stall, OpenAI session cap)
-                    # must NOT silently re-open a LIVE, hot-mic session. Doing
-                    # so made the assistant answer ambient speech with no wake
-                    # word after a network-induced close had already dumped the
-                    # user to the home screen ("yes I'm listening" out of
-                    # nowhere). Re-arm a WARM STANDBY instead: the session is
-                    # reconnected in the background and held silent until the
-                    # next "Hey Nexa", so the next wake is still instant but
-                    # the mic never goes live on its own.
+                    # An idle/unrecoverable unexpected drop must NOT silently
+                    # re-open a LIVE, hot-mic session. Doing so made the
+                    # assistant answer ambient speech with no wake word after a
+                    # network-induced close ("yes I'm listening" out of nowhere).
+                    # Re-arm a WARM STANDBY instead: reconnected in the
+                    # background and held silent until the next "Hey Nexa".
                     logger.info(
                         "Realtime session ended unexpectedly; re-arming warm "
                         "standby (wake word required to resume)."
                     )
                 self._realtime_reconnect_count = 0
+                self._voice_history.clear()
                 self._schedule_voice_prewarm(delay=0.2)
 
             Clock.schedule_once(_after_end, 0)
@@ -6058,6 +6196,15 @@ class MeetingBoxApp(App):
             # Also update home say bar / voice-session transcript with user text
             self._schedule_say_bar_update("You", text)
 
+            if is_final:
+                # Keep a rolling history so a mid-conversation drop can reconnect
+                # with context. A completed user turn also proves the (possibly
+                # just-reconnected) link works, so reset the resume budget: a
+                # flaky network that recovers between turns keeps resuming.
+                self._record_voice_turn("user", item_id or msg_id, text)
+                self._last_user_turn_monotonic = time.monotonic()
+                self._realtime_reconnect_count = 0
+
             # Parse picker choices on partials too; final ASR can be clipped
             # ("The") while a prior partial already contained "first one".
             if self._try_apply_active_picker_voice_choice(text):
@@ -6188,6 +6335,7 @@ class MeetingBoxApp(App):
             # one-shot append so the message still shows up.
             if not overlay._active_ai_msg_ids:
                 overlay.add_ai_message(text)
+                self._record_voice_turn("assistant", f"ai-{len(self._voice_history)}", text)
 
         def _on_ai_transcript_delta(item_id: str, accumulated: str) -> None:
             if not _is_my_session():
@@ -6196,6 +6344,7 @@ class MeetingBoxApp(App):
             if overlay is None:
                 return
             overlay.stream_ai_message(item_id, accumulated)
+            self._record_voice_turn("assistant", item_id, accumulated)
             # Also update home say bar / voice-session transcript with AI text
             self._schedule_say_bar_update("AI", accumulated)
 

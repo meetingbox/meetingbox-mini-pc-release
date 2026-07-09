@@ -161,10 +161,16 @@ _REALTIME_RATE = 24000
 # unaffected and stays full quality. Only the mic->server leg is transcoded,
 # and only at the final wire step: AEC, live captions and the speech-evidence
 # monitor all still see the full 24 kHz audio.
-#   REALTIME_UPLINK_CODEC=g711_ulaw  # g711_ulaw (default) | pcm16
-# Deployments with guaranteed bandwidth can set pcm16 for pristine uplink.
+#   REALTIME_UPLINK_CODEC=g711_ulaw  # g711_ulaw | pcm16
+# Default is chosen per platform: the bandwidth-constrained Linux appliance
+# (mini-PC on wifi) defaults to g711_ulaw so a marginal upstream can sustain
+# continuous speech; the desktop port defaults to pcm16 because its link has
+# the headroom and the 8 kHz telephone-quality downsample noticeably degrades
+# transcription accuracy (mis-heard words / fragmented turns). Either platform
+# can override with REALTIME_UPLINK_CODEC.
+_DEFAULT_UPLINK_CODEC = "pcm16" if IS_DESKTOP else "g711_ulaw"
 _REALTIME_UPLINK_CODEC = (
-    os.environ.get("REALTIME_UPLINK_CODEC", "g711_ulaw") or "g711_ulaw"
+    os.environ.get("REALTIME_UPLINK_CODEC", _DEFAULT_UPLINK_CODEC) or _DEFAULT_UPLINK_CODEC
 ).strip().lower()
 _G711_RATE = 8000
 
@@ -263,17 +269,23 @@ _SESSION_IDLE_CLOSE_S = 40.0
 # speech_stopped) is never mistaken for a dead link — except past the hard cap,
 # which catches a link that dies mid-utterance so speech_stopped never comes.
 _DEAD_LINK_RECV_SILENCE_S = max(
-    3.0, float(os.environ.get("REALTIME_DEAD_LINK_S", "8") or "8")
+    3.0, float(os.environ.get("REALTIME_DEAD_LINK_S", "5") or "5")
 )
 _DEAD_LINK_HARD_S = max(_DEAD_LINK_RECV_SILENCE_S + 5.0, 30.0)
 # Inbound silence alone is NOT proof of a dead link: a silent user produces the
 # exact same signature (uplink trickling frames, server with nothing to say).
 # So when a silence threshold trips, VERIFY with a protocol ping before killing
 # the session — a healthy idle link pongs in well under a second; only a truly
-# dead link stays mute. Generous timeout because OpenAI can delay pongs several
-# seconds under load (though mid-generation the deltas keep recv_silence fresh,
-# so we rarely probe then).
-_DEAD_LINK_PING_TIMEOUT_S = 10.0
+# dead link stays mute.
+#
+# A live link pongs in <1s, so a 10s wait for a pong that is never coming was
+# pure dead air: it turned a brief inbound half-open blip into ~20s of silence
+# before we even started recovering. Instead we probe FAST but require TWO
+# consecutive unanswered pings to declare death — the second ping absorbs a
+# single delayed pong under momentary load, so we are both quick (~4s worst
+# case vs the old 10s) and robust against false trips.
+_DEAD_LINK_PING_TIMEOUT_S = 2.0
+_DEAD_LINK_PING_STRIKES = 2
 
 # ── Device-driven morning-brief carousel walkthrough ───────────────────────
 # The Realtime model batches its navigate_device_ui calls (all three at once)
@@ -4423,16 +4435,20 @@ class RealtimeVoiceSession:
                 # identical). Confirm with a ws ping: pong -> link is alive,
                 # the silence is legitimate; no pong -> genuinely dead.
                 link_alive = False
-                try:
-                    pong_waiter = await ws.ping()
-                    await asyncio.wait_for(
-                        pong_waiter, timeout=_DEAD_LINK_PING_TIMEOUT_S
-                    )
-                    link_alive = True
-                except asyncio.CancelledError:
-                    raise
-                except Exception:
-                    link_alive = False
+                for _strike in range(_DEAD_LINK_PING_STRIKES):
+                    try:
+                        pong_waiter = await ws.ping()
+                        await asyncio.wait_for(
+                            pong_waiter, timeout=_DEAD_LINK_PING_TIMEOUT_S
+                        )
+                        link_alive = True
+                        break
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception:
+                        # A single missed pong can be a momentary hiccup under
+                        # load; only consecutive misses prove the link is dead.
+                        link_alive = False
                 if link_alive:
                     # Treat the pong as a server liveness event so the
                     # detector re-arms (next probe only after another full
@@ -4450,15 +4466,16 @@ class RealtimeVoiceSession:
                 recv_silence = now - self._last_server_event_at
                 logger.warning(
                     "Realtime: inbound link dead — no server event for %.1fs and "
-                    "ping unanswered for %.1fs while uplink active "
+                    "%d pings unanswered over %.1fs while uplink active "
                     "(last_send=%.1fs ago, state=%s). Reconnecting.",
-                    recv_silence, _DEAD_LINK_PING_TIMEOUT_S,
+                    recv_silence, _DEAD_LINK_PING_STRIKES,
+                    _DEAD_LINK_PING_TIMEOUT_S * _DEAD_LINK_PING_STRIKES,
                     now - self._last_frame_sent_at, self._state,
                 )
                 self._log_voice_event(
                     "dead_link_reconnect",
                     recv_silence=round(recv_silence, 1),
-                    ping_timeout=_DEAD_LINK_PING_TIMEOUT_S,
+                    ping_timeout=_DEAD_LINK_PING_TIMEOUT_S * _DEAD_LINK_PING_STRIKES,
                     in_utterance=in_acked_utterance,
                     state=self._state,
                 )

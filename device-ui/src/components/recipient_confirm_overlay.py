@@ -74,7 +74,8 @@ _FW, _FH = 1260.0, 800.0
 
 
 def _ff(fs: float) -> int:
-    s = min(DISPLAY_WIDTH / _FW, DISPLAY_HEIGHT / _FH)
+    import ui_scale
+    s = ui_scale.scale_for(_FW, _FH)
     return max(6, round(fs * s))
 
 

@@ -72,6 +72,22 @@ _HL_D = 54.0 * _SCALE                          # highlight circle diameter
 _PANEL_CM_W = 15.01
 _PANEL_CM_H = 9.53
 
+
+def dock_panel_px() -> tuple[float, float]:
+    """True physical-pixel footprint of the 7" panel on this monitor.
+
+    Prefer the monitor's real density (EDID) so the panel is that real-world
+    centimetre size on any display; otherwise fall back to the OS display-scale
+    factor applied to the design size. Used both to size the panel surface
+    (``_layout_surface``) and to scale screen content (``ui_scale``) so the two
+    are always derived from the SAME dimensions and stay in proportion.
+    """
+    ppcm = winov.physical_ppcm()
+    if ppcm:
+        return float(_PANEL_CM_W * ppcm[0]), float(_PANEL_CM_H * ppcm[1])
+    s = winov.system_scale() or 1.0
+    return float(DISPLAY_WIDTH) * s, float(DISPLAY_HEIGHT) * s
+
 _DOCK = ASSETS_DIR / "dock"
 
 # Shortcut definition: key, asset, Figma icon size, x-centre fraction within pill.
@@ -530,16 +546,17 @@ class DockController:
         if sm is None or root is None:
             return
 
-        # True physical-pixel target. Prefer the monitor's real density (EDID);
-        # fall back to the display-scale factor applied to the design size.
-        ppcm = winov.physical_ppcm()
-        if ppcm:
-            self._panel_w = float(_PANEL_CM_W * ppcm[0])
-            self._panel_h = float(_PANEL_CM_H * ppcm[1])
-        else:
-            s = winov.system_scale() or 1.0
-            self._panel_w = float(DISPLAY_WIDTH) * s
-            self._panel_h = float(DISPLAY_HEIGHT) * s
+        # True physical-pixel target (shared with ui_scale so the panel and its
+        # text/icons are scaled from the exact same dimensions).
+        self._panel_w, self._panel_h = dock_panel_px()
+        # Keep content scaling in sync. If the panel size ever changes here after
+        # the screens were built (e.g. moved to another monitor), already-created
+        # labels keep their size — but the value is corrected for any rebuilds.
+        try:
+            import ui_scale
+            ui_scale.set_effective_display_size(self._panel_w, self._panel_h)
+        except Exception:
+            logger.debug("ui_scale sync from panel failed", exc_info=True)
         self._surface_scale = 1.0
         radius = max(12.0, min(self._panel_w, self._panel_h) * 0.045)
 

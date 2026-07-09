@@ -78,7 +78,8 @@ def _sh(px: float) -> float:
 
 def _ff(fs: float) -> int:
     """Scale a Figma font size (px) proportionally to the physical display."""
-    scale = min(DISPLAY_WIDTH / _FW, DISPLAY_HEIGHT / _FH)
+    import ui_scale
+    scale = ui_scale.scale_for(_FW, _FH)
     return max(6, round(fs * scale))
 
 

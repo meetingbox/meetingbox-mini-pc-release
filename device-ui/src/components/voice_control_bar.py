@@ -78,7 +78,8 @@ _END_W_FIG, _END_H_FIG = 222.0, 47.0
 
 def _scale() -> float:
     """Uniform Figma→display scale factor."""
-    return min(DISPLAY_WIDTH / _FW, DISPLAY_HEIGHT / _FH)
+    import ui_scale
+    return ui_scale.scale_for(_FW, _FH)
 
 
 def _ff(fs: float) -> int:

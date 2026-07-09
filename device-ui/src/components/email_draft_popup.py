@@ -73,7 +73,8 @@ _DISCARD_BG   = (0.86, 0.21, 0.27, 1.0)    # red
 
 def _scale() -> float:
     """Scale factor vs the 1260×800 Figma baseline (clamped)."""
-    return max(0.55, min(DISPLAY_WIDTH / 1260.0, DISPLAY_HEIGHT / 800.0, 1.6))
+    import ui_scale
+    return max(0.55, min(ui_scale.scale_for(1260.0, 800.0), 1.6))
 
 
 def _fmt_recipients(items) -> str:

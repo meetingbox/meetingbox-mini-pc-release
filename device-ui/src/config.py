@@ -352,17 +352,34 @@ SPACING = {
 }
 
 
+def _effective_display_wh() -> tuple[float, float]:
+    """Pixel size screen content should scale against.
+
+    Equals DISPLAY_WIDTH/HEIGHT on the appliance and the plain desktop window;
+    in the Windows dock companion it is the measured physical panel size (set via
+    ui_scale) so these scale helpers track the surface the screens actually
+    render into. Lazy import avoids a circular dependency (ui_scale → config).
+    """
+    try:
+        import ui_scale
+        return ui_scale.effective_size()
+    except Exception:
+        return float(DISPLAY_WIDTH), float(DISPLAY_HEIGHT)
+
+
 def display_vertical_scale_raw() -> float:
     """Height vs 600px design baseline (capped)."""
-    return min(max(DISPLAY_HEIGHT / 600.0, 0.72), 2.35)
+    _, eff_h = _effective_display_wh()
+    return min(max(eff_h / 600.0, 0.72), 2.35)
 
 
 def display_horizontal_scale_raw() -> float:
     """Width vs 1024px design baseline (capped)."""
-    ratio = DISPLAY_WIDTH / 1024.0
+    eff_w, _ = _effective_display_wh()
+    ratio = eff_w / 1024.0
     # Panels narrower than the 1024 design width (e.g. portrait 600×1024) must scale
     # down; the old 0.85 floor made everything oversized horizontally.
-    if DISPLAY_WIDTH < 1024:
+    if eff_w < 1024:
         return min(max(ratio, 0.48), 3.2)
     return min(max(ratio, 0.85), 3.2)
 
@@ -433,12 +450,13 @@ def other_screen_horizontal_scale() -> float:
 
 def home_center_column_width() -> int:
     """Wide panels: wide centered column; small panels: nearly full width (before HOME_CONTENT_SCALE)."""
+    eff_w, _ = _effective_display_wh()
     side = SPACING["screen_padding"] * 4
-    usable = max(1, DISPLAY_WIDTH - side)
-    if DISPLAY_WIDTH <= 1440:
+    usable = max(1, int(eff_w) - side)
+    if eff_w <= 1440:
         # Never wider than the display (old max(360, …) could exceed narrow widths).
         return max(160, usable)
-    return min(2200, max(720, int(DISPLAY_WIDTH * 0.56)))
+    return min(2200, max(720, int(eff_w * 0.56)))
 
 
 # More rounded corners (Apple style)

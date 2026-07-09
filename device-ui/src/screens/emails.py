@@ -85,12 +85,14 @@ def _rel(fx: float, fy: float, fw: float, fh: float,
 
 def _ff(fs: float) -> float:
     """Figma font px → device font px."""
-    return max(6.0, fs * _SCALE)
+    import ui_scale
+    return max(6.0, fs * ui_scale.scale_for(_FW, _FH))
 
 
 def _sz(d: float) -> float:
     """Figma px → device px."""
-    return max(1.0, d * _SCALE)
+    import ui_scale
+    return max(1.0, d * ui_scale.scale_for(_FW, _FH))
 
 
 # ── Colours ───────────────────────────────────────────────────────────────────

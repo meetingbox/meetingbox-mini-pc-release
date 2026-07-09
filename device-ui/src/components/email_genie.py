@@ -90,7 +90,8 @@ _C_TEXT = (0.118, 0.129, 0.149, 1.0)   # near-black toast text
 
 
 def _scale_factor() -> float:
-    return min(DISPLAY_WIDTH / 1260.0, DISPLAY_HEIGHT / 800.0)
+    import ui_scale
+    return ui_scale.scale_for(1260.0, 800.0)
 
 
 def _fs(px: float) -> int:
