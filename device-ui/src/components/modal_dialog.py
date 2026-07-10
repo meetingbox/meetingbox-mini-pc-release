@@ -9,10 +9,65 @@ from kivy.uix.floatlayout import FloatLayout
 from kivy.uix.boxlayout import BoxLayout
 from kivy.uix.label import Label
 from kivy.uix.widget import Widget
-from kivy.graphics import Color, Rectangle, RoundedRectangle
+from kivy.uix.button import Button
+from kivy.graphics import Color, Rectangle, RoundedRectangle, Line
+from kivy.metrics import dp
 
 from config import COLORS, FONT_SIZES, BORDER_RADIUS, SPACING
-from components.button import PrimaryButton, SecondaryButton, DangerButton
+from components.button import PremiumButton, DangerButton
+
+
+# Light theme — matches the redesigned dock/dashboard (home.py) so dialogs
+# (signed-out, mic-not-detected, ...) no longer look like the old dark UI.
+_CARD_BG      = (1, 1, 1, 1)               # white card
+_TITLE_INK    = (0.227, 0.231, 0.239, 1)   # #3A3B3D  heading
+_MSG_INK      = (0.431, 0.431, 0.451, 1)   # #6E6E73  body text
+_SEP_LINE     = (0, 0, 0, 0.08)            # faint divider
+_PURPLE_START = (0.427, 0.282, 0.800, 1)   # #6D48CC  accent (top)
+_PURPLE_END   = (0.357, 0.247, 0.941, 1)   # #5B3FF0  accent (bottom)
+
+
+class _LightSecondaryButton(Button):
+    """Light, flat secondary button for the (light-themed) modal dialog."""
+
+    def __init__(self, **kwargs):
+        kwargs.setdefault('font_size', FONT_SIZES['medium'])
+        kwargs.setdefault('bold', False)
+        kwargs.setdefault('color', _TITLE_INK)
+        kwargs.setdefault('halign', 'center')
+        kwargs.setdefault('valign', 'middle')
+        super().__init__(**kwargs)
+        self.background_color = (0, 0, 0, 0)
+        self.background_normal = ''
+        self.background_down = ''
+        self._pressed = False
+        self.bind(pos=self._draw, size=self._draw)
+        self.bind(size=self._sync_label_text_size)
+
+    def _sync_label_text_size(self, *_args):
+        if self.width > 1 and self.height > 1:
+            self.text_size = (self.width - dp(12), self.height - dp(4))
+
+    def _draw(self, *_args):
+        self.canvas.before.clear()
+        with self.canvas.before:
+            bg = (0.93, 0.93, 0.94, 1) if self._pressed else (0.97, 0.97, 0.98, 1)
+            Color(*bg)
+            RoundedRectangle(pos=self.pos, size=self.size, radius=[BORDER_RADIUS])
+            Color(0, 0, 0, 0.12)
+            Line(
+                rounded_rectangle=(
+                    self.x, self.y, self.width, self.height, BORDER_RADIUS),
+                width=1,
+            )
+
+    def on_press(self):
+        self._pressed = True
+        self._draw()
+
+    def on_release(self):
+        self._pressed = False
+        self._draw()
 
 
 class ModalDialog(FloatLayout):
@@ -64,7 +119,7 @@ class ModalDialog(FloatLayout):
         )
 
         with card.canvas.before:
-            Color(*COLORS['surface'])
+            Color(*_CARD_BG)
             self._card_bg = RoundedRectangle(
                 pos=card.pos, size=card.size, radius=[BORDER_RADIUS])
             if border_color:
@@ -79,7 +134,7 @@ class ModalDialog(FloatLayout):
         )
 
         # Title
-        title_color = COLORS['red'] if danger else COLORS['white']
+        title_color = COLORS['red'] if danger else _TITLE_INK
         title_label = Label(
             text=title,
             font_size=FONT_SIZES['title'],
@@ -96,7 +151,7 @@ class ModalDialog(FloatLayout):
         # Separator
         sep = Widget(size_hint=(1, None), height=1)
         with sep.canvas:
-            Color(*COLORS['gray_700'])
+            Color(*_SEP_LINE)
             _sr = Rectangle(pos=sep.pos, size=sep.size)
         sep.bind(
             pos=lambda w, v: setattr(_sr, 'pos', w.pos),
@@ -108,7 +163,7 @@ class ModalDialog(FloatLayout):
         msg_label = Label(
             text=message,
             font_size=FONT_SIZES['small'] + 2,
-            color=COLORS['gray_500'],
+            color=_MSG_INK,
             halign='left',
             valign='top',
             size_hint=(1, 1),
@@ -126,7 +181,7 @@ class ModalDialog(FloatLayout):
 
         has_cancel = bool(cancel_text)
         if has_cancel:
-            cancel_btn = SecondaryButton(
+            cancel_btn = _LightSecondaryButton(
                 text=cancel_text,
                 size_hint=(0.5, 1),
                 font_size=FONT_SIZES['medium'],
@@ -142,7 +197,9 @@ class ModalDialog(FloatLayout):
                 font_size=FONT_SIZES['medium'],
             )
         else:
-            confirm_btn = PrimaryButton(
+            confirm_btn = PremiumButton(
+                gradient_start=_PURPLE_START,
+                gradient_end=_PURPLE_END,
                 text=confirm_text,
                 size_hint=(confirm_hint, 1),
                 font_size=FONT_SIZES['medium'],
