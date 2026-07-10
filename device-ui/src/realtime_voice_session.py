@@ -88,8 +88,9 @@ from api_client import invoke_realtime_tool_sync
 from ssl_compat import ws_ssl_context
 
 try:
-    from platform_compat import IS_DESKTOP
+    from platform_compat import IS_DESKTOP, IS_WINDOWS
 except Exception:  # pragma: no cover - platform_compat always present in app
+    IS_WINDOWS = sys.platform.startswith("win")
     IS_DESKTOP = not sys.platform.startswith("linux")
 
 logger = logging.getLogger(__name__)
@@ -558,35 +559,25 @@ _LOCAL_BARGE_IN_PREROLL_S = _env_float("REALTIME_BARGE_IN_PREROLL_S", 0.18, mini
 # mono stream. When live it becomes the mic SOURCE (source mode) instead of our
 # own PortAudio input stream.
 #
-# OFF by default (opt-in via REALTIME_OS_AEC=1). Source mode only emits mic
-# frames while the OS render clock ticks — we keep it clocking with a silent
-# "keep-alive" render stream — but under the playback start/stop churn of a real
-# session that clock stalls and the DSP stops delivering frames, so the mic goes
-# permanently deaf (observed: peak_rms collapses to ~48, then 60 s+ of zero
-# frames, then the realtime socket closes on a 90 s server-silence timeout).
-# The shipping EXE never used this path; it captured with a normal PortAudio
-# input stream (below), which delivers frames continuously regardless of
-# playback. Keep the DSP available for opt-in only.
+# Enabled by default on Windows: this is the only echo engine validated on the
+# target built-in speaker/mic hardware. The silent keep-alive render stream
+# keeps the DSP clock running through playback churn. If the DSP is unavailable
+# or fails to start, session startup automatically falls back to the normal
+# PortAudio + Speex path below, so enabling this default does not make the mic
+# unavailable on unsupported machines. It remains opt-in elsewhere.
+_DEFAULT_OS_AEC = "1" if IS_WINDOWS else "0"
 _OS_AEC_ENABLED = (
-    os.environ.get("REALTIME_OS_AEC", "0").strip().lower()
+    os.environ.get("REALTIME_OS_AEC", _DEFAULT_OS_AEC).strip().lower()
     not in ("0", "false", "no", "off", "")
 )
 
-# Engine ordering on Windows: WebRTC AEC3 + WASAPI loopback FIRST, OS Voice
-# Capture DSP as fallback. This is the architecture ChatGPT/Gemini/Meet
-# actually ship: the echo canceller is PURE SOFTWARE (the same AEC3 code
-# Chrome runs), so its behavior is deterministic and identical on every
-# machine regardless of the audio chip or vendor driver. The OS DSP
-# (CWMAudioAEC) delegates cancellation quality to whatever DSP the driver
-# provides — measured on real hardware it leaks residual echo bursts of
-# RMS 400-2000 that defeat any downstream gate, and it exposes no internal
-# state (no speech probability, no ERLE) so the client is blind to what it
-# did. AEC3's known trade-offs (loopback onset blind window, FIFO drift)
-# are handled explicitly by the reference-blind gate and the residual gate,
-# and — unlike driver behavior — they are the same on every device.
-# Set REALTIME_PREFER_OS_AEC=1 to restore OS-DSP-first without a rebuild.
+# Prefer the Windows Voice Capture DSP on Windows. WebRTC AEC3 remains an
+# explicit experimental option: on the target hardware it raised the barge-in
+# threshold enough to miss normal speech. An explicit environment value still
+# overrides this default for diagnostics.
+_DEFAULT_PREFER_OS_AEC = "1" if IS_WINDOWS else "0"
 _PREFER_OS_AEC = (
-    os.environ.get("REALTIME_PREFER_OS_AEC", "0").strip().lower()
+    os.environ.get("REALTIME_PREFER_OS_AEC", _DEFAULT_PREFER_OS_AEC).strip().lower()
     not in ("0", "false", "no", "off", "")
 )
 
@@ -1678,11 +1669,10 @@ class RealtimeVoiceSession:
             self._os_aec = None
             logger.debug("OS AEC init failed", exc_info=True)
 
-        # Genuine WebRTC AEC3 — the preferred desktop echo path. We build the
-        # engine and the OS far-end reference lazily at session-open (below);
-        # here we only probe availability so the log/route reflect the real
-        # decision. The engine runs at 48 kHz on its own near/far buffers and
-        # the mic pump downsamples the cleaned output to the 24 kHz uplink.
+        # Genuine WebRTC AEC3 — optional experimental desktop echo path. We
+        # build the engine and OS far-end reference lazily at session-open;
+        # here we only probe availability so logs reflect the real route.
+        # Windows prefers its validated Voice Capture DSP first.
         self._aec3 = None
         self._far_ref = None
         # True when the render tap in PcmStreamPlayer feeds the far reference
@@ -3053,14 +3043,12 @@ class RealtimeVoiceSession:
                     self._safe_call(self._on_before_open_mic_cb)
                     await asyncio.sleep(0.01)
 
-                # OS Voice Capture DSP (CWMAudioAEC): only when explicitly
-                # preferred (REALTIME_PREFER_OS_AEC=1). Its cancellation
-                # quality is whatever the vendor audio driver provides —
-                # device-dependent by construction — so the default engine
-                # order runs software AEC3 first (below) and keeps this as
-                # the escape hatch / fallback. In source mode it opens the
-                # default communications mic itself, so we must NOT also
-                # open a PortAudio mic on the same device.
+                # OS Voice Capture DSP (CWMAudioAEC): preferred by default on
+                # Windows after validation on the target coupled mic/speaker
+                # hardware. In source mode it opens the default communications
+                # mic itself, so we must NOT also open a PortAudio mic on the
+                # same device. A failed start safely falls through to AEC3 (if
+                # explicitly enabled) and then the PortAudio + Speex path.
                 os_aec_live = False
                 if _PREFER_OS_AEC and self._os_aec is not None:
                     try:
@@ -3106,8 +3094,7 @@ class RealtimeVoiceSession:
                         logger.debug("OS AEC start failed", exc_info=True)
                         self._os_aec = None
 
-                # PREFERRED: genuine WebRTC AEC3 (the canceller Chrome/Meet/
-                # ChatGPT desktop use) driven by a real playback reference —
+                # OPTIONAL: genuine WebRTC AEC3 driven by a playback reference —
                 # WASAPI loopback on Windows (the post-mix signal the speaker
                 # actually renders), app-PCM on macOS. Pure software: identical
                 # deterministic behavior on every device regardless of audio

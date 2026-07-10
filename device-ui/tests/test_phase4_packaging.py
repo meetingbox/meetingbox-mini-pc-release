@@ -32,6 +32,22 @@ def test_inno_script_exists():
     assert (PKG_WIN / "MeetingBox.iss").is_file()
 
 
+def test_windows_voice_defaults_and_upgrade_migration():
+    env_text = (PKG_WIN / "device-ui.env").read_text(encoding="utf-8")
+    assert "REALTIME_PREFER_OS_AEC=1" in env_text
+    assert "REALTIME_OS_AEC=1" in env_text
+    assert "REALTIME_WEBRTC_AEC=0" in env_text
+    assert "REALTIME_UPLINK_CODEC=g711_ulaw" in env_text
+
+    for script_name in ("MeetingBox.iss", "NexaCompanion.iss"):
+        script = (PKG_WIN / script_name).read_text(encoding="utf-8")
+        assert "MigrateVoiceConfiguration" in script
+        assert "'REALTIME_PREFER_OS_AEC', '1'" in script
+        assert "'REALTIME_OS_AEC', '1'" in script
+        assert "'REALTIME_WEBRTC_AEC', '0'" in script
+        assert "'REALTIME_UPLINK_CODEC', 'g711_ulaw'" in script
+
+
 def test_env_file_loader_setdefault_semantics(tmp_path, monkeypatch):
     env_file = importlib.import_module("env_file")
     f = tmp_path / "device-ui.env"

@@ -3931,7 +3931,19 @@ class MeetingBoxApp(App):
                 # whatever screen was last open (e.g. Calendar). Navigating to
                 # voice_session also auto-opens the dock panel (notify_screen).
                 dc = getattr(self, "dock_controller", None)
-                if dc is not None and getattr(dc, "_engaged", False):
+                # SummaryReviewScreen deliberately auto-starts a grounded voice
+                # session when opened. Keep that page visible instead of letting
+                # this internal wake immediately replace it with voice_session.
+                preserve_summary_page = (
+                    self.screen_manager is not None
+                    and self.screen_manager.current == "summary_review"
+                    and getattr(self, "_active_summary_meeting_id", None) is not None
+                )
+                if (
+                    dc is not None
+                    and getattr(dc, "_engaged", False)
+                    and not preserve_summary_page
+                ):
                     try:
                         self.goto_screen("voice_session", transition="fade")
                     except Exception:
@@ -3984,7 +3996,16 @@ class MeetingBoxApp(App):
         # tap. Without this, a local-mode wake leaves the panel on whatever
         # screen was last shown.
         dc = getattr(self, "dock_controller", None)
-        if dc is not None and getattr(dc, "_engaged", False):
+        preserve_summary_page = (
+            self.screen_manager is not None
+            and self.screen_manager.current == "summary_review"
+            and getattr(self, "_active_summary_meeting_id", None) is not None
+        )
+        if (
+            dc is not None
+            and getattr(dc, "_engaged", False)
+            and not preserve_summary_page
+        ):
             try:
                 self.goto_screen("voice_session", transition="fade")
             except Exception:

@@ -852,13 +852,11 @@ def test_speech_monitor_echo_risk_ignores_apm_probability():
     assert mon.observe(_frame(400), speech_prob=0.95, echo_risk=True, now=70.0) is False
 
 
-def test_aec3_is_default_engine_preference():
-    """Engine order contract: software AEC3 (device-independent, the
-    Chrome/ChatGPT-desktop canceller) must be preferred over the vendor-
-    driver-dependent OS Voice Capture DSP unless explicitly overridden."""
+def test_windows_os_aec_is_default_engine_preference():
+    """Windows prefers the Voice Capture DSP validated on target hardware."""
     import realtime_voice_session as rtv
 
-    assert rtv._PREFER_OS_AEC is False
+    assert rtv._PREFER_OS_AEC is rtv.IS_WINDOWS
 
 
 def test_uplink_echo_risk_follows_loopback_ground_truth(monkeypatch):
@@ -1416,16 +1414,8 @@ def test_pcm_stream_player_render_tap_receives_device_blocks():
     assert np.abs(np.frombuffer(fed[1], dtype=np.int16)).max() == 0
 
 
-def test_default_desktop_echo_engines_off_matches_exe(monkeypatch):
-    """Regression guard for the "mic goes deaf" fix.
-
-    The shipping EXE captured the mic with a plain PortAudio input stream +
-    Speex AEC + local barge-in. Two later engines regressed responsiveness on
-    coupled laptop mics: WebRTC AEC3 (raised the barge-in bar) and the Windows
-    Voice Capture DSP (source-mode capture that stalls and leaves the mic deaf).
-    Both must be OFF by default so a stock desktop launch lands back on the
-    reliable EXE path; they stay opt-in behind their env flags.
-    """
+def test_default_windows_os_aec_on_with_explicit_opt_out(monkeypatch):
+    """Windows defaults to validated OS AEC; unsupported starts fall back safely."""
     import importlib
 
     import realtime_voice_session as rtv
@@ -1434,13 +1424,15 @@ def test_default_desktop_echo_engines_off_matches_exe(monkeypatch):
         monkeypatch.delenv(var, raising=False)
     try:
         reloaded = importlib.reload(rtv)
-        assert reloaded._OS_AEC_ENABLED is False
+        assert reloaded._OS_AEC_ENABLED is reloaded.IS_WINDOWS
         assert reloaded._WEBRTC_AEC_ENABLED is False
-        assert reloaded._PREFER_OS_AEC is False
-        # Opt-in still works: setting the flag re-enables the engine.
-        monkeypatch.setenv("REALTIME_OS_AEC", "1")
+        assert reloaded._PREFER_OS_AEC is reloaded.IS_WINDOWS
+        # Diagnostics can still explicitly opt out without a rebuild.
+        monkeypatch.setenv("REALTIME_OS_AEC", "0")
+        monkeypatch.setenv("REALTIME_PREFER_OS_AEC", "0")
         reloaded = importlib.reload(rtv)
-        assert reloaded._OS_AEC_ENABLED is True
+        assert reloaded._OS_AEC_ENABLED is False
+        assert reloaded._PREFER_OS_AEC is False
     finally:
         # Restore the module to the ambient (unset) environment for later tests.
         for var in ("REALTIME_OS_AEC", "REALTIME_WEBRTC_AEC", "REALTIME_PREFER_OS_AEC"):

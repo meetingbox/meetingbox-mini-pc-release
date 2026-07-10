@@ -109,6 +109,55 @@ begin
   Result := '';
 end;
 
+// Preserve user configuration on upgrade, but migrate the voice settings that
+// caused self-echo and delayed turns in older installs.
+procedure SetVoiceEnvValue(var Lines: TArrayOfString; Key, Value: String);
+var
+  I: Integer;
+  Prefix: String;
+begin
+  Prefix := Key + '=';
+  for I := 0 to GetArrayLength(Lines) - 1 do
+  begin
+    if Pos(Prefix, Trim(Lines[I])) = 1 then
+    begin
+      Lines[I] := Prefix + Value;
+      Exit;
+    end;
+  end;
+  SetArrayLength(Lines, GetArrayLength(Lines) + 1);
+  Lines[GetArrayLength(Lines) - 1] := Prefix + Value;
+end;
+
+procedure MigrateVoiceConfiguration;
+var
+  ConfigPath: String;
+  Lines: TArrayOfString;
+begin
+  ConfigPath := ExpandConstant('{commonappdata}\Nexa\device-ui.env');
+  if not LoadStringsFromFile(ConfigPath, Lines) then
+  begin
+    Log('Voice config migration skipped: cannot read ' + ConfigPath);
+    Exit;
+  end;
+
+  SetVoiceEnvValue(Lines, 'REALTIME_PREFER_OS_AEC', '1');
+  SetVoiceEnvValue(Lines, 'REALTIME_OS_AEC', '1');
+  SetVoiceEnvValue(Lines, 'REALTIME_WEBRTC_AEC', '0');
+  SetVoiceEnvValue(Lines, 'REALTIME_UPLINK_CODEC', 'g711_ulaw');
+
+  if SaveStringsToFile(ConfigPath, Lines, False) then
+    Log('Migrated Nexa voice config to validated OS-AEC + G.711 settings')
+  else
+    Log('Voice config migration failed: cannot write ' + ConfigPath);
+end;
+
+procedure CurStepChanged(CurStep: TSetupStep);
+begin
+  if CurStep = ssPostInstall then
+    MigrateVoiceConfiguration;
+end;
+
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
 begin
   if CurUninstallStep = usUninstall then
