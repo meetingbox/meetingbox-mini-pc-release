@@ -20,6 +20,78 @@ audio-capture child `meetingbox-audio.exe`, and a shared `_internal\` payload.
 
 ---
 
+## ⚠️ Packaging integrity — how NOT to silently lose pieces
+
+Read this first. The build is intentionally robust, but several components are
+pulled in **defensively** (wrapped in `try/except` or `if file exists`). A
+missing dependency or file is therefore **skipped silently** instead of failing
+the build — the exe still starts, but a feature quietly regresses. The most
+important victim is **echo cancellation**: if it's dropped, the device starts
+hearing its own voice again and self-interrupts in a loop.
+
+> **Naming note (post-"Nexa" rebrand):** the current spec/installer produce
+> `Nexa.exe`, `nexa-audio.exe`, and `NexaSetup.exe`, and seed config to
+> `%PROGRAMDATA%\Nexa\device-ui.env`. The rest of this document still uses the
+> old `MeetingBox*` names — the steps are identical, only the output names
+> changed. Runtime logs still live under `%LOCALAPPDATA%\MeetingBox\logs\`.
+
+### Before you build — checklist
+1. Build **inside the Python 3.11 venv** with all deps installed
+   (`device-ui\requirements.txt` + `packaging\windows\requirements-build.txt`).
+   Confirm the echo-critical import resolves — this is the one that matters:
+   ```powershell
+   python -c "import comtypes, sounddevice, vosk, numpy, kivy; print('deps ok')"
+   ```
+   `comtypes` drives the **Windows Voice Capture DSP** (the OS-grade echo
+   canceller). If it is missing, `windows_aec` can't load, the DSP is skipped,
+   and voice silently falls back to Speex → **echo returns**.
+2. Confirm the two files the spec bundles *conditionally* actually exist:
+   - `device-ui\src\vendor\windows\libspeexdsp.dll`  (Speex fallback AEC)
+   - `packaging\windows\device-ui.env`               (config template)
+3. Confirm the echo flags are ON in `packaging\windows\device-ui.env`
+   (they must stay `1` — there is a DO-NOT-REVERT note next to them):
+   ```
+   REALTIME_PREFER_OS_AEC=1
+   REALTIME_OS_AEC=1
+   ```
+
+### After you build — verify the payload (proves nothing was dropped)
+```powershell
+$p = "packaging\windows\dist\Nexa"     # or dist\MeetingBox on an older build
+Test-Path "$p\Nexa.exe"
+Test-Path "$p\nexa-audio.exe"
+Test-Path "$p\_internal\device-ui.env"
+Test-Path "$p\_internal\vendor\windows\libspeexdsp.dll"
+Test-Path "$p\_internal\assets"
+Get-ChildItem "$p\_internal" -Directory -Filter comtypes   # DSP dependency present?
+```
+Everything above should exist. Then smoke-test: launch the exe, open a voice
+session, and check the log at `%LOCALAPPDATA%\MeetingBox\logs\meetingbox-ui.log`
+for:
+```
+Realtime AEC: Windows Voice Capture DSP available ... full-duplex
+```
+If instead the session engine reports the `speex echo canceller`, the DSP did
+NOT load — recheck `comtypes` and the `device-ui.env` flags above.
+
+### The one real deployment gotcha: config does NOT update on upgrade
+The installer seeds `%PROGRAMDATA%\Nexa\device-ui.env` with the
+`onlyifdoesntexist` flag (deliberately, so a customer's local edits survive an
+upgrade). Consequence: **any change to the packaged `device-ui.env` — including
+the echo flags — will NOT reach a machine that already has that file.** A *fresh*
+install gets the new config; an *upgrade* keeps the old one.
+
+To push a config change (e.g. re-enabling the echo flags) to an existing
+machine, do ONE of:
+- Edit the two flags in `%PROGRAMDATA%\Nexa\device-ui.env` directly, **or**
+- Delete that file and re-run the installer (it re-seeds from the fixed template).
+
+*(This is exactly why the echo fix appeared not to apply until the live
+`%PROGRAMDATA%\Nexa\device-ui.env` was refreshed — the template was correct, but
+the pre-existing per-machine file shadowed it.)*
+
+---
+
 ## Prerequisites (install once)
 
 - **Python 3.11** (64-bit) from [python.org](https://www.python.org/downloads/) —
