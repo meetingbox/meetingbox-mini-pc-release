@@ -442,6 +442,8 @@ class DockController:
         self._vrect = (0, 0, 0, 0)
         self._poll_ev = None
         self._topmost_accum = 0.0
+        self._fg_refresh_cooldown = 0.0
+        self._last_foreground_hwnd = 0
         # 7" panel surface: the ScreenManager rendered inside a scaling holder so
         # it is a true physical size regardless of monitor resolution/density.
         self._holder: Optional[ScatterLayout] = None
@@ -557,17 +559,9 @@ class DockController:
             # alpha + force a Kivy repaint several times over the first few
             # seconds (once real GL content exists) so it clears on its own on
             # first engage, with no interaction needed.
-            for _kick in (0.1, 0.35, 0.7, 1.2, 2.0):
+            for _kick in (0.12, 0.35, 0.7, 1.2, 2.0):
                 Clock.schedule_once(
                     lambda *_a: winov.refresh_alpha(self._hwnd), _kick
-                )
-            # Soft refreshes don't always clear the stale opaque (black) first
-            # frame on the ANGLE/D3D backend, so once a frame has been drawn do
-            # a hard hide->show recomposition (what the user's click effectively
-            # does). Two attempts cover slow first-paint.
-            for _hard in (0.5, 1.5):
-                Clock.schedule_once(
-                    lambda *_a: winov.hard_recomposite(self._hwnd), _hard
                 )
         except Exception:
             logger.exception("PepperDock: overlay setup failed")
@@ -899,6 +893,26 @@ class DockController:
         if self._topmost_accum >= 1.0:
             self._topmost_accum = 0.0
             winov.reassert_topmost(self._hwnd)
+        if self._fg_refresh_cooldown > 0.0:
+            self._fg_refresh_cooldown = max(0.0, self._fg_refresh_cooldown - dt)
+        # When the window that HAD the foreground VANISHES (the Dashboard's
+        # close button hides it to the tray), DWM re-composites the desktop and
+        # can present this overlay's stale surface as opaque black until the
+        # next input event. Soft alpha refreshes do NOT clear that state; only
+        # a full surface rebuild (hide->show, i.e. hard_recomposite) does. Do
+        # it ONCE, only on that exact transition: focus moving between two
+        # still-visible windows (normal alt-tab / app switching) never triggers
+        # it, so there is no repeated blinking.
+        fg = winov.foreground_hwnd()
+        if fg and fg != self._last_foreground_hwnd:
+            prev = self._last_foreground_hwnd
+            self._last_foreground_hwnd = fg
+            if (prev and prev != self._hwnd
+                    and not winov.is_window_visible(prev)
+                    and self._fg_refresh_cooldown <= 0.0):
+                self._fg_refresh_cooldown = 1.0
+                winov.hard_recomposite(self._hwnd)
+                winov.refresh_alpha(self._hwnd)
 
         # A window-level modal dialog (mic-permission, signed-out warning, ...) is
         # mounted on root_layout OUTSIDE the dock/panel rects. If the overlay is

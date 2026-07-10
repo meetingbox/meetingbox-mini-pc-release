@@ -1,7 +1,7 @@
-MeetingBox for Windows - Third-Party Software Notices
-=====================================================
+Nexa for Windows - Third-Party Software Notices
+===============================================
 
-MeetingBox for Windows includes third-party open-source software, listed below
+Nexa for Windows includes third-party open-source software, listed below
 with their licenses. Full license texts are available at the linked project
 pages. This list was generated from the actual dependency manifests
 (pip-licenses / license-checker) for version 1.0.0.

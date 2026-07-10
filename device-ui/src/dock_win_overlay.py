@@ -353,6 +353,27 @@ def make_overlay(hwnd: int) -> bool:
 
         _enable_dwm_alpha(hwnd)
 
+        # If startup parked the window fully off-screen, force a compositor
+        # surface rebuild there first (invisible to the user). This avoids the
+        # first on-screen frame briefly presenting as an opaque black surface.
+        try:
+            r = wintypes.RECT()
+            if u.GetWindowRect(hwnd, ctypes.byref(r)):
+                vx, vy, vw, vh = virtual_screen_rect()
+                on_screen = not (
+                    r.right <= vx
+                    or r.left >= (vx + vw)
+                    or r.bottom <= vy
+                    or r.top >= (vy + vh)
+                )
+                if not on_screen:
+                    u.ShowWindow(hwnd, SW_HIDE)
+                    u.ShowWindow(hwnd, SW_SHOWNA)
+                    _enable_dwm_alpha(hwnd)
+        except Exception:
+            logger.debug("make_overlay off-screen precompose failed",
+                         exc_info=True)
+
         # Cover the whole virtual desktop and pin top-most.
         x, y, w, h = virtual_screen_rect()
         u.SetWindowPos(
@@ -535,5 +556,32 @@ def is_foreground(hwnd: int) -> bool:
     try:
         _ensure_argtypes()
         return int(_user32().GetForegroundWindow() or 0) == int(hwnd)
+    except Exception:
+        return False
+
+
+def foreground_hwnd() -> int:
+    """Current foreground HWND (0 on failure/non-Windows)."""
+    if not IS_WINDOWS:
+        return 0
+    try:
+        _ensure_argtypes()
+        return int(_user32().GetForegroundWindow() or 0)
+    except Exception:
+        return 0
+
+
+def is_window_visible(hwnd: int) -> bool:
+    """True while *hwnd* is a visible (mapped) window.
+
+    Used to tell a window that was CLOSED/HIDDEN (Dashboard close button hides
+    it to the tray) apart from one that merely lost focus: minimized and
+    background windows keep WS_VISIBLE, a hidden/destroyed one does not.
+    """
+    if not IS_WINDOWS or not hwnd:
+        return False
+    try:
+        _ensure_argtypes()
+        return bool(_user32().IsWindowVisible(wintypes.HWND(hwnd)))
     except Exception:
         return False

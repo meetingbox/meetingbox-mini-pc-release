@@ -355,6 +355,14 @@ else:
         os.environ["DISPLAY_HEIGHT"] = str(_H)
 
 Config.set('graphics', 'window_state', 'visible')
+# Windows dock companion: keep SDL/Kivy window state visible (to avoid later
+# hide/show state drift), but start off-screen so the user never sees the
+# transient decorated desktop window before the transparent overlay takes over.
+_DOCK_STARTS_OFFSCREEN = (
+    sys.platform == "win32"
+    and not _FULLSCREEN
+    and os.getenv("MEETINGBOX_DOCK", "1") != "0"
+)
 if _FULLSCREEN:
     # Kiosk / appliance: borderless, pinned top-left, fullscreen.
     Config.set('graphics', 'position', 'custom')
@@ -369,7 +377,14 @@ else:
     # NON-resizable: the UI is laid out against a fixed DISPLAY_WIDTH x
     # DISPLAY_HEIGHT (the device 1260:800 aspect), so allowing free resize would
     # stretch/distort the layout. Locking it preserves the device aspect ratio.
-    Config.set('graphics', 'position', 'auto')
+    if _DOCK_STARTS_OFFSCREEN:
+        # Park the initial SDL window outside the desktop; overlay setup later
+        # repositions it across the virtual desktop.
+        Config.set('graphics', 'position', 'custom')
+        Config.set('graphics', 'left', '-32000')
+        Config.set('graphics', 'top', '-32000')
+    else:
+        Config.set('graphics', 'position', 'auto')
     Config.set('graphics', 'borderless', '0')
     Config.set('graphics', 'fullscreen', '0')
     Config.set('graphics', 'resizable', '0')
@@ -516,6 +531,7 @@ from config import (
     resolve_device_config_dir,
     setup_complete_marker_paths_for_read,
     get_device_auth_token,
+    has_dashboard_session,
     clear_stored_device_auth_token,
     read_dashboard_logout_signal,
     clear_dashboard_logout_signal,
@@ -1785,6 +1801,7 @@ class MeetingBoxApp(App):
             )
         else:
             logger.info("UI built – starting on splash screen")
+
         return self.root_layout
 
     def _ensure_window_visible(self):
@@ -1999,7 +2016,18 @@ class MeetingBoxApp(App):
         in-progress meeting by deferring the close while on a recording/
         processing screen, then warn the user and exit once it is safe.
         """
-        if not (self._pending_dashboard_logout or read_dashboard_logout_signal()):
+        logout_signal = read_dashboard_logout_signal()
+        if not (self._pending_dashboard_logout or logout_signal):
+            return
+        # Guard against stale/stray logout markers: if the Dashboard session
+        # file still exists, this is not a true sign-out. Consume the marker
+        # and keep the companion running.
+        if logout_signal and has_dashboard_session():
+            try:
+                clear_dashboard_logout_signal()
+            except Exception:
+                logger.debug("stale dashboard logout signal clear failed",
+                             exc_info=True)
             return
         self._pending_dashboard_logout = True
         cur = self.screen_manager.current if self.screen_manager is not None else ""
@@ -2479,12 +2507,15 @@ class MeetingBoxApp(App):
         try:
             from config import clear_dashboard_logout_signal
             if read_dashboard_logout_signal():
-                clear_stored_device_auth_token()
+                real_logout = not has_dashboard_session()
+                if real_logout:
+                    clear_stored_device_auth_token()
                 clear_dashboard_logout_signal()
-                try:
-                    self.backend.set_device_auth_header(None)
-                except Exception:
-                    pass
+                if real_logout:
+                    try:
+                        self.backend.set_device_auth_header(None)
+                    except Exception:
+                        pass
         except Exception:
             pass
 
