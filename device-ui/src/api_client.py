@@ -19,7 +19,12 @@ import httpx
 import websockets
 from websockets.exceptions import ConnectionClosed
 
-from ssl_compat import ws_ssl_context
+from ssl_compat import ws_ssl_context, httpx_verify
+
+# Shared TLS trust (OS store + certifi) for every httpx client so REST calls —
+# including the realtime ephemeral-token fetch — keep working behind AV
+# "HTTPS scanning" that MITMs TLS with its own root CA.
+_HTTPX_VERIFY = httpx_verify()
 
 from config import (
     BACKEND_URL,
@@ -282,7 +287,7 @@ def invoke_realtime_tool_sync(
         "arguments": arguments if arguments is not None else "{}",
     }
     try:
-        with httpx.Client(timeout=timeout) as client:
+        with httpx.Client(timeout=timeout, verify=_HTTPX_VERIFY) as client:
             resp = client.post(url, json=payload, headers=headers)
             resp.raise_for_status()
             body = resp.json()
@@ -307,7 +312,7 @@ def correct_transcript_sync(
         return text
     url = f"{root}/api/voice/correct-text"
     try:
-        with httpx.Client(timeout=timeout) as client:
+        with httpx.Client(timeout=timeout, verify=_HTTPX_VERIFY) as client:
             resp = client.post(
                 url,
                 json={"text": text.strip()},
@@ -356,6 +361,7 @@ class BackendClient:
                 float(API_TIMEOUT),
                 connect=min(10.0, float(API_TIMEOUT)),
             ),
+            verify=_HTTPX_VERIFY,
         )
         self._refresh_auth_header()
         self.ws_connection = None
@@ -403,7 +409,7 @@ class BackendClient:
             sn = serial_number.strip()
             if sn:
                 payload["serial_number"] = sn
-        async with httpx.AsyncClient(timeout=API_TIMEOUT) as raw:
+        async with httpx.AsyncClient(timeout=API_TIMEOUT, verify=_HTTPX_VERIFY) as raw:
             resp = await raw.post(
                 f"{self.base_url}/api/devices/claim",
                 json=payload,
@@ -430,7 +436,7 @@ class BackendClient:
         jwt = (user_jwt or "").strip()
         if not jwt:
             raise ValueError("Missing Google sign-in token")
-        async with httpx.AsyncClient(timeout=API_TIMEOUT) as raw:
+        async with httpx.AsyncClient(timeout=API_TIMEOUT, verify=_HTTPX_VERIFY) as raw:
             resp = await raw.get(
                 f"{self.base_url}/api/integrations/google/auth-url",
                 headers={"Authorization": f"Bearer {jwt}"},
@@ -461,7 +467,7 @@ class BackendClient:
         jwt = (user_jwt or "").strip()
         if not jwt:
             raise ValueError("Missing Google sign-in token")
-        async with httpx.AsyncClient(timeout=API_TIMEOUT) as raw:
+        async with httpx.AsyncClient(timeout=API_TIMEOUT, verify=_HTTPX_VERIFY) as raw:
             code_resp = await raw.post(
                 f"{self.base_url}/api/devices/pairing-codes",
                 headers={"Authorization": f"Bearer {jwt}"},
@@ -1786,6 +1792,7 @@ class BackendClient:
         async with httpx.AsyncClient(
             timeout=httpx.Timeout(connect=12.0, read=15.0, write=8.0, pool=8.0),
             follow_redirects=True,
+            verify=_HTTPX_VERIFY,
         ) as probe_client:
             for url in probes:
                 for attempt in range(2):
