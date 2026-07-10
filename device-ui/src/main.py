@@ -3437,6 +3437,7 @@ class MeetingBoxApp(App):
         mode = (recording_mode or "meeting").strip().lower()
         if mode not in {"meeting", "note"}:
             mode = "meeting"
+        logger.info("start_recording invoked (mode=%s)", mode)
         self.current_recording_mode = mode
         # Pre-recording context (who/what/why) captured by the voice agent, to be
         # stored as searchable metadata so the recording is findable later.
@@ -4154,6 +4155,11 @@ class MeetingBoxApp(App):
         self, recording_mode: str = "meeting", context: dict | None = None
     ) -> None:
         """Called when the realtime agent asks to start a recording."""
+        logger.info(
+            "Realtime start_recording callback fired (mode=%s, active=%s)",
+            recording_mode,
+            self.recording_state.get("active"),
+        )
         if self.recording_state.get("active"):
             logger.info("Realtime start_recording: already recording, ignoring.")
             return

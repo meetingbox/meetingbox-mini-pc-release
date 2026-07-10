@@ -5411,6 +5411,7 @@ class RealtimeVoiceSession:
         start_recording_requested = False
         start_recording_mode = "meeting"
         start_recording_context: dict = {}
+        start_recording_fired = False
         brief_started_now = False
         for item in outputs:
             if not isinstance(item, dict) or item.get("type") != "function_call":
@@ -5456,6 +5457,19 @@ class RealtimeVoiceSession:
                 )
                 start_recording_requested = True
                 start_recording_mode = mode
+                # Fire the device-side start NOW (hop to Kivy main thread) rather
+                # than after the session close/re-arm sequence below. The deferred
+                # path raced the teardown (_stop/ws.close + warm-standby re-arm)
+                # and the callback was being dropped, so the AI said "starting
+                # recording" but nothing actually started.
+                cb = self._on_start_recording_cb
+                if cb:
+                    Clock.schedule_once(
+                        lambda _dt, m=start_recording_mode, c=start_recording_context:
+                            self._safe_call(cb, m, c),
+                        0,
+                    )
+                    start_recording_fired = True
                 continue
 
             logger.info(
@@ -5620,12 +5634,16 @@ class RealtimeVoiceSession:
                 await ws.close()
             except Exception:
                 pass
-            cb = self._on_start_recording_cb
-            if cb:
-                Clock.schedule_once(
-                    lambda _dt, m=start_recording_mode, c=start_recording_context: self._safe_call(cb, m, c),
-                    0,
-                )
+            # Fallback: only fire here if we didn't already fire at detection time
+            # (guards against a double-start while still covering any path where
+            # the immediate fire was skipped).
+            if not start_recording_fired:
+                cb = self._on_start_recording_cb
+                if cb:
+                    Clock.schedule_once(
+                        lambda _dt, m=start_recording_mode, c=start_recording_context: self._safe_call(cb, m, c),
+                        0,
+                    )
 
     # ------------------------------------------------------------------
     # Misc helpers
