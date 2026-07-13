@@ -183,6 +183,50 @@ def test_realtime_session_end_callback_is_idempotent(monkeypatch):
     assert ended == [True]
 
 
+def test_device_session_lock_rejects_second_owner(tmp_path, monkeypatch):
+    import config
+    import realtime_voice_session as rtv
+
+    monkeypatch.setattr(rtv, "sd", None)
+    monkeypatch.setattr(config, "resolve_device_config_dir", lambda: tmp_path)
+
+    class _FakeFcntl:
+        LOCK_EX = 1
+        LOCK_NB = 2
+        LOCK_UN = 4
+        locked = False
+
+        @classmethod
+        def flock(cls, _fd, operation):
+            if operation == cls.LOCK_UN:
+                cls.locked = False
+            elif cls.locked:
+                raise BlockingIOError
+            else:
+                cls.locked = True
+
+    monkeypatch.setattr(rtv, "fcntl", _FakeFcntl)
+
+    def _session():
+        return RealtimeVoiceSession(
+            client_secret="ek_test",
+            model="gpt-realtime-2",
+            backend_base_url="http://127.0.0.1:8000",
+            device_token="mbd_test",
+            on_session_end=lambda: None,
+            on_error=lambda _msg: None,
+            on_connected=lambda: None,
+        )
+
+    first = _session()
+    second = _session()
+    assert first._acquire_device_session_lock() is True
+    assert second._acquire_device_session_lock() is False
+    first._release_device_session_lock()
+    assert second._acquire_device_session_lock() is True
+    second._release_device_session_lock()
+
+
 def test_extract_silent_hold_phrase_from_user_request():
     assert (
         _extract_silent_hold_phrase("Nexa, pause until I say continue Nexa.")

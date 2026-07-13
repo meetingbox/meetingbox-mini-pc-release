@@ -254,10 +254,11 @@ try:
 except ImportError:
     REALTIME_VOICE_IMPLEMENTED = False
 
-# Warm-standby: hold a pre-connected Realtime session so wake activates it
-# instantly. Disable (set 0) to fall back to cold per-wake sessions.
+# Warm-standby is opt-in. A background session complicates ownership across
+# account changes and duplicate UI processes; cold per-wake sessions guarantee
+# that only the explicit wake owns Realtime.
 REALTIME_WARM_STANDBY = os.environ.get(
-    "REALTIME_WARM_STANDBY", "1"
+    "REALTIME_WARM_STANDBY", "0"
 ).strip().lower() not in ("", "0", "false", "no", "off")
 
 # Boot-flow screens
@@ -823,6 +824,7 @@ class MeetingBoxApp(App):
         # Number of consecutive auto-reconnects since the last user-triggered wake.
         # Capped at 1 so a runaway reconnect loop doesn't block the wake listener.
         self._realtime_reconnect_count = 0
+        self._last_realtime_wake_monotonic = 0.0
         # Which email field the current recipient picker is resolving ("to"/"cc"/"bcc").
         self._picker_current_field = "to"
         # Queue recipient-pickers so ambiguous contacts resolve strictly one-at-a-time.
@@ -1430,6 +1432,7 @@ class MeetingBoxApp(App):
         self._warm_voice_pending = False
         self._realtime_launch_permitted = False
         self._realtime_reconnect_count = 0
+        self._last_realtime_wake_monotonic = 0.0
         self._realtime_mic_acquired = False
         self._realtime_connected_ok = False
         stopped_ids = set()
@@ -3004,6 +3007,23 @@ class MeetingBoxApp(App):
                 quiet_until - nowm,
             )
             return
+        if (
+            self._realtime_voice_session is not None
+            or self._realtime_session_pending
+        ):
+            _logging.getLogger(__name__).info(
+                "Ignoring duplicate wake while Realtime session is active or pending"
+            )
+            return
+        last_wake = float(
+            getattr(self, "_last_realtime_wake_monotonic", 0.0) or 0.0
+        )
+        if nowm - last_wake < 1.5:
+            _logging.getLogger(__name__).info(
+                "Ignoring duplicate wake callback within launch debounce"
+            )
+            return
+        self._last_realtime_wake_monotonic = nowm
 
         if getattr(self, "voice_assistant_enabled", True):
             # During an active meeting recording, suppress cloud Q&A so the
@@ -4876,9 +4896,10 @@ class MeetingBoxApp(App):
             return
         if self._realtime_voice_session is not None:
             logger.info(
-                "Ending prior Realtime voice session before starting a new one"
+                "Realtime voice session already active; skipping duplicate launch"
             )
-            self._end_realtime_voice_session()
+            self._realtime_launch_permitted = False
+            return
 
         if self._realtime_session_pending:
             logger.debug(

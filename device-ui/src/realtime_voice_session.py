@@ -65,6 +65,11 @@ from api_client import invoke_realtime_tool_sync
 logger = logging.getLogger(__name__)
 
 try:
+    import fcntl
+except ImportError:
+    fcntl = None
+
+try:
     import sounddevice as sd
 except ImportError:
     sd = None
@@ -841,6 +846,7 @@ class RealtimeVoiceSession:
         self._user_ended = False
         self._session_end_emitted = False
         self._session_end_lock = threading.Lock()
+        self._device_session_lock_file = None
 
         # Mic input
         self._audio_q: queue.Queue[bytes | None] = queue.Queue(maxsize=400)
@@ -1019,6 +1025,53 @@ class RealtimeVoiceSession:
                 pass
         self._abort_aplay()
         self._close_mic()
+
+    def _acquire_device_session_lock(self) -> bool:
+        """Ensure only one Realtime session owns this physical appliance."""
+        if fcntl is None:
+            return True
+        lock_file = None
+        try:
+            from config import resolve_device_config_dir
+
+            lock_path = resolve_device_config_dir() / "realtime_voice_session.lock"
+            lock_path.parent.mkdir(parents=True, exist_ok=True)
+            lock_file = lock_path.open("a+", encoding="utf-8")
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            lock_file.seek(0)
+            lock_file.truncate()
+            lock_file.write(f"pid={os.getpid()}\n")
+            lock_file.flush()
+            self._device_session_lock_file = lock_file
+            return True
+        except (BlockingIOError, OSError):
+            try:
+                if lock_file is not None:
+                    lock_file.close()
+            except Exception:
+                pass
+            logger.warning(
+                "Realtime session rejected: another process already owns device voice"
+            )
+            return False
+        except Exception:
+            logger.exception("Realtime device session lock failed")
+            return False
+
+    def _release_device_session_lock(self) -> None:
+        lock_file = self._device_session_lock_file
+        self._device_session_lock_file = None
+        if lock_file is None:
+            return
+        try:
+            if fcntl is not None:
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+        except Exception:
+            pass
+        try:
+            lock_file.close()
+        except Exception:
+            pass
 
     # ------------------------------------------------------------------
     # Callbacks (Kivy-thread-safe)
@@ -1917,6 +1970,13 @@ class RealtimeVoiceSession:
             self._emit_error("Missing client secret or model for Realtime.")
             self._emit_session_end()
             return
+        if not self._acquire_device_session_lock():
+            # This is an intentional ownership rejection, not a network failure;
+            # do not let main.py auto-reconnect and create another duplicate.
+            self._user_ended = True
+            self._emit_error("Another voice session is already active on this device.")
+            self._emit_session_end()
+            return
 
         self._loop = asyncio.get_running_loop()
         url = build_realtime_websocket_url(self._model)
@@ -2052,6 +2112,7 @@ class RealtimeVoiceSession:
                 except Exception:
                     pass
                 self._aec = None
+            self._release_device_session_lock()
             self._emit_session_end()
 
     # ------------------------------------------------------------------
