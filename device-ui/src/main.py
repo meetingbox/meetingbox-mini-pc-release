@@ -1537,9 +1537,6 @@ class MeetingBoxApp(App):
         else:
             self._metrics_push = None
 
-        # After boot-time API bursts settle, run connectivity / mic / model checks once.
-        # A slightly later start avoids transient false-negatives during initial network churn.
-        Clock.schedule_once(self._run_startup_self_test_overlay, 8.0)
         # Cold-start prewarm for instant first-open calendar/emails.
         Clock.schedule_once(lambda _dt: run_async(self._ui_cache_bootstrap_async()), 0.8)
         # Centralized sync loop to keep caches hot across all screens.
