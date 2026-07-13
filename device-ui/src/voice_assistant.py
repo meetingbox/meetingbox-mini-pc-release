@@ -180,6 +180,37 @@ def _best_phrase_similarity(text: str, target: str) -> float:
     )
 
 
+_NEXA_PREFIX_TOKENS = frozenset({"hey", "hay", "hei"})
+_NEXA_KEYWORD_TOKENS = frozenset({
+    "nexa", "nexah", "neksa", "necksa", "nexsa", "nexxa",
+    "nexus", "next", "necks", "nexo", "nexar", "nexer",
+    "nick", "nik", "nix", "mixer", "anexa", "inexa",
+})
+_NEXA_MERGED_TOKENS = frozenset({
+    "heynexa", "heynexah", "heynex", "heynexus", "heynext",
+    "haynexa", "heinexa", "hynexa", "hynex", "hynix",
+})
+
+
+def _nexa_wake_span(text: str) -> tuple[int, int] | None:
+    """Return the token span matching a constrained spoken ``Hey Nexa`` variant."""
+    words = _normalize_text(text).split()
+    for idx, word in enumerate(words):
+        if word in _NEXA_MERGED_TOKENS:
+            return idx, idx + 1
+
+    for idx, word in enumerate(words):
+        if word not in _NEXA_PREFIX_TOKENS:
+            continue
+        # Joining up to three following tokens handles slow/split recognition
+        # such as "hey neck sa" without accepting a bare "nexa"/"next".
+        for width in range(1, min(3, len(words) - idx - 1) + 1):
+            candidate = "".join(words[idx + 1:idx + 1 + width])
+            if candidate in _NEXA_KEYWORD_TOKENS:
+                return idx, idx + 1 + width
+    return None
+
+
 def _build_intent_specs(start_commands: list[str]) -> tuple[_IntentSpec, ...]:
     start_aliases = tuple(
         dict.fromkeys(
@@ -341,6 +372,8 @@ class VoiceCommandInterpreter:
         self._awaiting_confirmation_until = 0.0
 
     def _heard_wake_phrase(self, text: str) -> bool:
+        if self.wake_phrase == "hey nexa" and _nexa_wake_span(text) is not None:
+            return True
         # Slightly looser fuzzy match so noisy rooms / small-model errors still wake reliably.
         return _best_phrase_similarity(text, self.wake_phrase) >= 0.77
 
@@ -364,6 +397,16 @@ class VoiceCommandInterpreter:
             {"please", "uh", "um", "ok", "okay", "yeah", "really", "so", "now"}
         )
         words = norm.split()
+        if self.wake_phrase == "hey nexa":
+            span = _nexa_wake_span(norm)
+            if span is not None:
+                start, end = span
+                residual = [
+                    word
+                    for idx, word in enumerate(words)
+                    if not (start <= idx < end) and word not in fillers
+                ]
+                return not residual
         residual = [w for w in words if w not in wake_set and w not in fillers]
         if not residual:
             return True

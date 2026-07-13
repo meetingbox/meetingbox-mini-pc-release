@@ -50,6 +50,34 @@ def test_fuzzy_wake_phrase_allows_minor_transcript_variation():
     assert intent.name == "start_meeting"
 
 
+def test_nexa_wake_phrase_accepts_merged_split_and_accent_variants():
+    interpreter = _mk()
+    for phrase in (
+        "heynexa",
+        "hynexa",
+        "hynix",
+        "hay neksa",
+        "hey neck sa",
+        "hey an exa",
+        "hey mixer",
+    ):
+        assert interpreter.heard_wake_phrase(phrase) is True
+        assert interpreter.is_wake_only_utterance(phrase) is True
+
+
+def test_merged_nexa_wake_with_command_starts_meeting():
+    interpreter = _mk()
+    intent = interpreter.handle_transcript("heynexa start meeting", now=10.0)
+    assert intent is not None
+    assert intent.name == "start_meeting"
+
+
+def test_nexa_aliases_do_not_wake_without_hey_structure():
+    interpreter = _mk()
+    for phrase in ("nexa", "the next meeting", "kitchen mixer", "hey the next meeting"):
+        assert interpreter.heard_wake_phrase(phrase) is False
+
+
 def test_wake_phrase_times_out():
     interpreter = _mk()
     assert interpreter.handle_transcript("hey nexa", now=10.0) is None
