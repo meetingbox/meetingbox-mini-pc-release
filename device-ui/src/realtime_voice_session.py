@@ -839,6 +839,8 @@ class RealtimeVoiceSession:
         self._ws: Any = None
         self._connected_fired = False
         self._user_ended = False
+        self._session_end_emitted = False
+        self._session_end_lock = threading.Lock()
 
         # Mic input
         self._audio_q: queue.Queue[bytes | None] = queue.Queue(maxsize=400)
@@ -1029,6 +1031,10 @@ class RealtimeVoiceSession:
         Clock.schedule_once(lambda _dt: self._safe_call(self._on_connected_cb), 0)
 
     def _emit_session_end(self) -> None:
+        with self._session_end_lock:
+            if self._session_end_emitted:
+                return
+            self._session_end_emitted = True
         Clock.schedule_once(lambda _dt: self._safe_call(self._on_session_end_cb), 0)
 
     def _emit_state(self, state: str) -> None:

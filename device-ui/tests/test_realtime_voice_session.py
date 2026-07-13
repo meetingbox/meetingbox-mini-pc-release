@@ -155,6 +155,34 @@ def test_realtime_transcription_defaults_are_accuracy_first():
     assert _INPUT_TRANSCRIPTION_PROMPT == ""
 
 
+def test_realtime_session_end_callback_is_idempotent(monkeypatch):
+    import realtime_voice_session as rtv
+
+    monkeypatch.setattr(rtv, "sd", None)
+
+    class _ImmediateClock:
+        @staticmethod
+        def schedule_once(fn, _dt=0):
+            fn(0)
+
+    monkeypatch.setattr(rtv, "Clock", _ImmediateClock)
+    ended = []
+    session = RealtimeVoiceSession(
+        client_secret="ek_test",
+        model="gpt-realtime-2",
+        backend_base_url="http://127.0.0.1:8000",
+        device_token="mbd_test",
+        on_session_end=lambda: ended.append(True),
+        on_error=lambda _msg: None,
+        on_connected=lambda: None,
+    )
+
+    session._emit_session_end()
+    session._emit_session_end()
+
+    assert ended == [True]
+
+
 def test_extract_silent_hold_phrase_from_user_request():
     assert (
         _extract_silent_hold_phrase("Nexa, pause until I say continue Nexa.")

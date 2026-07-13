@@ -330,14 +330,10 @@ class PairDeviceScreen(BaseScreen):
                 Clock.schedule_once(_show_ex, 0)
                 return
 
-            dev = data.get("device") or {}
-            dname = dev.get("device_name") or name
-            self.app.device_name = dname
-            self.app.paired_owner_email = (data.get("owner_email") or "").strip()
-
             def _ok(*_a):
                 if self._link_btn:
                     self._link_btn.disabled = False
+                self.app.on_account_paired(data)
                 self.goto("meetingbox_ready", transition="slide_left")
 
             Clock.schedule_once(_ok, 0)

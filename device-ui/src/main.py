@@ -797,6 +797,10 @@ class MeetingBoxApp(App):
         self._warm_voice_session = None
         self._warm_voice_pending = False
         self._realtime_session_pending = False
+        # Incremented whenever pairing ownership changes. Async Realtime mint
+        # results carry the generation that started them and are discarded if
+        # they return after an unpair/re-pair.
+        self._realtime_auth_generation = 0
         self._realtime_session_start_monotonic = None
         self._realtime_connected_ok = False
         self._wake_hide_ev = None        # ClockEvent that resets home after wake timeout
@@ -1413,10 +1417,57 @@ class MeetingBoxApp(App):
         self._setup_poll = Clock.schedule_interval(self._global_setup_check, 3.0)
         self.goto_screen('splash', 'fade')
 
+    def _reset_realtime_sessions_for_account_change(self) -> None:
+        """Stop every old-account voice session and invalidate pending mints."""
+        self._realtime_auth_generation += 1
+        active = self._realtime_voice_session
+        warm = self._warm_voice_session
+        # Clear ownership before stop(); each session reports its end
+        # asynchronously, and stale callbacks must not find a newer session.
+        self._realtime_voice_session = None
+        self._warm_voice_session = None
+        self._realtime_session_pending = False
+        self._warm_voice_pending = False
+        self._realtime_launch_permitted = False
+        self._realtime_reconnect_count = 0
+        self._realtime_mic_acquired = False
+        self._realtime_connected_ok = False
+        stopped_ids = set()
+        for sess in (active, warm):
+            if sess is None or id(sess) in stopped_ids:
+                continue
+            stopped_ids.add(id(sess))
+            try:
+                sess.stop()
+            except Exception:
+                logger.debug(
+                    "Stopping stale Realtime session during account change",
+                    exc_info=True,
+                )
+        self._set_voice_runtime_state("idle")
+
+    def on_account_paired(self, data: dict) -> None:
+        """Apply new pairing ownership after claim_device persisted its token."""
+        self._reset_realtime_sessions_for_account_change()
+        dev = (data or {}).get("device") or {}
+        self.device_id = (dev.get("id") or "").strip() or None
+        self.device_name = (dev.get("device_name") or self.device_name).strip()
+        self.current_user_id = (
+            str((data or {}).get("owner_user_id") or "").strip() or None
+        )
+        self.paired_owner_email = (
+            str((data or {}).get("owner_email") or "").strip() or None
+        )
+        token = get_device_auth_token().strip()
+        self.backend.set_device_auth_header(token or None)
+        self._sync_voice_assistant_state()
+        self._schedule_voice_prewarm(delay=0.2)
+
     def on_account_unpaired(self, remote: bool = False):
         """Clear local pairing after dashboard or device-initiated unpair."""
         logger.info("Device unlinked from account (%s)",
                     "remote revoke" if remote else "local unpair")
+        self._reset_realtime_sessions_for_account_change()
         clear_stored_device_auth_token()
         self.backend.set_device_auth_header(None)
         self.current_user_id = None
@@ -1441,6 +1492,7 @@ class MeetingBoxApp(App):
         self._ui_cache_inflight.discard("emails_inbox")
         self._ui_cache_persist_to_disk()
         self._nav_stack.clear()
+        self._sync_voice_assistant_state()
         self.goto_screen('pair_device', 'fade')
 
     def _pairing_watchdog(self, _dt):
@@ -4759,8 +4811,10 @@ class MeetingBoxApp(App):
             return  # an active session owns the mic right now
         if self._warm_voice_session is not None or self._warm_voice_pending:
             return  # already warm / warming
-        if not get_device_auth_token().strip():
+        auth_token = get_device_auth_token().strip()
+        if not auth_token:
             return
+        auth_generation = self._realtime_auth_generation
         self._warm_voice_pending = True
 
         async def _go():
@@ -4768,10 +4822,21 @@ class MeetingBoxApp(App):
                 data = await self.backend.create_realtime_voice_session()
             except Exception as e:
                 logger.debug("Realtime warm prewarm mint failed: %s", e)
-                self._warm_voice_pending = False
+                if auth_generation == self._realtime_auth_generation:
+                    self._warm_voice_pending = False
+                return
+            if (
+                auth_generation != self._realtime_auth_generation
+                or auth_token != get_device_auth_token().strip()
+            ):
+                logger.info("Discarding stale Realtime prewarm after account change")
                 return
             Clock.schedule_once(
-                lambda _dt, d=data: self._run_realtime_voice_session(d, prewarm=True), 0
+                lambda _dt, d=data, g=auth_generation:
+                    self._run_realtime_voice_session(
+                        d, prewarm=True, auth_generation=g
+                    ),
+                0,
             )
 
         run_async(_go())
@@ -4832,12 +4897,14 @@ class MeetingBoxApp(App):
             return
         self._realtime_launch_permitted = False
 
-        if not get_device_auth_token().strip():
+        auth_token = get_device_auth_token().strip()
+        if not auth_token:
             Clock.schedule_once(
                 lambda _dt: self._begin_local_voice_command_session(), 0
             )
             return
 
+        auth_generation = self._realtime_auth_generation
         self._realtime_session_pending = True
 
         self._set_voice_indicator_override(
@@ -4884,6 +4951,8 @@ class MeetingBoxApp(App):
                 data = await self.backend.create_realtime_voice_session()
             except Exception as e:
                 logger.warning("Realtime voice session request failed: %s", e)
+                if auth_generation != self._realtime_auth_generation:
+                    return
                 self._realtime_session_pending = False
                 label = _friendly_realtime_failure(e)
                 Clock.schedule_once(
@@ -4896,11 +4965,32 @@ class MeetingBoxApp(App):
                     lambda _dt: self._begin_local_voice_command_session(), 5.6
                 )
                 return
-            Clock.schedule_once(lambda _dt, d=data: self._run_realtime_voice_session(d), 0)
+            if (
+                auth_generation != self._realtime_auth_generation
+                or auth_token != get_device_auth_token().strip()
+            ):
+                logger.info("Discarding stale Realtime session after account change")
+                return
+            Clock.schedule_once(
+                lambda _dt, d=data, g=auth_generation:
+                    self._run_realtime_voice_session(d, auth_generation=g),
+                0,
+            )
 
         run_async(_go())
 
-    def _run_realtime_voice_session(self, data: dict, prewarm: bool = False) -> None:
+    def _run_realtime_voice_session(
+        self,
+        data: dict,
+        prewarm: bool = False,
+        auth_generation: int | None = None,
+    ) -> None:
+        if (
+            auth_generation is not None
+            and auth_generation != self._realtime_auth_generation
+        ):
+            logger.info("Ignoring stale Realtime launch after account change")
+            return
         if prewarm:
             self._warm_voice_pending = False
             # An active session may have started while the warm mint was in
@@ -4931,6 +5021,8 @@ class MeetingBoxApp(App):
 
         from config import BACKEND_URL
 
+        session_generation = self._realtime_auth_generation
+        session_ref = {"session": None}
         secret = (data.get("client_secret") or "").strip()
         model = (data.get("model") or "").strip()
         sess_blob = data.get("session")
@@ -4976,7 +5068,15 @@ class MeetingBoxApp(App):
             # If the session ended unexpectedly (WS dropped, OpenAI hit the
             # ~15-60 min hard session cap), immediately start a fresh session
             # so the user doesn't have to re-say the wake word mid-thought.
-            sess = self._realtime_voice_session or self._warm_voice_session
+            sess = session_ref["session"]
+            if sess is None:
+                return
+            if (
+                self._realtime_voice_session is not sess
+                and self._warm_voice_session is not sess
+            ):
+                logger.debug("Ignoring end callback from stale Realtime session")
+                return
             activated = True
             unexpected = False
             try:
@@ -5005,12 +5105,19 @@ class MeetingBoxApp(App):
                 def _after_warm_end(_dt, _s=sess):
                     if self._warm_voice_session is _s:
                         self._warm_voice_session = None
-                    self._warm_voice_pending = False
-                    self._schedule_voice_prewarm(delay=0.2)
+                    if session_generation == self._realtime_auth_generation:
+                        self._warm_voice_pending = False
+                        self._schedule_voice_prewarm(delay=0.2)
                 Clock.schedule_once(_after_warm_end, 0)
                 return
 
-            def _after_end(_dt):
+            def _after_end(_dt, _s=sess):
+                if (
+                    session_generation != self._realtime_auth_generation
+                    or self._realtime_voice_session is not _s
+                ):
+                    logger.debug("Ignoring cleanup from stale Realtime session")
+                    return
                 self._end_realtime_voice_session()
                 if unexpected:
                     # Only auto-reconnect once per wake-word event.  If the
@@ -5048,13 +5155,32 @@ class MeetingBoxApp(App):
             Clock.schedule_once(_after_end, 0)
 
         def _err(msg: str) -> None:
+            sess = session_ref["session"]
+            if (
+                sess is None
+                or session_generation != self._realtime_auth_generation
+                or (
+                    self._realtime_voice_session is not sess
+                    and self._warm_voice_session is not sess
+                )
+            ):
+                logger.debug("Ignoring error from stale Realtime session: %s", msg)
+                return
             logger.error("Realtime voice error: %s", msg)
-            # Do not hide home listening here — session end + local fallback restore the UI.
-            Clock.schedule_once(lambda _dt: self._end_realtime_voice_session(), 0)
+            # _async_main always emits on_session_end from its finally block.
+            # Cleanup only there so error + end cannot race and process one
+            # failed session twice.
 
         def _on_rt_connected() -> None:
             # Vosk is paused from on_before_open_mic right before ALSA opens for Realtime.
             def _ui(_dt):
+                sess = session_ref["session"]
+                if (
+                    sess is None
+                    or session_generation != self._realtime_auth_generation
+                    or self._realtime_voice_session is not sess
+                ):
+                    return
                 self._realtime_connected_ok = True
                 # Cancel the wake-word timeout timer — the session owns the UI now
                 if self._wake_hide_ev is not None:
@@ -5334,6 +5460,7 @@ class MeetingBoxApp(App):
                 brief_data_provider=self._voice_brief_facts,
                 prewarm=prewarm,
             )
+            session_ref["session"] = sess
             if prewarm:
                 # Held in standby: do NOT touch the active-session pointer or UI.
                 # It connects + runs session.update and waits for activate().
