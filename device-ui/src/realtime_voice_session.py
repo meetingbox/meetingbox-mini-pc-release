@@ -832,6 +832,7 @@ class RealtimeVoiceSession:
         # Worker thread + asyncio loop
         self._thread: threading.Thread | None = None
         self._stop = threading.Event()
+        self._async_task: asyncio.Task | None = None
 
         # Device-driven morning-brief walkthrough state.
         self._brief_active = False
@@ -1013,6 +1014,12 @@ class RealtimeVoiceSession:
         except Exception:
             pass
         loop, ws = self._loop, self._ws
+        task = self._async_task
+        if loop and task is not None and not loop.is_closed():
+            try:
+                loop.call_soon_threadsafe(task.cancel)
+            except Exception:
+                pass
         if loop and ws and not loop.is_closed():
             async def _close():
                 try:
@@ -1025,6 +1032,13 @@ class RealtimeVoiceSession:
                 pass
         self._abort_aplay()
         self._close_mic()
+        thread = self._thread
+        if (
+            thread is not None
+            and thread is not threading.current_thread()
+            and thread.is_alive()
+        ):
+            thread.join(timeout=4.0)
 
     def _acquire_device_session_lock(self) -> bool:
         """Ensure only one Realtime session owns this physical appliance."""
@@ -1970,15 +1984,18 @@ class RealtimeVoiceSession:
             self._emit_error("Missing client secret or model for Realtime.")
             self._emit_session_end()
             return
+        self._async_task = asyncio.current_task()
+        self._loop = asyncio.get_running_loop()
+        if self._stop.is_set():
+            self._async_task = None
+            self._emit_session_end()
+            return
         if not self._acquire_device_session_lock():
-            # This is an intentional ownership rejection, not a network failure;
-            # do not let main.py auto-reconnect and create another duplicate.
-            self._user_ended = True
+            self._async_task = None
             self._emit_error("Another voice session is already active on this device.")
             self._emit_session_end()
             return
 
-        self._loop = asyncio.get_running_loop()
         url = build_realtime_websocket_url(self._model)
         headers = [("Authorization", f"Bearer {self._client_secret}")]
 
@@ -2094,10 +2111,13 @@ class RealtimeVoiceSession:
                         pump_task, idle_task, return_exceptions=True
                     )
 
+        except asyncio.CancelledError:
+            logger.info("Realtime session cancelled during shutdown")
         except Exception as e:
             logger.exception("Realtime WebSocket failed")
             self._emit_error(str(e))
         finally:
+            self._async_task = None
             self._emit_state("idle")
             self._ws = None
             self._abort_aplay()

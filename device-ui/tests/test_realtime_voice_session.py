@@ -227,6 +227,30 @@ def test_device_session_lock_rejects_second_owner(tmp_path, monkeypatch):
     second._release_device_session_lock()
 
 
+def test_stop_cancels_inflight_async_connection(monkeypatch):
+    import realtime_voice_session as rtv
+
+    monkeypatch.setattr(rtv, "sd", None)
+    session = RealtimeVoiceSession(
+        client_secret="ek_test",
+        model="gpt-realtime-2",
+        backend_base_url="http://127.0.0.1:8000",
+        device_token="mbd_test",
+        on_session_end=lambda: None,
+        on_error=lambda _msg: None,
+        on_connected=lambda: None,
+    )
+    loop = mock.MagicMock()
+    loop.is_closed.return_value = False
+    task = mock.MagicMock()
+    session._loop = loop
+    session._async_task = task
+
+    session.stop()
+
+    loop.call_soon_threadsafe.assert_called_once_with(task.cancel)
+
+
 def test_extract_silent_hold_phrase_from_user_request():
     assert (
         _extract_silent_hold_phrase("Nexa, pause until I say continue Nexa.")
