@@ -55,11 +55,9 @@ def test_nexa_wake_phrase_accepts_merged_split_and_accent_variants():
     for phrase in (
         "heynexa",
         "hynexa",
-        "hynix",
         "hay neksa",
         "hey neck sa",
         "hey an exa",
-        "hey mixer",
     ):
         assert interpreter.heard_wake_phrase(phrase) is True
         assert interpreter.is_wake_only_utterance(phrase) is True
@@ -74,8 +72,23 @@ def test_merged_nexa_wake_with_command_starts_meeting():
 
 def test_nexa_aliases_do_not_wake_without_hey_structure():
     interpreter = _mk()
-    for phrase in ("nexa", "the next meeting", "kitchen mixer", "hey the next meeting"):
+    for phrase in (
+        "nexa",
+        "hynix",
+        "the next meeting",
+        "kitchen mixer",
+        "hey next",
+        "hey mixer",
+        "hey the next meeting",
+        "we should use heynexa later",
+    ):
         assert interpreter.heard_wake_phrase(phrase) is False
+
+
+def test_playback_like_false_wake_does_not_open_pause_command_window():
+    interpreter = _mk()
+    assert interpreter.handle_transcript("hey next", now=10.0) is None
+    assert interpreter.handle_transcript("pause meeting", now=11.0) is None
 
 
 def test_wake_phrase_times_out():

@@ -183,20 +183,23 @@ def _best_phrase_similarity(text: str, target: str) -> float:
 _NEXA_PREFIX_TOKENS = frozenset({"hey", "hay", "hei"})
 _NEXA_KEYWORD_TOKENS = frozenset({
     "nexa", "nexah", "neksa", "necksa", "nexsa", "nexxa",
-    "nexus", "next", "necks", "nexo", "nexar", "nexer",
-    "nick", "nik", "nix", "mixer", "anexa", "inexa",
+    "nexus", "necks", "nexo", "nexar", "nexer", "anexa", "inexa",
 })
 _NEXA_MERGED_TOKENS = frozenset({
-    "heynexa", "heynexah", "heynex", "heynexus", "heynext",
-    "haynexa", "heinexa", "hynexa", "hynex", "hynix",
+    "heynexa", "heynexah", "heynex", "heynexus",
+    "haynexa", "heinexa", "hynexa", "hynex",
 })
+_NEXA_LEADING_FILLERS = frozenset({"please", "ok", "okay"})
 
 
 def _nexa_wake_span(text: str) -> tuple[int, int] | None:
     """Return the token span matching a constrained spoken ``Hey Nexa`` variant."""
     words = _normalize_text(text).split()
     for idx, word in enumerate(words):
-        if word in _NEXA_MERGED_TOKENS:
+        if (
+            word in _NEXA_MERGED_TOKENS
+            and all(prefix in _NEXA_LEADING_FILLERS for prefix in words[:idx])
+        ):
             return idx, idx + 1
 
     for idx, word in enumerate(words):
@@ -372,8 +375,8 @@ class VoiceCommandInterpreter:
         self._awaiting_confirmation_until = 0.0
 
     def _heard_wake_phrase(self, text: str) -> bool:
-        if self.wake_phrase == "hey nexa" and _nexa_wake_span(text) is not None:
-            return True
+        if self.wake_phrase == "hey nexa":
+            return _nexa_wake_span(text) is not None
         # Slightly looser fuzzy match so noisy rooms / small-model errors still wake reliably.
         return _best_phrase_similarity(text, self.wake_phrase) >= 0.77
 
