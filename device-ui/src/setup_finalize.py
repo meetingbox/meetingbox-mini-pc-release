@@ -22,7 +22,7 @@ def write_local_setup_complete_marker(
     meta: dict[str, Any] = {
         "version": 1,
         "completed_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
-        "device_name": (device_name or "MeetingBox").strip(),
+        "device_name": (device_name or "Nexa AI").strip(),
         "wifi_ssid": (wifi_ssid or "").strip(),
         "onboarding_flow": (onboarding_flow or "wifi_on_device_v1").strip(),
     }

@@ -32,7 +32,7 @@ class SetupProgressScreen(BaseScreen):
         root.add_widget(Widget(size_hint=(1, 0.25)))
 
         msg1 = Label(
-            text='Setting up your MeetingBox...',
+            text='Setting up your Nexa AI...',
             font_size=self.suf(FONT_SIZES['medium']),
             color=COLORS['white'],
             halign='center',

@@ -55,7 +55,7 @@ class MeetingBoxReadyScreen(BaseScreen):
         else:
             header.add_widget(Widget(size_hint=(None, 1), width=8))
         brand = Label(
-            text="MeetingBox",
+            text="Nexa AI",
             font_size=self.suf(FONT_SIZES["title"]),
             bold=True,
             color=COLORS["white"],
@@ -72,7 +72,7 @@ class MeetingBoxReadyScreen(BaseScreen):
         root.add_widget(Widget(size_hint=(1, None), height=12))
 
         title = Label(
-            text="MeetingBox is ready.",
+            text="Nexa AI is ready.",
             font_size=self.suf(FONT_SIZES["huge"]),
             bold=True,
             color=COLORS["white"],
@@ -214,7 +214,7 @@ class MeetingBoxReadyScreen(BaseScreen):
         return card
 
     def on_enter(self):
-        room = getattr(self.app, "device_name", "MeetingBox") or "MeetingBox"
+        room = getattr(self.app, "device_name", "Nexa AI") or "Nexa AI"
         acct = getattr(self.app, "paired_owner_email", "") or ""
         lang = getattr(self.app, "setup_language", "English (US)") or "English (US)"
         wifi = getattr(self.app, "connected_wifi_ssid", "") or "—"
@@ -234,7 +234,7 @@ class MeetingBoxReadyScreen(BaseScreen):
         async def _run():
             flow = "wifi_on_device_v1"
             wifi = getattr(self.app, "connected_wifi_ssid", "") or ""
-            device_name = getattr(self.app, "device_name", "MeetingBox") or "MeetingBox"
+            device_name = getattr(self.app, "device_name", "Nexa AI") or "Nexa AI"
             lang = getattr(self.app, "setup_language", "English (US)") or "English (US)"
 
             api_ok = await post_setup_complete_safe(self.backend, wifi, flow)

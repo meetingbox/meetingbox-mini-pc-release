@@ -34,7 +34,7 @@ class CompleteScreen(BaseScreen):
         self.status_bar = StatusBar(
             status_text='COMPLETE',
             status_color=COLORS['green'],
-            device_name='MeetingBox',
+            device_name='Nexa AI',
             show_settings=True,
         )
         root.add_widget(self.status_bar)
@@ -139,7 +139,7 @@ class CompleteScreen(BaseScreen):
 
     # ------------------------------------------------------------------
     def on_enter(self):
-        self.status_bar.device_label.text = getattr(self.app, 'device_name', 'MeetingBox')
+        self.status_bar.device_label.text = getattr(self.app, 'device_name', 'Nexa AI')
 
         # Checkmark spring-in
         self.check_label.opacity = 0

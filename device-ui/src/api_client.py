@@ -1253,7 +1253,7 @@ class BackendClient:
                 resp2.raise_for_status()
                 raw = resp2.json().get('system', {})
                 return {
-                    'device_name': 'MeetingBox',
+                    'device_name': 'Nexa AI',
                     'firmware_version': '1.0.0',
                     'ip_address': '',
                     'wifi_ssid': '',

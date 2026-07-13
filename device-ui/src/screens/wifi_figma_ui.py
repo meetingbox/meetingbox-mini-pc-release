@@ -436,7 +436,7 @@ def build_figma_wifi_column(logo_path: str, *, layout_scale: float = 1.0) -> dic
             )
         )
     brand_lbl = Label(
-        text="MeetingBox AI",
+        text="Nexa AI",
         font_size=sf(FONT_SIZES["medium"]),
         bold=False,
         color=COLORS["white"],

@@ -429,7 +429,7 @@ def _recording_start_error_screen_args(exc: BaseException) -> tuple[str, str]:
     if _recording_start_transient_network(exc):
         return (
             "Cannot reach server",
-            "Could not connect to the MeetingBox backend. After switching networks (for "
+            "Could not connect to the Nexa AI backend. After switching networks (for "
             "example unplugging Ethernet and using Wi‑Fi), wait a few seconds, confirm this "
             "device can reach the server URL, then tap TRY AGAIN. If it keeps failing, check "
             "BACKEND_URL in the appliance configuration.",
@@ -685,7 +685,7 @@ class MeetingBoxApp(App):
         # arrived before navigation to `processing`.
         self._transcription_done_for_session = None
         self.privacy_mode = DEFAULT_PRIVACY_MODE
-        self.device_name = 'MeetingBox'
+        self.device_name = 'Nexa AI'
         self.auto_record = False
         self.setup_language = 'English (US)'
         self.current_user_id = None
@@ -805,8 +805,8 @@ class MeetingBoxApp(App):
         self.voice_realtime_assistant = False
         # Sync interpreter to the product default immediately so wake works
         # before async device-settings load.
-        self.voice_wake_phrase_display = "Hey Pepper"
-        self.voice_assistant.apply_server_settings(wake_phrase="hey pepper")
+        self.voice_wake_phrase_display = "Hey Nexa"
+        self.voice_assistant.apply_server_settings(wake_phrase="hey nexa")
         self.voice_assistant_enabled = True
         self.assistant_speech_volume = 85
         # Realtime may only start when _handle_voice_wake_phrase sets this True (one-shot).
@@ -1652,7 +1652,7 @@ class MeetingBoxApp(App):
                 return
             try:
                 settings = await self.backend.get_settings()
-                name = settings.get('device_name', 'MeetingBox')
+                name = settings.get('device_name', 'Nexa AI')
                 if name:
                     self.device_name = name
                     logger.info("Device name loaded: %s", name)
@@ -1677,8 +1677,8 @@ class MeetingBoxApp(App):
                     vae = str(vae).strip().lower() in ("1", "true", "yes", "on")
                 self.voice_assistant_enabled = bool(vae)
 
-                vwp = (settings.get("voice_wake_phrase") or "hey pepper").strip().lower() or "hey pepper"
-                self.voice_wake_phrase_display = vwp[:1].upper() + vwp[1:] if vwp else "Hey Pepper"
+                vwp = (settings.get("voice_wake_phrase") or "hey nexa").strip().lower() or "hey nexa"
+                self.voice_wake_phrase_display = vwp[:1].upper() + vwp[1:] if vwp else "Hey Nexa"
                 try:
                     sv = settings.get("assistant_speech_volume", 85)
                     if isinstance(sv, str):
@@ -2880,7 +2880,7 @@ class MeetingBoxApp(App):
                 self.voice_indicator.set_state("speaking", "Speaking…")
             return
         if self.voice_assistant.available and self._voice_assistant_should_listen():
-            wkd = getattr(self, "voice_wake_phrase_display", None) or "Hey Pepper"
+            wkd = getattr(self, "voice_wake_phrase_display", None) or "Hey Nexa"
             self.voice_indicator.set_state("idle", f'Say "{wkd}"')
             return
         self.voice_indicator.set_state("hidden")
@@ -2981,7 +2981,7 @@ class MeetingBoxApp(App):
         self._realtime_launch_permitted = False
 
         timeout = max(2.0, self.voice_assistant.command_timeout_seconds)
-        lbl = getattr(self, "voice_wake_phrase_display", "Hey Pepper") or "Hey Pepper"
+        lbl = getattr(self, "voice_wake_phrase_display", "Hey Nexa") or "Hey Nexa"
         try:
             _logging.getLogger(__name__).info(
                 "VOICE_EVENT %s",

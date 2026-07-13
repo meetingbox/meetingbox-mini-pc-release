@@ -1,7 +1,7 @@
 """
 Local wake-word voice control for the device UI.
 
-Listens for a configurable wake phrase (default: "hey pepper"), then accepts
+Listens for a configurable wake phrase (default: "hey nexa"), then accepts
 follow-up commands covering meetings, navigation, device controls, and a small
 confirmation flow for destructive actions.
 """
@@ -275,7 +275,7 @@ def _build_intent_specs(start_commands: list[str]) -> tuple[_IntentSpec, ...]:
         _IntentSpec("wake_screen", ("wake screen", "turn screen on", "screen on", "wake up screen")),
         _IntentSpec("disconnect_wifi", ("disconnect wifi", "turn wifi off", "leave wifi")),
         _IntentSpec("pair_device", ("pair device", "open pairing", "pair this device")),
-        _IntentSpec("restart_device", ("restart device", "reboot device", "restart meetingbox")),
+        _IntentSpec("restart_device", ("restart device", "reboot device", "restart nexa", "restart meetingbox")),
         _IntentSpec("power_off", ("shut down device", "shutdown device", "power off device", "turn off device")),
         _IntentSpec("unpair_device", ("unpair device", "disconnect device", "unlink device")),
         _IntentSpec("delete_this_meeting", ("delete this meeting", "remove this meeting")),
@@ -460,7 +460,7 @@ class VoiceAssistant:
         self._on_amplitude = on_amplitude
         self._on_conversation_turn = on_conversation_turn
         self.enabled = _env_flag("VOICE_ASSISTANT_ENABLED", True)
-        self.wake_phrase = (os.getenv("VOICE_ASSISTANT_WAKE_PHRASE") or "hey pepper").strip() or "hey pepper"
+        self.wake_phrase = (os.getenv("VOICE_ASSISTANT_WAKE_PHRASE") or "hey nexa").strip() or "hey nexa"
         self.start_commands = [
             cmd.strip()
             for cmd in (

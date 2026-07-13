@@ -33,7 +33,7 @@ class ErrorScreen(BaseScreen):
         self.status_bar = StatusBar(
             status_text='ERROR',
             status_color=COLORS['yellow'],
-            device_name='MeetingBox',
+            device_name='Nexa AI',
             show_settings=True,
         )
         root.add_widget(self.status_bar)

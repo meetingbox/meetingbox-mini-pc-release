@@ -39,7 +39,7 @@ from qt.idle_screen import IdleScreen
 
 def main() -> int:
     app = QApplication(sys.argv)
-    app.setApplicationName("MeetingBoxQt")
+    app.setApplicationName("NexaQt")
 
     tabs = QTabWidget()
     tabs.setDocumentMode(True)
@@ -64,7 +64,7 @@ def main() -> int:
     mw = QMainWindow()
     mw.resize(1366, 768)
     mw.setCentralWidget(core)
-    mw.setWindowTitle("MeetingBox · Qt kiosk")
+    mw.setWindowTitle("Nexa · Qt kiosk")
 
     if "--fullscreen" in sys.argv:
         mw.showFullScreen()

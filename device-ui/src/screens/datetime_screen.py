@@ -128,8 +128,8 @@ class DateTimeScreen(BaseScreen):
                         ModalDialog(
                             title="Could not set time",
                             message=(
-                                "timedatectl failed — confirm the meetingbox-timedatectl\n"
-                                "helper is mounted and the container has been rebuilt."
+                                "The device time helper failed — confirm it is mounted\n"
+                                "and the container has been rebuilt."
                             ),
                             confirm_text="OK",
                             cancel_text="",

@@ -132,7 +132,7 @@ class BriefingScreen(BaseScreen):
 
         title_col = BoxLayout(orientation="vertical", spacing=sv(2))
         self.kicker = Label(
-            text="TONY ASSISTANT",
+            text="NEXA ASSISTANT",
             font_size=sf(FONT_SIZES["tiny"]),
             color=COLORS["blue"],
             bold=True,
@@ -250,7 +250,7 @@ class BriefingScreen(BaseScreen):
         self.add_widget(root)
 
     def on_enter(self):
-        self.title.text = f"Tony · {display_now().strftime('%A')}"
+        self.title.text = f"Nexa · {display_now().strftime('%A')}"
         self._orb.start()
 
     def on_leave(self):

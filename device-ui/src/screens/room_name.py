@@ -30,7 +30,7 @@ class RoomNameScreen(BaseScreen):
         self.make_dark_bg(root)
 
         header = BoxLayout(orientation='vertical', size_hint=(1, None), height=sv(96), spacing=sv(4))
-        brand = Label(text='MeetingBox setup', font_size=sf(FONT_SIZES['small']), bold=True, color=COLORS['blue'], halign='left', valign='bottom', size_hint=(1, .35))
+        brand = Label(text='Nexa AI setup', font_size=sf(FONT_SIZES['small']), bold=True, color=COLORS['blue'], halign='left', valign='bottom', size_hint=(1, .35))
         brand.bind(size=brand.setter('text_size'))
         header.add_widget(brand)
         title = Label(text='Name this room', font_size=sf(FONT_SIZES['huge']), bold=True, color=COLORS['white'], halign='left', valign='middle', size_hint=(1, .65))
@@ -96,7 +96,7 @@ class RoomNameScreen(BaseScreen):
     def _on_next(self, _inst):
         name = (self._text_input.text or '').strip()
         if not name:
-            self.add_widget(ModalDialog(title='Room name required', message='Please enter a name for this MeetingBox.', confirm_text='OK', cancel_text=''))
+            self.add_widget(ModalDialog(title='Room name required', message='Please enter a name for this Nexa AI.', confirm_text='OK', cancel_text=''))
             return
         self.app.device_name = name
         async def _save():

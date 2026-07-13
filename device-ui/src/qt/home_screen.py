@@ -49,7 +49,7 @@ class HomeScreen(QWidget):
         bot.addWidget(self._c3, stretch=285)
 
         # Say row
-        self._say = QLabel("Try asking Tony")
+        self._say = QLabel("Try asking Nexa")
         self._say.setWordWrap(False)
         self._say.setAlignment(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft)
         self._say.setObjectName("say_row")

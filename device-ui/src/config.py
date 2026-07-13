@@ -500,7 +500,7 @@ DEFAULT_AUTO_DELETE = 'never'       # never, 30, 60, 90
 # DEVICE INFO
 # ============================================================================
 
-DEVICE_MODEL = 'MeetingBox v1.0'
+DEVICE_MODEL = 'Nexa AI v1.0'
 
 _d_label, _d_public = _normalize_dashboard_config(os.getenv("DASHBOARD_URL", "meetingbox.local"))
 # Compact host:port for subtitles (e.g. Configure at …)

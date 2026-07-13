@@ -15,7 +15,7 @@ from screens.base_screen import BaseScreen
 _FIRMWARE = os.getenv("FIRMWARE_VERSION", "1.0.0")
 
 _LICENSES = """
-MeetingBox Device UI
+Nexa AI Device UI
 
 Open-source components used in this software:
 
@@ -29,7 +29,7 @@ Open-source components used in this software:
 • sounddevice — MIT License
 • numpy — BSD License
 
-For full license texts see: https://meetingbox.com/licenses
+For full license texts see: https://nexa.ai/licenses
 """.strip()
 
 
@@ -73,10 +73,10 @@ class AboutScreen(BaseScreen):
             l.bind(width=lambda w, v: setattr(w, "text_size", (v, None)))
             return l
 
-        body.add_widget(lbl("MeetingBox", bold=True, size=FONT_SIZES.get("large", 18)))
+        body.add_widget(lbl("Nexa AI", bold=True, size=FONT_SIZES.get("large", 18)))
         body.add_widget(lbl(f"Firmware {_FIRMWARE}", color=COLORS["gray_300"]))
         body.add_widget(lbl(f"Dashboard: {DASHBOARD_URL}", color=COLORS["gray_400"]))
-        body.add_widget(lbl("Support: support.meetingbox.com", color=COLORS["gray_400"]))
+        body.add_widget(lbl("Support: support.nexa.ai", color=COLORS["gray_400"]))
         body.add_widget(lbl(""))
         body.add_widget(lbl("Open-source licenses", bold=True))
         body.add_widget(lbl(_LICENSES, color=COLORS["gray_400"], size=10))

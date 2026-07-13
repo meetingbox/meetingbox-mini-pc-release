@@ -46,7 +46,7 @@ def voice_realtime_settings_subtitle() -> str:
     if USE_MOCK_BACKEND:
         return "MOCK_BACKEND is on — use a real backend to enable"
     if WAKE_LOCAL_VOICE_ONLY:
-        return "MEETINGBOX_WAKE_LOCAL_VOICE_ONLY is on — disables cloud Realtime"
+        return "Local voice-only mode is on — disables cloud Realtime"
     if not get_device_auth_token().strip():
         return "Pair device (link account) — DEVICE_AUTH_TOKEN needed"
     return "On: speech-to-speech after wake · VPS needs Realtime + OpenAI key"
@@ -111,7 +111,7 @@ class SettingsScreen(BaseScreen):
 
         self.device_name_item = SettingsItem(
             title='Device Name',
-            subtitle='MeetingBox',
+            subtitle='Nexa AI',
             mode='arrow',
             on_press=lambda _: self._show_device_name_dialog(),
         )
@@ -472,7 +472,7 @@ class SettingsScreen(BaseScreen):
 
         self.wake_phrase_item = SettingsItem(
             title='Wake phrase',
-            subtitle='hey buddy',
+            subtitle='hey nexa',
             mode='arrow',
             on_press=lambda _: self._show_wake_phrase_dialog(),
         )
@@ -608,7 +608,7 @@ class SettingsScreen(BaseScreen):
 
         self.support_item = SettingsItem(
             title='Help',
-            subtitle='support.meetingbox.com',
+            subtitle='support.nexa.ai',
             mode='info',
         )
         self.container.add_widget(self.support_item)
@@ -641,8 +641,8 @@ class SettingsScreen(BaseScreen):
         vra = getattr(self.app, "voice_realtime_assistant", False)
         self.voice_realtime_item.toggle.active = bool(vra)
         self._refresh_voice_realtime_subtitle()
-        wk = getattr(self.app, "voice_wake_phrase_display", "hey buddy")
-        self.wake_phrase_item.subtitle_label.text = (wk or "hey buddy").lower()
+        wk = getattr(self.app, "voice_wake_phrase_display", "hey nexa")
+        self.wake_phrase_item.subtitle_label.text = (wk or "hey nexa").lower()
         try:
             sv = int(getattr(self.app, "assistant_speech_volume", 85))
         except (TypeError, ValueError):
@@ -764,7 +764,7 @@ class SettingsScreen(BaseScreen):
                     self.model_item.subtitle_label.text = (
                         f'{DEVICE_MODEL}\nSerial: {serial}')
                     self.uptime_item.subtitle_label.text = f'{up_d}d {up_h}h'
-                    name = info.get('device_name', 'MeetingBox')
+                    name = info.get('device_name', 'Nexa AI')
                     self.device_name_item.subtitle_label.text = name
                     self.app.device_name = name
 
@@ -825,11 +825,11 @@ class SettingsScreen(BaseScreen):
                         if isinstance(vra, str):
                             vra = str(vra).strip().lower() in ("1", "true", "yes", "on")
                         self.voice_realtime_item.toggle.active = bool(vra)
-                        wk = (settings.get("voice_wake_phrase") or "hey buddy").strip().lower()
+                        wk = (settings.get("voice_wake_phrase") or "hey nexa").strip().lower()
                         self.wake_phrase_item.subtitle_label.text = wk
                         self.app.voice_realtime_assistant = bool(vra)
                         self.app.voice_wake_phrase_display = (
-                            wk[:1].upper() + wk[1:] if wk else "Hey buddy"
+                            wk[:1].upper() + wk[1:] if wk else "Hey Nexa"
                         )
                         if hasattr(self.app, "voice_assistant") and self.app.voice_assistant:
                             self.app.voice_assistant.apply_server_settings(
@@ -880,8 +880,8 @@ class SettingsScreen(BaseScreen):
         dialog = TextInputDialog(
             title='Device Name',
             message='Enter a new name for this device.',
-            initial_value=self.device_name_item.subtitle_label.text or 'MeetingBox',
-            placeholder='MeetingBox',
+            initial_value=self.device_name_item.subtitle_label.text or 'Nexa AI',
+            placeholder='Nexa AI',
             on_confirm=self._apply_device_name,
         )
         self.add_widget(dialog)
@@ -995,7 +995,7 @@ class SettingsScreen(BaseScreen):
         self.add_widget(
             ModalDialog(
                 title='Send diagnostic report?',
-                message='The last 200 log lines will be sent to MeetingBox support.',
+                message='The last 200 log lines will be sent to Nexa AI support.',
                 confirm_text='SEND',
                 cancel_text='CANCEL',
                 on_confirm=self._execute_send_diag_report,
@@ -1069,16 +1069,16 @@ class SettingsScreen(BaseScreen):
         dialog = TextInputDialog(
             title='Wake phrase',
             message='Phrase to wake the assistant (spoken naturally, e.g. hey buddy).',
-            initial_value=self.wake_phrase_item.subtitle_label.text or 'hey buddy',
-            placeholder='hey buddy',
+            initial_value=self.wake_phrase_item.subtitle_label.text or 'hey nexa',
+            placeholder='hey nexa',
             on_confirm=self._apply_wake_phrase,
         )
         self.add_widget(dialog)
 
     def _apply_wake_phrase(self, value: str):
-        wk = (value or '').strip().lower() or 'hey buddy'
+        wk = (value or '').strip().lower() or 'hey nexa'
         self.wake_phrase_item.subtitle_label.text = wk
-        disp = wk[:1].upper() + wk[1:] if wk else 'Hey buddy'
+        disp = wk[:1].upper() + wk[1:] if wk else 'Hey Nexa'
         self.app.voice_wake_phrase_display = disp
         if hasattr(self.app, "voice_assistant") and self.app.voice_assistant:
             self.app.voice_assistant.apply_server_settings(wake_phrase=wk)
@@ -1099,7 +1099,7 @@ class SettingsScreen(BaseScreen):
     def _show_unpair_account_dialog(self):
         dialog = ModalDialog(
             title='Unpair this device?',
-            message=('This device will disconnect from your MeetingBox\n'
+            message=('This device will disconnect from your Nexa AI\n'
                      'account. Gmail stays linked in the web dashboard.\n'
                      'You will enter a new pairing code to reconnect.'),
             confirm_text='UNPAIR',
@@ -1155,7 +1155,7 @@ class SettingsScreen(BaseScreen):
             message = (
                 'This device could not restart automatically. Power-cycle it or '
                 'ask your admin to allow systemctl reboot or passwordless sudo '
-                'for the MeetingBox user.'
+                'for the Nexa AI user.'
             )
         else:
             title = 'Power off failed'

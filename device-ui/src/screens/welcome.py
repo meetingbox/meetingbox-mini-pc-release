@@ -115,7 +115,7 @@ class WelcomeScreen(BaseScreen):
                 keep_ratio=True,
             ))
         brand = Label(
-            text='MeetingBox',
+            text='Nexa AI',
             font_size=self.suf(FONT_SIZES['medium']),
             bold=True,
             color=COLORS['white'],
@@ -143,7 +143,7 @@ class WelcomeScreen(BaseScreen):
 
         # "MeetingBox AI" — match Figma: ~64 px bold white, centred
         title = Label(
-            text='MeetingBox AI',
+            text='Nexa AI',
             font_size=self.suf(64),
             bold=True,
             color=COLORS['white'],

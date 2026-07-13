@@ -278,7 +278,7 @@ class MockBackendClient:
         return {
             "paired": True,
             "device_id": "mock-device-id",
-            "device_name": self._settings.get("device_name", "MeetingBox"),
+            "device_name": self._settings.get("device_name", "Nexa AI"),
             "owner_email": "you@example.com",
         }
 
@@ -314,7 +314,7 @@ class MockBackendClient:
         meta = {
             "version": 1,
             "completed_at": datetime.now().strftime("%Y-%m-%dT%H:%M:%SZ"),
-            "device_name": self._settings.get("device_name", "MeetingBox"),
+            "device_name": self._settings.get("device_name", "Nexa AI"),
             "wifi_ssid": wifi_ssid or "",
             "onboarding_flow": onboarding_flow,
         }
@@ -331,7 +331,7 @@ class MockBackendClient:
         await asyncio.sleep(0.2)
         from config import persist_device_auth_token
 
-        name = (device_name or "MeetingBox").strip() or "MeetingBox"
+        name = (device_name or "Nexa AI").strip() or "Nexa AI"
         self._settings["device_name"] = name
         token = "mock_mbd_claim_token"
         persist_device_auth_token(token)
