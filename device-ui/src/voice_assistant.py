@@ -180,38 +180,39 @@ def _best_phrase_similarity(text: str, target: str) -> float:
     )
 
 
-_NEXA_PREFIX_TOKENS = frozenset({"hey", "hay", "hei"})
-_NEXA_KEYWORD_TOKENS = frozenset({
-    "nexa", "nexah", "neksa", "necksa", "nexsa", "nexxa",
-    "nexus", "necks", "nexo", "nexar", "nexer", "anexa", "inexa",
+# Tokens the recognizer / accents commonly produce for the "hey" attention word.
+_HEY_TOKENS = frozenset({
+    "hey", "hay", "heya", "hi", "he", "ey", "hej", "hai", "ay",
+})
+_PEPPER_TOKENS = frozenset({
+    "pepper", "peppa", "pepa", "peper", "pepe", "paper", "pepperr",
+    "pepar", "peppr", "pehper", "peppie", "peppah", "peppar", "peppe",
+    "pepah",
+})
+# Tokens the Vosk small model / accents commonly produce for "nexa".
+_NEXA_TOKENS = frozenset({
+    "nexa", "nexus", "next", "necks", "neksa", "necksa", "nexo", "nexar",
+    "nexer", "nexah", "necksah", "nexxa", "nexsa", "annexa",
+    "nick", "nik", "nic", "nix", "knick", "knicks", "nex", "nexi", "nexen",
+    "mixer", "nixie", "mix", "nixy", "nixey",
 })
 _NEXA_MERGED_TOKENS = frozenset({
-    "heynexa", "heynexah", "heynex", "heynexus",
-    "haynexa", "heinexa", "hynexa", "hynex",
+    "heynexa", "hynexa",
+    "hynix", "hynex", "hinnick", "phoenix", "henrik", "henrick", "henriks",
+    "hennick", "hendrix",
 })
-_NEXA_LEADING_FILLERS = frozenset({"please", "ok", "okay"})
+_NEXA_FILLER_OK_TOKENS = frozenset({
+    "nick", "nexus", "nexa", "nixie", "mix", "mixer", "accent",
+    "nex", "nexi", "nexen", "nexo", "nixy", "nixey",
+})
 
 
-def _nexa_wake_span(text: str) -> tuple[int, int] | None:
-    """Return the token span matching a constrained spoken ``Hey Nexa`` variant."""
-    words = _normalize_text(text).split()
-    for idx, word in enumerate(words):
-        if (
-            word in _NEXA_MERGED_TOKENS
-            and all(prefix in _NEXA_LEADING_FILLERS for prefix in words[:idx])
-        ):
-            return idx, idx + 1
-
-    for idx, word in enumerate(words):
-        if word not in _NEXA_PREFIX_TOKENS:
-            continue
-        # Joining up to three following tokens handles slow/split recognition
-        # such as "hey neck sa" without accepting a bare "nexa"/"next".
-        for width in range(1, min(3, len(words) - idx - 1) + 1):
-            candidate = "".join(words[idx + 1:idx + 1 + width])
-            if candidate in _NEXA_KEYWORD_TOKENS:
-                return idx, idx + 1 + width
-    return None
+def _token_close(tok: str, target: str, threshold: float) -> bool:
+    if not tok or not target:
+        return False
+    if tok == target:
+        return True
+    return SequenceMatcher(None, tok, target).ratio() >= threshold
 
 
 def _build_intent_specs(start_commands: list[str]) -> tuple[_IntentSpec, ...]:
@@ -356,6 +357,27 @@ class VoiceCommandInterpreter:
         self.action_cooldown_seconds = max(0.5, action_cooldown_seconds)
         self.confirmation_timeout_seconds = max(2.0, confirmation_timeout_seconds)
         self._intent_specs = _build_intent_specs(start_commands)
+        parts = self.wake_phrase.split()
+        self._wake_prefix = parts[0] if parts else "hey"
+        self._wake_keyword = parts[-1] if parts else self.wake_phrase
+        if self._wake_keyword == "nexa":
+            self._keyword_tokens = _NEXA_TOKENS
+            self._merged_tokens = _NEXA_MERGED_TOKENS
+            self._filler_ok_tokens = _NEXA_FILLER_OK_TOKENS
+        elif self._wake_keyword == "pepper":
+            self._keyword_tokens = _PEPPER_TOKENS
+            self._merged_tokens = frozenset()
+            self._filler_ok_tokens = frozenset()
+        else:
+            self._keyword_tokens = frozenset({self._wake_keyword})
+            self._merged_tokens = frozenset()
+            self._filler_ok_tokens = frozenset()
+        try:
+            self._wake_keyword_threshold = float(
+                os.getenv("VOICE_ASSISTANT_WAKE_THRESHOLD", "") or 0.82
+            )
+        except ValueError:
+            self._wake_keyword_threshold = 0.82
         self._awaiting_command_until = 0.0
         self._awaiting_confirmation_until = 0.0
         self._last_action_at = 0.0
@@ -375,10 +397,37 @@ class VoiceCommandInterpreter:
         self._awaiting_confirmation_until = 0.0
 
     def _heard_wake_phrase(self, text: str) -> bool:
-        if self.wake_phrase == "hey nexa":
-            return _nexa_wake_span(text) is not None
-        # Slightly looser fuzzy match so noisy rooms / small-model errors still wake reliably.
-        return _best_phrase_similarity(text, self.wake_phrase) >= 0.77
+        norm = _normalize_text(text)
+        if not norm:
+            return False
+        if self.wake_phrase and self.wake_phrase in norm:
+            return True
+        words = norm.split()
+        n = len(words)
+        for idx in range(n):
+            if not self._is_prefix_token(words[idx]):
+                continue
+            if idx + 1 < n and self._is_keyword_token(words[idx + 1]):
+                return True
+            if (
+                self._filler_ok_tokens
+                and idx + 2 < n
+                and words[idx + 2] in self._filler_ok_tokens
+            ):
+                return True
+        if self._merged_tokens:
+            return any(word in self._merged_tokens for word in words)
+        return False
+
+    def _is_prefix_token(self, word: str) -> bool:
+        if self._wake_prefix == "hey":
+            return word in _HEY_TOKENS or _token_close(word, "hey", 0.85)
+        return _token_close(word, self._wake_prefix, 0.78)
+
+    def _is_keyword_token(self, word: str) -> bool:
+        if word in self._keyword_tokens:
+            return True
+        return _token_close(word, self._wake_keyword, self._wake_keyword_threshold)
 
     def _matches_any(self, text: str, phrases: tuple[str, ...], threshold: float = 0.76) -> bool:
         return any(_best_phrase_similarity(text, phrase) >= threshold for phrase in phrases)
@@ -400,22 +449,21 @@ class VoiceCommandInterpreter:
             {"please", "uh", "um", "ok", "okay", "yeah", "really", "so", "now"}
         )
         words = norm.split()
-        if self.wake_phrase == "hey nexa":
-            span = _nexa_wake_span(norm)
-            if span is not None:
-                start, end = span
-                residual = [
-                    word
-                    for idx, word in enumerate(words)
-                    if not (start <= idx < end) and word not in fillers
-                ]
-                return not residual
+        merged_indexes = [
+            idx for idx, word in enumerate(words) if word in self._merged_tokens
+        ]
+        if merged_indexes:
+            return all(
+                idx in merged_indexes or word in fillers
+                for idx, word in enumerate(words)
+            )
         residual = [w for w in words if w not in wake_set and w not in fillers]
         if not residual:
             return True
-        # Wake phrase with transcript typos (e.g. "hey toni") — at most one extra word and very close.
+        # Wake phrase (already matched above) plus at most one extra short word
+        # still counts as a wake-only utterance.
         wake_wc = len(self.wake_phrase.split())
-        if len(words) <= wake_wc + 1 and _best_phrase_similarity(norm, self.wake_phrase) >= 0.88:
+        if len(words) <= wake_wc + 1:
             return True
         return False
 
