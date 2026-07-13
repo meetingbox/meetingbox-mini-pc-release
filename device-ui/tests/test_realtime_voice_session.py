@@ -1,5 +1,7 @@
 """Realtime WebSocket helpers and sync tool invoke."""
 
+import asyncio
+import json
 import sys
 import types
 from pathlib import Path
@@ -30,6 +32,8 @@ from realtime_voice_session import (  # noqa: E402
     _INPUT_TRANSCRIPTION_PROMPT,
     _MIC_QUEUE_POLL_S,
     RealtimeVoiceSession,
+    _extract_silent_hold_phrase,
+    _silent_hold_phrase_heard,
     build_realtime_websocket_url,
     resample_pcm16_mono,
 )
@@ -149,6 +153,108 @@ def test_realtime_latency_tuning_constants():
 def test_realtime_transcription_defaults_are_accuracy_first():
     assert _DEFAULT_INPUT_TRANSCRIPTION_MODEL == "gpt-4o-transcribe"
     assert _INPUT_TRANSCRIPTION_PROMPT == ""
+
+
+def test_extract_silent_hold_phrase_from_user_request():
+    assert (
+        _extract_silent_hold_phrase("Nexa, pause until I say continue Nexa.")
+        == "continue nexa"
+    )
+    assert (
+        _extract_silent_hold_phrase("Stay quiet till I say the magic words welcome back.")
+        == "welcome back"
+    )
+    assert _extract_silent_hold_phrase("Pause the recording.") == ""
+
+
+def test_silent_hold_requires_complete_resume_phrase():
+    assert _silent_hold_phrase_heard("Okay, continue Nexa now.", "continue nexa")
+    assert not _silent_hold_phrase_heard("Please continue.", "continue nexa")
+    assert not _silent_hold_phrase_heard("Nexa is still paused.", "continue nexa")
+
+
+def test_silent_hold_suppresses_audio_playback(monkeypatch):
+    import realtime_voice_session as rtv
+
+    monkeypatch.setattr(rtv, "sd", None)
+    session = RealtimeVoiceSession(
+        client_secret="ek_test",
+        model="gpt-realtime-2",
+        backend_base_url="http://127.0.0.1:8000",
+        device_token="mbd_test",
+        on_session_end=lambda: None,
+        on_error=lambda _msg: None,
+        on_connected=lambda: None,
+    )
+    session._silent_hold_phrase = "continue nexa"
+    ensure_aplay = mock.MagicMock()
+    monkeypatch.setattr(session, "_ensure_aplay", ensure_aplay)
+
+    session._play_delta("AQI=")
+
+    ensure_aplay.assert_not_called()
+
+
+def test_silent_hold_cancels_ambient_responses_and_resumes(monkeypatch):
+    import realtime_voice_session as rtv
+
+    monkeypatch.setattr(rtv, "sd", None)
+    session = RealtimeVoiceSession(
+        client_secret="ek_test",
+        model="gpt-realtime-2",
+        backend_base_url="http://127.0.0.1:8000",
+        device_token="mbd_test",
+        on_session_end=lambda: None,
+        on_error=lambda _msg: None,
+        on_connected=lambda: None,
+    )
+
+    class _FakeWS:
+        def __init__(self):
+            self.events = iter([
+                {
+                    "type": "conversation.item.input_audio_transcription.completed",
+                    "transcript": "Nexa pause until I say continue Nexa",
+                },
+                {"type": "response.created"},
+                {"type": "response.done", "response": {}},
+                {
+                    "type": "conversation.item.input_audio_transcription.completed",
+                    "transcript": "This conversation is not for Nexa",
+                },
+                {"type": "response.created"},
+                {"type": "response.done", "response": {}},
+                {
+                    "type": "conversation.item.input_audio_transcription.completed",
+                    "transcript": "Continue Nexa",
+                },
+                {"type": "response.created"},
+                {"type": "response.done", "response": {}},
+            ])
+            self.sent = []
+
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            try:
+                return json.dumps(next(self.events))
+            except StopIteration:
+                raise StopAsyncIteration
+
+        async def send(self, raw):
+            self.sent.append(json.loads(raw))
+
+    ws = _FakeWS()
+    session._ws = ws
+    asyncio.run(session._recv_loop())
+
+    assert session._silent_hold_phrase == ""
+    assert session._silent_hold_resume_pending is False
+    assert sum(msg["type"] == "response.cancel" for msg in ws.sent) >= 3
+    resumed = [msg for msg in ws.sent if msg["type"] == "response.create"]
+    assert len(resumed) == 1
+    assert "silent hold is now over" in resumed[0]["response"]["instructions"]
 
 
 def test_local_barge_in_uses_reference_and_consecutive_frames(monkeypatch):

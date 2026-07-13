@@ -45,6 +45,7 @@ import json
 import logging
 import os
 import queue
+import re
 import shutil
 import string
 import subprocess
@@ -383,6 +384,41 @@ _PUNCT_TO_SPACE = str.maketrans({c: " " for c in string.punctuation})
 def _normalize_words(text: str) -> str:
     """Lowercase, strip all punctuation, collapse whitespace."""
     return " ".join((text or "").lower().translate(_PUNCT_TO_SPACE).split())
+
+
+_SILENT_HOLD_MARKERS = (
+    "pause",
+    "be quiet",
+    "stay quiet",
+    "keep quiet",
+    "stay silent",
+    "stop talking",
+    "dont speak",
+    "do not speak",
+)
+_SILENT_HOLD_RESUME_RE = re.compile(
+    r"\b(?:until|till|when)\s+(?:i\s+)?say\s+"
+    r"(?:(?:the\s+)?(?:magic\s+)?(?:word|words|phrase)\s+)?"
+    r"(?P<phrase>[a-z0-9]+(?:\s+[a-z0-9]+){0,4})\s*$"
+)
+
+
+def _extract_silent_hold_phrase(text: str) -> str:
+    """Return the user-chosen resume phrase from an explicit silent-hold request."""
+    normalized = _normalize_words(text)
+    if not normalized or not any(marker in normalized for marker in _SILENT_HOLD_MARKERS):
+        return ""
+    match = _SILENT_HOLD_RESUME_RE.search(normalized)
+    return match.group("phrase").strip() if match else ""
+
+
+def _silent_hold_phrase_heard(text: str, phrase: str) -> bool:
+    """Match the complete chosen phrase as consecutive normalized words."""
+    spoken = _normalize_words(text)
+    expected = _normalize_words(phrase)
+    if not spoken or not expected:
+        return False
+    return f" {expected} " in f" {spoken} "
 
 
 # Client-only tool the model can invoke when it judges that the
@@ -877,6 +913,12 @@ class RealtimeVoiceSession:
         self._active_audio_item_id: str | None = None
         self._active_audio_content_index = 0
         self._last_activity_monotonic = time.monotonic()
+        # Deterministic device-side silent hold. The Realtime model cannot be
+        # trusted to preserve a custom resume phrase while auto-responses keep
+        # being created for ambient conversation.
+        self._silent_hold_phrase = ""
+        self._silent_hold_resume_pending = False
+        self._silent_hold_resume_task = None
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -1750,6 +1792,8 @@ class RealtimeVoiceSession:
     def _play_delta(self, delta_b64: str) -> None:
         if not delta_b64:
             return
+        if self._silent_hold_phrase or self._silent_hold_resume_pending:
+            return
         if time.monotonic() < self._suppress_audio_until:
             return  # trailing bytes of a barge-in'd response
         try:
@@ -2302,6 +2346,8 @@ class RealtimeVoiceSession:
             return
         while not self._stop.is_set():
             await asyncio.sleep(1.0)
+            if self._silent_hold_phrase:
+                continue
             if self._state == "speaking" or self._response_in_progress:
                 continue
             idle_for = time.monotonic() - self._last_activity_monotonic
@@ -2314,6 +2360,64 @@ class RealtimeVoiceSession:
                 except Exception:
                     pass
                 break
+
+    async def _cancel_for_silent_hold(self, ws) -> None:
+        """Stop every model response without producing an acknowledgment."""
+        self._abort_aplay()
+        self._ai_transcript_buf = ""
+        self._active_ai_transcript_item_id = ""
+        self._emit_state("listening")
+        try:
+            await ws.send(json.dumps({"type": "response.cancel"}))
+        except Exception:
+            logger.debug("Realtime: silent-hold response.cancel failed", exc_info=True)
+
+    async def _send_silent_hold_resume_response(self, ws) -> None:
+        """Create the first audible response after the chosen phrase is heard."""
+        if not self._silent_hold_resume_pending or self._stop.is_set():
+            return
+        self._silent_hold_resume_pending = False
+        await ws.send(json.dumps({
+            "type": "response.create",
+            "response": {
+                "instructions": (
+                    "The device detected the user's exact resume phrase and silent hold is now over. "
+                    "Resume speaking now. Continue the interrupted response if it is still relevant; "
+                    "otherwise say exactly: \"I'm listening.\" Do not explain or mention silent hold."
+                ),
+            },
+        }))
+
+    async def _send_silent_hold_resume_after_delay(self, ws) -> None:
+        """Fallback when cancelling an idle response produces no response.done."""
+        try:
+            await asyncio.sleep(0.6)
+            await self._send_silent_hold_resume_response(ws)
+        except asyncio.CancelledError:
+            pass
+        except Exception:
+            logger.exception("Realtime: silent-hold resume response failed")
+
+    async def _release_silent_hold(self, ws, spoken: str) -> None:
+        phrase = self._silent_hold_phrase
+        self._silent_hold_phrase = ""
+        self._silent_hold_resume_pending = True
+        self._abort_aplay()
+        logger.info(
+            "Realtime: silent hold released by resume phrase %r in %r",
+            phrase,
+            spoken,
+        )
+        try:
+            await ws.send(json.dumps({"type": "response.cancel"}))
+        except Exception:
+            logger.debug("Realtime: resume response.cancel failed", exc_info=True)
+        try:
+            self._silent_hold_resume_task = asyncio.create_task(
+                self._send_silent_hold_resume_after_delay(ws)
+            )
+        except Exception:
+            logger.debug("Realtime: could not schedule silent-hold resume", exc_info=True)
 
     # ------------------------------------------------------------------
     # Receive loop — dispatch OpenAI events
@@ -2484,6 +2588,23 @@ class RealtimeVoiceSession:
                             transcript_model=_DEFAULT_INPUT_TRANSCRIPTION_MODEL,
                         )
                         self._emit_user_transcript(spoken, is_final=True)
+                        if self._silent_hold_phrase:
+                            if _silent_hold_phrase_heard(
+                                spoken, self._silent_hold_phrase
+                            ):
+                                await self._release_silent_hold(ws, spoken)
+                            else:
+                                await self._cancel_for_silent_hold(ws)
+                            continue
+                        hold_phrase = _extract_silent_hold_phrase(spoken)
+                        if hold_phrase:
+                            self._silent_hold_phrase = hold_phrase
+                            logger.info(
+                                "Realtime: entering silent hold until %r",
+                                hold_phrase,
+                            )
+                            await self._cancel_for_silent_hold(ws)
+                            continue
                         # Client-side farewell fallback: if the transcript is
                         # a clear goodbye phrase, close the session immediately
                         # without waiting for the model to call end_session.
@@ -2536,7 +2657,9 @@ class RealtimeVoiceSession:
                     )
                     self._ai_transcript_buf = ""
                     self._active_ai_transcript_item_id = ""
-                    if ai_text:
+                    if ai_text and not (
+                        self._silent_hold_phrase or self._silent_hold_resume_pending
+                    ):
                         logger.info("AI said: %r", ai_text)
                         # Final streaming update to make sure the bubble
                         # text exactly matches the .done payload, then a
@@ -2552,7 +2675,14 @@ class RealtimeVoiceSession:
                     "response.output_audio_transcript.delta",
                 ):
                     delta = msg.get("delta")
-                    if isinstance(delta, str) and delta:
+                    if (
+                        isinstance(delta, str)
+                        and delta
+                        and not (
+                            self._silent_hold_phrase
+                            or self._silent_hold_resume_pending
+                        )
+                    ):
                         item_id = (
                             msg.get("item_id")
                             or msg.get("response_id")
@@ -2572,6 +2702,18 @@ class RealtimeVoiceSession:
                 # ---- Model response lifecycle -------------------------
                 elif t in ("response.created", "response.started"):
                     self._touch()
+                    if self._silent_hold_phrase or self._silent_hold_resume_pending:
+                        self._response_in_progress = True
+                        self._abort_aplay()
+                        self._emit_state("listening")
+                        try:
+                            await ws.send(json.dumps({"type": "response.cancel"}))
+                        except Exception:
+                            logger.debug(
+                                "Realtime: active silent-hold response.cancel failed",
+                                exc_info=True,
+                            )
+                        continue
                     # A new response is starting; clear any leftover
                     # barge-in suppression so its audio plays cleanly.
                     self._suppress_audio_until = 0.0
@@ -2590,10 +2732,13 @@ class RealtimeVoiceSession:
                         pass
                     self._touch()
                     self._response_in_progress = True
-                    self._emit_state("speaking")
-                    if self._brief_active:
-                        self._brief_narration_audio_seen = True
-                    self._play_delta(self._extract_audio_delta(msg))
+                    if not (
+                        self._silent_hold_phrase or self._silent_hold_resume_pending
+                    ):
+                        self._emit_state("speaking")
+                        if self._brief_active:
+                            self._brief_narration_audio_seen = True
+                        self._play_delta(self._extract_audio_delta(msg))
 
                 elif t in ("response.output_audio.done", "response.audio.done"):
                     self._touch()
@@ -2606,6 +2751,25 @@ class RealtimeVoiceSession:
 
                 elif t == "response.done":
                     self._touch()
+                    if self._silent_hold_phrase:
+                        self._ai_transcript_buf = ""
+                        self._active_ai_transcript_item_id = ""
+                        self._response_in_progress = False
+                        self._active_audio_item_id = None
+                        self._active_audio_content_index = 0
+                        self._emit_state("listening")
+                        continue
+                    if self._silent_hold_resume_pending:
+                        self._ai_transcript_buf = ""
+                        self._active_ai_transcript_item_id = ""
+                        self._response_in_progress = False
+                        self._active_audio_item_id = None
+                        self._active_audio_content_index = 0
+                        resume_task = self._silent_hold_resume_task
+                        if resume_task is not None and not resume_task.done():
+                            resume_task.cancel()
+                        await self._send_silent_hold_resume_response(ws)
+                        continue
                     # If the .done transcript event never arrived but we
                     # accumulated deltas, flush them now.
                     leftover = self._ai_transcript_buf.strip()
