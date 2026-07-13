@@ -164,11 +164,28 @@ def test_extract_silent_hold_phrase_from_user_request():
         _extract_silent_hold_phrase("Stay quiet till I say the magic words welcome back.")
         == "welcome back"
     )
+    assert (
+        _extract_silent_hold_phrase(
+            "Go into quiet mode until I say continue Nexa while I take this call."
+        )
+        == "continue nexa"
+    )
+    assert (
+        _extract_silent_hold_phrase(
+            "Mute yourself till I say resume Nexa, I need to speak with someone."
+        )
+        == "resume nexa"
+    )
+    assert (
+        _extract_silent_hold_phrase("Please go into quiet mode for a while.")
+        == "continue nexa"
+    )
     assert _extract_silent_hold_phrase("Pause the recording.") == ""
 
 
 def test_silent_hold_requires_complete_resume_phrase():
     assert _silent_hold_phrase_heard("Okay, continue Nexa now.", "continue nexa")
+    assert _silent_hold_phrase_heard("Continue next.", "continue nexa")
     assert not _silent_hold_phrase_heard("Please continue.", "continue nexa")
     assert not _silent_hold_phrase_heard("Nexa is still paused.", "continue nexa")
 

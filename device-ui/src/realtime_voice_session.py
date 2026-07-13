@@ -389,15 +389,26 @@ def _normalize_words(text: str) -> str:
 _SILENT_HOLD_MARKERS = (
     "pause",
     "be quiet",
+    "go quiet",
     "stay quiet",
     "keep quiet",
+    "quiet mode",
+    "silence mode",
+    "go silent",
     "stay silent",
     "stop talking",
+    "mute yourself",
     "dont speak",
+    "don t speak",
     "do not speak",
 )
+_SILENT_HOLD_KNOWN_RESUME_RE = re.compile(
+    r"\b(?:until|till|when)\s+(?:i\s+)?(?:say|tell\s+you)\s+"
+    r"(?:(?:the\s+)?(?:magic\s+)?(?:word|words|phrase)\s+)?"
+    r"(?P<phrase>(?:continue|resume|unpause|wake\s+up)(?:\s+(?:nexa|next|nexer|nexa\s+ai))?)\b"
+)
 _SILENT_HOLD_RESUME_RE = re.compile(
-    r"\b(?:until|till|when)\s+(?:i\s+)?say\s+"
+    r"\b(?:until|till|when)\s+(?:i\s+)?(?:say|tell\s+you)\s+"
     r"(?:(?:the\s+)?(?:magic\s+)?(?:word|words|phrase)\s+)?"
     r"(?P<phrase>[a-z0-9]+(?:\s+[a-z0-9]+){0,4})\s*$"
 )
@@ -408,14 +419,32 @@ def _extract_silent_hold_phrase(text: str) -> str:
     normalized = _normalize_words(text)
     if not normalized or not any(marker in normalized for marker in _SILENT_HOLD_MARKERS):
         return ""
+    known = _SILENT_HOLD_KNOWN_RESUME_RE.search(normalized)
+    if known:
+        return known.group("phrase").strip()
     match = _SILENT_HOLD_RESUME_RE.search(normalized)
-    return match.group("phrase").strip() if match else ""
+    if match:
+        return match.group("phrase").strip()
+    if "quiet mode" in normalized or "silence mode" in normalized:
+        return "continue nexa"
+    return ""
+
+
+def _canonical_resume_phrase(text: str) -> str:
+    normalized = _normalize_words(text)
+    for alias in ("nexa ai", "next a", "next", "nexer"):
+        if normalized == alias:
+            return "nexa"
+        suffix = f" {alias}"
+        if normalized.endswith(suffix):
+            return f"{normalized[:-len(suffix)]} nexa"
+    return normalized
 
 
 def _silent_hold_phrase_heard(text: str, phrase: str) -> bool:
     """Match the complete chosen phrase as consecutive normalized words."""
-    spoken = _normalize_words(text)
-    expected = _normalize_words(phrase)
+    spoken = _canonical_resume_phrase(text)
+    expected = _canonical_resume_phrase(phrase)
     if not spoken or not expected:
         return False
     return f" {expected} " in f" {spoken} "
