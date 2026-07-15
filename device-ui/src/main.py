@@ -2958,12 +2958,14 @@ class MeetingBoxApp(App):
 
     def on_transcription_complete(self, data):
         meeting_id = data.get('meeting_id') or data.get('session_id')
+        mode = (data.get('recording_mode') or self.current_recording_mode or "meeting").strip().lower()
+        if mode not in {"meeting", "note"}:
+            mode = "meeting"
         logger.info("Transcription complete for meeting %s", meeting_id)
 
         def _update_status(_dt):
             screen = self.screen_manager.get_screen('processing')
             if hasattr(screen, 'set_processing_status'):
-                mode = (data.get('recording_mode') or self.current_recording_mode or "meeting").strip().lower()
                 text = 'Transcription done. Extracting notes…' if mode == "note" else 'Transcription done. Building meeting report…'
                 screen.set_processing_status(text)
 
@@ -3069,6 +3071,16 @@ class MeetingBoxApp(App):
             if (self.current_recording_mode == "note"
                     or str((summary or {}).get("recording_mode") or "").strip().lower() == "note"):
                 run_async(self._persist_note_tasks_from_summary(meeting_id, summary or {}))
+            # Windows dock add-on: when the 7" panel is collapsed, surface the
+            # completed meeting/note directly below the floating recording
+            # bubble. DockController ignores this on appliance/full-screen and
+            # while the panel is already open, preserving the existing Home UI.
+            dc = getattr(self, "dock_controller", None)
+            if dc is not None:
+                try:
+                    dc.notify_summary_ready(meeting_id, summary or {})
+                except Exception:
+                    logger.debug("Dock summary-ready notification failed", exc_info=True)
         # Any path reaching here is the authoritative "summary ready" signal —
         # silence the fallback poll so we don't duplicate work.
         if ready_for_review and self._summary_poll_meeting_id == meeting_id:

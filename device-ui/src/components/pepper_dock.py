@@ -32,13 +32,14 @@ from kivy.animation import Animation
 from kivy.clock import Clock
 from kivy.core.window import Window
 from kivy.graphics import (
-    Color, Ellipse, Line, RoundedRectangle,
+    Color, Ellipse, Line, Rectangle, RoundedRectangle, Triangle,
     StencilPush, StencilUse, StencilUnUse, StencilPop,
 )
 from kivy.properties import NumericProperty
 from kivy.uix.behaviors import ButtonBehavior
 from kivy.uix.floatlayout import FloatLayout
 from kivy.uix.image import Image
+from kivy.uix.label import Label
 from kivy.uix.scatterlayout import ScatterLayout
 from kivy.uix.widget import Widget
 
@@ -146,6 +147,10 @@ _PANEL_IN_DUR = 0.28
 _PANEL_OUT_DUR = 0.18
 # Cursor travel (px) before a press on the dock becomes a drag rather than a tap.
 _DRAG_THRESH = 8.0
+_RECORD_PILL_W = 190.0
+_NOTICE_W = 420.0
+_NOTICE_H = 82.0
+_NOTICE_GAP = 10.0
 
 
 def _clamp01(v: float) -> float:
@@ -235,6 +240,197 @@ class _IconButton(ButtonBehavior, Image):
             self._on_tap(self._key)
 
 
+class _RecordingControl(ButtonBehavior, Widget):
+    """Compact pause/resume or stop control rendered inside the recording pill."""
+
+    def __init__(self, kind: str, on_tap: Callable[[str], None], **kw):
+        super().__init__(**kw)
+        self._kind = kind
+        self._on_tap = on_tap
+        self._paused = False
+        with self.canvas:
+            self._ring_color = Color(0.52, 0.39, 0.95, 1.0)
+            self._ring = Line(circle=(0, 0, 0), width=max(1.2, 1.5 * _SCALE))
+            self._glyph_color = Color(0.52, 0.39, 0.95, 1.0)
+            self._bar_left = RoundedRectangle(radius=[2])
+            self._bar_right = RoundedRectangle(radius=[2])
+            self._play = Triangle(points=[0, 0, 0, 0, 0, 0])
+            self._stop_color = Color(1.0, 0.20, 0.26, 1.0)
+            self._stop = Rectangle()
+        self.bind(pos=self._draw, size=self._draw)
+
+    def set_paused(self, paused: bool) -> None:
+        self._paused = bool(paused)
+        self._draw()
+
+    def _draw(self, *_):
+        x, y, w, h = self.x, self.y, self.width, self.height
+        if w <= 0 or h <= 0:
+            return
+        cx, cy = x + w / 2.0, y + h / 2.0
+        r = min(w, h) * 0.43
+        self._ring.circle = (cx, cy, r)
+        self._ring.width = max(1.2, 1.5 * _SCALE)
+        if self._kind == "record_pause":
+            self._ring_color.a = 1.0
+            self._glyph_color.a = 1.0
+            self._stop_color.a = 0.0
+            bw, bh = w * 0.105, h * 0.34
+            self._bar_left.pos = (cx - bw * 1.45, cy - bh / 2.0)
+            self._bar_left.size = (bw, bh)
+            self._bar_right.pos = (cx + bw * 0.45, cy - bh / 2.0)
+            self._bar_right.size = (bw, bh)
+            self._play.points = [
+                cx - w * 0.08, cy - h * 0.18,
+                cx - w * 0.08, cy + h * 0.18,
+                cx + w * 0.17, cy,
+            ]
+            pause_alpha = 0.0 if self._paused else 1.0
+            self._bar_left.size = (bw, bh * pause_alpha)
+            self._bar_right.size = (bw, bh * pause_alpha)
+            self._play_color_alpha(1.0 if self._paused else 0.0)
+            self._stop.size = (0, 0)
+        else:
+            self._ring_color.a = 0.55
+            self._glyph_color.a = 0.0
+            self._stop_color.a = 1.0
+            self._bar_left.size = (0, 0)
+            self._bar_right.size = (0, 0)
+            self._play.points = [0, 0, 0, 0, 0, 0]
+            d = min(w, h) * 0.30
+            self._stop.pos = (cx - d / 2.0, cy - d / 2.0)
+            self._stop.size = (d, d)
+
+    def _play_color_alpha(self, alpha: float) -> None:
+        # Triangle shares the glyph color with the pause bars. Hide it by
+        # collapsing its points when recording is not paused.
+        if alpha <= 0.0:
+            self._play.points = [0, 0, 0, 0, 0, 0]
+
+    def on_release(self):
+        if self._on_tap:
+            self._on_tap(self._kind)
+
+
+class _NoticeButton(ButtonBehavior, Label):
+    def __init__(self, fill, **kw):
+        super().__init__(**kw)
+        with self.canvas.before:
+            self._fill_color = Color(*fill)
+            self._fill = RoundedRectangle(radius=[18])
+        self.bind(pos=self._draw, size=self._draw)
+
+    def _draw(self, *_):
+        self._fill.pos = self.pos
+        self._fill.size = self.size
+        self._fill.radius = [min(self.width, self.height) / 2.0]
+
+
+class _SummaryNotice(FloatLayout):
+    """Summary-ready notification anchored directly below the floating dock."""
+
+    def __init__(self, on_tap: Callable[[str], None], **kw):
+        super().__init__(**kw)
+        self.size_hint = (None, None)
+        with self.canvas.before:
+            Color(*_SHADOW)
+            self._shadow = RoundedRectangle(radius=[24])
+            Color(1.0, 1.0, 1.0, 0.98)
+            self._fill = RoundedRectangle(radius=[22])
+            Color(*_PILL_BORDER)
+            self._border = Line(width=max(1.0, _BORDER_W * 0.75))
+
+        self.headline = Label(
+            text="Meeting summary is ready",
+            color=(0.13, 0.14, 0.18, 1.0),
+            halign="left",
+            valign="middle",
+            bold=True,
+            size_hint=(None, None),
+        )
+        self.headline.bind(size=self.headline.setter("text_size"))
+        self.add_widget(self.headline)
+
+        self.subtitle = Label(
+            text="",
+            color=(0.43, 0.44, 0.50, 1.0),
+            halign="left",
+            valign="middle",
+            shorten=True,
+            shorten_from="right",
+            max_lines=1,
+            size_hint=(None, None),
+        )
+        self.subtitle.bind(size=self.subtitle.setter("text_size"))
+        self.add_widget(self.subtitle)
+
+        self.view_btn = _NoticeButton(
+            fill=(0.42, 0.28, 0.91, 1.0),
+            text="View",
+            color=(1, 1, 1, 1),
+            bold=True,
+            halign="center",
+            valign="middle",
+            size_hint=(None, None),
+        )
+        self.view_btn.bind(size=self.view_btn.setter("text_size"))
+        self.view_btn.bind(on_release=lambda *_: on_tap("summary_view"))
+        self.add_widget(self.view_btn)
+
+        self.close_btn = _NoticeButton(
+            fill=(0.91, 0.91, 0.94, 1.0),
+            text="Close",
+            color=(0.13, 0.14, 0.18, 1.0),
+            bold=True,
+            halign="center",
+            valign="middle",
+            size_hint=(None, None),
+        )
+        self.close_btn.bind(size=self.close_btn.setter("text_size"))
+        self.close_btn.bind(on_release=lambda *_: on_tap("summary_close"))
+        self.add_widget(self.close_btn)
+        self.bind(pos=self._draw, size=self._draw)
+
+    def set_content(self, *, is_note: bool, title: str, summary_ready: bool) -> None:
+        if summary_ready:
+            self.headline.text = "Notes are ready" if is_note else "Meeting summary is ready"
+        else:
+            self.headline.text = "Note transcription is ready" if is_note else "Meeting transcription is ready"
+        self.subtitle.text = title or ("Notes" if is_note else "Your meeting")
+
+    def _draw(self, *_):
+        x, y, w, h = self.x, self.y, self.width, self.height
+        if w <= 0 or h <= 0:
+            return
+        r = min(22.0 * _SCALE, h / 2.0)
+        self._shadow.pos = (x + 1.5 * _SCALE, y - 5.0 * _SCALE)
+        self._shadow.size = (w, h)
+        self._shadow.radius = [r]
+        self._fill.pos = (x, y)
+        self._fill.size = (w, h)
+        self._fill.radius = [r]
+        self._border.rounded_rectangle = (x + 1, y + 1, w - 2, h - 2, max(2.0, r - 1))
+        pad = 15.0 * _SCALE
+        button_h = h * 0.56
+        close_w = 64.0 * _SCALE
+        view_w = 62.0 * _SCALE
+        gap = 7.0 * _SCALE
+        self.close_btn.size = (close_w, button_h)
+        self.close_btn.pos = (x + w - pad - close_w, y + (h - button_h) / 2.0)
+        self.view_btn.size = (view_w, button_h)
+        self.view_btn.pos = (self.close_btn.x - gap - view_w, self.close_btn.y)
+        text_w = max(20.0, self.view_btn.x - x - pad * 1.5)
+        self.headline.pos = (x + pad, y + h * 0.48)
+        self.headline.size = (text_w, h * 0.35)
+        self.subtitle.pos = (x + pad, y + h * 0.17)
+        self.subtitle.size = (text_w, h * 0.29)
+        fs = max(10.0, 13.0 * _SCALE)
+        self.headline.font_size = fs
+        self.subtitle.font_size = max(9.0, 11.0 * _SCALE)
+        self.view_btn.font_size = max(9.0, 11.0 * _SCALE)
+        self.close_btn.font_size = max(9.0, 10.0 * _SCALE)
+
+
 class _RoundedClip(FloatLayout):
     """Clips its children to a rounded rectangle (rounded panel corners).
 
@@ -322,6 +518,39 @@ class PepperDock(FloatLayout):
         )
         self.add_widget(self._logo)
 
+        # During a meeting/note recording the normal navigation badge is
+        # replaced by an always-visible pause/stop/timer capsule. This is only a
+        # presentation layer; capture remains owned by MeetingBoxApp.
+        self._recording_active = False
+        self._recording_paused = False
+        self._recording_elapsed = 0
+        control_d = 34.0 * _SCALE
+        self._record_pause = _RecordingControl(
+            "record_pause", on_tap, size_hint=(None, None), size=(control_d, control_d)
+        )
+        self._record_stop = _RecordingControl(
+            "record_stop", on_tap, size_hint=(None, None), size=(control_d, control_d)
+        )
+        self._record_pause.disabled = True
+        self._record_stop.disabled = True
+        self._record_timer = Label(
+            text="00:00:00",
+            color=(1.0, 0.20, 0.26, 1.0),
+            bold=True,
+            halign="center",
+            valign="middle",
+            size_hint=(None, None),
+        )
+        self._record_timer.bind(size=self._record_timer.setter("text_size"))
+        for widget in (self._record_pause, self._record_stop, self._record_timer):
+            widget.opacity = 0.0
+            self.add_widget(widget)
+
+        self._summary_notice = _SummaryNotice(on_tap)
+        self._summary_notice.opacity = 0.0
+        self._summary_notice.disabled = True
+        self.add_widget(self._summary_notice)
+
         self.bind(
             expand=lambda *_: self._apply(),
             park=lambda *_: self._apply(),
@@ -340,6 +569,37 @@ class PepperDock(FloatLayout):
     def set_pulsing(self, on: bool) -> None:
         self._pulsing = bool(on)
         self._apply()
+
+    def set_recording_state(self, active: bool, paused: bool, elapsed: int) -> None:
+        self._recording_active = bool(active)
+        self._recording_paused = bool(paused)
+        self._recording_elapsed = max(0, int(elapsed or 0))
+        self._record_pause.disabled = not self._recording_active
+        self._record_stop.disabled = not self._recording_active
+        self._record_pause.set_paused(self._recording_paused)
+        self._record_timer.text = self._format_elapsed(self._recording_elapsed)
+        self._apply()
+
+    def show_summary_notice(self, *, is_note: bool, title: str, summary_ready: bool = True) -> None:
+        self._summary_notice.set_content(
+            is_note=is_note,
+            title=title,
+            summary_ready=summary_ready,
+        )
+        self._summary_notice.disabled = False
+        self._summary_notice.opacity = 1.0
+        self._apply()
+
+    def dismiss_summary_notice(self) -> None:
+        self._summary_notice.opacity = 0.0
+        self._summary_notice.disabled = True
+
+    @staticmethod
+    def _format_elapsed(seconds: int) -> str:
+        total = max(0, int(seconds or 0))
+        hours, rem = divmod(total, 3600)
+        minutes, secs = divmod(rem, 60)
+        return f"{hours:02d}:{minutes:02d}:{secs:02d}"
 
     @property
     def active(self) -> Optional[str]:
@@ -367,31 +627,66 @@ class PepperDock(FloatLayout):
         we = _smoothstep(e)
         cx, cy = self._center()
 
+        if self._recording_active:
+            self._logo.opacity = 0.0
+            for ic in self._icons.values():
+                ic.opacity = 0.0
+            self._highlight.set_alpha(0.0)
+            rw = _RECORD_PILL_W * _SCALE
+            self._pill.size = (rw, PILL_H)
+            self._pill.center = (cx, cy)
+            self._pill.opacity = 1.0
+            control_d = 34.0 * _SCALE
+            gap = 5.0 * _SCALE
+            left = cx - rw / 2.0 + 8.0 * _SCALE
+            self._record_pause.size = (control_d, control_d)
+            self._record_pause.pos = (left, cy - control_d / 2.0)
+            self._record_stop.size = (control_d, control_d)
+            self._record_stop.pos = (
+                self._record_pause.right + gap,
+                self._record_pause.y,
+            )
+            timer_x = self._record_stop.right + 7.0 * _SCALE
+            self._record_timer.pos = (timer_x, cy - PILL_H * 0.34)
+            self._record_timer.size = (
+                max(20.0, cx + rw / 2.0 - 8.0 * _SCALE - timer_x),
+                PILL_H * 0.68,
+            )
+            self._record_timer.font_size = max(12.0, 18.0 * _SCALE)
+            for widget in (self._record_pause, self._record_stop, self._record_timer):
+                widget.opacity = 1.0
+        else:
+            for widget in (self._record_pause, self._record_stop, self._record_timer):
+                widget.opacity = 0.0
+
         # Logo fades out quickly as the capsule takes over. A gentle breathing
         # scale gives the idle badge a subtle, calm presence.
-        b = self.breathe if e < 0.02 else 1.0
-        ld = LOGO_D * b
-        self._logo.size = (ld, ld)
-        self._logo.center = (cx, cy)
-        self._logo.opacity = _clamp01(1.0 - e * 1.8)
+        if not self._recording_active:
+            b = self.breathe if e < 0.02 else 1.0
+            ld = LOGO_D * b
+            self._logo.size = (ld, ld)
+            self._logo.center = (cx, cy)
+            self._logo.opacity = _clamp01(1.0 - e * 1.8)
 
         # Capsule grows from a circle (collapsed) to the full pill width.
-        pw = PILL_H + (PILL_W - PILL_H) * we
-        self._pill.size = (pw, PILL_H)
-        self._pill.center = (cx, cy)
-        self._pill.opacity = _clamp01(e * 2.2)
+        if not self._recording_active:
+            pw = PILL_H + (PILL_W - PILL_H) * we
+            self._pill.size = (pw, PILL_H)
+            self._pill.center = (cx, cy)
+            self._pill.opacity = _clamp01(e * 2.2)
 
         # Icons fade + slide outward only after the capsule has grown a bit.
         icon_op = _smoothstep((e - 0.35) / 0.65)
         frac_by_key = {k: f for k, _a, _s, f in _ITEMS}
-        for key, ic in self._icons.items():
-            tx = self._icon_target_x(frac_by_key[key], cx)
-            ic.center = (cx + (tx - cx) * e, cy)
-            ic.opacity = icon_op
+        if not self._recording_active:
+            for key, ic in self._icons.items():
+                tx = self._icon_target_x(frac_by_key[key], cx)
+                ic.center = (cx + (tx - cx) * e, cy)
+                ic.opacity = icon_op
 
         # Highlight tracks the active icon; when Pepper is listening it breathes
         # a soft, growing ring around the active glyph.
-        if self._active in self._icons:
+        if not self._recording_active and self._active in self._icons:
             tx = self._icon_target_x(frac_by_key[self._active], cx)
             grow = 1.0 + (0.28 * self.pulse if self._pulsing else 0.0)
             d = _HL_D * grow
@@ -402,6 +697,14 @@ class PepperDock(FloatLayout):
         else:
             self._highlight.set_alpha(0.0)
 
+        notice_w = min(_NOTICE_W * _SCALE, max(260.0, Window.width - 20.0))
+        notice_h = _NOTICE_H * _SCALE
+        self._summary_notice.size = (notice_w, notice_h)
+        self._summary_notice.pos = (
+            max(5.0, min(cx - notice_w / 2.0, Window.width - notice_w - 5.0)),
+            cy - PILL_H / 2.0 - _NOTICE_GAP * _SCALE - notice_h,
+        )
+
     # ── hit-test rectangles (Kivy coords) ─────────────────────────────────────
     def logo_rect(self, pad: float = 6.0) -> tuple[float, float, float, float]:
         cx, cy = self._center()
@@ -410,9 +713,20 @@ class PepperDock(FloatLayout):
 
     def pill_rect(self, pad: float = 8.0) -> tuple[float, float, float, float]:
         cx, cy = self._center()
-        w = PILL_W + pad * 2
+        base_w = _RECORD_PILL_W * _SCALE if self._recording_active else PILL_W
+        w = base_w + pad * 2
         h = PILL_H + pad * 2
         return (cx - w / 2, cy - h / 2, w, h)
+
+    def summary_notice_rect(self) -> Optional[tuple[float, float, float, float]]:
+        if self._summary_notice.disabled or self._summary_notice.opacity <= 0.05:
+            return None
+        return (
+            self._summary_notice.x,
+            self._summary_notice.y,
+            self._summary_notice.width,
+            self._summary_notice.height,
+        )
 
 
 class DockController:
@@ -466,6 +780,10 @@ class DockController:
         self._pulse_on = False
         self._park_path = self._park_store_path()
         self.dock.park = self._load_park()
+        self._last_recording_state: tuple[bool, bool, int] | None = None
+        self._summary_meeting_id: str | None = None
+        self._summary_data: dict = {}
+        self._consumed_summary_ids: set[str] = set()
 
     # ── installation ──────────────────────────────────────────────────────────
     def install(self) -> None:
@@ -517,6 +835,10 @@ class DockController:
             anim.start(self.dock)
         except Exception:
             logger.debug("PepperDock: breathing animation failed", exc_info=True)
+
+    def _stop_breathing(self) -> None:
+        Animation.cancel_all(self.dock, "breathe")
+        self.dock.breathe = 1.0
 
     def _update_pulse(self) -> None:
         """Run a listening ring-pulse only while the Voice screen is active."""
@@ -748,6 +1070,26 @@ class DockController:
         if self._suppress_tap:
             self._suppress_tap = False
             return
+        if key == "record_pause":
+            if not self.app.recording_state.get("active"):
+                return
+            if self.app.recording_state.get("paused"):
+                self.app.resume_recording()
+            else:
+                self.app.pause_recording()
+            return
+        if key == "record_stop":
+            if self.app.recording_state.get("active"):
+                self.app.stop_recording()
+            return
+        if key == "summary_view":
+            self._open_summary_notice()
+            return
+        if key == "summary_close":
+            self._dismiss_summary_notice(mark_consumed=True)
+            return
+        if self.app.recording_state.get("active"):
+            return
         # Re-tapping the active shortcut collapses back to the lone logo.
         if self.state == "screen_open" and key == self.dock.active:
             self.collapse()
@@ -807,6 +1149,89 @@ class DockController:
             app._handle_voice_wake_phrase("")
         except Exception:
             logger.exception("PepperDock: voice activation failed")
+
+    def notify_summary_ready(self, meeting_id: str, summary: dict) -> None:
+        """Show a completion notice only when the Windows panel is closed."""
+        if (
+            not self._engaged
+            or self.state == "screen_open"
+            or not meeting_id
+            or str(meeting_id) in self._consumed_summary_ids
+        ):
+            return
+        self._summary_meeting_id = str(meeting_id)
+        self._summary_data = dict(summary or {})
+        mode = str(
+            self._summary_data.get("recording_mode")
+            or self._summary_data.get("content_type")
+            or "meeting"
+        ).strip().lower()
+        title = ""
+        for key in ("title", "report_title", "meeting_title", "name"):
+            title = str(self._summary_data.get(key) or "").strip()
+            if title:
+                break
+        self.dock.show_summary_notice(
+            is_note=mode in {"note", "notes"},
+            title=title,
+            summary_ready=True,
+        )
+        logger.info("PepperDock: summary-ready notice shown for %s", meeting_id)
+
+    def _mark_summary_consumed(self, meeting_id: str | None) -> None:
+        if not meeting_id:
+            return
+        self._consumed_summary_ids.add(meeting_id)
+        try:
+            home = self.app.screen_manager.get_screen("home")
+            shown = getattr(home, "_shown_summary_ids", None)
+            if isinstance(shown, set):
+                shown.add(meeting_id)
+        except Exception:
+            logger.debug("PepperDock: could not mark summary consumed", exc_info=True)
+
+    def _dismiss_summary_notice(self, *, mark_consumed: bool) -> None:
+        if mark_consumed:
+            self._mark_summary_consumed(self._summary_meeting_id)
+        self.dock.dismiss_summary_notice()
+        self._summary_meeting_id = None
+        self._summary_data = {}
+
+    def _open_summary_notice(self) -> None:
+        meeting_id = self._summary_meeting_id
+        summary = dict(self._summary_data)
+        if not meeting_id:
+            return
+        self._mark_summary_consumed(meeting_id)
+        self._dismiss_summary_notice(mark_consumed=False)
+        self._show_surface()
+        self.state = "screen_open"
+        self.dock.set_active(None)
+        self._animate_expand()
+        try:
+            self.app._voice_open_summary_review(meeting_id, summary)
+        except Exception:
+            logger.exception("PepperDock: could not open completed summary")
+
+    def _sync_recording_state(self) -> None:
+        state = getattr(self.app, "recording_state", {}) or {}
+        active = bool(state.get("active"))
+        paused = bool(state.get("paused"))
+        elapsed = 0
+        if active:
+            try:
+                elapsed = int(self.app._current_recording_elapsed_seconds())
+            except Exception:
+                elapsed = int(state.get("elapsed") or 0)
+        snapshot = (active, paused, elapsed)
+        if snapshot == self._last_recording_state:
+            return
+        self._last_recording_state = snapshot
+        self.dock.set_recording_state(active, paused, elapsed)
+        if active:
+            self._stop_breathing()
+        elif self.state == "collapsed":
+            self._start_breathing()
 
     # ── interaction: expand / collapse ────────────────────────────────────────
     def _animate_expand(self) -> None:
@@ -889,6 +1314,7 @@ class DockController:
     def _poll(self, dt: float) -> None:
         if not self._engaged:
             return
+        self._sync_recording_state()
         self._topmost_accum += dt
         if self._topmost_accum >= 1.0:
             self._topmost_accum = 0.0
@@ -941,18 +1367,35 @@ class DockController:
             return
 
         interactive = False
-        if self.state == "collapsed":
-            interactive = self._point_in(kx, ky, self.dock.logo_rect())
+        notice_rect = self.dock.summary_notice_rect()
+        in_notice = bool(
+            notice_rect and self._point_in(kx, ky, notice_rect)
+        )
+        recording_active = bool(self.app.recording_state.get("active"))
+        if recording_active:
+            in_pill = self._point_in(kx, ky, self.dock.pill_rect())
+            in_surface = (
+                self.state == "screen_open"
+                and self._point_in(kx, ky, self._surface_rect())
+            )
+            interactive = in_pill or in_surface or in_notice
+            if btn and self.state == "screen_open" and not interactive:
+                # Hiding the panel while recording is UI-only. Capture and the
+                # recording capsule continue until Pause or Stop is explicit.
+                self.collapse()
+        elif self.state == "collapsed":
+            interactive = in_notice or self._point_in(kx, ky, self.dock.logo_rect())
             if interactive:
-                self.expand_hover()
+                if not in_notice:
+                    self.expand_hover()
         elif self.state == "expanded":
-            interactive = self._point_in(kx, ky, self.dock.pill_rect())
+            interactive = in_notice or self._point_in(kx, ky, self.dock.pill_rect())
             if not interactive:
                 self.collapse()
         elif self.state == "screen_open":
             in_pill = self._point_in(kx, ky, self.dock.pill_rect())
             in_surface = self._point_in(kx, ky, self._surface_rect())
-            interactive = in_pill or in_surface
+            interactive = in_pill or in_surface or in_notice
             if btn and not interactive:
                 # Tapping the bare desktop (outside the pill and the panel) is an
                 # explicit "I'm done" gesture: end any live voice/audio session
