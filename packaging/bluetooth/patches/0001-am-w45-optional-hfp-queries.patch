@@ -7,10 +7,10 @@ Forwarded: not-needed
 
 --- a/spa/plugins/bluez5/backend-native.c
 +++ b/spa/plugins/bluez5/backend-native.c
-@@ -1810,7 +1810,15 @@ static bool rfcomm_hfp_ag(struct rfcomm *rfcomm, char *buf)
- 			rfcomm_send_reply(rfcomm, "+BIND: 2,0");
- 			rfcomm_send_reply(rfcomm, "OK");
- 		}
+@@ -1108,7 +1108,15 @@ static bool rfcomm_hfp_ag(struct rfcomm *rfcomm, char *buf)
+ 	} else if (spa_strstartswith(buf, "AT+APLSIRI?")) {
+ 		// This command is sent when we activate Apple extensions
+ 		rfcomm_send_reply(rfcomm, "OK");
 -	} else if (!mm_is_available(backend->modemmanager)) {
 +	} else if (spa_strstartswith(buf, "AT+CCWA=") ||
 +			spa_strstartswith(buf, "AT+BTRH?") ||
