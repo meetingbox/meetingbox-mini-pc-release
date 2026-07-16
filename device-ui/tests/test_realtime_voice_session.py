@@ -633,3 +633,32 @@ def test_speaker_writer_does_not_restart_after_intentional_abort(monkeypatch):
 
     ensure.assert_called_once()
     session._aplay_writer.shutdown(wait=False, cancel_futures=True)
+
+
+def test_live_caption_starts_from_local_mic_before_server_vad(monkeypatch):
+    import queue
+    import realtime_voice_session as rtv
+
+    monkeypatch.setattr(rtv, "sd", None)
+    session = RealtimeVoiceSession(
+        client_secret="ek_test",
+        model="gpt-realtime-2",
+        backend_base_url="http://127.0.0.1:8000",
+        device_token="mbd_test",
+        on_session_end=lambda: None,
+        on_error=lambda _msg: None,
+        on_connected=lambda: None,
+    )
+    session._aec = None
+    session._caption_q = queue.Queue(maxsize=4)
+    session._emit_user_speech_started = mock.MagicMock()
+    pcm = (np.ones(480, dtype=np.int16) * 1200).tobytes()
+    ws = mock.AsyncMock()
+
+    asyncio.run(session._upload_resampled_audio(ws, pcm))
+
+    assert session._caption_active is True
+    assert session._caption_started_locally is True
+    session._emit_user_speech_started.assert_called_once()
+    assert session._caption_q.get_nowait() == pcm
+    session._aplay_writer.shutdown(wait=False, cancel_futures=True)

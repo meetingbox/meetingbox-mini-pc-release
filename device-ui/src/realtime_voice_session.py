@@ -379,6 +379,9 @@ _REALTIME_LIVE_CAPTION = (
     os.environ.get("REALTIME_LIVE_CAPTION", "1").strip().lower()
     not in ("0", "false", "no", "off", "")
 )
+_LIVE_CAPTION_START_RMS = _env_float(
+    "REALTIME_LIVE_CAPTION_START_RMS", 250.0, minimum=50.0, maximum=5000.0
+)
 
 
 # ---------------------------------------------------------------------------
@@ -902,9 +905,17 @@ class RealtimeVoiceSession:
         # buffered as the far-end reference; the mic stream (after resample
         # to 24 kHz) is the near-end. The canceller produces the
         # echo-suppressed mic signal we forward to OpenAI.
+        bluetooth_audio = "bluez_" in (
+            f"{self._audio_pair.capture_name} {self._audio_pair.playback_name}".lower()
+        )
         try:
             from _aec import SpeexAEC, is_available as _aec_available
-            if _aec_available():
+            if bluetooth_audio:
+                self._aec = None
+                logger.info(
+                    "Realtime AEC: using headset hardware echo control for Bluetooth duplex"
+                )
+            elif _aec_available():
                 self._aec = SpeexAEC(
                     frame_size=480, filter_length=4800, sample_rate=_REALTIME_RATE
                 )
@@ -932,6 +943,7 @@ class RealtimeVoiceSession:
         self._caption_thread: threading.Thread | None = None
         self._caption_reset = threading.Event()
         self._caption_active = False  # True only between speech_started/stopped
+        self._caption_started_locally = False
         self._caption_text = ""        # finalized segments for the current utterance
         self._caption_emit_lock = threading.Lock()
         self._caption_pending_text = ""
@@ -2472,6 +2484,19 @@ class RealtimeVoiceSession:
         # Feed the same echo-cancelled PCM to the live-caption recognizer
         # (non-blocking; dropped if the side thread falls behind).
         if self._caption_q is not None:
+            if (
+                not self._caption_active
+                and self._pcm_rms(resampled) >= _LIVE_CAPTION_START_RMS
+            ):
+                # Start the visible partial from local mic energy instead of
+                # waiting for the server VAD round-trip. The server event still
+                # remains authoritative for turn completion.
+                self._caption_active = True
+                self._caption_started_locally = True
+                self._caption_reset.set()
+                self._reset_live_caption_pending()
+                self._emit_user_speech_started()
+                self._log_voice_event("local_caption_speech_started")
             try:
                 self._caption_q.put_nowait(resampled)
             except queue.Full:
@@ -2816,10 +2841,11 @@ class RealtimeVoiceSession:
                     self._active_user_transcript_item_id = ""
                     # Reset the live-caption recognizer + reset the UI bubble
                     # tracker so captions render into a fresh bubble.
-                    self._reset_live_caption_pending()
-                    self._caption_active = True
-                    self._caption_reset.set()
-                    self._emit_user_speech_started()
+                    if not self._caption_started_locally:
+                        self._reset_live_caption_pending()
+                        self._caption_active = True
+                        self._caption_reset.set()
+                        self._emit_user_speech_started()
                     # In half-duplex, server-side speech_started can still
                     # occasionally come from residual echo on some external
                     # mic/speaker paths. Only force-stop playback when local
@@ -2864,6 +2890,8 @@ class RealtimeVoiceSession:
                     # Stop live captions — OpenAI's accurate transcript now
                     # owns the bubble for this finished utterance.
                     self._caption_active = False
+                    self._caption_started_locally = False
+                    self._caption_reset.set()
                     self._reset_live_caption_pending()
                     # Tell the UI to drop in a placeholder user bubble
                     # right away so the gap before transcription/AI is
