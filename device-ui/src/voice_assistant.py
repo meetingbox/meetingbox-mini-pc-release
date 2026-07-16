@@ -14,6 +14,7 @@ import os
 import queue
 import re
 import shutil
+import subprocess
 import threading
 import time
 import zipfile
@@ -595,6 +596,8 @@ class VoiceAssistant:
         self._thread: threading.Thread | None = None
         self._stream = None
         self._stream_samplerate = 0
+        self._capture_route: str | None = None
+        self._last_route_check_at = 0.0
         self._recognizer = None
         self._model = None
         self._model_lock = threading.Lock()
@@ -728,6 +731,7 @@ class VoiceAssistant:
             if self._is_paused() or self._is_tts_active():
                 self._stop_event.wait(0.25)
                 continue
+            self._refresh_capture_route()
             if not self._ensure_model_ready():
                 self._stop_event.wait(10.0)
                 continue
@@ -749,6 +753,46 @@ class VoiceAssistant:
                 self._reset_recognizer()
 
         self._close_stream()
+
+    @staticmethod
+    def _read_default_source() -> str:
+        try:
+            result = subprocess.run(
+                ["pactl", "get-default-source"],
+                capture_output=True,
+                text=True,
+                timeout=2,
+                check=False,
+            )
+            return result.stdout.strip()
+        except Exception:
+            return ""
+
+    def _refresh_capture_route(self, now: float | None = None) -> None:
+        """Reopen only the wake mic when PipeWire changes or drops its source."""
+        now = time.monotonic() if now is None else now
+        if now - self._last_route_check_at < 2.0:
+            return
+        self._last_route_check_at = now
+        current = self._read_default_source()
+        route_changed = (
+            self._capture_route is not None and current != self._capture_route
+        )
+        stream_dead = (
+            self._stream is not None
+            and getattr(self._stream, "active", True) is False
+        )
+        self._capture_route = current
+        if not route_changed and not stream_dead:
+            return
+        logger.warning(
+            "Voice assistant reopening input after route change/dead stream "
+            "(source=%s dead=%s)",
+            current or "<unavailable>",
+            stream_dead,
+        )
+        self._close_stream()
+        self._clear_audio_queue()
 
     def _is_paused(self) -> bool:
         with self._pause_lock:

@@ -1,5 +1,6 @@
 from pathlib import Path
 import sys
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
@@ -167,6 +168,36 @@ def test_is_awaiting_command_after_wake():
     interpreter = _mk()
     interpreter.handle_transcript("hey nexa", now=10.0)
     assert interpreter.is_awaiting_command(now=10.5) is True
+
+
+def test_wake_listener_reopens_when_default_source_changes(monkeypatch):
+    assistant = VoiceAssistant(lambda _intent: None)
+    assistant._capture_route = "bluez_input.old"
+    assistant._stream = mock.MagicMock(active=True)
+    close_stream = mock.MagicMock()
+    clear_queue = mock.MagicMock()
+    monkeypatch.setattr(assistant, "_read_default_source", lambda: "bluez_input.new")
+    monkeypatch.setattr(assistant, "_close_stream", close_stream)
+    monkeypatch.setattr(assistant, "_clear_audio_queue", clear_queue)
+
+    assistant._refresh_capture_route(now=10.0)
+
+    close_stream.assert_called_once()
+    clear_queue.assert_called_once()
+
+
+def test_wake_listener_reopens_dead_stream_without_route_change(monkeypatch):
+    assistant = VoiceAssistant(lambda _intent: None)
+    assistant._capture_route = "bluez_input.same"
+    assistant._stream = mock.MagicMock(active=False)
+    close_stream = mock.MagicMock()
+    monkeypatch.setattr(assistant, "_read_default_source", lambda: "bluez_input.same")
+    monkeypatch.setattr(assistant, "_close_stream", close_stream)
+    monkeypatch.setattr(assistant, "_clear_audio_queue", mock.MagicMock())
+
+    assistant._refresh_capture_route(now=10.0)
+
+    close_stream.assert_called_once()
 
 
 def test_farewell_detects_common_sign_offs():
