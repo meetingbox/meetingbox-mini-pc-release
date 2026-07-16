@@ -35,6 +35,13 @@ if [[ -z "$rollback_package" ]]; then
 fi
 dpkg -i "$rollback_package"
 
+if [[ -f "$STATE_DIR/legacy-wireplumber.lua" ]]; then
+  legacy_dir="/home/$AUDIO_USER/.config/wireplumber/bluetooth.lua.d"
+  install -d -o "$AUDIO_USER" -g "$AUDIO_USER" -m 0755 "$legacy_dir"
+  install -o "$AUDIO_USER" -g "$AUDIO_USER" -m 0644 \
+    "$STATE_DIR/legacy-wireplumber.lua" "$legacy_dir/51-enable-hfp-hsp.lua"
+fi
+
 audio_uid="$(id -u "$AUDIO_USER")"
 runuser -u "$AUDIO_USER" -- env \
   XDG_RUNTIME_DIR="/run/user/$audio_uid" \

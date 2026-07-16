@@ -12,6 +12,8 @@ DEVICE_MAC="${2:-}"
 AUDIO_USER="${MEETINGBOX_AUDIO_USER:-meetingbox}"
 STATE_DIR="/var/lib/meetingbox/bluetooth"
 ROLLBACK_DIR="$STATE_DIR/rollback"
+BLUEZ_PLUGIN="/usr/lib/x86_64-linux-gnu/spa-0.2/bluez5/libspa-bluez5.so"
+LEGACY_CONFIG="/home/$AUDIO_USER/.config/wireplumber/bluetooth.lua.d/51-enable-hfp-hsp.lua"
 
 [[ -f "$PACKAGE_PATH" ]] || {
   echo "Patched libspa-0.2-bluetooth package is required" >&2
@@ -36,6 +38,18 @@ fi
 sha256sum "$PACKAGE_PATH" >"$STATE_DIR/installed-package.sha256"
 printf 'previous_version=%q\ninstalled_from=%q\n' \
   "$current_version" "$(readlink -f "$PACKAGE_PATH")" >"$STATE_DIR/install.state"
+
+# Migrate the earlier emergency copied-library workaround back into dpkg
+# ownership before installing the versioned package.
+if dpkg-divert --list "$BLUEZ_PLUGIN" | grep -q "$BLUEZ_PLUGIN"; then
+  [[ -f "$BLUEZ_PLUGIN" ]] && cp -a "$BLUEZ_PLUGIN" "$STATE_DIR/manual-libspa-bluez5.so"
+  rm -f "$BLUEZ_PLUGIN"
+  dpkg-divert --remove --rename "$BLUEZ_PLUGIN"
+fi
+if [[ -f "$LEGACY_CONFIG" ]]; then
+  cp -a "$LEGACY_CONFIG" "$STATE_DIR/legacy-wireplumber.lua"
+  rm -f "$LEGACY_CONFIG"
+fi
 
 install -D -m 0644 "$ROOT_DIR/51-meetingbox-amw45.lua" \
   /etc/wireplumber/bluetooth.lua.d/51-meetingbox-amw45.lua
