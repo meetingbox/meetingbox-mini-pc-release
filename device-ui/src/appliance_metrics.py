@@ -9,9 +9,16 @@ from __future__ import annotations
 import logging
 import os
 import shutil
+import time
 from typing import Any, Dict
 
 logger = logging.getLogger(__name__)
+_BOOT_ID = ""
+try:
+    with open("/proc/sys/kernel/random/boot_id", encoding="utf-8") as _boot_file:
+        _BOOT_ID = _boot_file.read().strip()
+except OSError:
+    pass
 
 try:
     import psutil  # type: ignore
@@ -32,14 +39,25 @@ def collect_appliance_metrics() -> Dict[str, Any]:
             cpu = float(psutil.cpu_percent(interval=0.25))
             mem = psutil.virtual_memory()
             disk = psutil.disk_usage(path)
+            proc = psutil.Process(os.getpid())
+            net = psutil.net_io_counters()
+            load_1m = float(os.getloadavg()[0]) if hasattr(os, "getloadavg") else 0.0
             return {
+                "timestamp_ms": int(time.time() * 1000),
+                "build_sha": os.getenv("MEETINGBOX_BUILD_SHA", "unknown"),
+                "boot_id": _BOOT_ID,
                 "cpu_percent": round(cpu, 1),
+                "process_cpu_percent": round(float(proc.cpu_percent(interval=None)), 1),
+                "process_rss_mb": round(proc.memory_info().rss / (1024**2), 1),
+                "load_1m": round(load_1m, 2),
                 "memory_percent": round(float(mem.percent), 1),
                 "memory_used_gb": round(mem.used / (1024**3), 2),
                 "memory_total_gb": round(mem.total / (1024**3), 2),
                 "disk_percent": round(float(disk.percent), 1),
                 "disk_used_gb": round(disk.used / (1024**3), 2),
                 "disk_total_gb": round(disk.total / (1024**3), 2),
+                "network_bytes_sent": int(net.bytes_sent),
+                "network_bytes_recv": int(net.bytes_recv),
             }
         except Exception as e:
             logger.debug("psutil metrics failed, using fallback: %s", e)
@@ -78,7 +96,11 @@ def collect_appliance_metrics() -> Dict[str, Any]:
         disk_total = 1
 
     return {
+        "timestamp_ms": int(time.time() * 1000),
+        "build_sha": os.getenv("MEETINGBOX_BUILD_SHA", "unknown"),
+        "boot_id": _BOOT_ID,
         "cpu_percent": round(load_cpu, 1),
+        "load_1m": round(float(os.getloadavg()[0]), 2) if hasattr(os, "getloadavg") else 0.0,
         "memory_percent": round(mem_pct, 1),
         "memory_used_gb": round(mem_used_gb, 2),
         "memory_total_gb": round(mem_total_gb, 2),

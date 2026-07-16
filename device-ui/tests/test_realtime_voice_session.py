@@ -573,3 +573,63 @@ def test_far_ref_slice_uses_most_recent_audio(monkeypatch):
     ref = session._far_ref_slice(len(new))
     ref_rms = session._pcm_rms(ref)
     assert ref_rms > 1500
+
+
+def test_speaker_writer_restarts_dead_aplay_and_retries_chunk(monkeypatch):
+    import realtime_voice_session as rtv
+
+    monkeypatch.setattr(rtv, "sd", None)
+    session = RealtimeVoiceSession(
+        client_secret="ek_test",
+        model="gpt-realtime-2",
+        backend_base_url="http://127.0.0.1:8000",
+        device_token="mbd_test",
+        on_session_end=lambda: None,
+        on_error=lambda _msg: None,
+        on_connected=lambda: None,
+    )
+    dead = mock.MagicMock()
+    dead.stdin.write.side_effect = BrokenPipeError()
+    healthy = mock.MagicMock()
+    session._aplay_proc = dead
+
+    def _ensure():
+        if session._aplay_proc is None:
+            session._aplay_proc = healthy
+
+    monkeypatch.setattr(session, "_ensure_aplay", _ensure)
+    session._write_to_aplay(b"audio", session._aplay_generation)
+
+    healthy.stdin.write.assert_called_once_with(b"audio")
+    session._aplay_writer.shutdown(wait=False, cancel_futures=True)
+
+
+def test_speaker_writer_does_not_restart_after_intentional_abort(monkeypatch):
+    import realtime_voice_session as rtv
+
+    monkeypatch.setattr(rtv, "sd", None)
+    session = RealtimeVoiceSession(
+        client_secret="ek_test",
+        model="gpt-realtime-2",
+        backend_base_url="http://127.0.0.1:8000",
+        device_token="mbd_test",
+        on_session_end=lambda: None,
+        on_error=lambda _msg: None,
+        on_connected=lambda: None,
+    )
+    proc = mock.MagicMock()
+
+    def _aborted_write(_raw):
+        session._aplay_generation += 1
+        raise BrokenPipeError()
+
+    proc.stdin.write.side_effect = _aborted_write
+    session._aplay_proc = proc
+    ensure = mock.MagicMock()
+    monkeypatch.setattr(session, "_ensure_aplay", ensure)
+    generation = session._aplay_generation
+
+    session._write_to_aplay(b"audio", generation)
+
+    ensure.assert_called_once()
+    session._aplay_writer.shutdown(wait=False, cancel_futures=True)

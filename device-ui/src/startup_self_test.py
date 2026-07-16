@@ -231,7 +231,7 @@ async def _check_realtime_session(app: Any, voice_rt_setting: bool) -> SelfCheck
     return SelfCheckResult(
         "Realtime voice (mint)",
         False,
-        "response missing client_secret/session",
+        "response missing client_secret",
     )
 
 

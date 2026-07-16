@@ -874,6 +874,8 @@ class RealtimeVoiceSession:
         # up, tripping ping_timeout and killing the session mid-reply.
         self._aplay_proc: subprocess.Popen | None = None
         self._aplay_pid: int | None = None
+        self._aplay_lock = threading.Lock()
+        self._aplay_generation = 0
         self._aplay_writer = ThreadPoolExecutor(
             max_workers=1, thread_name_prefix="rtv-aplay"
         )
@@ -1924,44 +1926,45 @@ class RealtimeVoiceSession:
     # ------------------------------------------------------------------
 
     def _ensure_aplay(self) -> None:
-        if self._aplay_proc is not None and self._aplay_proc.poll() is None:
-            return
-        if not shutil.which("aplay"):
-            return
-        # Priority: explicit env override → audio_pair auto-detect (USB or fallback)
-        output_device = (os.getenv("AUDIO_OUTPUT_DEVICE") or "").strip()
-        if not output_device:
-            output_device = self._audio_pair.playback or ""
+        with self._aplay_lock:
+            if self._aplay_proc is not None and self._aplay_proc.poll() is None:
+                return
+            if not shutil.which("aplay"):
+                return
+            # Priority: explicit env override → audio_pair auto-detect (USB or fallback)
+            output_device = (os.getenv("AUDIO_OUTPUT_DEVICE") or "").strip()
+            if not output_device:
+                output_device = self._audio_pair.playback or ""
+                if output_device:
+                    logger.info(
+                        "Realtime aplay: using auto-detected device %s (%s)",
+                        output_device,
+                        self._audio_pair.playback_name or output_device,
+                    )
+            cmd = [
+                "aplay",
+                "-q",
+                "-t", "raw",
+                "-f", "S16_LE",
+                "-r", str(_REALTIME_RATE),
+                "-c", "1",
+                "--buffer-time", _APLAY_BUFFER_TIME_US,
+            ]
             if output_device:
-                logger.info(
-                    "Realtime aplay: using auto-detected device %s (%s)",
-                    output_device,
-                    self._audio_pair.playback_name or output_device,
+                cmd += ["-D", output_device]
+            try:
+                self._aplay_proc = subprocess.Popen(
+                    cmd,
+                    stdin=subprocess.PIPE,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
                 )
-        cmd = [
-            "aplay",
-            "-q",
-            "-t", "raw",
-            "-f", "S16_LE",
-            "-r", str(_REALTIME_RATE),
-            "-c", "1",
-            "--buffer-time", _APLAY_BUFFER_TIME_US,
-        ]
-        if output_device:
-            cmd += ["-D", output_device]
-        try:
-            self._aplay_proc = subprocess.Popen(
-                cmd,
-                stdin=subprocess.PIPE,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            )
-            self._aplay_pid = self._aplay_proc.pid
-            logger.info("Realtime aplay started pid=%s device=%s", self._aplay_pid, output_device or "default")
-        except Exception:
-            logger.exception("Realtime: aplay start failed")
-            self._aplay_proc = None
-            self._aplay_pid = None
+                self._aplay_pid = self._aplay_proc.pid
+                logger.info("Realtime aplay started pid=%s device=%s", self._aplay_pid, output_device or "default")
+            except Exception:
+                logger.exception("Realtime: aplay start failed")
+                self._aplay_proc = None
+                self._aplay_pid = None
 
     def audio_playback_remaining_s(self) -> float:
         """Approximate seconds of assistant speech still queued for the speaker.
@@ -2021,35 +2024,50 @@ class RealtimeVoiceSession:
         if proc is None or proc.stdin is None:
             return
         try:
-            self._aplay_writer.submit(self._write_to_aplay, proc, raw)
+            generation = self._aplay_generation
+            self._aplay_writer.submit(self._write_to_aplay, raw, generation)
         except RuntimeError:
             # Executor already shut down (session closing).
             pass
 
-    def _write_to_aplay(self, proc: subprocess.Popen, raw: bytes) -> None:
-        """Runs on the rtv-aplay thread. Blocking here is fine."""
-        stdin = proc.stdin
-        if stdin is None:
-            return
-        try:
-            stdin.write(raw)
-            if not self._first_speaker_write_logged:
-                self._first_speaker_write_logged = True
-                self._log_voice_event("first_speaker_write", bytes=len(raw))
-        except (BrokenPipeError, ValueError):
-            # Expected when we kill aplay for a barge-in (pipe closed).
-            pass
-        except Exception:
-            logger.debug("aplay write failed", exc_info=True)
+    def _write_to_aplay(self, raw: bytes, generation: int) -> None:
+        """Write one chunk, restarting an unexpectedly dead speaker once."""
+        for attempt in range(2):
+            if generation != self._aplay_generation or self._stop.is_set():
+                return
+            self._ensure_aplay()
+            proc = self._aplay_proc
+            stdin = proc.stdin if proc is not None else None
+            if proc is None or stdin is None:
+                return
+            try:
+                stdin.write(raw)
+                if not self._first_speaker_write_logged:
+                    self._first_speaker_write_logged = True
+                    self._log_voice_event("first_speaker_write", bytes=len(raw))
+                return
+            except (BrokenPipeError, ValueError, OSError):
+                if generation != self._aplay_generation:
+                    return
+                with self._aplay_lock:
+                    if self._aplay_proc is proc:
+                        self._aplay_proc = None
+                        self._aplay_pid = None
+                self._log_voice_event("speaker_restart", attempt=attempt + 1)
+            except Exception:
+                logger.debug("aplay write failed", exc_info=True)
+                return
 
     def _abort_aplay(self) -> None:
         """Hard-kill the playback subprocess immediately."""
+        self._aplay_generation += 1
         with self._playback_clock_lock:
             self._assistant_audio_play_until = 0.0
             self._mute_mic_uplink_until = 0.0
-        proc = self._aplay_proc
-        self._aplay_proc = None
-        self._aplay_pid = None
+        with self._aplay_lock:
+            proc = self._aplay_proc
+            self._aplay_proc = None
+            self._aplay_pid = None
         if proc is None:
             return
         pid = getattr(proc, "pid", None)

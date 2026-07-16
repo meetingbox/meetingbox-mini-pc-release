@@ -5119,9 +5119,9 @@ class MeetingBoxApp(App):
         secret = (data.get("client_secret") or "").strip()
         model = (data.get("model") or "").strip()
         sess_blob = data.get("session")
-        rt_voice = ""
+        rt_voice = (data.get("voice") or "").strip()
         if isinstance(sess_blob, dict):
-            rt_voice = extract_realtime_output_voice(sess_blob)
+            rt_voice = rt_voice or extract_realtime_output_voice(sess_blob)
         if not secret or not model:
             if prewarm:
                 self._schedule_voice_prewarm_retry("invalid mint response")

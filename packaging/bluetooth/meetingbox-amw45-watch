@@ -3,8 +3,34 @@ set -u
 
 ROUTE_CMD="${MEETINGBOX_AMW45_ROUTE_CMD:-/usr/local/sbin/meetingbox-amw45-route}"
 CHECK_INTERVAL="${MEETINGBOX_BT_CHECK_INTERVAL:-20}"
+READY_FILE="/run/meetingbox-amw45-ready"
+AUDIO_USER="${MEETINGBOX_AUDIO_USER:-meetingbox}"
+AUDIO_UID="$(id -u "$AUDIO_USER")"
+RUNTIME_DIR="/run/user/$AUDIO_UID"
+
+route_healthy() {
+  [[ -r "$READY_FILE" ]] || return 1
+  # shellcheck disable=SC1090
+  source "$READY_FILE"
+  [[ -n "${mac:-}" && -n "${source:-}" && -n "${sink:-}" ]] || return 1
+  bluetoothctl info "$mac" | grep -q "Connected: yes" || return 1
+  defaults="$(
+    runuser -u "$AUDIO_USER" -- env \
+      XDG_RUNTIME_DIR="$RUNTIME_DIR" \
+      PULSE_RUNTIME_PATH="$RUNTIME_DIR/pulse" \
+      PIPEWIRE_RUNTIME_DIR="$RUNTIME_DIR" \
+      sh -c 'printf "%s\n%s\n" "$(pactl get-default-source)" "$(pactl get-default-sink)"'
+  )" || return 1
+  [[ "$defaults" == "$(printf '%s\n%s' "$source" "$sink")" ]]
+}
 
 while true; do
+  # Never touch a healthy active route. Reapplying defaults/profile while a
+  # voice turn is streaming can kill the ALSA playback/capture subprocesses.
+  if route_healthy; then
+    sleep "$CHECK_INTERVAL"
+    continue
+  fi
   if ! "$ROUTE_CMD"; then
     logger -t meetingbox-amw45 "duplex route unavailable; retrying in ${CHECK_INTERVAL}s"
   fi
