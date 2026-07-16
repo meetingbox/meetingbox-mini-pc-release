@@ -1,0 +1,15 @@
+[Unit]
+Description=MeetingBox AM-W45 mSBC duplex routing
+After=bluetooth.service systemd-user-sessions.service
+Wants=bluetooth.service
+
+[Service]
+Type=simple
+ExecStart=/usr/local/sbin/meetingbox-amw45-watch
+Restart=always
+RestartSec=5
+StartLimitIntervalSec=120
+StartLimitBurst=10
+
+[Install]
+WantedBy=multi-user.target

@@ -51,6 +51,7 @@ import string
 import subprocess
 import threading
 import time
+import uuid
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
@@ -127,9 +128,10 @@ _REALTIME_RATE = 24000
 # to the user-stop → response-start latency vs 5 ms.
 _APPEND_CHUNK_MS = 20
 
-# How often the mic pump polls the audio queue. Kept tight so the
-# event loop never sleeps long enough to delay a flush.
-_MIC_QUEUE_POLL_S = 0.01
+# Maximum wait for the next continuous mic frame. Capture supplies a frame
+# every 20 ms, so 50 ms avoids empty executor wakeups without adding latency
+# while the stream is healthy.
+_MIC_QUEUE_POLL_S = 0.05
 
 # aplay ALSA buffer in microseconds. 70 ms keeps the speaker pipe from
 # starving while leaving room to hard-kill on barge-in.
@@ -716,6 +718,8 @@ class RealtimeVoiceSession:
         on_session_end,
         on_error,
         on_connected,
+        correlation_id: str = "",
+        on_ready=None,
         on_device_navigate=None,
         output_voice: str | None = None,
         on_before_open_mic=None,
@@ -746,6 +750,15 @@ class RealtimeVoiceSession:
         self._activate_event: asyncio.Event | None = None
         self._activate_requested = False
         self._session_update_sent = False
+        self._session_ready = threading.Event()
+        self._session_id = uuid.uuid4().hex[:12]
+        self._wake_id = (correlation_id or "").strip()
+        self._turn_sequence = 0
+        self._turn_id = ""
+        self._first_outbound_audio_logged = False
+        self._first_inbound_audio_logged = False
+        self._first_speaker_write_logged = False
+        self._first_local_partial_logged = False
         self._client_secret = (client_secret or "").strip()
         self._model = (model or "").strip()
         self._backend_base_url = (backend_base_url or "").strip()
@@ -753,6 +766,7 @@ class RealtimeVoiceSession:
         self._on_session_end_cb = on_session_end
         self._on_error_cb = on_error
         self._on_connected_cb = on_connected
+        self._on_ready_cb = on_ready
         self._on_device_navigate_cb = on_device_navigate
         self._on_before_open_mic_cb = on_before_open_mic
         self._on_state_change_cb = on_state_change
@@ -877,6 +891,10 @@ class RealtimeVoiceSession:
         self._barge_in_consecutive = 0
         self._barge_in_last_cancel_at = 0.0
         self._audio_q_drops = 0
+        self._pipeline_frames = 0
+        self._resample_total_ms = 0.0
+        self._aec_frames = 0
+        self._aec_total_ms = 0.0
 
         # Acoustic echo canceller. The bytes we hand to aplay are also
         # buffered as the far-end reference; the mic stream (after resample
@@ -913,6 +931,10 @@ class RealtimeVoiceSession:
         self._caption_reset = threading.Event()
         self._caption_active = False  # True only between speech_started/stopped
         self._caption_text = ""        # finalized segments for the current utterance
+        self._caption_emit_lock = threading.Lock()
+        self._caption_pending_text = ""
+        self._caption_emit_scheduled = False
+        self._caption_q_drops = 0
 
         # Streaming buffer for AI audio transcript deltas. We flush it
         # on the matching .done event, or on response.done as a fallback
@@ -979,10 +1001,13 @@ class RealtimeVoiceSession:
         """True if the session ended without user intent (WS drop, timeout)."""
         return not self._user_ended
 
-    def activate(self) -> None:
+    def activate(self, wake_id: str = "") -> None:
         """Promote a pre-warmed (held) session to active: open the mic and
         start streaming. Safe to call from the Kivy main thread."""
+        if wake_id:
+            self._wake_id = wake_id.strip()
         self._activate_requested = True
+        self._log_voice_event("wake_activate", prewarm=self._prewarm)
         # Reset the idle clock so the watchdog counts from the moment the
         # user actually wakes the session, not from when the warm standby
         # was first created (which could be 40+ seconds ago, causing the
@@ -1002,6 +1027,7 @@ class RealtimeVoiceSession:
             self._prewarm
             and not self._activate_requested
             and self._ws is not None
+            and self._session_ready.is_set()
             and not self._stop.is_set()
         )
 
@@ -1097,6 +1123,11 @@ class RealtimeVoiceSession:
     def _emit_connected(self) -> None:
         Clock.schedule_once(lambda _dt: self._safe_call(self._on_connected_cb), 0)
 
+    def _emit_ready(self) -> None:
+        cb = self._on_ready_cb
+        if cb:
+            Clock.schedule_once(lambda _dt: self._safe_call(cb), 0)
+
     def _emit_session_end(self) -> None:
         with self._session_end_lock:
             if self._session_end_emitted:
@@ -1118,6 +1149,44 @@ class RealtimeVoiceSession:
             Clock.schedule_once(
                 lambda _dt: self._safe_call(cb, text, is_final), 0
             )
+
+    def _reset_live_caption_pending(self) -> None:
+        with self._caption_emit_lock:
+            self._caption_pending_text = ""
+
+    def _queue_live_caption(self, text: str) -> None:
+        """Keep only the newest Vosk partial and render at most once per frame."""
+        cb = self._on_user_transcript_cb
+        if not cb or not text or not self._caption_active:
+            return
+        if not self._first_local_partial_logged:
+            self._first_local_partial_logged = True
+            self._log_voice_event("first_local_partial", chars=len(text))
+        with self._caption_emit_lock:
+            self._caption_pending_text = text
+            if self._caption_emit_scheduled:
+                return
+            self._caption_emit_scheduled = True
+        Clock.schedule_once(self._flush_live_caption, 1.0 / 30.0)
+
+    def _flush_live_caption(self, _dt=0) -> None:
+        with self._caption_emit_lock:
+            text = self._caption_pending_text
+            self._caption_pending_text = ""
+            self._caption_emit_scheduled = False
+        if text and self._caption_active:
+            self._safe_call(self._on_user_transcript_cb, text, False)
+            self._log_voice_event("local_partial_rendered", chars=len(text))
+        with self._caption_emit_lock:
+            should_reschedule = bool(
+                self._caption_pending_text
+                and self._caption_active
+                and not self._caption_emit_scheduled
+            )
+            if should_reschedule:
+                self._caption_emit_scheduled = True
+        if should_reschedule:
+            Clock.schedule_once(self._flush_live_caption, 1.0 / 30.0)
 
     def _emit_ai_transcript(self, text: str) -> None:
         cb = self._on_ai_transcript_cb
@@ -1190,6 +1259,9 @@ class RealtimeVoiceSession:
         q = self._caption_q
         if rec is None or q is None:
             return
+        decode_frames = 0
+        decode_total_ms = 0.0
+        last_report = time.monotonic()
         while not self._stop.is_set():
             try:
                 pcm = q.get(timeout=0.2)
@@ -1210,19 +1282,35 @@ class RealtimeVoiceSession:
             if not self._caption_active:
                 continue
             try:
+                decode_started = time.perf_counter()
                 if rec.AcceptWaveform(pcm):
                     res = json.loads(rec.Result() or "{}")
                     seg = (res.get("text") or "").strip()
                     if seg:
                         self._caption_text = (self._caption_text + " " + seg).strip()
                         if self._caption_active:
-                            self._emit_user_transcript(self._caption_text, is_final=False)
+                            self._queue_live_caption(self._caption_text)
                 else:
                     pres = json.loads(rec.PartialResult() or "{}")
                     part = (pres.get("partial") or "").strip()
                     if part and self._caption_active:
                         live = (self._caption_text + " " + part).strip()
-                        self._emit_user_transcript(live, is_final=False)
+                        self._queue_live_caption(live)
+                decode_frames += 1
+                decode_total_ms += (time.perf_counter() - decode_started) * 1000.0
+                now = time.monotonic()
+                if now - last_report >= 5.0:
+                    self._log_voice_event(
+                        "caption_pipeline",
+                        frames=decode_frames,
+                        avg_decode_ms=round(
+                            decode_total_ms / max(1, decode_frames), 3
+                        ),
+                        queue_depth=q.qsize(),
+                    )
+                    decode_frames = 0
+                    decode_total_ms = 0.0
+                    last_report = now
             except Exception:
                 logger.debug("Live caption decode failed", exc_info=True)
 
@@ -1938,14 +2026,16 @@ class RealtimeVoiceSession:
             # Executor already shut down (session closing).
             pass
 
-    @staticmethod
-    def _write_to_aplay(proc: subprocess.Popen, raw: bytes) -> None:
+    def _write_to_aplay(self, proc: subprocess.Popen, raw: bytes) -> None:
         """Runs on the rtv-aplay thread. Blocking here is fine."""
         stdin = proc.stdin
         if stdin is None:
             return
         try:
             stdin.write(raw)
+            if not self._first_speaker_write_logged:
+                self._first_speaker_write_logged = True
+                self._log_voice_event("first_speaker_write", bytes=len(raw))
         except (BrokenPipeError, ValueError):
             # Expected when we kill aplay for a barge-in (pipe closed).
             pass
@@ -2089,6 +2179,7 @@ class RealtimeVoiceSession:
                 # against the idle budget (safety net for cold sessions).
                 self._touch()
                 idle_task = asyncio.create_task(self._idle_watchdog())
+                route_task = asyncio.create_task(self._audio_route_watchdog())
 
                 # Warm session just woken: greet only after the local wake-word
                 # mic has been released and the Realtime mic is open. Speaking
@@ -2107,8 +2198,9 @@ class RealtimeVoiceSession:
                         pass
                     pump_task.cancel()
                     idle_task.cancel()
+                    route_task.cancel()
                     await asyncio.gather(
-                        pump_task, idle_task, return_exceptions=True
+                        pump_task, idle_task, route_task, return_exceptions=True
                     )
 
         except asyncio.CancelledError:
@@ -2311,6 +2403,10 @@ class RealtimeVoiceSession:
         payload = {
             "event": event,
             "ts": round(time.time(), 3),
+            "mono_ms": round(time.monotonic() * 1000.0, 1),
+            "session_id": self._session_id,
+            "wake_id": self._wake_id,
+            "turn_id": self._turn_id,
             **fields,
         }
         try:
@@ -2349,7 +2445,10 @@ class RealtimeVoiceSession:
 
     async def _upload_resampled_audio(self, ws, resampled: bytes) -> None:
         if self._aec is not None:
+            aec_started = time.perf_counter()
             resampled = self._aec_process(resampled)
+            self._aec_frames += 1
+            self._aec_total_ms += (time.perf_counter() - aec_started) * 1000.0
             if not resampled:
                 return
         # Feed the same echo-cancelled PCM to the live-caption recognizer
@@ -2358,12 +2457,21 @@ class RealtimeVoiceSession:
             try:
                 self._caption_q.put_nowait(resampled)
             except queue.Full:
-                pass
+                self._caption_q_drops += 1
+                if self._caption_q_drops == 1 or self._caption_q_drops % 25 == 0:
+                    self._log_voice_event(
+                        "caption_queue_drop",
+                        drops=self._caption_q_drops,
+                        queue_depth=self._caption_q.qsize(),
+                    )
         payload = base64.b64encode(resampled).decode("ascii")
         await ws.send(json.dumps({
             "type": "input_audio_buffer.append",
             "audio": payload,
         }))
+        if not self._first_outbound_audio_logged:
+            self._first_outbound_audio_logged = True
+            self._log_voice_event("first_outbound_audio", bytes=len(resampled))
         self._touch()
 
     # ------------------------------------------------------------------
@@ -2374,7 +2482,6 @@ class RealtimeVoiceSession:
         assert self._ws is not None
         ws = self._ws
         loop = asyncio.get_running_loop()
-        native_sr = self._mic_native_sr
 
         def _get() -> bytes:
             try:
@@ -2389,7 +2496,31 @@ class RealtimeVoiceSession:
             if not piece:
                 continue
             try:
-                resampled = resample_pcm16_mono(piece, native_sr, _REALTIME_RATE)
+                resample_started = time.perf_counter()
+                resampled = resample_pcm16_mono(
+                    piece, self._mic_native_sr, _REALTIME_RATE
+                )
+                self._pipeline_frames += 1
+                self._resample_total_ms += (
+                    time.perf_counter() - resample_started
+                ) * 1000.0
+                if self._pipeline_frames >= 250:
+                    self._log_voice_event(
+                        "audio_pipeline",
+                        frames=self._pipeline_frames,
+                        avg_resample_ms=round(
+                            self._resample_total_ms / self._pipeline_frames, 3
+                        ),
+                        avg_aec_ms=round(
+                            self._aec_total_ms / max(1, self._aec_frames), 3
+                        ),
+                        audio_queue_depth=self._audio_q.qsize(),
+                        audio_queue_drops=self._audio_q_drops,
+                    )
+                    self._pipeline_frames = 0
+                    self._resample_total_ms = 0.0
+                    self._aec_frames = 0
+                    self._aec_total_ms = 0.0
                 now = time.monotonic()
                 # Energy-based echo gate:
                 # While the agent is speaking, suppress mic frames whose energy
@@ -2460,13 +2591,19 @@ class RealtimeVoiceSession:
         ws = self._ws
         if ws is None:
             return
+        last_tick = time.monotonic()
         while not self._stop.is_set():
             await asyncio.sleep(1.0)
+            now = time.monotonic()
+            lag_ms = max(0.0, (now - last_tick - 1.0) * 1000.0)
+            last_tick = now
+            if lag_ms >= 50.0:
+                self._log_voice_event("event_loop_lag", lag_ms=round(lag_ms, 1))
             if self._silent_hold_phrase:
                 continue
             if self._state == "speaking" or self._response_in_progress:
                 continue
-            idle_for = time.monotonic() - self._last_activity_monotonic
+            idle_for = now - self._last_activity_monotonic
             if idle_for >= _SESSION_IDLE_CLOSE_S:
                 logger.info("Realtime: closing idle session after %.1fs", idle_for)
                 self._user_ended = True
@@ -2476,6 +2613,63 @@ class RealtimeVoiceSession:
                 except Exception:
                     pass
                 break
+
+    @staticmethod
+    def _pulse_default_route() -> tuple[str, str]:
+        defaults = []
+        for kind in ("source", "sink"):
+            try:
+                result = subprocess.run(
+                    ["pactl", f"get-default-{kind}"],
+                    capture_output=True,
+                    text=True,
+                    timeout=3,
+                    check=False,
+                )
+                defaults.append(result.stdout.strip())
+            except Exception:
+                defaults.append("")
+        return defaults[0], defaults[1]
+
+    async def _audio_route_watchdog(self) -> None:
+        """Reopen capture/playback when PipeWire changes the default route."""
+        previous = await asyncio.to_thread(self._pulse_default_route)
+        while not self._stop.is_set():
+            await asyncio.sleep(2.0)
+            current = await asyncio.to_thread(self._pulse_default_route)
+            if current == previous or not any(current):
+                continue
+            previous = current
+            self._log_voice_event(
+                "audio_route_changed",
+                bluetooth=any("bluez" in endpoint.lower() for endpoint in current),
+            )
+            self._close_mic()
+            self._abort_aplay()
+            try:
+                from audio_device_resolve import resolve_audio_pair
+
+                self._audio_pair = resolve_audio_pair(sd)
+                if _REALTIME_HALF_DUPLEX_ENV not in (
+                    "1", "true", "yes", "on", "0", "false", "no", "off"
+                ):
+                    self._half_duplex = not bool(self._audio_pair.is_combined)
+                preferred, candidates = self._resolve_input_device()
+                if not self._open_mic(preferred, candidates):
+                    self._emit_error(
+                        "Bluetooth audio changed and the microphone could not reopen."
+                    )
+                    self._log_voice_event("audio_route_reopen_failed")
+                else:
+                    self._log_voice_event(
+                        "audio_route_reopened",
+                        capture=self._audio_pair.capture_name or "",
+                        playback=self._audio_pair.playback_name or "",
+                        is_combined=bool(self._audio_pair.is_combined),
+                    )
+            except Exception:
+                logger.exception("Realtime audio route reopen failed")
+                self._emit_error("Audio route changed; using the available fallback.")
 
     async def _cancel_for_silent_hold(self, ws) -> None:
         """Stop every model response without producing an acknowledgment."""
@@ -2568,6 +2762,10 @@ class RealtimeVoiceSession:
 
                 elif t == "session.updated":
                     self._log_session_summary(msg, label="session.updated")
+                    if not self._session_ready.is_set():
+                        self._session_ready.set()
+                        self._log_voice_event("session_ready", prewarm=self._prewarm)
+                        self._emit_ready()
                     # Cold sessions fire the wake greeting here, once the
                     # session.update is acked. Warm (prewarm) sessions complete
                     # this handshake while HELD — long before the user wakes
@@ -2579,6 +2777,12 @@ class RealtimeVoiceSession:
                 # ---- User speech --------------------------------------
                 elif t == "input_audio_buffer.speech_started":
                     self._touch()
+                    self._turn_sequence += 1
+                    self._turn_id = f"{self._session_id}-{self._turn_sequence:04d}"
+                    self._first_outbound_audio_logged = False
+                    self._first_inbound_audio_logged = False
+                    self._first_speaker_write_logged = False
+                    self._first_local_partial_logged = False
                     self._log_voice_event("speech_started")
                     # The user is taking over — stop auto-driving the briefing so
                     # we don't fight their request (e.g. "skip to my emails").
@@ -2594,6 +2798,7 @@ class RealtimeVoiceSession:
                     self._active_user_transcript_item_id = ""
                     # Reset the live-caption recognizer + reset the UI bubble
                     # tracker so captions render into a fresh bubble.
+                    self._reset_live_caption_pending()
                     self._caption_active = True
                     self._caption_reset.set()
                     self._emit_user_speech_started()
@@ -2641,6 +2846,7 @@ class RealtimeVoiceSession:
                     # Stop live captions — OpenAI's accurate transcript now
                     # owns the bubble for this finished utterance.
                     self._caption_active = False
+                    self._reset_live_caption_pending()
                     # Tell the UI to drop in a placeholder user bubble
                     # right away so the gap before transcription/AI is
                     # filled with immediate visual feedback.
@@ -2700,7 +2906,7 @@ class RealtimeVoiceSession:
                         logger.info("User said: %r", spoken)
                         self._log_voice_event(
                             "final_transcript",
-                            text=spoken,
+                            chars=len(spoken),
                             transcript_model=_DEFAULT_INPUT_TRANSCRIPTION_MODEL,
                         )
                         self._emit_user_transcript(spoken, is_final=True)
@@ -2818,6 +3024,7 @@ class RealtimeVoiceSession:
                 # ---- Model response lifecycle -------------------------
                 elif t in ("response.created", "response.started"):
                     self._touch()
+                    self._log_voice_event("response_created")
                     if self._silent_hold_phrase or self._silent_hold_resume_pending:
                         self._response_in_progress = True
                         self._abort_aplay()
@@ -2837,6 +3044,9 @@ class RealtimeVoiceSession:
                     self._emit_state("thinking")
 
                 elif t in ("response.output_audio.delta", "response.audio.delta"):
+                    if not self._first_inbound_audio_logged:
+                        self._first_inbound_audio_logged = True
+                        self._log_voice_event("first_inbound_audio")
                     item_id = msg.get("item_id")
                     if isinstance(item_id, str) and item_id.strip():
                         self._active_audio_item_id = item_id

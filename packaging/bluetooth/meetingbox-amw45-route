@@ -1,0 +1,118 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+CONFIG_FILE="${MEETINGBOX_AMW45_CONFIG:-/etc/default/meetingbox-amw45}"
+if [[ -r "$CONFIG_FILE" ]]; then
+  # shellcheck disable=SC1090
+  source "$CONFIG_FILE"
+fi
+
+AUDIO_USER="${MEETINGBOX_AUDIO_USER:-meetingbox}"
+DEVICE_NAME="${MEETINGBOX_BLUETOOTH_NAME:-AM-W45}"
+DEVICE_MAC="${MEETINGBOX_BLUETOOTH_MAC:-}"
+CONNECT_ATTEMPTS="${MEETINGBOX_BT_CONNECT_ATTEMPTS:-6}"
+READY_FILE="/run/meetingbox-amw45-ready"
+rm -f "$READY_FILE"
+
+if [[ -z "$DEVICE_MAC" ]]; then
+  DEVICE_MAC="$(
+    bluetoothctl devices Paired |
+      awk -v wanted="$DEVICE_NAME" '$1 == "Device" { mac=$2; $1=$2=""; sub(/^  */, ""); if ($0 == wanted) print mac }' |
+      head -n 1
+  )"
+fi
+if [[ -z "$DEVICE_MAC" ]]; then
+  echo "AM-W45 route: paired device '$DEVICE_NAME' not found" >&2
+  exit 1
+fi
+
+AUDIO_UID="$(id -u "$AUDIO_USER")"
+RUNTIME_DIR="/run/user/$AUDIO_UID"
+run_audio() {
+  runuser -u "$AUDIO_USER" -- env \
+    XDG_RUNTIME_DIR="$RUNTIME_DIR" \
+    PULSE_RUNTIME_PATH="$RUNTIME_DIR/pulse" \
+    PIPEWIRE_RUNTIME_DIR="$RUNTIME_DIR" \
+    "$@"
+}
+
+rfkill unblock bluetooth || true
+bluetoothctl power on >/dev/null
+bluetoothctl trust "$DEVICE_MAC" >/dev/null || true
+
+connected=0
+for ((attempt = 1; attempt <= CONNECT_ATTEMPTS; attempt++)); do
+  if bluetoothctl info "$DEVICE_MAC" | grep -q "Connected: yes"; then
+    connected=1
+    break
+  fi
+  timeout 8 bluetoothctl connect "$DEVICE_MAC" >/dev/null 2>&1 || true
+  sleep 2
+done
+if [[ "$connected" -ne 1 ]] && ! bluetoothctl info "$DEVICE_MAC" | grep -q "Connected: yes"; then
+  echo "AM-W45 route: Bluetooth connection failed after $CONNECT_ATTEMPTS attempts" >&2
+  exit 1
+fi
+
+card_suffix="${DEVICE_MAC//:/_}"
+card_name="bluez_card.$card_suffix"
+for _ in {1..20}; do
+  if run_audio pactl list cards short | awk '{print $2}' | grep -Fxq "$card_name"; then
+    break
+  fi
+  sleep 1
+done
+if ! run_audio pactl list cards short | awk '{print $2}' | grep -Fxq "$card_name"; then
+  echo "AM-W45 route: PipeWire card $card_name did not appear" >&2
+  exit 1
+fi
+
+# Voice must remain duplex. Never select A2DP while the appliance is listening,
+# and do not re-apply an already active profile (which can interrupt streams).
+active_profile="$(
+  run_audio pactl list cards |
+    awk -v wanted="$card_name" '
+      /^[[:space:]]*Name:/ { active=($2 == wanted) }
+      active && /^[[:space:]]*Active Profile:/ { print $3; exit }
+    '
+)"
+if [[ "$active_profile" != "headset-head-unit-msbc" ]]; then
+  if ! run_audio pactl set-card-profile "$card_name" headset-head-unit-msbc; then
+    echo "AM-W45 route: required mSBC HFP profile is unavailable" >&2
+    exit 1
+  fi
+fi
+
+sink_name=""
+source_name=""
+for _ in {1..20}; do
+  sink_name="$(
+    run_audio pactl list sinks short |
+      awk -v suffix="$card_suffix" '$2 ~ suffix {print $2; exit}'
+  )"
+  source_name="$(
+    run_audio pactl list sources short |
+      awk -v suffix="$card_suffix" '$2 ~ suffix && $2 !~ /\.monitor$/ {print $2; exit}'
+  )"
+  [[ -n "$sink_name" && -n "$source_name" ]] && break
+  sleep 1
+done
+if [[ -z "$sink_name" || -z "$source_name" ]]; then
+  echo "AM-W45 route: mSBC profile lacks a sink or microphone source" >&2
+  exit 1
+fi
+
+run_audio pactl set-default-sink "$sink_name"
+run_audio pactl set-default-source "$source_name"
+
+actual_sink="$(run_audio pactl get-default-sink)"
+actual_source="$(run_audio pactl get-default-source)"
+if [[ "$actual_sink" != "$sink_name" || "$actual_source" != "$source_name" ]]; then
+  echo "AM-W45 route: failed to make both endpoints default" >&2
+  exit 1
+fi
+
+install -d -m 0755 /run
+printf 'mac=%s\nprofile=headset-head-unit-msbc\nsink=%s\nsource=%s\n' \
+  "$DEVICE_MAC" "$sink_name" "$source_name" >"$READY_FILE"
+echo "AM-W45 duplex ready: $source_name -> $sink_name"

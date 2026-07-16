@@ -72,6 +72,27 @@ def _resolve_python() -> str:
     return sys.executable or "python3"
 
 
+def _existing_audio_capture_pids(proc_root: Path = Path("/proc")) -> list[int]:
+    """Return other host-visible audio_capture.py processes."""
+    if not sys.platform.startswith("linux") or not proc_root.is_dir():
+        return []
+    own_pid = os.getpid()
+    found: list[int] = []
+    for entry in proc_root.iterdir():
+        if not entry.name.isdigit():
+            continue
+        pid = int(entry.name)
+        if pid == own_pid:
+            continue
+        try:
+            cmdline = (entry / "cmdline").read_bytes().replace(b"\x00", b" ")
+        except (FileNotFoundError, PermissionError, ProcessLookupError, OSError):
+            continue
+        if b"audio_capture.py" in cmdline:
+            found.append(pid)
+    return sorted(found)
+
+
 class AudioSupervisor:
     """Manage a child ``audio_capture.py`` process with auto-restart."""
 
@@ -101,6 +122,12 @@ class AudioSupervisor:
     def start(self) -> None:
         if self._thread and self._thread.is_alive():
             return
+        existing = _existing_audio_capture_pids()
+        if existing:
+            raise RuntimeError(
+                "Refusing to start duplicate audio_capture.py; "
+                f"existing host PIDs: {existing}"
+            )
         self._stop.clear()
         self._thread = threading.Thread(
             target=self._supervise,

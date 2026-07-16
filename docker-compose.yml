@@ -38,6 +38,7 @@ services:
       - "host.docker.internal:host-gateway"
     environment:
       - PYTHONUNBUFFERED=1
+      - MEETINGBOX_BUILD_SHA=${MEETINGBOX_BUILD_SHA:-unknown}
       # Local API on the same host: set BACKEND_URL=http://127.0.0.1:8000 in .env. For cloud,
       # set DASHBOARD_URL and omit BACKEND_URL so the API base is derived from the dashboard URL,
       # or set BACKEND_URL explicitly.
@@ -62,6 +63,10 @@ services:
       - MEETINGBOX_LAN_IP=${MEETINGBOX_LAN_IP:-}
       - MEETINGBOX_LAN_IP_FILE=${MEETINGBOX_LAN_IP_FILE:-/data/config/lan_ip}
       - MOCK_BACKEND=${MOCK_BACKEND:-0}
+      # dev_device latency release: keep one fully configured Realtime socket
+      # held with its mic closed so wake activation does not mint/connect cold.
+      - REALTIME_WARM_STANDBY=${REALTIME_WARM_STANDBY:-1}
+      - REALTIME_LIVE_CAPTION=${REALTIME_LIVE_CAPTION:-1}
       - AUDIO_INPUT_DEVICE_INDEX=${AUDIO_INPUT_DEVICE_INDEX:-}
       - AUDIO_INPUT_DEVICE_NAME=${AUDIO_INPUT_DEVICE_NAME:-}
       - ALSA_CARD=${ALSA_CARD:-}

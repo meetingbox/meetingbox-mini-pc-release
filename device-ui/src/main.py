@@ -17,6 +17,7 @@ import sys
 import threading
 import time
 import traceback
+import uuid
 from datetime import datetime, timedelta
 from pathlib import Path
 from collections import defaultdict
@@ -797,6 +798,8 @@ class MeetingBoxApp(App):
         # on the felt-latency path. See REALTIME_WARM_STANDBY.
         self._warm_voice_session = None
         self._warm_voice_pending = False
+        self._warm_voice_retry_attempt = 0
+        self._warm_voice_retry_event = None
         self._realtime_session_pending = False
         # Incremented whenever pairing ownership changes. Async Realtime mint
         # results carry the generation that started them and are discarded if
@@ -860,16 +863,21 @@ class MeetingBoxApp(App):
     def ui_cache_get(self, key: str):
         return self._ui_data_cache.get(key)
 
-    def ui_cache_set(self, key: str, value):
+    def ui_cache_set(self, key: str, value, *, persist: bool = True) -> bool:
+        changed = self._ui_data_cache.get(key) != value
         self._ui_data_cache[key] = value
         self._ui_data_cache_ts[key] = time.time()
         self._evict_calendar_week_cache()
-        self._ui_cache_persist_to_disk()
+        if persist and changed:
+            self._ui_cache_persist_to_disk()
+        if not changed:
+            return False
         for cb in list(self._ui_cache_subscribers.get(key, [])):
             try:
                 cb(value)
             except Exception:
                 logger.debug("ui_cache subscriber failed for %s", key, exc_info=True)
+        return True
 
     def _evict_calendar_week_cache(self, max_weeks: int = 8) -> None:
         """Keep only the most recently set calendar-week entries.
@@ -892,6 +900,8 @@ class MeetingBoxApp(App):
         ts = self._ui_data_cache_ts.get(key)
         if ts is None:
             return False
+        if ttl_s is None and key.startswith("calendar_week:"):
+            ttl_s = self._ui_data_cache_ttl.get("calendar_week", 45.0)
         ttl = float(ttl_s if ttl_s is not None else self._ui_data_cache_ttl.get(key, 60.0))
         return (time.time() - ts) <= ttl
 
@@ -977,116 +987,110 @@ class MeetingBoxApp(App):
             logger.debug("ui cache load skipped", exc_info=True)
 
     async def _ui_cache_bootstrap_async(self) -> None:
-        """Prewarm cold-start data so first screen opens are near-instant."""
-        if USE_MOCK_BACKEND:
-            return
-        try:
-            if self.ui_cache_mark_inflight("emails_inbox"):
-                try:
-                    data = await self.backend.fetch_gmail_recent(
-                        max_results=50,
-                        days=90,
-                        q="",
-                        folder="all",
-                    )
-                    rows = data.get("messages") or []
-                    if isinstance(rows, list):
-                        self.ui_cache_set("emails_inbox", list(rows))
-                finally:
-                    self.ui_cache_clear_inflight("emails_inbox")
-        except Exception:
-            logger.debug("emails bootstrap prewarm failed", exc_info=True)
-
-        try:
-            monday = display_now().date() - timedelta(days=display_now().date().weekday())
-            key = f"calendar_week:{monday.isoformat()}"
-            if self.ui_cache_mark_inflight(key):
-                try:
-                    end_d = monday + timedelta(days=6)
-                    data = await self.backend.get_calendar_week(
-                        monday.isoformat(),
-                        end_d.isoformat(),
-                    )
-                    if isinstance(data, dict):
-                        self.ui_cache_set(key, dict(data))
-                finally:
-                    self.ui_cache_clear_inflight(key)
-        except Exception:
-            logger.debug("calendar bootstrap prewarm failed", exc_info=True)
-
-        try:
-            if self.ui_cache_mark_inflight("morning_brief_context"):
-                try:
-                    ctx = await self.backend.get_briefing_context(days_ahead=1)
-                    if isinstance(ctx, dict):
-                        self.ui_cache_set("morning_brief_context", dict(ctx))
-                finally:
-                    self.ui_cache_clear_inflight("morning_brief_context")
-        except Exception:
-            logger.debug("morning brief context prewarm failed", exc_info=True)
-
-        try:
-            if self.ui_cache_mark_inflight("morning_brief_gmail"):
-                try:
-                    gf = await self.backend.fetch_gmail_recent(
-                        max_results=40,
-                        days=90,
-                        q="",
-                        folder="all",
-                    )
-                    if isinstance(gf, dict):
-                        self.ui_cache_set("morning_brief_gmail", dict(gf))
-                finally:
-                    self.ui_cache_clear_inflight("morning_brief_gmail")
-        except Exception:
-            logger.debug("morning brief gmail prewarm failed", exc_info=True)
+        """Compatibility entry point; use the same deduplicated refresh path."""
+        await self._ui_cache_refresh_once()
 
     async def _ui_cache_refresh_once(self) -> None:
-        """Unified realtime-ish refresh: fetch once, fan out to all UI caches."""
+        """Refresh only stale datasets, then persist the changed batch once."""
         if USE_MOCK_BACKEND:
             return
         today = display_now().date()
         monday = today - timedelta(days=today.weekday())
         week_key = f"calendar_week:{monday.isoformat()}"
         end_d = monday + timedelta(days=6)
+        requests: list[tuple[str, object]] = []
+        if not self.ui_cache_is_fresh("emails_inbox"):
+            requests.append(
+                (
+                    "gmail",
+                    self.backend.fetch_gmail_recent(
+                        max_results=50, days=90, q="", folder="all"
+                    ),
+                )
+            )
+        if not self.ui_cache_is_fresh(week_key):
+            requests.append(
+                (
+                    "calendar",
+                    self.backend.get_calendar_week(
+                        monday.isoformat(), end_d.isoformat()
+                    ),
+                )
+            )
+        if not self.ui_cache_is_fresh("morning_brief_context"):
+            requests.append(
+                ("brief", self.backend.get_briefing_context(days_ahead=1))
+            )
+        if not self.ui_cache_is_fresh("home_summary_bundle"):
+            requests.extend(
+                [
+                    ("home", self.backend.get_home_summary()),
+                    ("meetings", self.backend.get_meetings(limit=1)),
+                ]
+            )
+        if not requests:
+            return
+        changed = False
         try:
             results = await asyncio.gather(
-                self.backend.fetch_gmail_recent(max_results=50, days=90, q="", folder="all"),
-                self.backend.get_calendar_week(monday.isoformat(), end_d.isoformat()),
-                self.backend.get_briefing_context(days_ahead=1),
-                self.backend.get_home_summary(),
-                self.backend.get_meetings(limit=1),
+                *(request for _name, request in requests),
                 return_exceptions=True,
             )
-            gfeed = results[0] if not isinstance(results[0], BaseException) else {}
-            week = results[1] if not isinstance(results[1], BaseException) else {}
-            brief = results[2] if not isinstance(results[2], BaseException) else {}
-            home_summary = results[3] if not isinstance(results[3], BaseException) else {}
-            meetings = results[4] if not isinstance(results[4], BaseException) else []
+            fetched = {
+                name: result
+                for (name, _request), result in zip(requests, results)
+                if not isinstance(result, BaseException)
+            }
+            gfeed = fetched.get("gmail", {})
+            week = fetched.get("calendar", {})
+            brief = fetched.get("brief", {})
+            home_summary = fetched.get("home", {})
+            meetings = fetched.get("meetings", [])
 
-            if isinstance(gfeed, dict):
+            if "gmail" in fetched and isinstance(gfeed, dict):
                 gfeed = self.ui_apply_email_read_overrides(dict(gfeed))
                 rows = gfeed.get("messages") or []
                 if isinstance(rows, list):
-                    self.ui_cache_set("emails_inbox", list(rows))
-                self.ui_cache_set("morning_brief_gmail", dict(gfeed))
-            if isinstance(week, dict):
-                self.ui_cache_set(week_key, dict(week))
-            if isinstance(brief, dict):
-                self.ui_cache_set("morning_brief_context", dict(brief))
-            if isinstance(home_summary, dict):
-                self.ui_cache_set(
+                    changed |= self.ui_cache_set(
+                        "emails_inbox", list(rows), persist=False
+                    )
+                changed |= self.ui_cache_set(
+                    "morning_brief_gmail", dict(gfeed), persist=False
+                )
+            if "calendar" in fetched and isinstance(week, dict):
+                changed |= self.ui_cache_set(week_key, dict(week), persist=False)
+            if "brief" in fetched and isinstance(brief, dict):
+                changed |= self.ui_cache_set(
+                    "morning_brief_context", dict(brief), persist=False
+                )
+            if "home" in fetched and isinstance(home_summary, dict):
+                cached_gfeed = (
+                    gfeed
+                    if isinstance(gfeed, dict) and gfeed
+                    else self.ui_cache_get("morning_brief_gmail") or {}
+                )
+                changed |= self.ui_cache_set(
                     "home_summary_bundle",
                     {
                         "summary": dict(home_summary),
                         "meetings": meetings if isinstance(meetings, list) else [],
-                        "gfeed": gfeed if isinstance(gfeed, dict) else {},
+                        "gfeed": cached_gfeed,
                     },
+                    persist=False,
                 )
         except Exception:
             logger.debug("ui cache unified refresh failed", exc_info=True)
+        finally:
+            if changed:
+                self._ui_cache_persist_to_disk()
 
     def _ui_cache_sync_tick(self, _dt) -> None:
+        # Voice capture, captions, and turn handling are latency-critical. Keep
+        # the existing cache while a cold or active Realtime session owns the
+        # interaction path instead of competing with it through five HTTP
+        # requests and JSON decodes.
+        if self._realtime_voice_session is not None or self._realtime_session_pending:
+            return
         if self._ui_sync_inflight:
             return
         self._ui_sync_inflight = True
@@ -1430,6 +1434,14 @@ class MeetingBoxApp(App):
         self._warm_voice_session = None
         self._realtime_session_pending = False
         self._warm_voice_pending = False
+        self._warm_voice_retry_attempt = 0
+        retry_event = self._warm_voice_retry_event
+        self._warm_voice_retry_event = None
+        if retry_event is not None:
+            try:
+                retry_event.cancel()
+            except Exception:
+                pass
         self._realtime_launch_permitted = False
         self._realtime_reconnect_count = 0
         self._last_realtime_wake_monotonic = 0.0
@@ -1592,13 +1604,11 @@ class MeetingBoxApp(App):
         else:
             self._metrics_push = None
 
-        # Cold-start prewarm for instant first-open calendar/emails.
-        Clock.schedule_once(lambda _dt: run_async(self._ui_cache_bootstrap_async()), 0.8)
-        # Centralized sync loop to keep caches hot across all screens.
+        # One guarded cold-start refresh, then a low-frequency centralized loop.
         if self._ui_sync_event:
             self._ui_sync_event.cancel()
-        self._ui_sync_event = Clock.schedule_interval(self._ui_cache_sync_tick, 5.0)
-        Clock.schedule_once(lambda _dt: self._ui_cache_sync_tick(0), 1.6)
+        self._ui_sync_event = Clock.schedule_interval(self._ui_cache_sync_tick, 30.0)
+        Clock.schedule_once(lambda _dt: self._ui_cache_sync_tick(0), 0.8)
 
     def _run_startup_self_test_overlay(self, _dt):
         """Boot-time self-test modal (disable with MEETINGBOX_STARTUP_SELF_TEST=0)."""
@@ -2901,6 +2911,15 @@ class MeetingBoxApp(App):
                 self._end_realtime_voice_session()
             except Exception:
                 logger.exception("Failed to stop Realtime voice session for recording")
+        warm = getattr(self, "_warm_voice_session", None)
+        self._warm_voice_session = None
+        self._warm_voice_pending = False
+        if warm is not None:
+            try:
+                logger.info("Recording active — cancelling Realtime warm standby")
+                warm.stop()
+            except Exception:
+                logger.exception("Failed to stop Realtime warm standby for recording")
         self._set_voice_runtime_state("idle")
         self._sync_voice_assistant_state()
         self._refresh_voice_indicator()
@@ -2908,6 +2927,7 @@ class MeetingBoxApp(App):
     def _resume_voice_assistant_after_recording(self) -> None:
         self._voice_recording_suspended = False
         self._sync_voice_assistant_state()
+        self._schedule_voice_prewarm(delay=0.5)
 
     def _sync_voice_assistant_state(self) -> None:
         if not getattr(self, 'voice_assistant', None):
@@ -3051,13 +3071,16 @@ class MeetingBoxApp(App):
 
         timeout = max(2.0, self.voice_assistant.command_timeout_seconds)
         lbl = getattr(self, "voice_wake_phrase_display", "Hey Nexa") or "Hey Nexa"
+        self._pending_voice_wake_id = uuid.uuid4().hex[:12]
         try:
             _logging.getLogger(__name__).info(
                 "VOICE_EVENT %s",
                 json.dumps(
                     {
                         "event": "wake_detected",
-                        "phrase": lbl,
+                        "wake_id": self._pending_voice_wake_id,
+                        "ts": round(time.time(), 3),
+                        "mono_ms": round(time.monotonic() * 1000.0, 1),
                         "realtime_enabled": bool(getattr(self, "voice_realtime_assistant", False)),
                         "recording_active": bool(self.recording_state.get("active")),
                     },
@@ -4785,6 +4808,10 @@ class MeetingBoxApp(App):
         self._realtime_voice_session = None
         self._realtime_session_pending = False
         self._sync_voice_assistant_state()
+        # Voice-path polling was intentionally paused. Refresh once after the
+        # session releases the latency-critical path instead of waiting for the
+        # next 30-second cache interval.
+        Clock.schedule_once(lambda _dt: self._ui_cache_sync_tick(0), 0.5)
         if self.recording_state.get("active"):
             self._clear_voice_indicator_override()
             self._hide_home_listening_state()
@@ -4809,11 +4836,33 @@ class MeetingBoxApp(App):
         if not REALTIME_WARM_STANDBY:
             return
         try:
-            Clock.schedule_once(
-                lambda _dt: self._prewarm_realtime_voice_session(), max(0.0, delay)
+            pending_event = self._warm_voice_retry_event
+            if pending_event is not None:
+                pending_event.cancel()
+
+            def _run(_dt):
+                self._warm_voice_retry_event = None
+                self._prewarm_realtime_voice_session()
+
+            self._warm_voice_retry_event = Clock.schedule_once(
+                _run, max(0.0, delay)
             )
         except Exception:
             logger.debug("voice prewarm schedule failed", exc_info=True)
+
+    def _schedule_voice_prewarm_retry(self, reason: str) -> None:
+        """Retry failed standby setup with bounded backoff, without a hot loop."""
+        if not REALTIME_WARM_STANDBY:
+            return
+        self._warm_voice_retry_attempt = min(self._warm_voice_retry_attempt + 1, 8)
+        delay = min(30.0, 0.5 * (2 ** (self._warm_voice_retry_attempt - 1)))
+        logger.warning(
+            "Realtime warm standby unavailable (%s); retrying in %.1fs (attempt %d)",
+            reason,
+            delay,
+            self._warm_voice_retry_attempt,
+        )
+        self._schedule_voice_prewarm(delay=delay)
 
     def _prewarm_realtime_voice_session(self) -> None:
         """Mint + connect a Realtime session and hold it in standby (mic closed,
@@ -4841,15 +4890,25 @@ class MeetingBoxApp(App):
             try:
                 data = await self.backend.create_realtime_voice_session()
             except Exception as e:
-                logger.debug("Realtime warm prewarm mint failed: %s", e)
+                logger.warning("Realtime warm prewarm mint failed: %s", e)
                 if auth_generation == self._realtime_auth_generation:
                     self._warm_voice_pending = False
+                    Clock.schedule_once(
+                        lambda _dt: self._schedule_voice_prewarm_retry("mint failed"),
+                        0,
+                    )
                 return
             if (
                 auth_generation != self._realtime_auth_generation
                 or auth_token != get_device_auth_token().strip()
             ):
                 logger.info("Discarding stale Realtime prewarm after account change")
+                if auth_generation == self._realtime_auth_generation:
+                    self._warm_voice_pending = False
+                    Clock.schedule_once(
+                        lambda _dt: self._schedule_voice_prewarm_retry("token changed"),
+                        0,
+                    )
                 return
             Clock.schedule_once(
                 lambda _dt, d=data, g=auth_generation:
@@ -4869,6 +4928,18 @@ class MeetingBoxApp(App):
             return False
         sess = self._warm_voice_session
         if sess is None or not getattr(sess, "is_held", None) or not sess.is_held():
+            if sess is not None:
+                logger.warning(
+                    "Realtime: warm standby not ready at wake; discarding it and cold-starting"
+                )
+                self._warm_voice_session = None
+                self._warm_voice_pending = False
+                try:
+                    sess.stop()
+                except Exception:
+                    logger.debug("Stopping unready warm standby failed", exc_info=True)
+            else:
+                logger.warning("Realtime: no warm standby at wake; cold-starting")
             return False
         self._warm_voice_session = None
         self._realtime_voice_session = sess
@@ -4878,7 +4949,7 @@ class MeetingBoxApp(App):
         self._sync_voice_assistant_state()
         self._apply_pending_summary_context_to(sess)
         try:
-            sess.activate()
+            sess.activate(wake_id=getattr(self, "_pending_voice_wake_id", ""))
         except Exception:
             logger.exception("Realtime warm activate failed; cold-starting")
             try:
@@ -5034,6 +5105,7 @@ class MeetingBoxApp(App):
         except ImportError:
             logger.exception("realtime_voice_session module missing")
             if prewarm:
+                self._schedule_voice_prewarm_retry("module unavailable")
                 return
             self._clear_voice_indicator_override()
             self._sync_voice_assistant_state()
@@ -5052,6 +5124,7 @@ class MeetingBoxApp(App):
             rt_voice = extract_realtime_output_voice(sess_blob)
         if not secret or not model:
             if prewarm:
+                self._schedule_voice_prewarm_retry("invalid mint response")
                 return
             self._clear_voice_indicator_override()
             self._sync_voice_assistant_state()
@@ -5128,7 +5201,7 @@ class MeetingBoxApp(App):
                         self._warm_voice_session = None
                     if session_generation == self._realtime_auth_generation:
                         self._warm_voice_pending = False
-                        self._schedule_voice_prewarm(delay=0.2)
+                        self._schedule_voice_prewarm_retry("standby disconnected")
                 Clock.schedule_once(_after_warm_end, 0)
                 return
 
@@ -5224,6 +5297,18 @@ class MeetingBoxApp(App):
                 self._clear_home_say_bar()
 
             Clock.schedule_once(_ui, 0)
+
+        def _on_rt_ready() -> None:
+            sess = session_ref["session"]
+            if sess is None or session_generation != self._realtime_auth_generation:
+                return
+            if prewarm:
+                if self._warm_voice_session is not sess:
+                    return
+                self._warm_voice_retry_attempt = 0
+                logger.info("Realtime: warm-standby session ready for instant activation")
+            elif self._realtime_voice_session is sess:
+                logger.info("Realtime: cold session handshake ready")
 
         def _on_rt_state(state: str) -> None:
             self._set_voice_runtime_state(state)
@@ -5458,9 +5543,11 @@ class MeetingBoxApp(App):
                 model=model,
                 backend_base_url=BACKEND_URL,
                 device_token=tok,
+                correlation_id=getattr(self, "_pending_voice_wake_id", ""),
                 on_session_end=_end,
                 on_error=_err,
                 on_connected=_on_rt_connected,
+                on_ready=_on_rt_ready,
                 on_device_navigate=self._realtime_voice_navigate,
                 output_voice=rt_voice or None,
                 on_before_open_mic=_before_realtime_mic,
@@ -5488,6 +5575,23 @@ class MeetingBoxApp(App):
                 self._warm_voice_session = sess
                 sess.start()
                 logger.info("Realtime: warm-standby session connecting (held until wake)")
+
+                def _ready_timeout(_dt, _s=sess):
+                    if (
+                        self._warm_voice_session is _s
+                        and not _s.is_held()
+                        and session_generation == self._realtime_auth_generation
+                    ):
+                        logger.warning("Realtime: warm-standby readiness timed out")
+                        self._warm_voice_session = None
+                        self._warm_voice_pending = False
+                        try:
+                            _s.stop()
+                        except Exception:
+                            logger.debug("Stopping timed-out warm standby failed", exc_info=True)
+                        self._schedule_voice_prewarm_retry("readiness timeout")
+
+                Clock.schedule_once(_ready_timeout, 15.0)
             else:
                 self._realtime_voice_session = sess
                 self._sync_voice_assistant_state()
@@ -5498,6 +5602,7 @@ class MeetingBoxApp(App):
             if prewarm:
                 self._warm_voice_session = None
                 self._warm_voice_pending = False
+                self._schedule_voice_prewarm_retry("session start failed")
                 return
             self._realtime_voice_session = None
             self._realtime_mic_acquired = False
@@ -6674,7 +6779,45 @@ class _QuickPanelButton(Widget):
 # ENTRY POINT
 # ==================================================================
 
+def _acquire_ui_instance_lock():
+    """Hold a host-visible advisory lock for the lifetime of the UI process."""
+    if not sys.platform.startswith("linux"):
+        return None
+    import fcntl
+
+    lock_path = Path(
+        os.environ.get("MEETINGBOX_UI_LOCK_FILE", "/data/config/meetingbox-ui.lock")
+    )
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    lock_file = lock_path.open("a+", encoding="utf-8")
+    try:
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError as exc:
+        lock_file.seek(0)
+        owner = lock_file.read().strip() or "unknown owner"
+        lock_file.close()
+        raise RuntimeError(
+            f"Another MeetingBox UI/audio owner is already running ({owner})"
+        ) from exc
+    lock_file.seek(0)
+    lock_file.truncate()
+    lock_file.write(
+        json.dumps(
+            {
+                "pid": os.getpid(),
+                "started_at": datetime.now().astimezone().isoformat(),
+                "build_sha": os.environ.get("MEETINGBOX_BUILD_SHA", "unknown"),
+            },
+            sort_keys=True,
+        )
+    )
+    lock_file.flush()
+    return lock_file
+
+
 def main():
+    # Keep the file object alive until process exit; closing it releases flock.
+    _instance_lock = _acquire_ui_instance_lock()
     _boot_ts = datetime.now().astimezone().strftime("%Y-%m-%d %H:%M:%S %Z")
     print(
         f"[MeetingBox] Starting Device UI (pid={os.getpid()}, time={_boot_ts})",
@@ -6689,6 +6832,10 @@ def main():
     )
     print(f"[MeetingBox] BACKEND_URL={os.environ.get('BACKEND_URL', '(not set)')}", flush=True)
     print(f"[MeetingBox] MOCK_BACKEND={os.environ.get('MOCK_BACKEND', '(not set)')}", flush=True)
+    print(
+        f"[MeetingBox] BUILD_SHA={os.environ.get('MEETINGBOX_BUILD_SHA', 'unknown')}",
+        flush=True,
+    )
 
     if sys.platform.startswith('linux'):
         xauth = os.environ.get("XAUTHORITY", "")

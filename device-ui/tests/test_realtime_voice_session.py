@@ -147,7 +147,65 @@ def test_realtime_latency_tuning_constants():
     # 20 ms avoids PortAudio input overflow on the appliance while staying
     # comfortably below perceptible turn-latency boundaries.
     assert _APPEND_CHUNK_MS <= 20
-    assert _MIC_QUEUE_POLL_S <= 0.01
+    # The continuous capture path supplies 20 ms frames. A 50 ms blocking wait
+    # removes empty executor wakeups without delaying frames already queued.
+    assert 0.02 <= _MIC_QUEUE_POLL_S <= 0.05
+
+
+def test_warm_session_is_held_only_after_session_update(monkeypatch):
+    import realtime_voice_session as rtv
+
+    monkeypatch.setattr(rtv, "sd", None)
+    session = RealtimeVoiceSession(
+        client_secret="ek_test",
+        model="gpt-realtime-2",
+        backend_base_url="http://127.0.0.1:8000",
+        device_token="mbd_test",
+        on_session_end=lambda: None,
+        on_error=lambda _msg: None,
+        on_connected=lambda: None,
+        prewarm=True,
+    )
+    session._ws = object()
+
+    assert session.is_held() is False
+    session._session_ready.set()
+    assert session.is_held() is True
+
+
+def test_live_caption_coalesces_to_latest_pending_partial(monkeypatch):
+    import realtime_voice_session as rtv
+
+    monkeypatch.setattr(rtv, "sd", None)
+    scheduled = []
+
+    class _QueuedClock:
+        @staticmethod
+        def schedule_once(fn, dt=0):
+            scheduled.append((fn, dt))
+
+    monkeypatch.setattr(rtv, "Clock", _QueuedClock)
+    rendered = []
+    session = RealtimeVoiceSession(
+        client_secret="ek_test",
+        model="gpt-realtime-2",
+        backend_base_url="http://127.0.0.1:8000",
+        device_token="mbd_test",
+        on_session_end=lambda: None,
+        on_error=lambda _msg: None,
+        on_connected=lambda: None,
+        on_user_transcript=lambda text, is_final: rendered.append((text, is_final)),
+    )
+    session._caption_active = True
+
+    session._queue_live_caption("hello")
+    session._queue_live_caption("hello there")
+
+    assert len(scheduled) == 1
+    fn, delay = scheduled.pop()
+    assert delay <= 1.0 / 30.0
+    fn(0)
+    assert rendered == [("hello there", False)]
 
 
 def test_realtime_transcription_defaults_are_accuracy_first():

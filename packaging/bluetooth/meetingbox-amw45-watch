@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+set -u
+
+ROUTE_CMD="${MEETINGBOX_AMW45_ROUTE_CMD:-/usr/local/sbin/meetingbox-amw45-route}"
+CHECK_INTERVAL="${MEETINGBOX_BT_CHECK_INTERVAL:-20}"
+
+while true; do
+  if ! "$ROUTE_CMD"; then
+    logger -t meetingbox-amw45 "duplex route unavailable; retrying in ${CHECK_INTERVAL}s"
+  fi
+  sleep "$CHECK_INTERVAL"
+done

@@ -1,0 +1,26 @@
+Description: Accept optional AM-W45 HFP phone queries without ModemManager
+ The AM-W45 aborts its HFP service-level connection when optional phone
+ queries receive CME_NO_CONNECTION_TO_PHONE. These commands do not change
+ call state; acknowledging them keeps the standard native HFP backend usable.
+Author: MeetingBox
+Forwarded: not-needed
+
+--- a/spa/plugins/bluez5/backend-native.c
++++ b/spa/plugins/bluez5/backend-native.c
+@@ -1810,7 +1810,15 @@ static bool rfcomm_hfp_ag(struct rfcomm *rfcomm, char *buf)
+ 			rfcomm_send_reply(rfcomm, "+BIND: 2,0");
+ 			rfcomm_send_reply(rfcomm, "OK");
+ 		}
+-	} else if (!mm_is_available(backend->modemmanager)) {
++	} else if (spa_strstartswith(buf, "AT+CCWA=") ||
++			spa_strstartswith(buf, "AT+BTRH?") ||
++			spa_strstartswith(buf, "AT+CGMI") ||
++			spa_strstartswith(buf, "AT+CGMM") ||
++			spa_strstartswith(buf, "AT+CCLK?")) {
++		/* Compatibility: AM-W45 tears down HFP when optional phone
++		 * information queries fail on an appliance without a modem. */
++		rfcomm_send_reply(rfcomm, "OK");
++	} else if (!mm_is_available(backend->modemmanager)) {
+ 		spa_log_warn(backend->log, "RFCOMM receive command but modem not available: %s", buf);
+ 		rfcomm_send_error(rfcomm, CMEE_NO_CONNECTION_TO_PHONE);
+ 		return true;
