@@ -8,7 +8,6 @@ OUT_DIR="${2:-$ROOT_DIR/dist}"
 
 command -v apt-get >/dev/null
 command -v dpkg-buildpackage >/dev/null
-command -v dch >/dev/null
 [[ -r "$PATCH_FILE" ]]
 
 rm -rf "$WORK_DIR"
@@ -24,9 +23,26 @@ fi
 
 cd "$source_dir"
 patch --forward --batch -p1 <"$PATCH_FILE"
-DEBEMAIL="release@meetingbox.local" DEBFULLNAME="MeetingBox Release" \
-  dch --local "+meetingbox1" --distribution noble \
-  "Accept optional AM-W45 HFP phone queries without ModemManager."
+base_version="$(dpkg-parsechangelog -S Version)"
+package_source="$(dpkg-parsechangelog -S Source)"
+custom_version="${base_version}+meetingbox1"
+maintainer_date="$(date -R)"
+python3 - "$package_source" "$custom_version" "$maintainer_date" <<'PY'
+from pathlib import Path
+import sys
+
+source, version, date = sys.argv[1:]
+changelog = Path("debian/changelog")
+previous = changelog.read_text(encoding="utf-8")
+entry = f"""{source} ({version}) noble; urgency=medium
+
+  * Accept optional AM-W45 HFP phone queries without ModemManager.
+
+ -- MeetingBox Release <release@meetingbox.local>  {date}
+
+"""
+changelog.write_text(entry + previous, encoding="utf-8")
+PY
 
 DEB_BUILD_OPTIONS="nocheck" dpkg-buildpackage -b -uc -us
 cd ..
