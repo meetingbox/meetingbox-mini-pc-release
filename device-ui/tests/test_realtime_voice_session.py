@@ -714,8 +714,9 @@ def test_separate_usb_mic_rejects_measured_echo_but_keeps_strong_barge_in(monkey
             measured_echo,
             now=now,
             echo_suppressed=True,
+            near_voice_detected=False,
         )
-        assert mic_rms < threshold
+        assert mic_rms > threshold
         assert detected is False
 
     for now in (80.08, 80.10):
@@ -723,15 +724,46 @@ def test_separate_usb_mic_rejects_measured_echo_but_keeps_strong_barge_in(monkey
             strong_user_voice,
             now=now,
             echo_suppressed=True,
+            near_voice_detected=True,
         )
         assert detected is False
     detected, mic_rms, _, threshold, _ = session._detect_local_barge_in(
         strong_user_voice,
         now=80.12,
         echo_suppressed=True,
+        near_voice_detected=True,
     )
     assert mic_rms > threshold
     assert detected is True
+
+
+def test_aec_process_exposes_near_end_voice_decision(monkeypatch):
+    rtv = sys.modules["realtime_voice_session"]
+
+    monkeypatch.setattr(rtv, "sd", None)
+    session = RealtimeVoiceSession(
+        client_secret="ek_test",
+        model="gpt-realtime-2",
+        backend_base_url="http://127.0.0.1:8000",
+        device_token="mbd_test",
+        on_session_end=lambda: None,
+        on_error=lambda _msg: None,
+        on_connected=lambda: None,
+    )
+
+    class _FakeAEC:
+        last_voice_detected = True
+
+        @staticmethod
+        def cancel(near, _far):
+            return near
+
+    session._aec = _FakeAEC()
+    frame = (np.ones(480, dtype=np.int16) * 3000).tobytes()
+    session._aec_far_buf.extend(frame)
+
+    assert session._aec_process(frame) == frame
+    assert session._aec_near_voice_detected is True
 
 
 def test_new_playback_clears_stale_aec_reference_and_arms_barge_in(monkeypatch):

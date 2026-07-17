@@ -71,6 +71,7 @@ SPEEX_ECHO_SET_SAMPLING_RATE = 24
 # Speex preprocess ctl IDs (from speex/speex_preprocess.h)
 SPEEX_PREPROCESS_SET_DENOISE = 0
 SPEEX_PREPROCESS_SET_AGC = 2
+SPEEX_PREPROCESS_SET_VAD = 4
 SPEEX_PREPROCESS_SET_ECHO_STATE = 24
 SPEEX_PREPROCESS_SET_ECHO_SUPPRESS = 28
 SPEEX_PREPROCESS_SET_ECHO_SUPPRESS_ACTIVE = 30
@@ -105,6 +106,7 @@ class SpeexAEC:
         self.frame_size = int(frame_size)
         self.sample_rate = int(sample_rate)
         self._lock = threading.Lock()
+        self.last_voice_detected = False
 
         self._echo_state = _lib.speex_echo_state_init(self.frame_size, int(filter_length))
         if not self._echo_state:
@@ -129,6 +131,9 @@ class SpeexAEC:
         )
         _lib.speex_preprocess_ctl(
             self._pre_state, SPEEX_PREPROCESS_SET_AGC, ctypes.byref(off)
+        )
+        _lib.speex_preprocess_ctl(
+            self._pre_state, SPEEX_PREPROCESS_SET_VAD, ctypes.byref(on)
         )
 
         # Tie preprocessor to the echo state so residual-echo suppression runs.
@@ -162,9 +167,12 @@ class SpeexAEC:
         far_arr = FrameT.from_buffer_copy(far)
         with self._lock:
             if self._echo_state is None or self._pre_state is None:
+                self.last_voice_detected = False
                 return near
             _lib.speex_echo_cancellation(self._echo_state, near_arr, far_arr, out)
-            _lib.speex_preprocess_run(self._pre_state, out)
+            self.last_voice_detected = bool(
+                _lib.speex_preprocess_run(self._pre_state, out)
+            )
         return bytes(out)
 
     def close(self) -> None:

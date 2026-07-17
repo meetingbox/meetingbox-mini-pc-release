@@ -371,7 +371,7 @@ _LOCAL_BARGE_IN_ARM_DELAY_S = _env_float(
     "REALTIME_BARGE_IN_ARM_DELAY_S", 0.9, minimum=0.0, maximum=2.0
 )
 _USB_BARGE_IN_MIN_RMS = _env_float(
-    "REALTIME_USB_BARGE_IN_MIN_RMS", 6500.0, minimum=1000.0, maximum=30000.0
+    "REALTIME_USB_BARGE_IN_MIN_RMS", 2500.0, minimum=500.0, maximum=30000.0
 )
 _USB_BARGE_IN_MIN_FRAMES = _env_int(
     "REALTIME_USB_BARGE_IN_MIN_FRAMES", 3, minimum=2, maximum=10
@@ -939,6 +939,7 @@ class RealtimeVoiceSession:
         self._aec_far_buf = bytearray()
         self._aec_near_buf = bytearray()
         self._aec_buf_lock = threading.Lock()
+        self._aec_near_voice_detected = False
 
         # Live caption (on-device Vosk partials while the user speaks). Enabled
         # only when the feature flag is on AND a preloaded Vosk model was handed
@@ -2293,6 +2294,7 @@ class RealtimeVoiceSession:
             return mic_pcm16
         fbytes = self._aec_frame_bytes
         out = bytearray()
+        near_voice_detected = False
         with self._aec_buf_lock:
             self._aec_near_buf.extend(mic_pcm16)
             while len(self._aec_near_buf) >= fbytes:
@@ -2305,9 +2307,13 @@ class RealtimeVoiceSession:
                     far = b"\x00" * fbytes
                 try:
                     out.extend(aec.cancel(near, far))
+                    near_voice_detected = near_voice_detected or bool(
+                        getattr(aec, "last_voice_detected", False)
+                    )
                 except Exception:
                     logger.debug("AEC cancel failed", exc_info=True)
                     out.extend(near)
+        self._aec_near_voice_detected = near_voice_detected
         return bytes(out)
 
     def _apply_aec(self, mic_pcm16: bytes) -> bytes:
@@ -2375,6 +2381,7 @@ class RealtimeVoiceSession:
         *,
         now: float,
         echo_suppressed: bool = False,
+        near_voice_detected: bool | None = None,
     ) -> tuple[bool, float, float, float, float]:
         """Detect live user speech while normal mic upload is muted for echo.
 
@@ -2438,6 +2445,12 @@ class RealtimeVoiceSession:
         # routes introduce enough speaker->mic coloration to look like "diverged"
         # echo and cause false self-interruption.
         loud_enough = mic_rms >= threshold
+        if (
+            echo_suppressed
+            and self._separate_usb_mic
+            and near_voice_detected is not True
+        ):
+            loud_enough = False
         # Guard against strong pure echo spikes from external mic/speaker
         # coupling: if mic looks almost identical to far-end playback and is
         # only modestly louder than the reference, treat it as self-audio.
@@ -2649,6 +2662,11 @@ class RealtimeVoiceSession:
                         barge_frame,
                         now=now,
                         echo_suppressed=barge_aec_applied,
+                        near_voice_detected=(
+                            self._aec_near_voice_detected
+                            if barge_aec_applied
+                            else None
+                        ),
                     )
                     if detected:
                         await self._cancel_for_local_barge_in(
