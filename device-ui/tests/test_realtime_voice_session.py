@@ -63,6 +63,44 @@ def test_resample_pcm16_mono_changes_rate():
     assert len(out48000) > len(pcm)
 
 
+def test_bluetooth_duplex_keeps_software_echo_cancellation(monkeypatch):
+    audio_device_resolve = __import__("audio_device_resolve")
+
+    class _FakeAEC:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+    fake_aec_module = types.ModuleType("_aec")
+    fake_aec_module.SpeexAEC = _FakeAEC
+    fake_aec_module.is_available = lambda: True
+    monkeypatch.setitem(sys.modules, "_aec", fake_aec_module)
+    monkeypatch.setattr(
+        audio_device_resolve,
+        "resolve_audio_pair",
+        lambda _sd: types.SimpleNamespace(
+            capture=None,
+            playback=None,
+            capture_name="bluez_input.AM_W45",
+            playback_name="bluez_output.AM_W45",
+            is_combined=True,
+        ),
+    )
+
+    session = RealtimeVoiceSession(
+        client_secret="test",
+        model="test",
+        backend_base_url="http://localhost",
+        device_token="test",
+        on_session_end=lambda: None,
+        on_error=lambda _msg: None,
+        on_connected=lambda: None,
+    )
+    try:
+        assert isinstance(session._aec, _FakeAEC)
+    finally:
+        session._aplay_writer.shutdown(wait=False)
+
+
 def test_invoke_realtime_tool_sync_uses_httpx(monkeypatch):
     import api_client
 

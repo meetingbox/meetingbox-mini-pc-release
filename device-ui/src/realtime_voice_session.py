@@ -905,17 +905,9 @@ class RealtimeVoiceSession:
         # buffered as the far-end reference; the mic stream (after resample
         # to 24 kHz) is the near-end. The canceller produces the
         # echo-suppressed mic signal we forward to OpenAI.
-        bluetooth_audio = "bluez_" in (
-            f"{self._audio_pair.capture_name} {self._audio_pair.playback_name}".lower()
-        )
         try:
             from _aec import SpeexAEC, is_available as _aec_available
-            if bluetooth_audio:
-                self._aec = None
-                logger.info(
-                    "Realtime AEC: using headset hardware echo control for Bluetooth duplex"
-                )
-            elif _aec_available():
+            if _aec_available():
                 self._aec = SpeexAEC(
                     frame_size=480, filter_length=4800, sample_rate=_REALTIME_RATE
                 )
