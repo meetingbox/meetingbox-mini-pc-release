@@ -2062,11 +2062,6 @@ class RealtimeVoiceSession:
                     self._aec_near_buf.clear()
                     self._barge_in_armed_at = now + _LOCAL_BARGE_IN_ARM_DELAY_S
                     self._reset_local_barge_state()
-                self._aec_far_buf.extend(raw)
-                max_bytes = _REALTIME_RATE * 2 * 5
-                excess = len(self._aec_far_buf) - max_bytes
-                if excess > 0:
-                    del self._aec_far_buf[:excess]
         self._ensure_aplay()
         proc = self._aplay_proc
         if proc is None or proc.stdin is None:
@@ -2090,6 +2085,18 @@ class RealtimeVoiceSession:
                 return
             try:
                 stdin.write(raw)
+                # Feed AEC when audio reaches the playback writer, not when its
+                # websocket delta arrives. Realtime can deliver a whole reply
+                # faster than aplay consumes it; queuing the reference at
+                # network speed made Speex run out of far-end audio while the
+                # speaker was still talking and misclassify that echo as barge-in.
+                if self._aec is not None or _LOCAL_BARGE_IN_ENABLED:
+                    with self._aec_buf_lock:
+                        self._aec_far_buf.extend(raw)
+                        max_bytes = _REALTIME_RATE * 2 * 5
+                        excess = len(self._aec_far_buf) - max_bytes
+                        if excess > 0:
+                            del self._aec_far_buf[:excess]
                 if not self._first_speaker_write_logged:
                     self._first_speaker_write_logged = True
                     self._log_voice_event("first_speaker_write", bytes=len(raw))
