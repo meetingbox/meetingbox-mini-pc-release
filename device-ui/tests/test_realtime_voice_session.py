@@ -783,7 +783,7 @@ def test_separate_usb_mic_rejects_measured_echo_but_keeps_strong_barge_in(monkey
         assert mic_rms > threshold
         assert detected is False
 
-    for now in (80.08, 80.10):
+    for now in (80.08, 80.10, 80.12):
         detected, *_ = session._detect_local_barge_in(
             strong_user_voice,
             now=now,
@@ -793,7 +793,7 @@ def test_separate_usb_mic_rejects_measured_echo_but_keeps_strong_barge_in(monkey
         assert detected is False
     detected, mic_rms, _, threshold, _ = session._detect_local_barge_in(
         strong_user_voice,
-        now=80.12,
+        now=80.14,
         echo_suppressed=True,
         near_voice_detected=True,
     )
@@ -862,7 +862,7 @@ def test_new_playback_clears_stale_aec_reference_and_arms_barge_in(monkeypatch):
 
     assert bytes(session._aec_far_buf) == raw
     assert session._aec_near_buf == bytearray()
-    assert session._barge_in_armed_at == 70.9
+    assert session._barge_in_armed_at == 70.4
 
 
 def test_far_ref_slice_uses_most_recent_audio(monkeypatch):

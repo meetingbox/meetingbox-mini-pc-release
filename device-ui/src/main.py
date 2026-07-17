@@ -5222,6 +5222,12 @@ class MeetingBoxApp(App):
                     logger.debug("Ignoring cleanup from stale Realtime session")
                     return
                 self._end_realtime_voice_session()
+                # The consumed active session cannot also be a pending standby.
+                # Clear a stale pending flag before scheduling its replacement;
+                # otherwise _prewarm_realtime_voice_session() returns forever
+                # and every later wake pays the full cold mint/connect path.
+                if self._warm_voice_session is None:
+                    self._warm_voice_pending = False
                 if unexpected:
                     # Only auto-reconnect once per wake-word event.  If the
                     # reconnect session also ends unexpectedly we fall back to

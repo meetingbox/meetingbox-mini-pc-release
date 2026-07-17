@@ -367,13 +367,13 @@ _LOCAL_BARGE_IN_SPIKE_ECHO_MAX_REF_RATIO = _env_float(
 _LOCAL_BARGE_IN_MIN_FRAMES = _env_int("REALTIME_BARGE_IN_MIN_FRAMES", 2, minimum=1, maximum=10)
 _LOCAL_BARGE_IN_PREROLL_S = _env_float("REALTIME_BARGE_IN_PREROLL_S", 0.18, minimum=0.0, maximum=0.5)
 _LOCAL_BARGE_IN_ARM_DELAY_S = _env_float(
-    "REALTIME_BARGE_IN_ARM_DELAY_S", 0.9, minimum=0.0, maximum=2.0
+    "REALTIME_BARGE_IN_ARM_DELAY_S", 0.4, minimum=0.0, maximum=2.0
 )
 _USB_BARGE_IN_MIN_RMS = _env_float(
-    "REALTIME_USB_BARGE_IN_MIN_RMS", 2500.0, minimum=500.0, maximum=30000.0
+    "REALTIME_USB_BARGE_IN_MIN_RMS", 2000.0, minimum=500.0, maximum=30000.0
 )
 _USB_BARGE_IN_MIN_FRAMES = _env_int(
-    "REALTIME_USB_BARGE_IN_MIN_FRAMES", 3, minimum=2, maximum=10
+    "REALTIME_USB_BARGE_IN_MIN_FRAMES", 4, minimum=2, maximum=10
 )
 
 # Live on-screen captions WHILE the user speaks. OpenAI's input transcription
