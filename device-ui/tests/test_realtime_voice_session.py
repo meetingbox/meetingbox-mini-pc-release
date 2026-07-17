@@ -1,6 +1,7 @@
 """Realtime WebSocket helpers and sync tool invoke."""
 
 import asyncio
+import base64
 import json
 import sys
 import types
@@ -632,6 +633,60 @@ def test_half_duplex_barge_in_uses_aec_cleaned_voice_not_speaker_reference(monke
     assert detected is True
     assert mic_rms > threshold
     assert ref_rms > mic_rms
+
+
+def test_half_duplex_barge_in_waits_for_aec_convergence(monkeypatch):
+    rtv = sys.modules["realtime_voice_session"]
+
+    monkeypatch.setattr(rtv, "sd", None)
+    session = RealtimeVoiceSession(
+        client_secret="ek_test",
+        model="gpt-realtime-2",
+        backend_base_url="http://127.0.0.1:8000",
+        device_token="mbd_test",
+        on_session_end=lambda: None,
+        on_error=lambda _msg: None,
+        on_connected=lambda: None,
+    )
+    session._response_in_progress = True
+    session._half_duplex = True
+    session._barge_in_armed_at = 60.9
+    loud_early_echo = (np.ones(480, dtype=np.int16) * 12000).tobytes()
+
+    for now in (60.1, 60.2, 60.3):
+        detected, *_ = session._detect_local_barge_in(
+            loud_early_echo,
+            now=now,
+            echo_suppressed=True,
+        )
+        assert detected is False
+
+
+def test_new_playback_clears_stale_aec_reference_and_arms_barge_in(monkeypatch):
+    rtv = sys.modules["realtime_voice_session"]
+
+    monkeypatch.setattr(rtv, "sd", None)
+    monkeypatch.setattr(rtv.time, "monotonic", lambda: 70.0)
+    session = RealtimeVoiceSession(
+        client_secret="ek_test",
+        model="gpt-realtime-2",
+        backend_base_url="http://127.0.0.1:8000",
+        device_token="mbd_test",
+        on_session_end=lambda: None,
+        on_error=lambda _msg: None,
+        on_connected=lambda: None,
+    )
+    session._aec = mock.MagicMock()
+    session._aec_far_buf.extend(b"stale")
+    session._aec_near_buf.extend(b"near")
+    session._ensure_aplay = mock.MagicMock()
+    raw = (np.ones(480, dtype=np.int16) * 1000).tobytes()
+
+    session._play_delta(base64.b64encode(raw).decode("ascii"))
+
+    assert bytes(session._aec_far_buf) == raw
+    assert session._aec_near_buf == bytearray()
+    assert session._barge_in_armed_at == 70.9
 
 
 def test_far_ref_slice_uses_most_recent_audio(monkeypatch):

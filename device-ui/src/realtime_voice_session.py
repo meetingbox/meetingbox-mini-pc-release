@@ -367,6 +367,9 @@ _LOCAL_BARGE_IN_SPIKE_ECHO_MAX_REF_RATIO = _env_float(
 )
 _LOCAL_BARGE_IN_MIN_FRAMES = _env_int("REALTIME_BARGE_IN_MIN_FRAMES", 2, minimum=1, maximum=10)
 _LOCAL_BARGE_IN_PREROLL_S = _env_float("REALTIME_BARGE_IN_PREROLL_S", 0.18, minimum=0.0, maximum=0.5)
+_LOCAL_BARGE_IN_ARM_DELAY_S = _env_float(
+    "REALTIME_BARGE_IN_ARM_DELAY_S", 0.9, minimum=0.0, maximum=2.0
+)
 
 # Live on-screen captions WHILE the user speaks. OpenAI's input transcription
 # only runs AFTER end-of-turn (post-commit), so it can't show words mid-speech.
@@ -895,6 +898,7 @@ class RealtimeVoiceSession:
         self._barge_in_noise_rms = 0.0
         self._barge_in_consecutive = 0
         self._barge_in_last_cancel_at = 0.0
+        self._barge_in_armed_at = 0.0
         self._audio_q_drops = 0
         self._pipeline_frames = 0
         self._resample_total_ms = 0.0
@@ -1999,22 +2003,13 @@ class RealtimeVoiceSession:
             return
         if not raw:
             return
-        # Push the same PCM into the far-end ring so AEC and local barge-in
-        # detection know what is about to come out of the speaker. Cap to ~5 s
-        # to keep memory bounded if the mic side stalls.
-        if self._aec is not None or _LOCAL_BARGE_IN_ENABLED:
-            with self._aec_buf_lock:
-                self._aec_far_buf.extend(raw)
-                max_bytes = _REALTIME_RATE * 2 * 5
-                excess = len(self._aec_far_buf) - max_bytes
-                if excess > 0:
-                    del self._aec_far_buf[:excess]
         # Extend the cumulative playback clock by this chunk duration. Chunks can
         # arrive back-to-back before the speaker has played earlier chunks; using
         # max(previous_until, now) keeps a true queued-audio end time.
         chunk_s = len(raw) / (_REALTIME_RATE * 2)   # PCM16 mono bytes → seconds
         now = time.monotonic()
         with self._playback_clock_lock:
+            new_playback = self._assistant_audio_play_until <= now
             start_at = max(self._assistant_audio_play_until, now)
             self._assistant_audio_play_until = start_at + chunk_s
             # Keep the mic muted for an echo-decay tail after playback ends
@@ -2023,6 +2018,21 @@ class RealtimeVoiceSession:
                 self._mute_mic_uplink_until,
                 self._assistant_audio_play_until + self._mic_reopen_tail_s,
             )
+        # A new response needs a clean, time-aligned reference. Retaining the
+        # previous response's tail makes Speex cancel unrelated audio and lets
+        # the new speaker output pass through as a false user interruption.
+        if self._aec is not None or _LOCAL_BARGE_IN_ENABLED:
+            with self._aec_buf_lock:
+                if new_playback:
+                    self._aec_far_buf.clear()
+                    self._aec_near_buf.clear()
+                    self._barge_in_armed_at = now + _LOCAL_BARGE_IN_ARM_DELAY_S
+                    self._reset_local_barge_state()
+                self._aec_far_buf.extend(raw)
+                max_bytes = _REALTIME_RATE * 2 * 5
+                excess = len(self._aec_far_buf) - max_bytes
+                if excess > 0:
+                    del self._aec_far_buf[:excess]
         self._ensure_aplay()
         proc = self._aplay_proc
         if proc is None or proc.stdin is None:
@@ -2068,6 +2078,11 @@ class RealtimeVoiceSession:
         with self._playback_clock_lock:
             self._assistant_audio_play_until = 0.0
             self._mute_mic_uplink_until = 0.0
+        with self._aec_buf_lock:
+            self._aec_far_buf.clear()
+            self._aec_near_buf.clear()
+        self._barge_in_armed_at = 0.0
+        self._reset_local_barge_state()
         with self._aplay_lock:
             proc = self._aplay_proc
             self._aplay_proc = None
@@ -2367,6 +2382,22 @@ class RealtimeVoiceSession:
         if not (self._response_in_progress or self.audio_playback_remaining_s() > 0.12):
             return False, 0.0, 0.0, 0.0, 1.0
         mic_rms = self._pcm_rms(mic_pcm16)
+        if self._half_duplex and now < self._barge_in_armed_at:
+            self._barge_in_consecutive = 0
+            baseline = self._barge_in_noise_rms
+            self._barge_in_noise_rms = (
+                mic_rms if baseline <= 0.0 else (baseline * 0.7) + (mic_rms * 0.3)
+            )
+            return (
+                False,
+                mic_rms,
+                self._far_ref_rms(len(mic_pcm16)),
+                max(
+                    _LOCAL_BARGE_IN_MIN_RMS,
+                    self._barge_in_noise_rms * _LOCAL_BARGE_IN_BASELINE_RATIO,
+                ),
+                1.0,
+            )
         ref_pcm = self._far_ref_slice(len(mic_pcm16))
         ref_rms = self._pcm_rms(ref_pcm)
         echo_similarity = self._echo_similarity(mic_pcm16, ref_pcm)
