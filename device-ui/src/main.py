@@ -4826,6 +4826,13 @@ class MeetingBoxApp(App):
             self._hide_home_listening_state()
             self._refresh_voice_indicator()
             return
+        # This cleanup is also called directly by normal UI/session shutdown,
+        # before Realtime's asynchronous end callback runs. Re-arm standby here
+        # so that callback ordering cannot leave every later wake on the cold
+        # mint/connect path.
+        if self._warm_voice_session is None:
+            self._warm_voice_pending = False
+        self._schedule_voice_prewarm(delay=0.1)
         if short_failed:
             # Do not hide listening here — local fallback re-shows it for the full timeout.
             Clock.schedule_once(

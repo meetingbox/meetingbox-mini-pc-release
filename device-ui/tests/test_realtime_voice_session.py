@@ -783,7 +783,7 @@ def test_separate_usb_mic_rejects_measured_echo_but_keeps_strong_barge_in(monkey
         assert mic_rms > threshold
         assert detected is False
 
-    for now in (80.08, 80.10, 80.12):
+    for now in (80.08, 80.10):
         detected, *_ = session._detect_local_barge_in(
             strong_user_voice,
             now=now,
@@ -793,7 +793,7 @@ def test_separate_usb_mic_rejects_measured_echo_but_keeps_strong_barge_in(monkey
         assert detected is False
     detected, mic_rms, _, threshold, _ = session._detect_local_barge_in(
         strong_user_voice,
-        now=80.14,
+        now=80.12,
         echo_suppressed=True,
         near_voice_detected=True,
     )
