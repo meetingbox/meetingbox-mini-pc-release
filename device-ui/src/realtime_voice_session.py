@@ -245,13 +245,12 @@ _REALTIME_WAKE_GREETING_ENABLED = os.environ.get(
 ).strip().lower() not in ("", "0", "false", "no", "off")
 
 _REALTIME_WAKE_GREETING_INSTRUCTIONS = (
-    "Open with exactly one short greeting sentence to confirm you are "
-    "listening, max six words. Vary it naturally between phrasings like "
-    "'Hey, how can I help you?', 'Yes, I'm listening', 'Hi, what do you "
-    "need?', 'Go ahead.', 'I'm here.'. Then immediately stop and wait for "
-    "the user's request. Do NOT introduce yourself, list capabilities, "
-    "mention tools, or read out today's date / weather / schedule unless "
-    "the user explicitly asks."
+    "Give one warm, natural greeting in one or two short sentences. Ask how "
+    "the user is and how you can help, with natural variation. For example: "
+    "'Hi there! How are you? How can I help?' Do not say only that you are "
+    "listening. Then stop and wait. Do NOT introduce yourself, list "
+    "capabilities, mention tools, or read out today's date, weather, or "
+    "schedule unless the user explicitly asks."
 )
 
 # STT model for the user-speech transcript stream (used by the UI
@@ -734,6 +733,7 @@ class RealtimeVoiceSession:
         on_ready=None,
         on_device_navigate=None,
         output_voice: str | None = None,
+        display_name: str | None = None,
         on_before_open_mic=None,
         on_state_change=None,
         on_user_transcript=None,
@@ -806,6 +806,7 @@ class RealtimeVoiceSession:
             (output_voice or "").strip().lower()
             or _REALTIME_OUTPUT_VOICE_FALLBACK
         )
+        self._display_name = (display_name or "").strip()
 
         # Resolve audio device pair (combined USB mic+speaker detection).
         # Done once at init so aplay and the mic stream use a consistent device.
@@ -940,6 +941,16 @@ class RealtimeVoiceSession:
         self._aec_near_buf = bytearray()
         self._aec_buf_lock = threading.Lock()
         self._aec_near_voice_detected = False
+        try:
+            import webrtcvad
+
+            self._near_vad = webrtcvad.Vad(2)
+            logger.info("Realtime barge-in VAD: WebRTC enabled after Speex AEC")
+        except Exception:
+            self._near_vad = None
+            logger.exception(
+                "Realtime barge-in VAD: WebRTC unavailable; using Speex fallback"
+            )
 
         # Live caption (on-device Vosk partials while the user speaks). Enabled
         # only when the feature flag is on AND a preloaded Vosk model was handed
@@ -1866,12 +1877,23 @@ class RealtimeVoiceSession:
         preferred = resolve_sounddevice_capture_device_index(sd)
         candidates = capture_device_fallback_candidates(sd, preferred)
 
-        # If the ALSA pair found a USB capture device that sounddevice missed
-        # (common when PortAudio doesn't enumerate all ALSA cards), inject the
-        # ALSA string as the first candidate so _open_mic tries it before the
-        # PortAudio default.
+        # If the ALSA pair found a USB capture device, inject it only when
+        # PortAudio can actually open that identifier. ALSA strings such as
+        # "plughw:1,0" are not accepted by python-sounddevice on this appliance;
+        # trying five sample rates against one delayed every wake by ~0.5-0.8 s
+        # before the valid numeric USB device was attempted.
         pair_capture = self._audio_pair.capture
-        if pair_capture is not None and pair_capture not in candidates:
+        pair_capture_usable = pair_capture is not None
+        if pair_capture_usable:
+            try:
+                sd.query_devices(pair_capture, "input")
+            except Exception:
+                pair_capture_usable = False
+                logger.debug(
+                    "Realtime mic: skipping unsupported PortAudio identifier %s",
+                    pair_capture,
+                )
+        if pair_capture_usable and pair_capture not in candidates:
             candidates = [pair_capture, *candidates]
             if preferred is None:
                 preferred = pair_capture
@@ -2306,10 +2328,23 @@ class RealtimeVoiceSession:
                 else:
                     far = b"\x00" * fbytes
                 try:
-                    out.extend(aec.cancel(near, far))
-                    near_voice_detected = near_voice_detected or bool(
-                        getattr(aec, "last_voice_detected", False)
-                    )
+                    cleaned = aec.cancel(near, far)
+                    out.extend(cleaned)
+                    if self._near_vad is not None:
+                        # WebRTC VAD supports 8/16/32/48 kHz, while Realtime
+                        # audio is 24 kHz. Decimate this fixed 20 ms frame to
+                        # 8 kHz (480 -> 160 samples) without another expensive
+                        # general-purpose resampling pass.
+                        vad_frame = np.frombuffer(
+                            cleaned, dtype=np.int16
+                        )[::3].tobytes()
+                        near_voice_detected = near_voice_detected or bool(
+                            self._near_vad.is_speech(vad_frame, 8000)
+                        )
+                    else:
+                        near_voice_detected = near_voice_detected or bool(
+                            getattr(aec, "last_voice_detected", False)
+                        )
                 except Exception:
                     logger.debug("AEC cancel failed", exc_info=True)
                     out.extend(near)
@@ -3339,7 +3374,15 @@ class RealtimeVoiceSession:
             return
         self._wake_greeting_sent = True
         ctx = self._active_summary_context
-        greeting = self._active_summary_greeting or _REALTIME_WAKE_GREETING_INSTRUCTIONS
+        greeting = self._active_summary_greeting
+        if not greeting:
+            first_name = self._display_name.split()[0] if self._display_name else ""
+            greeting = _REALTIME_WAKE_GREETING_INSTRUCTIONS
+            if first_name:
+                greeting = (
+                    f"Warmly address the user as {json.dumps(first_name)}. "
+                    + greeting
+                )
         try:
             if ctx:
                 await self._inject_system_message(ws, ctx)

@@ -348,7 +348,16 @@ def setup_logging():
         handlers.append(fh)
     except Exception as e:
         print(f"Warning: Could not create log file {LOG_FILE}: {e}")
-    logging.basicConfig(level=getattr(logging, LOG_LEVEL), handlers=handlers)
+    level = getattr(logging, LOG_LEVEL)
+    logging.basicConfig(level=level, handlers=handlers)
+    # Kivy may install a root handler before this module is imported, causing
+    # basicConfig() to leave the root level at DEBUG. Packet-level websocket
+    # and HTTP logs then serialize every Realtime audio delta on the UI event
+    # loop. Keep application telemetry at the configured level while silencing
+    # noisy transport internals.
+    logging.getLogger().setLevel(level)
+    for noisy_logger in ("websockets", "httpcore", "httpx"):
+        logging.getLogger(noisy_logger).setLevel(logging.WARNING)
 
 setup_logging()
 logger = logging.getLogger(__name__)
@@ -5550,6 +5559,7 @@ class MeetingBoxApp(App):
                 on_ready=_on_rt_ready,
                 on_device_navigate=self._realtime_voice_navigate,
                 output_voice=rt_voice or None,
+                display_name=self.current_display_name,
                 on_before_open_mic=_before_realtime_mic,
                 on_state_change=_on_rt_state,
                 on_user_transcript=_on_user_transcript,

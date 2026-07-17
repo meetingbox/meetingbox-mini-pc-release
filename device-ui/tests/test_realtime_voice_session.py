@@ -51,6 +51,30 @@ def test_build_realtime_websocket_url_defaults_when_blank():
     assert "gpt-realtime-2" in u
 
 
+def test_wake_greeting_is_natural_and_uses_known_first_name(monkeypatch):
+    rtv = sys.modules["realtime_voice_session"]
+    monkeypatch.setattr(rtv, "sd", None)
+    session = RealtimeVoiceSession(
+        client_secret="ek_test",
+        model="gpt-realtime-2",
+        backend_base_url="http://127.0.0.1:8000",
+        device_token="mbd_test",
+        display_name="Shiva Kumar",
+        on_session_end=lambda: None,
+        on_error=lambda _msg: None,
+        on_connected=lambda: None,
+    )
+    ws = mock.AsyncMock()
+
+    asyncio.run(session._send_wake_greeting(ws))
+
+    payload = json.loads(ws.send.await_args.args[0])
+    instructions = payload["response"]["instructions"]
+    assert '"Shiva"' in instructions
+    assert "Ask how the user is and how you can help" in instructions
+    assert "Yes, I'm listening" not in instructions
+
+
 def test_audio_route_snapshot_includes_hotplug_inventory(monkeypatch):
     outputs = iter(
         (
@@ -77,6 +101,46 @@ def test_audio_route_snapshot_includes_hotplug_inventory(monkeypatch):
         "built_in_source,usb_input",
         "bluez_output.AM_W45,built_in_sink",
     )
+
+
+def test_realtime_mic_skips_unsupported_alsa_identifier(monkeypatch):
+    rtv = sys.modules["realtime_voice_session"]
+    mic_resolve = sys.modules["mic_input_resolve"]
+    monkeypatch.setattr(rtv, "sd", None)
+    session = RealtimeVoiceSession(
+        client_secret="ek_test",
+        model="gpt-realtime-2",
+        backend_base_url="http://127.0.0.1:8000",
+        device_token="mbd_test",
+        on_session_end=lambda: None,
+        on_error=lambda _msg: None,
+        on_connected=lambda: None,
+    )
+    session._audio_pair.capture = "plughw:1,0"
+    session._audio_pair.capture_name = "USB PnP Sound Device"
+
+    class _FakeSoundDevice:
+        @staticmethod
+        def query_devices(device, _kind=None):
+            if device == "plughw:1,0":
+                raise ValueError("unsupported PortAudio identifier")
+            return {"name": "USB PnP Sound Device"}
+
+    monkeypatch.setattr(rtv, "sd", _FakeSoundDevice())
+    monkeypatch.setattr(
+        mic_resolve, "resolve_sounddevice_capture_device_index", lambda _sd: 8
+    )
+    monkeypatch.setattr(
+        mic_resolve,
+        "capture_device_fallback_candidates",
+        lambda _sd, _preferred: [8, None],
+    )
+
+    preferred, candidates = session._resolve_input_device()
+
+    assert preferred == 8
+    assert candidates == [8, None]
+    assert "plughw:1,0" not in candidates
 
 
 def test_resample_pcm16_mono_noop_at_same_rate():
@@ -737,7 +801,7 @@ def test_separate_usb_mic_rejects_measured_echo_but_keeps_strong_barge_in(monkey
     assert detected is True
 
 
-def test_aec_process_exposes_near_end_voice_decision(monkeypatch):
+def test_aec_process_uses_webrtc_near_end_voice_decision(monkeypatch):
     rtv = sys.modules["realtime_voice_session"]
 
     monkeypatch.setattr(rtv, "sd", None)
@@ -752,13 +816,21 @@ def test_aec_process_exposes_near_end_voice_decision(monkeypatch):
     )
 
     class _FakeAEC:
-        last_voice_detected = True
+        last_voice_detected = False
 
         @staticmethod
         def cancel(near, _far):
             return near
 
+    class _FakeVad:
+        @staticmethod
+        def is_speech(frame, sample_rate):
+            assert sample_rate == 8000
+            assert len(frame) == 160 * 2
+            return True
+
     session._aec = _FakeAEC()
+    session._near_vad = _FakeVad()
     frame = (np.ones(480, dtype=np.int16) * 3000).tobytes()
     session._aec_far_buf.extend(frame)
 
