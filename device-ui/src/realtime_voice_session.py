@@ -2284,6 +2284,15 @@ class RealtimeVoiceSession:
                     out.extend(near)
         return bytes(out)
 
+    def _apply_aec(self, mic_pcm16: bytes) -> bytes:
+        if self._aec is None:
+            return mic_pcm16
+        started = time.perf_counter()
+        cleaned = self._aec_process(mic_pcm16)
+        self._aec_frames += 1
+        self._aec_total_ms += (time.perf_counter() - started) * 1000.0
+        return cleaned
+
     @staticmethod
     def _pcm_rms(pcm16: bytes) -> float:
         if not pcm16:
@@ -2339,6 +2348,7 @@ class RealtimeVoiceSession:
         mic_pcm16: bytes,
         *,
         now: float,
+        echo_suppressed: bool = False,
     ) -> tuple[bool, float, float, float, float]:
         """Detect live user speech while normal mic upload is muted for echo.
 
@@ -2362,11 +2372,15 @@ class RealtimeVoiceSession:
         echo_similarity = self._echo_similarity(mic_pcm16, ref_pcm)
         baseline = self._barge_in_noise_rms
         if baseline <= 0.0:
-            baseline = ref_rms if ref_rms > 0.0 else mic_rms
+            baseline = (
+                min(mic_rms, _LOCAL_BARGE_IN_MIN_RMS * 0.25)
+                if echo_suppressed
+                else (ref_rms if ref_rms > 0.0 else mic_rms)
+            )
             self._barge_in_noise_rms = baseline
         threshold = max(
             _LOCAL_BARGE_IN_MIN_RMS,
-            ref_rms * _LOCAL_BARGE_IN_REF_RATIO,
+            0.0 if echo_suppressed else ref_rms * _LOCAL_BARGE_IN_REF_RATIO,
             baseline * _LOCAL_BARGE_IN_BASELINE_RATIO,
         )
         # Two independent barge-in paths:
@@ -2381,14 +2395,15 @@ class RealtimeVoiceSession:
         # coupling: if mic looks almost identical to far-end playback and is
         # only modestly louder than the reference, treat it as self-audio.
         if (
-            loud_enough
+            not echo_suppressed
+            and loud_enough
             and ref_rms > 0.0
             and echo_similarity >= _LOCAL_BARGE_IN_SPIKE_ECHO_SIMILARITY_GUARD
             and mic_rms <= (ref_rms * _LOCAL_BARGE_IN_SPIKE_ECHO_MAX_REF_RATIO)
         ):
             loud_enough = False
         diverged_from_echo = False
-        if _LOCAL_BARGE_IN_ECHO_DIVERGENCE_ENABLED:
+        if _LOCAL_BARGE_IN_ECHO_DIVERGENCE_ENABLED and not echo_suppressed:
             diverged_from_echo = (
                 ref_rms > 0.0
                 and baseline > 0.0
@@ -2465,12 +2480,15 @@ class RealtimeVoiceSession:
         except Exception:
             logger.debug("local barge-in response.cancel failed", exc_info=True)
 
-    async def _upload_resampled_audio(self, ws, resampled: bytes) -> None:
-        if self._aec is not None:
-            aec_started = time.perf_counter()
-            resampled = self._aec_process(resampled)
-            self._aec_frames += 1
-            self._aec_total_ms += (time.perf_counter() - aec_started) * 1000.0
+    async def _upload_resampled_audio(
+        self,
+        ws,
+        resampled: bytes,
+        *,
+        aec_already_applied: bool = False,
+    ) -> None:
+        if self._aec is not None and not aec_already_applied:
+            resampled = self._apply_aec(resampled)
             if not resampled:
                 return
         # Feed the same echo-cancelled PCM to the live-caption recognizer
@@ -2568,10 +2586,17 @@ class RealtimeVoiceSession:
                 # Both conditions ensure we don't pass near-silence or mild
                 # echo while still allowing clear speech to interrupt.
                 if now < self._mute_mic_uplink_until:
-                    self._barge_in_preroll.append(resampled)
+                    barge_frame = resampled
+                    barge_aec_applied = self._half_duplex and self._aec is not None
+                    if barge_aec_applied:
+                        barge_frame = self._apply_aec(resampled)
+                        if not barge_frame:
+                            continue
+                    self._barge_in_preroll.append(barge_frame)
                     detected, mic_rms, ref_rms, threshold, echo_similarity = self._detect_local_barge_in(
-                        resampled,
+                        barge_frame,
                         now=now,
+                        echo_suppressed=barge_aec_applied,
                     )
                     if detected:
                         await self._cancel_for_local_barge_in(
@@ -2584,7 +2609,11 @@ class RealtimeVoiceSession:
                         frames = list(self._barge_in_preroll)
                         self._reset_local_barge_state()
                         for frame in frames:
-                            await self._upload_resampled_audio(ws, frame)
+                            await self._upload_resampled_audio(
+                                ws,
+                                frame,
+                                aec_already_applied=barge_aec_applied,
+                            )
                         continue
                     if self._half_duplex:
                         # Half-duplex still withholds echo-contaminated mic

@@ -591,6 +591,49 @@ def test_local_barge_in_blocks_echo_like_rms_spike(monkeypatch):
     assert detected is False
 
 
+def test_half_duplex_barge_in_uses_aec_cleaned_voice_not_speaker_reference(monkeypatch):
+    rtv = sys.modules["realtime_voice_session"]
+
+    monkeypatch.setattr(rtv, "sd", None)
+    session = RealtimeVoiceSession(
+        client_secret="ek_test",
+        model="gpt-realtime-2",
+        backend_base_url="http://127.0.0.1:8000",
+        device_token="mbd_test",
+        on_session_end=lambda: None,
+        on_error=lambda _msg: None,
+        on_connected=lambda: None,
+    )
+    session._response_in_progress = True
+    speaker = (np.ones(480, dtype=np.int16) * 5000).tobytes()
+    echo_residual = (np.ones(480, dtype=np.int16) * 250).tobytes()
+    user_voice = (np.ones(480, dtype=np.int16) * 2200).tobytes()
+    session._aec_far_buf.extend(speaker)
+
+    for now in (50.0, 50.02, 50.04):
+        detected, *_ = session._detect_local_barge_in(
+            echo_residual,
+            now=now,
+            echo_suppressed=True,
+        )
+        assert detected is False
+
+    detected, *_ = session._detect_local_barge_in(
+        user_voice,
+        now=50.06,
+        echo_suppressed=True,
+    )
+    assert detected is False
+    detected, mic_rms, ref_rms, threshold, _ = session._detect_local_barge_in(
+        user_voice,
+        now=50.08,
+        echo_suppressed=True,
+    )
+    assert detected is True
+    assert mic_rms > threshold
+    assert ref_rms > mic_rms
+
+
 def test_far_ref_slice_uses_most_recent_audio(monkeypatch):
     import realtime_voice_session as rtv
 
