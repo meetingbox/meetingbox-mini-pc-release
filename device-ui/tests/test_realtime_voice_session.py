@@ -51,6 +51,34 @@ def test_build_realtime_websocket_url_defaults_when_blank():
     assert "gpt-realtime-2" in u
 
 
+def test_audio_route_snapshot_includes_hotplug_inventory(monkeypatch):
+    outputs = iter(
+        (
+            "built_in_source\n",
+            "built_in_sink\n",
+            (
+                "1\tbuilt_in_source\tPipeWire\n"
+                "2\tusb_input\tPipeWire\n"
+                "3\tbuilt_in_sink.monitor\tPipeWire\n"
+            ),
+            "4\tbuilt_in_sink\tPipeWire\n5\tbluez_output.AM_W45\tPipeWire\n",
+        )
+    )
+    monkeypatch.setattr(
+        "realtime_voice_session.subprocess.run",
+        lambda *_args, **_kwargs: types.SimpleNamespace(stdout=next(outputs)),
+    )
+
+    route = RealtimeVoiceSession._pulse_default_route()
+
+    assert route == (
+        "built_in_source",
+        "built_in_sink",
+        "built_in_source,usb_input",
+        "bluez_output.AM_W45,built_in_sink",
+    )
+
+
 def test_resample_pcm16_mono_noop_at_same_rate():
     samples = (np.ones(100, dtype=np.int16) * 1000).tobytes()
     out = resample_pcm16_mono(samples, 24000, 24000)
@@ -660,6 +688,50 @@ def test_half_duplex_barge_in_waits_for_aec_convergence(monkeypatch):
             echo_suppressed=True,
         )
         assert detected is False
+
+
+def test_separate_usb_mic_rejects_measured_echo_but_keeps_strong_barge_in(monkeypatch):
+    rtv = sys.modules["realtime_voice_session"]
+
+    monkeypatch.setattr(rtv, "sd", None)
+    session = RealtimeVoiceSession(
+        client_secret="ek_test",
+        model="gpt-realtime-2",
+        backend_base_url="http://127.0.0.1:8000",
+        device_token="mbd_test",
+        on_session_end=lambda: None,
+        on_error=lambda _msg: None,
+        on_connected=lambda: None,
+    )
+    session._response_in_progress = True
+    session._half_duplex = True
+    session._separate_usb_mic = True
+    measured_echo = (np.ones(480, dtype=np.int16) * 6100).tobytes()
+    strong_user_voice = (np.ones(480, dtype=np.int16) * 12000).tobytes()
+
+    for now in (80.0, 80.02, 80.04, 80.06):
+        detected, mic_rms, _, threshold, _ = session._detect_local_barge_in(
+            measured_echo,
+            now=now,
+            echo_suppressed=True,
+        )
+        assert mic_rms < threshold
+        assert detected is False
+
+    for now in (80.08, 80.10):
+        detected, *_ = session._detect_local_barge_in(
+            strong_user_voice,
+            now=now,
+            echo_suppressed=True,
+        )
+        assert detected is False
+    detected, mic_rms, _, threshold, _ = session._detect_local_barge_in(
+        strong_user_voice,
+        now=80.12,
+        echo_suppressed=True,
+    )
+    assert mic_rms > threshold
+    assert detected is True
 
 
 def test_new_playback_clears_stale_aec_reference_and_arms_barge_in(monkeypatch):

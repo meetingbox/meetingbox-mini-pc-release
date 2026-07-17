@@ -186,6 +186,25 @@ def test_wake_listener_reopens_when_default_source_changes(monkeypatch):
     clear_queue.assert_called_once()
 
 
+def test_wake_listener_reopens_when_usb_inventory_changes(monkeypatch):
+    assistant = VoiceAssistant(lambda _intent: None)
+    assistant._capture_route = "built_in|built_in"
+    assistant._stream = mock.MagicMock(active=True)
+    close_stream = mock.MagicMock()
+    monkeypatch.setattr(assistant, "_read_default_source", lambda: "built_in")
+    monkeypatch.setattr(
+        assistant,
+        "_read_source_inventory",
+        lambda: "built_in,usb_input",
+    )
+    monkeypatch.setattr(assistant, "_close_stream", close_stream)
+    monkeypatch.setattr(assistant, "_clear_audio_queue", mock.MagicMock())
+
+    assistant._refresh_capture_route(now=10.0)
+
+    close_stream.assert_called_once()
+
+
 def test_wake_listener_reopens_dead_stream_without_route_change(monkeypatch):
     assistant = VoiceAssistant(lambda _intent: None)
     assistant._capture_route = "bluez_input.same"

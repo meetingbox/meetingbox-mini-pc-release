@@ -370,6 +370,12 @@ _LOCAL_BARGE_IN_PREROLL_S = _env_float("REALTIME_BARGE_IN_PREROLL_S", 0.18, mini
 _LOCAL_BARGE_IN_ARM_DELAY_S = _env_float(
     "REALTIME_BARGE_IN_ARM_DELAY_S", 0.9, minimum=0.0, maximum=2.0
 )
+_USB_BARGE_IN_MIN_RMS = _env_float(
+    "REALTIME_USB_BARGE_IN_MIN_RMS", 8000.0, minimum=1000.0, maximum=30000.0
+)
+_USB_BARGE_IN_MIN_FRAMES = _env_int(
+    "REALTIME_USB_BARGE_IN_MIN_FRAMES", 3, minimum=2, maximum=10
+)
 
 # Live on-screen captions WHILE the user speaks. OpenAI's input transcription
 # only runs AFTER end-of-turn (post-commit), so it can't show words mid-speech.
@@ -836,6 +842,11 @@ class RealtimeVoiceSession:
             playback=getattr(self._audio_pair, "playback_name", None) or str(getattr(self._audio_pair, "playback", "")),
             is_combined=bool(getattr(self._audio_pair, "is_combined", False)),
             half_duplex=self._half_duplex,
+        )
+        capture_name = str(getattr(self._audio_pair, "capture_name", "") or "").lower()
+        self._separate_usb_mic = (
+            "usb" in capture_name
+            and not bool(getattr(self._audio_pair, "is_combined", False))
         )
 
         # Echo-decay tail: keep the mic muted this long AFTER the assistant's
@@ -2413,6 +2424,11 @@ class RealtimeVoiceSession:
             _LOCAL_BARGE_IN_MIN_RMS,
             0.0 if echo_suppressed else ref_rms * _LOCAL_BARGE_IN_REF_RATIO,
             baseline * _LOCAL_BARGE_IN_BASELINE_RATIO,
+            (
+                _USB_BARGE_IN_MIN_RMS
+                if echo_suppressed and self._separate_usb_mic
+                else 0.0
+            ),
         )
         # Two independent barge-in paths:
         # 1) classic RMS spike over playback-ref threshold
@@ -2454,8 +2470,13 @@ class RealtimeVoiceSession:
             # Track the echo/noise floor while muted; keep it slow so a user's
             # first syllable remains a spike rather than becoming the baseline.
             self._barge_in_noise_rms = (baseline * 0.96) + (mic_rms * 0.04)
+        required_frames = (
+            _USB_BARGE_IN_MIN_FRAMES
+            if echo_suppressed and self._separate_usb_mic
+            else _LOCAL_BARGE_IN_MIN_FRAMES
+        )
         return (
-            self._barge_in_consecutive >= _LOCAL_BARGE_IN_MIN_FRAMES,
+            self._barge_in_consecutive >= required_frames,
             mic_rms,
             ref_rms,
             threshold,
@@ -2710,7 +2731,7 @@ class RealtimeVoiceSession:
                 break
 
     @staticmethod
-    def _pulse_default_route() -> tuple[str, str]:
+    def _pulse_default_route() -> tuple[str, str, str, str]:
         defaults = []
         for kind in ("source", "sink"):
             try:
@@ -2724,10 +2745,28 @@ class RealtimeVoiceSession:
                 defaults.append(result.stdout.strip())
             except Exception:
                 defaults.append("")
-        return defaults[0], defaults[1]
+        inventories = []
+        for kind in ("sources", "sinks"):
+            try:
+                result = subprocess.run(
+                    ["pactl", "list", kind, "short"],
+                    capture_output=True,
+                    text=True,
+                    timeout=3,
+                    check=False,
+                )
+                names = []
+                for line in result.stdout.splitlines():
+                    parts = line.split("\t")
+                    if len(parts) >= 2 and ".monitor" not in parts[1]:
+                        names.append(parts[1].strip())
+                inventories.append(",".join(sorted(names)))
+            except Exception:
+                inventories.append("")
+        return defaults[0], defaults[1], inventories[0], inventories[1]
 
     async def _audio_route_watchdog(self) -> None:
-        """Reopen capture/playback when PipeWire changes the default route."""
+        """Reopen capture/playback when defaults or device inventory changes."""
         previous = await asyncio.to_thread(self._pulse_default_route)
         while not self._stop.is_set():
             await asyncio.sleep(2.0)
@@ -2749,6 +2788,28 @@ class RealtimeVoiceSession:
                     "1", "true", "yes", "on", "0", "false", "no", "off"
                 ):
                     self._half_duplex = not bool(self._audio_pair.is_combined)
+                capture_name = str(self._audio_pair.capture_name or "").lower()
+                self._separate_usb_mic = (
+                    "usb" in capture_name and not bool(self._audio_pair.is_combined)
+                )
+                old_aec = self._aec
+                if old_aec is not None:
+                    try:
+                        old_aec.close()
+                    except Exception:
+                        pass
+                self._aec = None
+                try:
+                    from _aec import SpeexAEC, is_available as _aec_available
+
+                    if _aec_available():
+                        self._aec = SpeexAEC(
+                            frame_size=480,
+                            filter_length=4800,
+                            sample_rate=_REALTIME_RATE,
+                        )
+                except Exception:
+                    logger.exception("Realtime AEC reset failed after audio route change")
                 preferred, candidates = self._resolve_input_device()
                 if not self._open_mic(preferred, candidates):
                     self._emit_error(

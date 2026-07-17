@@ -768,13 +768,35 @@ class VoiceAssistant:
         except Exception:
             return ""
 
+    @staticmethod
+    def _read_source_inventory() -> str:
+        try:
+            result = subprocess.run(
+                ["pactl", "list", "sources", "short"],
+                capture_output=True,
+                text=True,
+                timeout=2,
+                check=False,
+            )
+            names = []
+            for line in result.stdout.splitlines():
+                parts = line.split("\t")
+                if len(parts) >= 2 and ".monitor" not in parts[1]:
+                    names.append(parts[1].strip())
+            return ",".join(sorted(names))
+        except Exception:
+            return ""
+
+    def _capture_route_signature(self) -> str:
+        return f"{self._read_default_source()}|{self._read_source_inventory()}"
+
     def _refresh_capture_route(self, now: float | None = None) -> None:
-        """Reopen only the wake mic when PipeWire changes or drops its source."""
+        """Reopen the wake mic when defaults or available sources change."""
         now = time.monotonic() if now is None else now
         if now - self._last_route_check_at < 2.0:
             return
         self._last_route_check_at = now
-        current = self._read_default_source()
+        current = self._capture_route_signature()
         route_changed = (
             self._capture_route is not None and current != self._capture_route
         )
