@@ -302,11 +302,11 @@ def _is_prompt_echo(text: str) -> bool:
 # waits longer to be sure the user is done. "low" was historically forced
 # because the device lacked acoustic echo cancellation and high eagerness
 # caught speaker echo as user speech. AEC plus the strict local USB barge-in
-# gate now prevents speaker audio from reaching server VAD, so use "high" to
-# finalize clear user turns promptly. Override via
+# gate now prevents speaker audio from reaching server VAD. Use "medium" so
+# natural pauses remain in one complete user turn. Override via
 # REALTIME_VAD_EAGERNESS (low|medium|high|auto).
 _REALTIME_VAD_EAGERNESS = (
-    os.environ.get("REALTIME_VAD_EAGERNESS", "high").strip().lower() or "high"
+    os.environ.get("REALTIME_VAD_EAGERNESS", "medium").strip().lower() or "medium"
 )
 
 # Half-duplex self-hearing guard. On a device whose mic and speaker share the
@@ -3507,8 +3507,8 @@ class RealtimeVoiceSession:
           - input.turn_detection.eagerness — how quickly the assistant
             replies after the user stops. The server defaults to "low"
             (most conservative) for hardware without echo cancellation;
-            AEC and local echo gating are enabled, so we bump to "high" (env
-            REALTIME_VAD_EAGERNESS) for a snappier turn-around while
+            AEC and local echo gating are enabled, so we use "medium" (env
+            REALTIME_VAD_EAGERNESS) for complete but responsive turns while
             keeping create_response/interrupt_response TRUE.
           - tools — server tools + end_session.
         """
