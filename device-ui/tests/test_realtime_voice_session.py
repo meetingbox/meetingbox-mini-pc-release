@@ -304,6 +304,35 @@ def test_warm_session_is_held_only_after_session_update(monkeypatch):
     assert session.is_held() is True
 
 
+def test_session_update_uses_bounded_server_vad(monkeypatch):
+    import realtime_voice_session as rtv
+
+    monkeypatch.setattr(rtv, "sd", None)
+    session = RealtimeVoiceSession(
+        client_secret="ek_test",
+        model="gpt-realtime-2",
+        backend_base_url="http://127.0.0.1:8000",
+        device_token="mbd_test",
+        on_session_end=lambda: None,
+        on_error=lambda _msg: None,
+        on_connected=lambda: None,
+    )
+    ws = mock.AsyncMock()
+
+    asyncio.run(session._send_session_update(ws))
+
+    payload = json.loads(ws.send.await_args.args[0])
+    turn_detection = payload["session"]["audio"]["input"]["turn_detection"]
+    assert turn_detection == {
+        "type": "server_vad",
+        "threshold": 0.5,
+        "prefix_padding_ms": 500,
+        "silence_duration_ms": 900,
+        "create_response": True,
+        "interrupt_response": True,
+    }
+
+
 def test_live_caption_coalesces_to_latest_pending_partial(monkeypatch):
     import realtime_voice_session as rtv
 

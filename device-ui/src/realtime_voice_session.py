@@ -6,12 +6,12 @@ Minimal, low-latency rebuild.
 Design:
 - Connect to wss://api.openai.com/v1/realtime with the ephemeral
   client_secret minted by the MeetingBox server.
-- Trust the server's semantic_vad for turn detection — server runs with
+- Use server VAD for bounded turn detection — the session runs with
   `create_response: true` and `interrupt_response: true`, so end-of-turn
   and barge-in are handled at the source instead of being gated on a
   second model hop (transcription + manual response.create on the
   client). This removes ~0.5–1.5 s of dead air per turn.
-- Send ONE small session.update: nudge eagerness to "high" and enable
+- Send ONE small session.update: set a fixed silence timeout and enable
   user-audio transcription (used only for farewell detection). The
   server's full instructions, tools, voice, and audio format are left
   exactly as configured.
@@ -297,16 +297,12 @@ def _is_prompt_echo(text: str) -> bool:
         return True
     return False
 
-# Turn-end detection eagerness for semantic VAD. Higher = the assistant
-# replies sooner after the user stops talking (less dead air); lower =
-# waits longer to be sure the user is done. "low" was historically forced
-# because the device lacked acoustic echo cancellation and high eagerness
-# caught speaker echo as user speech. AEC plus the strict local USB barge-in
-# gate now prevents speaker audio from reaching server VAD. Use "medium" so
-# natural pauses remain in one complete user turn. Override via
-# REALTIME_VAD_EAGERNESS (low|medium|high|auto).
-_REALTIME_VAD_EAGERNESS = (
-    os.environ.get("REALTIME_VAD_EAGERNESS", "medium").strip().lower() or "medium"
+# Use deterministic server VAD now that AEC and the strict local USB gate keep
+# assistant playback out of the uplink. Semantic VAD left short requests open
+# for 4–6 seconds; this closes a turn after a bounded silence while preserving
+# the first word with prefix padding.
+_REALTIME_VAD_SILENCE_MS = _env_int(
+    "REALTIME_VAD_SILENCE_MS", 900, minimum=500, maximum=2000
 )
 
 # Half-duplex self-hearing guard. On a device whose mic and speaker share the
@@ -3493,8 +3489,9 @@ class RealtimeVoiceSession:
         """Override only what we need + register the client-side end_session tool.
 
         The server already configured the session with the full system
-        prompt, tools, voice, audio format, and turn-detection (semantic
-        VAD with create_response and interrupt_response both true). We
+        prompt, tools, voice, and audio format. We replace turn detection
+        with bounded server VAD while keeping response creation and interruption
+        enabled. We
         do NOT resend instructions — sending a partial session with that
         field omitted would silently wipe it. We DO resend tools, but
         only after merging the server's tool list (cached from
@@ -3504,12 +3501,9 @@ class RealtimeVoiceSession:
           - input.transcription.model — enables a transcript stream of
             user speech (used for farewell detection and the transcript
             overlay).
-          - input.turn_detection.eagerness — how quickly the assistant
-            replies after the user stops. The server defaults to "low"
-            (most conservative) for hardware without echo cancellation;
-            AEC and local echo gating are enabled, so we use "medium" (env
-            REALTIME_VAD_EAGERNESS) for complete but responsive turns while
-            keeping create_response/interrupt_response TRUE.
+          - input.turn_detection — deterministic server VAD with a bounded
+            silence duration. Local AEC/echo gating protects it from assistant
+            playback while prefix padding preserves the user's first word.
           - tools — server tools + end_session.
         """
         merged_tools = list(self._server_tools) + [END_SESSION_TOOL, START_RECORDING_TOOL]
@@ -3526,14 +3520,14 @@ class RealtimeVoiceSession:
         # happens locally before frames reach OpenAI; when the local detector
         # does release user speech, the latest user turn must still win.
         interrupt_response = True
-        # "auto" means: leave the server's turn_detection eagerness untouched.
-        if _REALTIME_VAD_EAGERNESS and _REALTIME_VAD_EAGERNESS != "auto":
-            audio_input["turn_detection"] = {
-                "type": "semantic_vad",
-                "eagerness": _REALTIME_VAD_EAGERNESS,
-                "create_response": True,
-                "interrupt_response": interrupt_response,
-            }
+        audio_input["turn_detection"] = {
+            "type": "server_vad",
+            "threshold": 0.5,
+            "prefix_padding_ms": 500,
+            "silence_duration_ms": _REALTIME_VAD_SILENCE_MS,
+            "create_response": True,
+            "interrupt_response": interrupt_response,
+        }
         try:
             await ws.send(json.dumps({
                 "type": "session.update",
@@ -3549,7 +3543,8 @@ class RealtimeVoiceSession:
                 "session_update_sent",
                 transcript_model=_DEFAULT_INPUT_TRANSCRIPTION_MODEL,
                 transcript_prompt=bool(_INPUT_TRANSCRIPTION_PROMPT.strip()),
-                vad_eagerness=_REALTIME_VAD_EAGERNESS,
+                vad_mode="server_vad",
+                vad_silence_ms=_REALTIME_VAD_SILENCE_MS,
                 interrupt_response=interrupt_response,
                 half_duplex=self._half_duplex,
             )
