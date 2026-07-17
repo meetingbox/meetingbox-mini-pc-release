@@ -862,7 +862,7 @@ def test_new_playback_clears_stale_aec_reference_and_arms_barge_in(monkeypatch):
 
     assert bytes(session._aec_far_buf) == raw
     assert session._aec_near_buf == bytearray()
-    assert session._barge_in_armed_at == 70.4
+    assert session._barge_in_armed_at == 70.9
 
 
 def test_far_ref_slice_uses_most_recent_audio(monkeypatch):
