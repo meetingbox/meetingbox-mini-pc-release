@@ -133,6 +133,12 @@ _APPEND_CHUNK_MS = 20
 # while the stream is healthy.
 _MIC_QUEUE_POLL_S = 0.05
 
+# Never let mic processing fall seconds behind live speech. On this device a
+# burst of speaker/AEC work can otherwise fill hundreds of 20 ms frames, so
+# OpenAI hears an old request long after the user spoke it. Preserve a small
+# 160 ms cushion and discard only the stale prefix.
+_MIC_MAX_BACKLOG_FRAMES = 8
+
 # aplay ALSA buffer in microseconds. 70 ms keeps the speaker pipe from
 # starving while leaving room to hard-kill on barge-in.
 _APLAY_BUFFER_TIME_US = "70000"
@@ -2765,19 +2771,38 @@ class RealtimeVoiceSession:
     # Mic pump (asyncio side)
     # ------------------------------------------------------------------
 
+    def _get_live_mic_piece(self) -> bytes | None:
+        """Return a near-live mic frame, bounding latency under CPU bursts."""
+        try:
+            piece = self._audio_q.get(timeout=_MIC_QUEUE_POLL_S)
+        except queue.Empty:
+            return b""
+
+        dropped = 0
+        while piece is not None and self._audio_q.qsize() > _MIC_MAX_BACKLOG_FRAMES:
+            try:
+                newer = self._audio_q.get_nowait()
+            except queue.Empty:
+                break
+            dropped += 1
+            piece = newer
+
+        if dropped:
+            self._audio_q_drops += dropped
+            # AEC consumes one 20 ms far-end frame per mic frame. Discard the
+            # matching stale reference so cancellation remains time-aligned.
+            stale_far_bytes = dropped * self._aec_frame_bytes
+            with self._aec_buf_lock:
+                del self._aec_far_buf[: min(stale_far_bytes, len(self._aec_far_buf))]
+        return piece
+
     async def _pump_mic(self) -> None:
         assert self._ws is not None
         ws = self._ws
         loop = asyncio.get_running_loop()
 
-        def _get() -> bytes:
-            try:
-                return self._audio_q.get(timeout=_MIC_QUEUE_POLL_S)
-            except queue.Empty:
-                return b""
-
         while not self._stop.is_set():
-            piece = await loop.run_in_executor(None, _get)
+            piece = await loop.run_in_executor(None, self._get_live_mic_piece)
             if piece is None:
                 break
             if not piece:

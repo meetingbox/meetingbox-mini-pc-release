@@ -954,6 +954,33 @@ def test_mic_pump_uploads_barge_preroll_before_cancel_clears_state(monkeypatch):
     )
 
 
+def test_live_mic_piece_discards_seconds_of_stale_audio_and_keeps_aec_aligned(
+    monkeypatch,
+):
+    rtv = sys.modules["realtime_voice_session"]
+    monkeypatch.setattr(rtv, "sd", None)
+    session = RealtimeVoiceSession(
+        client_secret="ek_test",
+        model="gpt-realtime-2",
+        backend_base_url="http://127.0.0.1:8000",
+        device_token="mbd_test",
+        on_session_end=lambda: None,
+        on_error=lambda _msg: None,
+        on_connected=lambda: None,
+    )
+    frames = [bytes([index]) * 960 for index in range(20)]
+    for frame in frames:
+        session._audio_q.put_nowait(frame)
+    session._aec_far_buf.extend(b"x" * (20 * session._aec_frame_bytes))
+
+    piece = session._get_live_mic_piece()
+
+    assert piece == frames[11]
+    assert session._audio_q.qsize() == 8
+    assert session._audio_q_drops == 11
+    assert len(session._aec_far_buf) == 9 * session._aec_frame_bytes
+
+
 def test_aec_process_uses_webrtc_near_end_voice_decision(monkeypatch):
     rtv = sys.modules["realtime_voice_session"]
 
