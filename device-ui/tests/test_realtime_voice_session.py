@@ -970,6 +970,68 @@ def test_mic_pump_uploads_barge_preroll_before_cancel_clears_state(monkeypatch):
     )
 
 
+def test_wait_wait_phrase_matching_requires_two_consecutive_words():
+    assert RealtimeVoiceSession._contains_wait_wait("wait wait") is True
+    assert RealtimeVoiceSession._contains_wait_wait("Wait, WAIT!") is True
+    assert RealtimeVoiceSession._contains_wait_wait("please wait wait now") is True
+    assert RealtimeVoiceSession._contains_wait_wait("wait") is False
+    assert RealtimeVoiceSession._contains_wait_wait("wait and wait") is False
+    assert RealtimeVoiceSession._contains_wait_wait("await waiting") is False
+
+
+def test_wait_wait_keyword_interrupts_without_lowering_energy_gate(monkeypatch):
+    rtv = sys.modules["realtime_voice_session"]
+    monkeypatch.setattr(rtv, "sd", None)
+    session = RealtimeVoiceSession(
+        client_secret="ek_test",
+        model="gpt-realtime-2",
+        backend_base_url="http://127.0.0.1:8000",
+        device_token="mbd_test",
+        on_session_end=lambda: None,
+        on_error=lambda _msg: None,
+        on_connected=lambda: None,
+    )
+    frame = (np.arange(480, dtype=np.int16) * 2).tobytes()
+    session._ws = mock.AsyncMock()
+    session._mic_native_sr = 24000
+    session._response_in_progress = True
+    session._mute_mic_uplink_until = rtv.time.monotonic() + 10.0
+    session._aec = mock.MagicMock()
+    session._apply_aec = mock.MagicMock(return_value=frame)
+    session._detect_local_barge_in = mock.MagicMock(
+        return_value=(False, 300.0, 1000.0, 5500.0, 0.9)
+    )
+    session._feed_wait_wait_audio = mock.MagicMock()
+    session._wait_wait_detected.set()
+
+    async def cancel_keyword(*_args, **_kwargs):
+        session._reset_local_barge_state()
+
+    async def upload_and_stop(*_args, **_kwargs):
+        session._stop.set()
+
+    session._cancel_for_local_barge_in = mock.AsyncMock(
+        side_effect=cancel_keyword
+    )
+    session._upload_resampled_audio = mock.AsyncMock(
+        side_effect=upload_and_stop
+    )
+    session._audio_q.put_nowait(frame)
+
+    asyncio.run(session._pump_mic())
+
+    session._cancel_for_local_barge_in.assert_awaited_once()
+    assert (
+        session._cancel_for_local_barge_in.await_args.kwargs["detection_mode"]
+        == "keyword_wait_wait"
+    )
+    session._upload_resampled_audio.assert_awaited_once_with(
+        session._ws,
+        frame,
+        aec_already_applied=True,
+    )
+
+
 def test_live_mic_piece_discards_seconds_of_stale_audio_and_keeps_aec_aligned(
     monkeypatch,
 ):

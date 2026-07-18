@@ -402,6 +402,10 @@ _USB_BARGE_IN_MIN_RMS = _env_float(
 _USB_BARGE_IN_MIN_FRAMES = _env_int(
     "REALTIME_USB_BARGE_IN_MIN_FRAMES", 3, minimum=2, maximum=10
 )
+_WAIT_WAIT_INTERRUPT_ENABLED = (
+    os.environ.get("REALTIME_WAIT_WAIT_INTERRUPT", "1").strip().lower()
+    not in ("0", "false", "no", "off", "")
+)
 
 # Live on-screen captions WHILE the user speaks. OpenAI's input transcription
 # only runs AFTER end-of-turn (post-commit), so it can't show words mid-speech.
@@ -1002,6 +1006,17 @@ class RealtimeVoiceSession:
         self._caption_pending_text = ""
         self._caption_emit_scheduled = False
         self._caption_q_drops = 0
+        # Test-only semantic interruption path. A constrained recognizer listens
+        # for the exact phrase "wait wait" on AEC-cleaned audio only while the
+        # assistant is speaking; it never changes the proven energy/AEC gate.
+        self._wait_wait_enabled = bool(
+            _WAIT_WAIT_INTERRUPT_ENABLED and vosk_model is not None
+        )
+        self._wait_wait_rec = None
+        self._wait_wait_q: queue.Queue | None = None
+        self._wait_wait_thread: threading.Thread | None = None
+        self._wait_wait_detected = threading.Event()
+        self._wait_wait_reset = threading.Event()
 
         # Streaming buffer for AI audio transcript deltas. We flush it
         # on the matching .done event, or on response.done as a fallback
@@ -1380,6 +1395,96 @@ class RealtimeVoiceSession:
                     last_report = now
             except Exception:
                 logger.debug("Live caption decode failed", exc_info=True)
+
+    def _start_wait_wait_worker(self) -> None:
+        """Start a grammar-limited local recognizer for the test interrupt phrase."""
+        if not self._wait_wait_enabled or self._wait_wait_thread is not None:
+            return
+        try:
+            from vosk import KaldiRecognizer
+
+            grammar = json.dumps(["wait wait", "[unk]"])
+            self._wait_wait_rec = KaldiRecognizer(
+                self._vosk_model,
+                _REALTIME_RATE,
+                grammar,
+            )
+        except Exception:
+            logger.debug(
+                "Wait-wait interrupt: recognizer init failed; disabling",
+                exc_info=True,
+            )
+            self._wait_wait_enabled = False
+            return
+        self._wait_wait_q = queue.Queue(maxsize=32)
+        self._wait_wait_thread = threading.Thread(
+            target=self._wait_wait_worker,
+            daemon=True,
+            name="rtv-wait-wait",
+        )
+        self._wait_wait_thread.start()
+        logger.info("Realtime keyword interrupt enabled: 'wait wait'")
+
+    @staticmethod
+    def _contains_wait_wait(text: str) -> bool:
+        words = re.findall(r"[a-z]+", (text or "").lower())
+        return any(
+            words[index] == "wait" and words[index + 1] == "wait"
+            for index in range(len(words) - 1)
+        )
+
+    def _wait_wait_worker(self) -> None:
+        rec = self._wait_wait_rec
+        q = self._wait_wait_q
+        if rec is None or q is None:
+            return
+        while not self._stop.is_set():
+            try:
+                pcm = q.get(timeout=0.2)
+            except queue.Empty:
+                continue
+            if pcm is None:
+                break
+            if self._wait_wait_reset.is_set():
+                self._wait_wait_reset.clear()
+                try:
+                    rec.Reset()
+                except Exception:
+                    pass
+            try:
+                accepted = rec.AcceptWaveform(pcm)
+                payload = rec.Result() if accepted else rec.PartialResult()
+                decoded = json.loads(payload or "{}")
+                text = (
+                    decoded.get("text")
+                    if accepted
+                    else decoded.get("partial")
+                ) or ""
+                if not self._contains_wait_wait(text):
+                    continue
+                # Defensive semantic echo guard. The test phrase should not be
+                # present in Nexa's active response, but if it is, never let
+                # residual speaker audio stop playback.
+                if self._contains_wait_wait(self._ai_transcript_buf):
+                    rec.Reset()
+                    continue
+                self._wait_wait_detected.set()
+                rec.Reset()
+            except Exception:
+                logger.debug("Wait-wait interrupt decode failed", exc_info=True)
+
+    def _feed_wait_wait_audio(self, pcm: bytes) -> None:
+        q = self._wait_wait_q
+        if not self._wait_wait_enabled or q is None or not pcm:
+            return
+        try:
+            q.put_nowait(pcm)
+        except queue.Full:
+            try:
+                q.get_nowait()
+                q.put_nowait(pcm)
+            except (queue.Empty, queue.Full):
+                pass
 
     def _emit_device_navigation(self, tool_output_json: str) -> None:
         cb = self._on_device_navigate_cb
@@ -2383,6 +2488,7 @@ class RealtimeVoiceSession:
 
                 # Start the live-caption side thread now that the mic is open.
                 self._start_caption_worker()
+                self._start_wait_wait_worker()
 
                 pump_task = asyncio.create_task(self._pump_mic())
                 # Reset the idle clock from the moment the mic is live so
@@ -2699,19 +2805,22 @@ class RealtimeVoiceSession:
         ref_rms: float,
         threshold: float,
         echo_similarity: float,
+        detection_mode: str | None = None,
     ) -> None:
         self._barge_in_last_cancel_at = time.monotonic()
         self._abort_aplay()
         self._suppress_audio_until = time.monotonic() + _BARGE_IN_SUPPRESS_AUDIO_S
         self._emit_state("listening")
-        detection_mode = "rms_spike" if mic_rms >= threshold else "echo_divergence"
+        mode = detection_mode or (
+            "rms_spike" if mic_rms >= threshold else "echo_divergence"
+        )
         self._log_voice_event(
             "barge_in_detected",
             mic_rms=round(mic_rms, 1),
             ref_rms=round(ref_rms, 1),
             threshold=round(threshold, 1),
             echo_similarity=round(echo_similarity, 3),
-            detection_mode=detection_mode,
+            detection_mode=mode,
             half_duplex=self._half_duplex,
         )
         try:
@@ -2852,6 +2961,11 @@ class RealtimeVoiceSession:
                         if not barge_frame:
                             continue
                     self._barge_in_preroll.append(barge_frame)
+                    self._feed_wait_wait_audio(barge_frame)
+                    keyword_detected = self._wait_wait_detected.is_set()
+                    if keyword_detected:
+                        self._wait_wait_detected.clear()
+                        self._wait_wait_reset.set()
                     detected, mic_rms, ref_rms, threshold, echo_similarity = self._detect_local_barge_in(
                         barge_frame,
                         now=now,
@@ -2862,7 +2976,7 @@ class RealtimeVoiceSession:
                             else None
                         ),
                     )
-                    if detected:
+                    if detected or keyword_detected:
                         # Snapshot before cancellation: aborting playback resets
                         # detector state and clears the live deque.
                         frames = list(self._barge_in_preroll)
@@ -2872,6 +2986,11 @@ class RealtimeVoiceSession:
                             ref_rms=ref_rms,
                             threshold=threshold,
                             echo_similarity=echo_similarity,
+                            detection_mode=(
+                                "keyword_wait_wait"
+                                if keyword_detected
+                                else None
+                            ),
                         )
                         self._reset_local_barge_state()
                         for frame in frames:
