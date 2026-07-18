@@ -825,14 +825,12 @@ def test_half_duplex_barge_in_uses_aec_cleaned_voice_not_speaker_reference(monke
         user_voice,
         now=50.06,
         echo_suppressed=True,
-        near_voice_detected=True,
     )
     assert detected is False
     detected, mic_rms, ref_rms, threshold, _ = session._detect_local_barge_in(
         user_voice,
         now=50.08,
         echo_suppressed=True,
-        near_voice_detected=True,
     )
     assert detected is True
     assert mic_rms > threshold
@@ -892,18 +890,20 @@ def test_separate_usb_mic_rejects_measured_echo_but_keeps_strong_barge_in(monkey
             echo_suppressed=True,
             near_voice_detected=False,
         )
+        assert mic_rms < threshold
         assert detected is False
 
-    detected, *_ = session._detect_local_barge_in(
-        strong_user_voice,
-        now=80.08,
-        echo_suppressed=True,
-        near_voice_detected=True,
-    )
-    assert detected is False
+    for now in (80.08, 80.10):
+        detected, *_ = session._detect_local_barge_in(
+            strong_user_voice,
+            now=now,
+            echo_suppressed=True,
+            near_voice_detected=True,
+        )
+        assert detected is False
     detected, mic_rms, _, threshold, _ = session._detect_local_barge_in(
         strong_user_voice,
-        now=80.10,
+        now=80.12,
         echo_suppressed=True,
         near_voice_detected=True,
     )
@@ -1015,7 +1015,7 @@ def test_new_playback_clears_stale_aec_reference_and_arms_barge_in(monkeypatch):
 
     assert session._aec_far_buf == bytearray()
     assert session._aec_near_buf == bytearray()
-    assert session._barge_in_armed_at == 70.3
+    assert session._barge_in_armed_at == 70.9
 
     proc = mock.MagicMock()
     session._aplay_proc = proc
