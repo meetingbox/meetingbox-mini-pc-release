@@ -402,6 +402,18 @@ _USB_BARGE_IN_MIN_RMS = _env_float(
 _USB_BARGE_IN_MIN_FRAMES = _env_int(
     "REALTIME_USB_BARGE_IN_MIN_FRAMES", 3, minimum=2, maximum=10
 )
+_USB_BARGE_IN_DOUBLE_TALK_MIN_RMS = _env_float(
+    "REALTIME_USB_BARGE_IN_DOUBLE_TALK_MIN_RMS",
+    1800.0,
+    minimum=500.0,
+    maximum=10000.0,
+)
+_USB_BARGE_IN_DOUBLE_TALK_MIN_FRAMES = _env_int(
+    "REALTIME_USB_BARGE_IN_DOUBLE_TALK_MIN_FRAMES",
+    5,
+    minimum=3,
+    maximum=10,
+)
 
 # Live on-screen captions WHILE the user speaks. OpenAI's input transcription
 # only runs AFTER end-of-turn (post-commit), so it can't show words mid-speech.
@@ -975,6 +987,7 @@ class RealtimeVoiceSession:
         self._aec_near_buf = bytearray()
         self._aec_buf_lock = threading.Lock()
         self._aec_near_voice_detected = False
+        self._aec_speex_voice_detected = False
         try:
             import webrtcvad
 
@@ -2457,6 +2470,7 @@ class RealtimeVoiceSession:
         fbytes = self._aec_frame_bytes
         out = bytearray()
         near_voice_detected = False
+        speex_voice_detected = False
         with self._aec_buf_lock:
             self._aec_near_buf.extend(mic_pcm16)
             while len(self._aec_near_buf) >= fbytes:
@@ -2470,6 +2484,9 @@ class RealtimeVoiceSession:
                 try:
                     cleaned = aec.cancel(near, far)
                     out.extend(cleaned)
+                    speex_voice_detected = speex_voice_detected or bool(
+                        getattr(aec, "last_voice_detected", False)
+                    )
                     if self._near_vad is not None:
                         # WebRTC VAD supports 8/16/32/48 kHz, while Realtime
                         # audio is 24 kHz. Decimate this fixed 20 ms frame to
@@ -2482,13 +2499,14 @@ class RealtimeVoiceSession:
                             self._near_vad.is_speech(vad_frame, 8000)
                         )
                     else:
-                        near_voice_detected = near_voice_detected or bool(
-                            getattr(aec, "last_voice_detected", False)
+                        near_voice_detected = (
+                            near_voice_detected or speex_voice_detected
                         )
                 except Exception:
                     logger.debug("AEC cancel failed", exc_info=True)
                     out.extend(near)
         self._aec_near_voice_detected = near_voice_detected
+        self._aec_speex_voice_detected = speex_voice_detected
         return bytes(out)
 
     def _apply_aec(self, mic_pcm16: bytes) -> bytes:
@@ -2557,6 +2575,7 @@ class RealtimeVoiceSession:
         now: float,
         echo_suppressed: bool = False,
         near_voice_detected: bool | None = None,
+        echo_aware_voice_detected: bool | None = None,
     ) -> tuple[bool, float, float, float, float]:
         """Detect live user speech while normal mic upload is muted for echo.
 
@@ -2623,9 +2642,28 @@ class RealtimeVoiceSession:
         if (
             echo_suppressed
             and self._separate_usb_mic
-            and near_voice_detected is not True
+            and (
+                near_voice_detected is not True
+                or echo_aware_voice_detected is not True
+            )
         ):
             loud_enough = False
+        # Separate USB mic + chassis speaker has a second, normal-volume path.
+        # Both this path and the high-energy USB path require WebRTC VAD and
+        # Speex's echo-aware VAD to agree that post-AEC audio contains near-end
+        # speech. The normal path additionally stays above the adaptive
+        # residual-echo floor for a longer run of frames.
+        double_talk_threshold = max(
+            _USB_BARGE_IN_DOUBLE_TALK_MIN_RMS,
+            baseline * _LOCAL_BARGE_IN_BASELINE_RATIO,
+        )
+        double_talk = (
+            echo_suppressed
+            and self._separate_usb_mic
+            and near_voice_detected is True
+            and echo_aware_voice_detected is True
+            and mic_rms >= double_talk_threshold
+        )
         # Guard against strong pure echo spikes from external mic/speaker
         # coupling: if mic looks almost identical to far-end playback and is
         # only modestly louder than the reference, treat it as self-audio.
@@ -2650,24 +2688,28 @@ class RealtimeVoiceSession:
                 )
                 and echo_similarity <= _LOCAL_BARGE_IN_MAX_ECHO_SIMILARITY
             )
-        detected = loud_enough or diverged_from_echo
-        if detected:
+        candidate = loud_enough or diverged_from_echo or double_talk
+        if candidate:
             self._barge_in_consecutive += 1
         else:
             self._barge_in_consecutive = 0
             # Track the echo/noise floor while muted; keep it slow so a user's
             # first syllable remains a spike rather than becoming the baseline.
             self._barge_in_noise_rms = (baseline * 0.96) + (mic_rms * 0.04)
-        required_frames = (
-            _USB_BARGE_IN_MIN_FRAMES
-            if echo_suppressed and self._separate_usb_mic
-            else _LOCAL_BARGE_IN_MIN_FRAMES
-        )
+        if double_talk and not loud_enough:
+            required_frames = _USB_BARGE_IN_DOUBLE_TALK_MIN_FRAMES
+            effective_threshold = double_talk_threshold
+        elif echo_suppressed and self._separate_usb_mic:
+            required_frames = _USB_BARGE_IN_MIN_FRAMES
+            effective_threshold = threshold
+        else:
+            required_frames = _LOCAL_BARGE_IN_MIN_FRAMES
+            effective_threshold = threshold
         return (
             self._barge_in_consecutive >= required_frames,
             mic_rms,
             ref_rms,
-            threshold,
+            effective_threshold,
             echo_similarity,
         )
 
@@ -2858,6 +2900,11 @@ class RealtimeVoiceSession:
                         echo_suppressed=barge_aec_applied,
                         near_voice_detected=(
                             self._aec_near_voice_detected
+                            if barge_aec_applied
+                            else None
+                        ),
+                        echo_aware_voice_detected=(
+                            self._aec_speex_voice_detected
                             if barge_aec_applied
                             else None
                         ),
