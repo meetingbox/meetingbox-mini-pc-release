@@ -397,7 +397,7 @@ _LOCAL_BARGE_IN_ARM_DELAY_S = _env_float(
     "REALTIME_BARGE_IN_ARM_DELAY_S", 0.9, minimum=0.0, maximum=2.0
 )
 _USB_BARGE_IN_MIN_RMS = _env_float(
-    "REALTIME_USB_BARGE_IN_MIN_RMS", 5500.0, minimum=500.0, maximum=30000.0
+    "REALTIME_USB_BARGE_IN_MIN_RMS", 5000.0, minimum=500.0, maximum=30000.0
 )
 _USB_BARGE_IN_MIN_FRAMES = _env_int(
     "REALTIME_USB_BARGE_IN_MIN_FRAMES", 3, minimum=2, maximum=10
