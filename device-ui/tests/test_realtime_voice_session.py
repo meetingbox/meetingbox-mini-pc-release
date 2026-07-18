@@ -356,9 +356,10 @@ def test_realtime_latency_tuning_constants():
     # 20 ms avoids PortAudio input overflow on the appliance while staying
     # comfortably below perceptible turn-latency boundaries.
     assert _APPEND_CHUNK_MS <= 20
-    # The continuous capture path supplies 20 ms frames. A 50 ms blocking wait
-    # removes empty executor wakeups without delaying frames already queued.
-    assert 0.02 <= _MIC_QUEUE_POLL_S <= 0.05
+    # The continuous capture path supplies 20 ms frames. The dedicated
+    # Realtime loop polls its thread-safe queue directly, avoiding a per-frame
+    # executor handoff while yielding briefly whenever capture is empty.
+    assert 0.001 <= _MIC_QUEUE_POLL_S <= 0.01
 
 
 def test_warm_session_is_held_only_after_session_update(monkeypatch):
@@ -403,6 +404,9 @@ def test_session_update_uses_bounded_server_vad(monkeypatch):
     transcription = payload["session"]["audio"]["input"]["transcription"]
     assert transcription["model"] == _DEFAULT_INPUT_TRANSCRIPTION_MODEL
     assert "language" not in transcription
+    assert payload["session"]["audio"]["input"]["noise_reduction"] == {
+        "type": "far_field",
+    }
     turn_detection = payload["session"]["audio"]["input"]["turn_detection"]
     assert turn_detection == {
         "type": "server_vad",
@@ -411,6 +415,16 @@ def test_session_update_uses_bounded_server_vad(monkeypatch):
         "silence_duration_ms": 900,
         "create_response": True,
         "interrupt_response": True,
+    }
+
+    session._audio_pair = types.SimpleNamespace(
+        capture_name="USB PnP Sound Device / USB Audio",
+    )
+    ws.reset_mock()
+    asyncio.run(session._send_session_update(ws))
+    usb_payload = json.loads(ws.send.await_args.args[0])
+    assert usb_payload["session"]["audio"]["input"]["noise_reduction"] == {
+        "type": "near_field",
     }
 
 
@@ -968,17 +982,17 @@ def test_live_mic_piece_discards_seconds_of_stale_audio_and_keeps_aec_aligned(
         on_error=lambda _msg: None,
         on_connected=lambda: None,
     )
-    frames = [bytes([index]) * 960 for index in range(20)]
+    frames = [bytes([index]) * 960 for index in range(40)]
     for frame in frames:
         session._audio_q.put_nowait(frame)
-    session._aec_far_buf.extend(b"x" * (20 * session._aec_frame_bytes))
+    session._aec_far_buf.extend(b"x" * (40 * session._aec_frame_bytes))
 
     piece = session._get_live_mic_piece()
 
-    assert piece == frames[11]
-    assert session._audio_q.qsize() == 8
-    assert session._audio_q_drops == 11
-    assert len(session._aec_far_buf) == 9 * session._aec_frame_bytes
+    assert piece == frames[14]
+    assert session._audio_q.qsize() == 25
+    assert session._audio_q_drops == 14
+    assert len(session._aec_far_buf) == 26 * session._aec_frame_bytes
 
 
 def test_aec_process_uses_webrtc_near_end_voice_decision(monkeypatch):

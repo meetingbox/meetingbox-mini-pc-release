@@ -128,16 +128,16 @@ _REALTIME_RATE = 24000
 # to the user-stop → response-start latency vs 5 ms.
 _APPEND_CHUNK_MS = 20
 
-# Maximum wait for the next continuous mic frame. Capture supplies a frame
-# every 20 ms, so 50 ms avoids empty executor wakeups without adding latency
-# while the stream is healthy.
-_MIC_QUEUE_POLL_S = 0.05
+# Empty-queue sleep on the dedicated Realtime asyncio thread. Polling the
+# thread-safe capture queue directly avoids a thread-pool round trip for every
+# 20 ms frame, which previously made processing slower than capture.
+_MIC_QUEUE_POLL_S = 0.005
 
 # Never let mic processing fall seconds behind live speech. On this device a
-# burst of speaker/AEC work can otherwise fill hundreds of 20 ms frames, so
-# OpenAI hears an old request long after the user spoke it. Preserve a small
-# 160 ms cushion and discard only the stale prefix.
-_MIC_MAX_BACKLOG_FRAMES = 8
+# burst of speaker/AEC work can otherwise fill hundreds of 20 ms frames. Keep
+# up to 500 ms so a brief CPU spike cannot remove whole words, while still
+# preventing the multi-second delayed speech seen in production.
+_MIC_MAX_BACKLOG_FRAMES = 25
 
 # aplay ALSA buffer in microseconds. 70 ms keeps the speaker pipe from
 # starving while leaving room to hard-kill on barge-in.
@@ -2774,7 +2774,7 @@ class RealtimeVoiceSession:
     def _get_live_mic_piece(self) -> bytes | None:
         """Return a near-live mic frame, bounding latency under CPU bursts."""
         try:
-            piece = self._audio_q.get(timeout=_MIC_QUEUE_POLL_S)
+            piece = self._audio_q.get_nowait()
         except queue.Empty:
             return b""
 
@@ -2799,13 +2799,13 @@ class RealtimeVoiceSession:
     async def _pump_mic(self) -> None:
         assert self._ws is not None
         ws = self._ws
-        loop = asyncio.get_running_loop()
 
         while not self._stop.is_set():
-            piece = await loop.run_in_executor(None, self._get_live_mic_piece)
+            piece = self._get_live_mic_piece()
             if piece is None:
                 break
             if not piece:
+                await asyncio.sleep(_MIC_QUEUE_POLL_S)
                 continue
             try:
                 resample_started = time.perf_counter()
@@ -3666,6 +3666,17 @@ class RealtimeVoiceSession:
         audio_input: dict = {
             "transcription": transcription_cfg,
         }
+        capture_name = str(
+            getattr(self._audio_pair, "capture_name", "") or ""
+        ).lower()
+        external_near_field = any(
+            marker in capture_name
+            for marker in ("usb", "bluez", "bluetooth", "headset")
+        )
+        noise_reduction_type = (
+            "near_field" if external_near_field else "far_field"
+        )
+        audio_input["noise_reduction"] = {"type": noise_reduction_type}
         # Keep server-side interruption enabled. Half-duplex echo protection now
         # happens locally before frames reach OpenAI; when the local detector
         # does release user speech, the latest user turn must still win.
@@ -3697,6 +3708,7 @@ class RealtimeVoiceSession:
                 vad_silence_ms=_REALTIME_VAD_SILENCE_MS,
                 interrupt_response=interrupt_response,
                 half_duplex=self._half_duplex,
+                noise_reduction=noise_reduction_type,
             )
         except Exception:
             logger.warning("Realtime session.update failed", exc_info=True)
