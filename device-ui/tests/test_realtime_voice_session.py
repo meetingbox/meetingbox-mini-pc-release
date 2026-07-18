@@ -356,10 +356,9 @@ def test_realtime_latency_tuning_constants():
     # 20 ms avoids PortAudio input overflow on the appliance while staying
     # comfortably below perceptible turn-latency boundaries.
     assert _APPEND_CHUNK_MS <= 20
-    # The continuous capture path supplies 20 ms frames. The dedicated
-    # Realtime loop polls its thread-safe queue directly, avoiding a per-frame
-    # executor handoff while yielding briefly whenever capture is empty.
-    assert 0.001 <= _MIC_QUEUE_POLL_S <= 0.01
+    # The continuous capture path supplies 20 ms frames. A 50 ms blocking wait
+    # runs off-loop so incoming assistant audio cannot be starved.
+    assert 0.02 <= _MIC_QUEUE_POLL_S <= 0.05
 
 
 def test_warm_session_is_held_only_after_session_update(monkeypatch):

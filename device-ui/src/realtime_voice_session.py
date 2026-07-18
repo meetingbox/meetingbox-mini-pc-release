@@ -128,10 +128,10 @@ _REALTIME_RATE = 24000
 # to the user-stop → response-start latency vs 5 ms.
 _APPEND_CHUNK_MS = 20
 
-# Empty-queue sleep on the dedicated Realtime asyncio thread. Polling the
-# thread-safe capture queue directly avoids a thread-pool round trip for every
-# 20 ms frame, which previously made processing slower than capture.
-_MIC_QUEUE_POLL_S = 0.005
+# Maximum wait for the next continuous mic frame. Capture supplies a frame
+# every 20 ms, so 50 ms avoids empty executor wakeups without adding latency
+# while the stream is healthy.
+_MIC_QUEUE_POLL_S = 0.05
 
 # Never let mic processing fall seconds behind live speech. On this device a
 # burst of speaker/AEC work can otherwise fill hundreds of 20 ms frames. Keep
@@ -2774,7 +2774,7 @@ class RealtimeVoiceSession:
     def _get_live_mic_piece(self) -> bytes | None:
         """Return a near-live mic frame, bounding latency under CPU bursts."""
         try:
-            piece = self._audio_q.get_nowait()
+            piece = self._audio_q.get(timeout=_MIC_QUEUE_POLL_S)
         except queue.Empty:
             return b""
 
@@ -2799,13 +2799,13 @@ class RealtimeVoiceSession:
     async def _pump_mic(self) -> None:
         assert self._ws is not None
         ws = self._ws
+        loop = asyncio.get_running_loop()
 
         while not self._stop.is_set():
-            piece = self._get_live_mic_piece()
+            piece = await loop.run_in_executor(None, self._get_live_mic_piece)
             if piece is None:
                 break
             if not piece:
-                await asyncio.sleep(_MIC_QUEUE_POLL_S)
                 continue
             try:
                 resample_started = time.perf_counter()
