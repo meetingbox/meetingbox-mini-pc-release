@@ -4633,8 +4633,8 @@ class MeetingBoxApp(App):
     def _commit_email_action(self, action: str) -> None:
         """Fly the email card away (once) and land on the transcription page.
 
-        Triggered both by a button tap (optimistic) and by the server's terminal
-        ``show_email_draft`` state (voice-initiated send/save/discard)."""
+        Triggered after the server reports a terminal ``show_email_draft``
+        state (or immediately for local save/discard actions)."""
         sm = getattr(self, "screen_manager", None)
         if sm is None:
             return
@@ -4675,8 +4675,25 @@ class MeetingBoxApp(App):
             _nav()
 
     def _on_email_draft_send_tapped(self) -> None:
-        self._send_voice_user_text("Yes, send it.")
-        self._commit_email_action("send")
+        sm = getattr(self, "screen_manager", None)
+        sess = getattr(self, "_realtime_voice_session", None)
+        try:
+            screen = sm.get_screen("email_draft") if sm else None
+            fields = screen.get_draft_payload() if screen else {}
+            if screen is not None:
+                screen.set_draft({"state": "sending"})
+            if sess is None:
+                raise RuntimeError("Voice session is unavailable")
+            sess.cancel_current_response()
+            if not sess.send_visible_email_draft(fields):
+                raise RuntimeError("Could not start the email send")
+        except Exception as exc:
+            logger.warning("Visible email send failed to start: %s", exc)
+            if 'screen' in locals() and screen is not None:
+                screen.set_draft({
+                    "state": "ready",
+                    "error": str(exc),
+                })
 
     def _on_email_draft_save_tapped(self) -> None:
         self._send_voice_user_text("Save it as a draft.")
@@ -5134,6 +5151,9 @@ class MeetingBoxApp(App):
         session_ref = {"session": None}
         secret = (data.get("client_secret") or "").strip()
         model = (data.get("model") or "").strip()
+        account_display_name = " ".join(
+            str(data.get("display_name") or "").split()
+        )
         sess_blob = data.get("session")
         rt_voice = (data.get("voice") or "").strip()
         if isinstance(sess_blob, dict):
@@ -5572,7 +5592,7 @@ class MeetingBoxApp(App):
                 on_ready=_on_rt_ready,
                 on_device_navigate=self._realtime_voice_navigate,
                 output_voice=rt_voice or None,
-                display_name=self.current_display_name,
+                display_name=account_display_name or self.current_display_name,
                 on_before_open_mic=_before_realtime_mic,
                 on_state_change=_on_rt_state,
                 on_user_transcript=_on_user_transcript,

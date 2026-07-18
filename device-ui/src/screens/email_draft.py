@@ -378,6 +378,7 @@ class EmailDraftScreen(BaseScreen):
         self._fields: dict = {
             "to": [], "cc": [], "bcc": [], "subject": "", "body": "",
         }
+        self._error = ""
 
         # Callbacks set by main.py
         self.on_send       = None
@@ -589,6 +590,7 @@ class EmailDraftScreen(BaseScreen):
             self._fields["subject"] = str(data.get("subject") or "").strip()
         if "body" in data:
             self._fields["body"] = str(data.get("body") or "")
+        self._error = str(data.get("error") or "").strip()
 
         self._refresh_ui()
 
@@ -601,6 +603,7 @@ class EmailDraftScreen(BaseScreen):
         self._state = "drafting"
         self._flyaway_committed = False
         self._fields = {"to": [], "cc": [], "bcc": [], "subject": "", "body": ""}
+        self._error = ""
         self._refresh_ui()
         self.restore_action_visuals()
         if self._voice_pill:
@@ -675,6 +678,16 @@ class EmailDraftScreen(BaseScreen):
         """True once the draft has been sent, saved, or discarded."""
         return self._state in ("sent", "saved", "discarded")
 
+    def get_draft_payload(self) -> dict:
+        """Return a detached copy of the exact fields currently shown."""
+        return {
+            "to": list(self._fields["to"]),
+            "cc": list(self._fields["cc"]),
+            "bcc": list(self._fields["bcc"]),
+            "subject": self._fields["subject"],
+            "body": self._fields["body"],
+        }
+
     def _apply_state(self, state: str) -> None:
         self._state = state
         terminal = {
@@ -689,6 +702,8 @@ class EmailDraftScreen(BaseScreen):
             self._schedule_auto_back()
         elif state == "ready":
             self._set_buttons_enabled(True)
+            if self._error and self._voice_pill:
+                self._voice_pill.set_state_text("Send failed — check draft")
         elif state == "sending":
             self._set_buttons_enabled(False)
         # "drafting" → buttons remain enabled, pill shows Listening

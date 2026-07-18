@@ -109,6 +109,12 @@ def _is_bt_pulse_name(name: str) -> bool:
     return any(k in low for k in _BT_PULSE_KEYWORDS)
 
 
+def _pulse_bt_device_id(name: str) -> str:
+    """Return the stable Bluetooth address fragment from a Pulse node name."""
+    match = re.search(r"bluez_(?:input|output)\.([0-9a-fA-F_]{17})", name)
+    return match.group(1).lower() if match else ""
+
+
 def _pulse_bt_source_names() -> list[str]:
     """Return Bluetooth source names from PulseAudio/PipeWire (e.g. bluez_input.*)."""
     try:
@@ -297,12 +303,24 @@ def resolve_audio_pair(sd=None) -> AudioDevicePair:
         pair.capture = capture_pcm
         pair.capture_name = f"(Bluetooth/PulseAudio via {capture_pcm}) {src}"
         if bt_sinks:
-            snk = bt_sinks[0]
+            src_device_id = _pulse_bt_device_id(src)
+            snk = next(
+                (
+                    candidate
+                    for candidate in bt_sinks
+                    if src_device_id
+                    and _pulse_bt_device_id(candidate) == src_device_id
+                ),
+                bt_sinks[0],
+            )
             _pulse_set_default_sink(snk)
             playback_pcm = _pick_pulse_pcm("aplay")
             pair.playback = playback_pcm
             pair.playback_name = f"(Bluetooth/PulseAudio via {playback_pcm}) {snk}"
-            pair.is_combined = True
+            pair.is_combined = bool(
+                src_device_id
+                and _pulse_bt_device_id(snk) == src_device_id
+            )
             bt_speaker_routed = True
             logger.info(
                 "AudioPair [Priority 0]: Bluetooth mic+speaker via PulseAudio — "
@@ -319,6 +337,8 @@ def resolve_audio_pair(sd=None) -> AudioDevicePair:
         # Still apply the env override for playback if set.
         out_override = (os.getenv("AUDIO_OUTPUT_DEVICE_NAME") or "").strip()
         if out_override:
+            if pair.is_combined and out_override != pair.playback:
+                pair.is_combined = False
             pair.playback = out_override
             pair.playback_name = f"(AUDIO_OUTPUT_DEVICE_NAME) {out_override}"
             logger.info("AudioPair: AUDIO_OUTPUT_DEVICE_NAME override → %s", out_override)
@@ -414,6 +434,8 @@ def resolve_audio_pair(sd=None) -> AudioDevicePair:
     # Env override always wins for playback
     out_override = (os.getenv("AUDIO_OUTPUT_DEVICE_NAME") or "").strip()
     if out_override:
+        if pair.is_combined and out_override != pair.playback:
+            pair.is_combined = False
         pair.playback = out_override
         pair.playback_name = f"(AUDIO_OUTPUT_DEVICE_NAME) {out_override}"
         logger.info("AudioPair: AUDIO_OUTPUT_DEVICE_NAME override → %s", out_override)

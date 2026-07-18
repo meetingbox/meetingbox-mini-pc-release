@@ -244,14 +244,38 @@ _REALTIME_WAKE_GREETING_ENABLED = os.environ.get(
     "REALTIME_WAKE_GREETING_ENABLED", "1"
 ).strip().lower() not in ("", "0", "false", "no", "off")
 
-_REALTIME_WAKE_GREETING_INSTRUCTIONS = (
-    "Give one warm, natural greeting in one or two short sentences. Ask how "
-    "the user is and how you can help, with natural variation. For example: "
-    "'Hi there! How are you? How can I help?' Do not say only that you are "
-    "listening. Then stop and wait. Do NOT introduce yourself, list "
-    "capabilities, mention tools, or read out today's date, weather, or "
-    "schedule unless the user explicitly asks."
+_REALTIME_WAKE_GREETING_STYLES = (
+    "Use a friendly, direct opener.",
+    "Use a relaxed conversational opener.",
+    "Use a warm question offering help.",
+    "Use a brief upbeat acknowledgment and offer help.",
 )
+_wake_greeting_style_lock = threading.Lock()
+_wake_greeting_style_index = 0
+
+
+def _next_wake_greeting_instructions(display_name: str) -> str:
+    """Rotate greeting intent so wake speech stays brief without sounding scripted."""
+    global _wake_greeting_style_index
+    with _wake_greeting_style_lock:
+        index = _wake_greeting_style_index
+        _wake_greeting_style_index += 1
+    style = _REALTIME_WAKE_GREETING_STYLES[
+        index % len(_REALTIME_WAKE_GREETING_STYLES)
+    ]
+    first_name = display_name.split()[0] if display_name else ""
+    name_rule = (
+        f"You may naturally use the authenticated first name {json.dumps(first_name)} once. "
+        if first_name and index % 3 == 0
+        else "Do not use the user's name in this greeting. "
+    )
+    return (
+        "Give exactly one natural greeting clause, ideally 3–7 words. "
+        f"{style} {name_rule}"
+        "Vary the wording; do not use a fixed script. Never use garu, sir, madam, "
+        "or another honorific. Then stop and wait. Do not introduce yourself, "
+        "list capabilities, or mention date, weather, schedule, or tools."
+    )
 
 # STT model for the user-speech transcript stream (used by the UI
 # overlay, farewell detection, and grammar correction).
@@ -364,13 +388,19 @@ _LOCAL_BARGE_IN_SPIKE_ECHO_MAX_REF_RATIO = _env_float(
 _LOCAL_BARGE_IN_MIN_FRAMES = _env_int("REALTIME_BARGE_IN_MIN_FRAMES", 2, minimum=1, maximum=10)
 _LOCAL_BARGE_IN_PREROLL_S = _env_float("REALTIME_BARGE_IN_PREROLL_S", 0.18, minimum=0.0, maximum=0.5)
 _LOCAL_BARGE_IN_ARM_DELAY_S = _env_float(
-    "REALTIME_BARGE_IN_ARM_DELAY_S", 0.9, minimum=0.0, maximum=2.0
+    "REALTIME_BARGE_IN_ARM_DELAY_S", 0.3, minimum=0.0, maximum=2.0
 )
 _USB_BARGE_IN_MIN_RMS = _env_float(
-    "REALTIME_USB_BARGE_IN_MIN_RMS", 6500.0, minimum=500.0, maximum=30000.0
+    "REALTIME_USB_BARGE_IN_MIN_RMS", 1200.0, minimum=500.0, maximum=30000.0
 )
 _USB_BARGE_IN_MIN_FRAMES = _env_int(
-    "REALTIME_USB_BARGE_IN_MIN_FRAMES", 3, minimum=2, maximum=10
+    "REALTIME_USB_BARGE_IN_MIN_FRAMES", 2, minimum=2, maximum=10
+)
+_USB_BARGE_IN_RESIDUAL_RATIO = _env_float(
+    "REALTIME_USB_BARGE_IN_RESIDUAL_RATIO", 3.0, minimum=1.5, maximum=8.0
+)
+_USB_BARGE_IN_BASELINE_CAP_RMS = _env_float(
+    "REALTIME_USB_BARGE_IN_BASELINE_CAP_RMS", 600.0, minimum=200.0, maximum=3000.0
 )
 
 # Live on-screen captions WHILE the user speaks. OpenAI's input transcription
@@ -785,6 +815,13 @@ class RealtimeVoiceSession:
         self._on_user_speech_stopped_cb = on_user_speech_stopped
         self._on_user_speech_started_cb = on_user_speech_started
         self._on_email_draft_cb = on_email_draft
+        self._visible_email_draft: dict[str, Any] = {
+            "to": [],
+            "cc": [],
+            "bcc": [],
+            "subject": "",
+            "body": "",
+        }
         self._on_email_view_cb  = on_email_view
         self._on_recipient_picker_cb = on_recipient_picker
         self._on_task_creation_cb = on_task_creation
@@ -1580,11 +1617,17 @@ class RealtimeVoiceSession:
             data = json.loads(tool_output_json)
         except (json.JSONDecodeError, TypeError):
             return
-        if not isinstance(data, dict) or not data.get("ok"):
+        if not isinstance(data, dict):
             return
         draft = data.get("device_email_draft")
         if not isinstance(draft, dict):
             return
+        for key in ("to", "cc", "bcc", "subject", "body"):
+            if key in draft:
+                value = draft[key]
+                self._visible_email_draft[key] = (
+                    list(value) if isinstance(value, list) else value
+                )
         Clock.schedule_once(lambda _dt: self._safe_call(cb, draft), 0)
 
     def _emit_email_view(self, tool_output_json: str) -> None:
@@ -1836,6 +1879,74 @@ class RealtimeVoiceSession:
         except Exception:
             logger.debug("send_user_text schedule failed", exc_info=True)
 
+    def send_visible_email_draft(self, draft: dict) -> bool:
+        """Send the exact reviewed draft through the server's atomic email tool."""
+        loop, ws = self._loop, self._ws
+        if loop is None or ws is None or loop.is_closed() or not isinstance(draft, dict):
+            return False
+        fields = {
+            "to": list(draft.get("to") or []),
+            "cc": list(draft.get("cc") or []),
+            "bcc": list(draft.get("bcc") or []),
+            "subject": str(draft.get("subject") or ""),
+            "body": str(draft.get("body") or ""),
+        }
+        self._visible_email_draft.update(fields)
+        arguments = json.dumps({
+            **fields,
+            "confirmed_by_user": True,
+            "confirmation_phrase": "[BUTTON:Send]",
+        })
+
+        async def _send() -> None:
+            out = await asyncio.get_running_loop().run_in_executor(
+                None,
+                lambda: invoke_realtime_tool_sync(
+                    self._backend_base_url,
+                    self._device_token,
+                    call_id=f"device-email-{uuid.uuid4()}",
+                    name="send_visible_email_draft",
+                    arguments=arguments,
+                ),
+            )
+            self._emit_email_draft(out)
+            try:
+                result = json.loads(out or "{}")
+            except (TypeError, ValueError):
+                result = {}
+            ok = bool(isinstance(result, dict) and result.get("ok"))
+            detail = str(
+                (result.get("detail") if isinstance(result, dict) else "")
+                or "I couldn't send that email. Please check the draft and try again."
+            )
+            outcome = (
+                "VISIBLE EMAIL SEND RESULT: Gmail committed the send successfully. "
+                "Tell the user only: Sent."
+                if ok
+                else "VISIBLE EMAIL SEND RESULT: the send failed. Keep the draft open and "
+                f"briefly tell the user this error: {detail[:300]}"
+            )
+            try:
+                await self._inject_system_message(ws, outcome)
+                await ws.send(json.dumps({
+                    "type": "response.create",
+                    "response": {
+                        "instructions": (
+                            "Briefly report the visible email send result just provided. "
+                            "Do not claim success if it failed."
+                        ),
+                    },
+                }))
+            except Exception:
+                logger.warning("Realtime visible email result announcement failed", exc_info=True)
+
+        try:
+            asyncio.run_coroutine_threadsafe(_send(), loop)
+            return True
+        except Exception:
+            logger.debug("visible email send schedule failed", exc_info=True)
+            return False
+
     @staticmethod
     def _safe_call(cb, *args) -> None:
         if not cb:
@@ -1922,6 +2033,18 @@ class RealtimeVoiceSession:
                     stream.start()
                     self._mic_stream = stream
                     self._mic_native_sr = sr
+                    if (
+                        self._audio_pair.is_combined
+                        and dev != self._audio_pair.capture
+                    ):
+                        self._audio_pair.is_combined = False
+                        self._half_duplex = True
+                        logger.warning(
+                            "Realtime mic fallback opened %s instead of paired capture %s; "
+                            "using conservative duplex gating",
+                            dev,
+                            self._audio_pair.capture,
+                        )
                     logger.info(
                         "Realtime mic open: device=%s samplerate=%s", dev, sr
                     )
@@ -1972,6 +2095,19 @@ class RealtimeVoiceSession:
                 return
             # Priority: explicit env override → audio_pair auto-detect (USB or fallback)
             output_device = (os.getenv("AUDIO_OUTPUT_DEVICE") or "").strip()
+            if (
+                output_device
+                and self._audio_pair.is_combined
+                and output_device != self._audio_pair.playback
+            ):
+                self._audio_pair.is_combined = False
+                self._half_duplex = True
+                logger.warning(
+                    "Realtime playback override %s differs from paired endpoint %s; "
+                    "using conservative duplex gating",
+                    output_device,
+                    self._audio_pair.playback,
+                )
             if not output_device:
                 output_device = self._audio_pair.playback or ""
                 if output_device:
@@ -2439,12 +2575,14 @@ class RealtimeVoiceSession:
         if not (self._response_in_progress or self.audio_playback_remaining_s() > 0.12):
             return False, 0.0, 0.0, 0.0, 1.0
         mic_rms = self._pcm_rms(mic_pcm16)
-        if self._half_duplex and now < self._barge_in_armed_at:
+        if now < self._barge_in_armed_at:
             self._barge_in_consecutive = 0
-            baseline = self._barge_in_noise_rms
-            self._barge_in_noise_rms = (
-                mic_rms if baseline <= 0.0 else (baseline * 0.7) + (mic_rms * 0.3)
-            )
+            if near_voice_detected is not True:
+                sample = min(mic_rms, _USB_BARGE_IN_BASELINE_CAP_RMS)
+                baseline = self._barge_in_noise_rms
+                self._barge_in_noise_rms = (
+                    sample if baseline <= 0.0 else (baseline * 0.8) + (sample * 0.2)
+                )
             return (
                 False,
                 mic_rms,
@@ -2471,8 +2609,11 @@ class RealtimeVoiceSession:
             0.0 if echo_suppressed else ref_rms * _LOCAL_BARGE_IN_REF_RATIO,
             baseline * _LOCAL_BARGE_IN_BASELINE_RATIO,
             (
-                _USB_BARGE_IN_MIN_RMS
-                if echo_suppressed and self._separate_usb_mic
+                max(
+                    _USB_BARGE_IN_MIN_RMS,
+                    baseline * _USB_BARGE_IN_RESIDUAL_RATIO,
+                )
+                if echo_suppressed
                 else 0.0
             ),
         )
@@ -2486,7 +2627,6 @@ class RealtimeVoiceSession:
         loud_enough = mic_rms >= threshold
         if (
             echo_suppressed
-            and self._separate_usb_mic
             and near_voice_detected is not True
         ):
             loud_enough = False
@@ -2521,10 +2661,16 @@ class RealtimeVoiceSession:
             self._barge_in_consecutive = 0
             # Track the echo/noise floor while muted; keep it slow so a user's
             # first syllable remains a spike rather than becoming the baseline.
-            self._barge_in_noise_rms = (baseline * 0.96) + (mic_rms * 0.04)
+            if near_voice_detected is not True:
+                sample = (
+                    min(mic_rms, _USB_BARGE_IN_BASELINE_CAP_RMS)
+                    if echo_suppressed
+                    else mic_rms
+                )
+                self._barge_in_noise_rms = (baseline * 0.96) + (sample * 0.04)
         required_frames = (
             _USB_BARGE_IN_MIN_FRAMES
-            if echo_suppressed and self._separate_usb_mic
+            if echo_suppressed
             else _LOCAL_BARGE_IN_MIN_FRAMES
         )
         return (
@@ -2691,7 +2837,7 @@ class RealtimeVoiceSession:
                 # echo while still allowing clear speech to interrupt.
                 if now < self._mute_mic_uplink_until:
                     barge_frame = resampled
-                    barge_aec_applied = self._half_duplex and self._aec is not None
+                    barge_aec_applied = self._aec is not None
                     if barge_aec_applied:
                         barge_frame = self._apply_aec(resampled)
                         if not barge_frame:
@@ -2708,6 +2854,9 @@ class RealtimeVoiceSession:
                         ),
                     )
                     if detected:
+                        # Snapshot before cancellation: aborting playback resets
+                        # detector state and clears the live deque.
+                        frames = list(self._barge_in_preroll)
                         await self._cancel_for_local_barge_in(
                             ws,
                             mic_rms=mic_rms,
@@ -2715,7 +2864,6 @@ class RealtimeVoiceSession:
                             threshold=threshold,
                             echo_similarity=echo_similarity,
                         )
-                        frames = list(self._barge_in_preroll)
                         self._reset_local_barge_state()
                         for frame in frames:
                             await self._upload_resampled_audio(
@@ -2724,28 +2872,9 @@ class RealtimeVoiceSession:
                                 aec_already_applied=barge_aec_applied,
                             )
                         continue
-                    if self._half_duplex:
-                        # Half-duplex still withholds echo-contaminated mic
-                        # frames, but local barge-in above can break out as
-                        # soon as live user speech is detected.
-                        continue
-                    # Full-duplex (echo-isolated puck): energy-based barge-in
-                    # gate. Let a frame through only if the mic is clearly
-                    # louder than the expected echo — i.e. the user is talking
-                    # over the assistant.
-                    mic_samples = np.frombuffer(resampled, dtype=np.int16).astype(np.float32)
-                    mic_rms = float(np.sqrt(np.mean(mic_samples ** 2))) if len(mic_samples) else 0.0
-                    with self._aec_buf_lock:
-                        ref = bytes(self._aec_far_buf[:len(resampled)])
-                    if ref:
-                        ref_samples = np.frombuffer(ref, dtype=np.int16).astype(np.float32)
-                        ref_rms = float(np.sqrt(np.mean(ref_samples ** 2)))
-                    else:
-                        ref_rms = 0.0
-                    # Let through only if mic is clearly louder than the echo
-                    barge_in = mic_rms > max(ref_rms * 0.4, 300.0)
-                    if not barge_in:
-                        continue
+                    # Both duplex modes withhold all playback-window audio
+                    # until post-AEC VAD and the adaptive residual gate agree.
+                    continue
                 else:
                     self._reset_local_barge_state()
                 await self._upload_resampled_audio(ws, resampled)
@@ -3380,13 +3509,7 @@ class RealtimeVoiceSession:
         ctx = self._active_summary_context
         greeting = self._active_summary_greeting
         if not greeting:
-            first_name = self._display_name.split()[0] if self._display_name else ""
-            greeting = _REALTIME_WAKE_GREETING_INSTRUCTIONS
-            if first_name:
-                greeting = (
-                    f"Warmly address the user as {json.dumps(first_name)}. "
-                    + greeting
-                )
+            greeting = _next_wake_greeting_instructions(self._display_name)
         try:
             if ctx:
                 await self._inject_system_message(ws, ctx)
@@ -3509,7 +3632,6 @@ class RealtimeVoiceSession:
         merged_tools = list(self._server_tools) + [END_SESSION_TOOL, START_RECORDING_TOOL]
         transcription_cfg = {
             "model": _DEFAULT_INPUT_TRANSCRIPTION_MODEL,
-            "language": "en",
         }
         if _INPUT_TRANSCRIPTION_PROMPT.strip():
             transcription_cfg["prompt"] = _INPUT_TRANSCRIPTION_PROMPT
@@ -3614,6 +3736,21 @@ class RealtimeVoiceSession:
                 start_recording_requested = True
                 start_recording_mode = mode
                 continue
+
+            if name == "send_visible_email_draft":
+                try:
+                    send_args = json.loads(args or "{}")
+                except (TypeError, ValueError):
+                    send_args = {}
+                # The screen, not model memory, is authoritative for content.
+                # Preserve only the model-observed verbal confirmation fields.
+                args = json.dumps({
+                    **self._visible_email_draft,
+                    "confirmed_by_user": send_args.get("confirmed_by_user") is True,
+                    "confirmation_phrase": str(
+                        send_args.get("confirmation_phrase") or ""
+                    ),
+                })
 
             logger.info(
                 "Realtime tool invoke: name=%s call_id=%s args=%s",

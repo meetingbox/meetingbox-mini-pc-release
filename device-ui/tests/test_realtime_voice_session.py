@@ -51,9 +51,10 @@ def test_build_realtime_websocket_url_defaults_when_blank():
     assert "gpt-realtime-2" in u
 
 
-def test_wake_greeting_is_natural_and_uses_known_first_name(monkeypatch):
+def test_wake_greeting_varies_and_uses_account_name_only_occasionally(monkeypatch):
     rtv = sys.modules["realtime_voice_session"]
     monkeypatch.setattr(rtv, "sd", None)
+    monkeypatch.setattr(rtv, "_wake_greeting_style_index", 0)
     session = RealtimeVoiceSession(
         client_secret="ek_test",
         model="gpt-realtime-2",
@@ -71,8 +72,26 @@ def test_wake_greeting_is_natural_and_uses_known_first_name(monkeypatch):
     payload = json.loads(ws.send.await_args.args[0])
     instructions = payload["response"]["instructions"]
     assert '"Shiva"' in instructions
-    assert "Ask how the user is and how you can help" in instructions
+    assert "exactly one natural greeting clause" in instructions
+    assert "Vary the wording" in instructions
+    assert "Never use garu, sir, madam" in instructions
     assert "Yes, I'm listening" not in instructions
+
+    next_session = RealtimeVoiceSession(
+        client_secret="ek_test",
+        model="gpt-realtime-2",
+        backend_base_url="http://127.0.0.1:8000",
+        device_token="mbd_test",
+        display_name="Shiva Kumar",
+        on_session_end=lambda: None,
+        on_error=lambda _msg: None,
+        on_connected=lambda: None,
+    )
+    next_ws = mock.AsyncMock()
+    asyncio.run(next_session._send_wake_greeting(next_ws))
+    next_instructions = json.loads(next_ws.send.await_args.args[0])["response"]["instructions"]
+    assert '"Shiva"' not in next_instructions
+    assert next_instructions != instructions
 
 
 def test_audio_route_snapshot_includes_hotplug_inventory(monkeypatch):
@@ -105,7 +124,8 @@ def test_audio_route_snapshot_includes_hotplug_inventory(monkeypatch):
 
 def test_realtime_mic_skips_unsupported_alsa_identifier(monkeypatch):
     rtv = sys.modules["realtime_voice_session"]
-    mic_resolve = sys.modules["mic_input_resolve"]
+    import mic_input_resolve
+    mic_resolve = mic_input_resolve
     monkeypatch.setattr(rtv, "sd", None)
     session = RealtimeVoiceSession(
         client_secret="ek_test",
@@ -217,6 +237,64 @@ def test_invoke_realtime_tool_sync_uses_httpx(monkeypatch):
     assert ctx.__enter__.return_value.post.called
 
 
+def test_verbal_email_send_uses_authoritative_visible_fields(monkeypatch):
+    rtv = sys.modules["realtime_voice_session"]
+    monkeypatch.setattr(rtv, "sd", None)
+    captured = {}
+
+    def _invoke(_base, _token, *, call_id, name, arguments):
+        captured.update(
+            call_id=call_id,
+            name=name,
+            arguments=json.loads(arguments),
+        )
+        return json.dumps({"ok": True})
+
+    monkeypatch.setattr(rtv, "invoke_realtime_tool_sync", _invoke)
+    session = RealtimeVoiceSession(
+        client_secret="ek_test",
+        model="gpt-realtime-2",
+        backend_base_url="http://127.0.0.1:8000",
+        device_token="mbd_test",
+        on_session_end=lambda: None,
+        on_error=lambda _msg: None,
+        on_connected=lambda: None,
+    )
+    session._visible_email_draft = {
+        "to": ["visible@example.com"],
+        "cc": [],
+        "bcc": [],
+        "subject": "Visible subject",
+        "body": "Visible body",
+    }
+    ws = mock.AsyncMock()
+    msg = {
+        "response": {
+            "output": [{
+                "type": "function_call",
+                "call_id": "email-call",
+                "name": "send_visible_email_draft",
+                "arguments": json.dumps({
+                    "to": ["wrong@example.com"],
+                    "subject": "Wrong",
+                    "body": "Wrong",
+                    "confirmed_by_user": True,
+                    "confirmation_phrase": "yes send it",
+                }),
+            }],
+        },
+    }
+
+    asyncio.run(session._handle_response_done(ws, msg))
+
+    assert captured["name"] == "send_visible_email_draft"
+    assert captured["arguments"] == {
+        **session._visible_email_draft,
+        "confirmed_by_user": True,
+        "confirmation_phrase": "yes send it",
+    }
+
+
 def test_resolve_sounddevice_capture_prefers_usb_then_builtin_then_first(monkeypatch):
     import mic_input_resolve as mir
 
@@ -322,6 +400,9 @@ def test_session_update_uses_bounded_server_vad(monkeypatch):
     asyncio.run(session._send_session_update(ws))
 
     payload = json.loads(ws.send.await_args.args[0])
+    transcription = payload["session"]["audio"]["input"]["transcription"]
+    assert transcription["model"] == _DEFAULT_INPUT_TRANSCRIPTION_MODEL
+    assert "language" not in transcription
     turn_detection = payload["session"]["audio"]["input"]["turn_detection"]
     assert turn_detection == {
         "type": "server_vad",
@@ -744,12 +825,14 @@ def test_half_duplex_barge_in_uses_aec_cleaned_voice_not_speaker_reference(monke
         user_voice,
         now=50.06,
         echo_suppressed=True,
+        near_voice_detected=True,
     )
     assert detected is False
     detected, mic_rms, ref_rms, threshold, _ = session._detect_local_barge_in(
         user_voice,
         now=50.08,
         echo_suppressed=True,
+        near_voice_detected=True,
     )
     assert detected is True
     assert mic_rms > threshold
@@ -809,25 +892,66 @@ def test_separate_usb_mic_rejects_measured_echo_but_keeps_strong_barge_in(monkey
             echo_suppressed=True,
             near_voice_detected=False,
         )
-        assert mic_rms < threshold
         assert detected is False
 
-    for now in (80.08, 80.10):
-        detected, *_ = session._detect_local_barge_in(
-            strong_user_voice,
-            now=now,
-            echo_suppressed=True,
-            near_voice_detected=True,
-        )
-        assert detected is False
+    detected, *_ = session._detect_local_barge_in(
+        strong_user_voice,
+        now=80.08,
+        echo_suppressed=True,
+        near_voice_detected=True,
+    )
+    assert detected is False
     detected, mic_rms, _, threshold, _ = session._detect_local_barge_in(
         strong_user_voice,
-        now=80.12,
+        now=80.10,
         echo_suppressed=True,
         near_voice_detected=True,
     )
     assert mic_rms > threshold
     assert detected is True
+
+
+def test_mic_pump_uploads_barge_preroll_before_cancel_clears_state(monkeypatch):
+    rtv = sys.modules["realtime_voice_session"]
+    monkeypatch.setattr(rtv, "sd", None)
+    session = RealtimeVoiceSession(
+        client_secret="ek_test",
+        model="gpt-realtime-2",
+        backend_base_url="http://127.0.0.1:8000",
+        device_token="mbd_test",
+        on_session_end=lambda: None,
+        on_error=lambda _msg: None,
+        on_connected=lambda: None,
+    )
+    frame = (np.arange(480, dtype=np.int16) * 3).tobytes()
+    session._ws = mock.AsyncMock()
+    session._mic_native_sr = 24000
+    session._response_in_progress = True
+    session._mute_mic_uplink_until = rtv.time.monotonic() + 10.0
+    session._aec = mock.MagicMock()
+    session._aec_near_voice_detected = True
+    session._apply_aec = mock.MagicMock(return_value=frame)
+    session._detect_local_barge_in = mock.MagicMock(
+        return_value=(True, 3000.0, 1000.0, 1200.0, 0.1)
+    )
+
+    async def cancel_and_clear(*_args, **_kwargs):
+        session._reset_local_barge_state()
+
+    async def upload_and_stop(*_args, **_kwargs):
+        session._stop.set()
+
+    session._cancel_for_local_barge_in = mock.AsyncMock(side_effect=cancel_and_clear)
+    session._upload_resampled_audio = mock.AsyncMock(side_effect=upload_and_stop)
+    session._audio_q.put_nowait(frame)
+
+    asyncio.run(session._pump_mic())
+
+    session._upload_resampled_audio.assert_awaited_once_with(
+        session._ws,
+        frame,
+        aec_already_applied=True,
+    )
 
 
 def test_aec_process_uses_webrtc_near_end_voice_decision(monkeypatch):
@@ -891,7 +1015,7 @@ def test_new_playback_clears_stale_aec_reference_and_arms_barge_in(monkeypatch):
 
     assert session._aec_far_buf == bytearray()
     assert session._aec_near_buf == bytearray()
-    assert session._barge_in_armed_at == 70.9
+    assert session._barge_in_armed_at == 70.3
 
     proc = mock.MagicMock()
     session._aplay_proc = proc
