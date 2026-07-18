@@ -915,7 +915,6 @@ def test_separate_usb_mic_rejects_measured_echo_but_keeps_strong_barge_in(monkey
             now=now,
             echo_suppressed=True,
             near_voice_detected=True,
-            echo_aware_voice_detected=True,
         )
         assert detected is False
     detected, mic_rms, _, threshold, _ = session._detect_local_barge_in(
@@ -923,72 +922,6 @@ def test_separate_usb_mic_rejects_measured_echo_but_keeps_strong_barge_in(monkey
         now=80.12,
         echo_suppressed=True,
         near_voice_detected=True,
-        echo_aware_voice_detected=True,
-    )
-    assert mic_rms > threshold
-    assert detected is True
-
-
-def test_separate_usb_mic_uses_dual_vad_for_normal_volume_barge_in(monkeypatch):
-    rtv = sys.modules["realtime_voice_session"]
-
-    monkeypatch.setattr(rtv, "sd", None)
-    session = RealtimeVoiceSession(
-        client_secret="ek_test",
-        model="gpt-realtime-2",
-        backend_base_url="http://127.0.0.1:8000",
-        device_token="mbd_test",
-        on_session_end=lambda: None,
-        on_error=lambda _msg: None,
-        on_connected=lambda: None,
-    )
-    session._response_in_progress = True
-    session._half_duplex = True
-    session._separate_usb_mic = True
-    session._barge_in_noise_rms = 500.0
-    normal_user_voice = (np.ones(480, dtype=np.int16) * 3000).tobytes()
-
-    # WebRTC alone can mistake residual assistant audio for speech. It must
-    # never unlock either the normal or high-energy path without Speex's
-    # echo-aware agreement.
-    for index in range(8):
-        detected, *_ = session._detect_local_barge_in(
-            normal_user_voice,
-            now=90.0 + (index * 0.02),
-            echo_suppressed=True,
-            near_voice_detected=True,
-            echo_aware_voice_detected=False,
-        )
-        assert detected is False
-
-    loud_residual_echo = (np.ones(480, dtype=np.int16) * 9000).tobytes()
-    for index in range(4):
-        detected, *_ = session._detect_local_barge_in(
-            loud_residual_echo,
-            now=90.2 + (index * 0.02),
-            echo_suppressed=True,
-            near_voice_detected=True,
-            echo_aware_voice_detected=False,
-        )
-        assert detected is False
-
-    session._reset_local_barge_state()
-    session._barge_in_noise_rms = 500.0
-    for index in range(4):
-        detected, *_ = session._detect_local_barge_in(
-            normal_user_voice,
-            now=91.0 + (index * 0.02),
-            echo_suppressed=True,
-            near_voice_detected=True,
-            echo_aware_voice_detected=True,
-        )
-        assert detected is False
-    detected, mic_rms, _, threshold, _ = session._detect_local_barge_in(
-        normal_user_voice,
-        now=91.08,
-        echo_suppressed=True,
-        near_voice_detected=True,
-        echo_aware_voice_detected=True,
     )
     assert mic_rms > threshold
     assert detected is True
