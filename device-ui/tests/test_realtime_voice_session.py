@@ -903,7 +903,10 @@ def test_separate_usb_mic_rejects_measured_echo_but_keeps_strong_barge_in(monkey
             echo_suppressed=True,
             near_voice_detected=False,
         )
-        assert mic_rms < threshold
+        # RMS alone may cross the more responsive USB threshold, but measured
+        # echo must still be rejected unless post-AEC WebRTC VAD confirms
+        # independent near-end speech.
+        assert mic_rms > threshold
         assert detected is False
 
     for now in (80.08, 80.10):
