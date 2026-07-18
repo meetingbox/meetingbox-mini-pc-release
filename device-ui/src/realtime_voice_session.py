@@ -397,18 +397,7 @@ _LOCAL_BARGE_IN_ARM_DELAY_S = _env_float(
     "REALTIME_BARGE_IN_ARM_DELAY_S", 0.9, minimum=0.0, maximum=2.0
 )
 _USB_BARGE_IN_MIN_RMS = _env_float(
-    # This floor is applied only after Speex AEC and WebRTC VAD agree that
-    # independent near-end speech is present. Keep it low enough for normal
-    # speech at desk distance; the VAD, adaptive echo baseline, 0.9 s AEC
-    # convergence delay, and consecutive-frame requirement remain the
-    # self-listening safeguards.
-    "REALTIME_USB_BARGE_IN_MIN_RMS", 2200.0, minimum=500.0, maximum=30000.0
-)
-_USB_BARGE_IN_BASELINE_CAP_RMS = _env_float(
-    "REALTIME_USB_BARGE_IN_BASELINE_CAP_RMS",
-    1000.0,
-    minimum=200.0,
-    maximum=3000.0,
+    "REALTIME_USB_BARGE_IN_MIN_RMS", 5500.0, minimum=500.0, maximum=30000.0
 )
 _USB_BARGE_IN_MIN_FRAMES = _env_int(
     "REALTIME_USB_BARGE_IN_MIN_FRAMES", 3, minimum=2, maximum=10
@@ -2589,19 +2578,9 @@ class RealtimeVoiceSession:
         if self._half_duplex and now < self._barge_in_armed_at:
             self._barge_in_consecutive = 0
             baseline = self._barge_in_noise_rms
-            if not (
-                echo_suppressed
-                and self._separate_usb_mic
-                and near_voice_detected is True
-            ):
-                sample = (
-                    min(mic_rms, _USB_BARGE_IN_BASELINE_CAP_RMS)
-                    if echo_suppressed and self._separate_usb_mic
-                    else mic_rms
-                )
-                self._barge_in_noise_rms = (
-                    sample if baseline <= 0.0 else (baseline * 0.7) + (sample * 0.3)
-                )
+            self._barge_in_noise_rms = (
+                mic_rms if baseline <= 0.0 else (baseline * 0.7) + (mic_rms * 0.3)
+            )
             return (
                 False,
                 mic_rms,
@@ -2678,17 +2657,7 @@ class RealtimeVoiceSession:
             self._barge_in_consecutive = 0
             # Track the echo/noise floor while muted; keep it slow so a user's
             # first syllable remains a spike rather than becoming the baseline.
-            if not (
-                echo_suppressed
-                and self._separate_usb_mic
-                and near_voice_detected is True
-            ):
-                sample = (
-                    min(mic_rms, _USB_BARGE_IN_BASELINE_CAP_RMS)
-                    if echo_suppressed and self._separate_usb_mic
-                    else mic_rms
-                )
-                self._barge_in_noise_rms = (baseline * 0.96) + (sample * 0.04)
+            self._barge_in_noise_rms = (baseline * 0.96) + (mic_rms * 0.04)
         required_frames = (
             _USB_BARGE_IN_MIN_FRAMES
             if echo_suppressed and self._separate_usb_mic

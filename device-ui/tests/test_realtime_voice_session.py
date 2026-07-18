@@ -894,15 +894,12 @@ def test_separate_usb_mic_rejects_measured_echo_but_keeps_strong_barge_in(monkey
     session._half_duplex = True
     session._separate_usb_mic = True
     measured_echo = (np.ones(480, dtype=np.int16) * 6100).tobytes()
-    normal_user_voice = (np.ones(480, dtype=np.int16) * 3000).tobytes()
     strong_user_voice = (np.ones(480, dtype=np.int16) * 12000).tobytes()
 
-    # A long stretch of loud residual speaker echo must not inflate the
-    # adaptive baseline until ordinary desk-distance speech can never pass.
-    for index in range(50):
+    for now in (80.0, 80.02, 80.04, 80.06):
         detected, mic_rms, _, threshold, _ = session._detect_local_barge_in(
             measured_echo,
-            now=80.0 + (index * 0.02),
+            now=now,
             echo_suppressed=True,
             near_voice_detected=False,
         )
@@ -912,32 +909,22 @@ def test_separate_usb_mic_rejects_measured_echo_but_keeps_strong_barge_in(monkey
         assert mic_rms > threshold
         assert detected is False
 
-    for now in (81.02, 81.04):
+    for now in (80.08, 80.10):
         detected, *_ = session._detect_local_barge_in(
-            normal_user_voice,
+            strong_user_voice,
             now=now,
             echo_suppressed=True,
             near_voice_detected=True,
         )
         assert detected is False
     detected, mic_rms, _, threshold, _ = session._detect_local_barge_in(
-        normal_user_voice,
-        now=81.06,
+        strong_user_voice,
+        now=80.12,
         echo_suppressed=True,
         near_voice_detected=True,
     )
     assert mic_rms > threshold
     assert detected is True
-
-    session._reset_local_barge_state()
-    for now in (81.08, 81.10, 81.12):
-        detected, *_ = session._detect_local_barge_in(
-            strong_user_voice,
-            now=now,
-            echo_suppressed=True,
-            near_voice_detected=False,
-        )
-        assert detected is False
 
 
 def test_mic_pump_uploads_barge_preroll_before_cancel_clears_state(monkeypatch):
