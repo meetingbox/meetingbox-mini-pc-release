@@ -61,7 +61,10 @@ import numpy as np
 import websockets
 from kivy.clock import Clock
 
-from api_client import invoke_realtime_tool_sync
+from api_client import (
+    invoke_realtime_tool_sync,
+    prewarm_realtime_tool_connection_sync,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -1037,6 +1040,11 @@ class RealtimeVoiceSession:
         # State exposed to the UI / idle watchdog
         self._state = "idle"            # idle | listening | thinking | speaking
         self._response_in_progress = False
+        # Tool HTTP calls run outside the receive loop so OpenAI events,
+        # keepalives, transcripts and interruptions continue to be consumed.
+        # The lock preserves response/tool ordering across background handlers.
+        self._response_done_tasks: set[asyncio.Task] = set()
+        self._response_done_lock = asyncio.Lock()
         self._active_audio_item_id: str | None = None
         self._active_audio_content_index = 0
         self._last_activity_monotonic = time.monotonic()
@@ -2335,6 +2343,14 @@ class RealtimeVoiceSession:
                 # socket is kept alive — including while held in warm standby.
                 recv_task = asyncio.create_task(self._recv_loop())
 
+                # Establish the backend keep-alive connection while this session
+                # is still warming, before the first user-initiated tool call.
+                asyncio.get_running_loop().run_in_executor(
+                    None,
+                    prewarm_realtime_tool_connection_sync,
+                    self._backend_base_url,
+                )
+
                 # Warm standby: hold the connected session WITHOUT opening the
                 # mic or streaming audio until activate() is called (on wake).
                 # No mic + no audio in => no VAD turn => zero billable response
@@ -2352,6 +2368,14 @@ class RealtimeVoiceSession:
                         # finally emit a single session_end; main.py re-prewarms.
                         act_task.cancel()
                         return
+
+                if self._prewarm:
+                    # Refresh a potentially idle keep-alive connection at wake.
+                    asyncio.get_running_loop().run_in_executor(
+                        None,
+                        prewarm_realtime_tool_connection_sync,
+                        self._backend_base_url,
+                    )
 
                 # Active path: let the UI close any local mic (e.g. Vosk wake
                 # word) before we open ALSA for the Realtime session.
@@ -2418,8 +2442,15 @@ class RealtimeVoiceSession:
                     pump_task.cancel()
                     idle_task.cancel()
                     route_task.cancel()
+                    done_tasks = list(self._response_done_tasks)
+                    for task in done_tasks:
+                        task.cancel()
                     await asyncio.gather(
-                        pump_task, idle_task, route_task, return_exceptions=True
+                        pump_task,
+                        idle_task,
+                        route_task,
+                        *done_tasks,
+                        return_exceptions=True,
                     )
 
         except asyncio.CancelledError:
@@ -3485,7 +3516,11 @@ class RealtimeVoiceSession:
                     if leftover:
                         logger.info("AI said (flushed from deltas): %r", leftover)
                         self._emit_ai_transcript(leftover)
-                    await self._handle_response_done(ws, msg)
+                    task = asyncio.create_task(
+                        self._run_response_done_handler(ws, msg)
+                    )
+                    self._response_done_tasks.add(task)
+                    task.add_done_callback(self._response_done_tasks.discard)
                     self._response_in_progress = False
                     self._active_audio_item_id = None
                     self._active_audio_content_index = 0
@@ -3725,9 +3760,26 @@ class RealtimeVoiceSession:
     # Tool round-trip on response.done
     # ------------------------------------------------------------------
 
+    async def _run_response_done_handler(self, ws, msg: dict) -> None:
+        """Handle completed responses off-loop while preserving their order."""
+        try:
+            async with self._response_done_lock:
+                await self._handle_response_done(ws, msg)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("Realtime: response.done handler failed")
+
     async def _handle_response_done(self, ws, msg: dict) -> None:
         response = msg.get("response") or {}
         if not isinstance(response, dict):
+            return
+        status = str(response.get("status") or "").strip().lower()
+        if status in {"cancelled", "canceled", "failed", "incomplete"}:
+            logger.info(
+                "Realtime: skipping tools from %s response",
+                status,
+            )
             return
         outputs = response.get("output") or []
         if not isinstance(outputs, list):
@@ -3804,6 +3856,7 @@ class RealtimeVoiceSession:
                 "Realtime tool invoke: name=%s call_id=%s args=%s",
                 name, call_id, args[:200],
             )
+            invoke_started = time.monotonic()
             out = await asyncio.get_running_loop().run_in_executor(
                 None,
                 lambda _b=self._backend_base_url, _t=self._device_token,
@@ -3811,7 +3864,12 @@ class RealtimeVoiceSession:
                     _b, _t, call_id=_c, name=_n, arguments=_a,
                 ),
             )
-            logger.info("Realtime tool result: name=%s out_len=%d", name, len(out or ""))
+            logger.info(
+                "Realtime tool result: name=%s out_len=%d elapsed_ms=%.1f",
+                name,
+                len(out or ""),
+                (time.monotonic() - invoke_started) * 1000.0,
+            )
 
             model_out = out
             if name != "show_email_draft":

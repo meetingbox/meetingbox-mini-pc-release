@@ -10,6 +10,7 @@ import json
 import logging
 import os
 import re
+import threading
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 from typing import AsyncIterator, Dict, List, Optional
@@ -31,6 +32,45 @@ from config import (
 )
 
 logger = logging.getLogger(__name__)
+
+_REALTIME_TOOL_CLIENT: httpx.Client | None = None
+_REALTIME_TOOL_CLIENT_LOCK = threading.Lock()
+
+
+def _get_realtime_tool_client() -> httpx.Client:
+    """Return the process-wide keep-alive client used by Realtime tools."""
+    global _REALTIME_TOOL_CLIENT
+    if _REALTIME_TOOL_CLIENT is None:
+        with _REALTIME_TOOL_CLIENT_LOCK:
+            if _REALTIME_TOOL_CLIENT is None:
+                _REALTIME_TOOL_CLIENT = httpx.Client(
+                    timeout=90.0,
+                    limits=httpx.Limits(
+                        max_connections=8,
+                        max_keepalive_connections=4,
+                        keepalive_expiry=300.0,
+                    ),
+                )
+    return _REALTIME_TOOL_CLIENT
+
+
+def prewarm_realtime_tool_connection_sync(
+    base_url: str,
+    timeout: float = 15.0,
+) -> bool:
+    """Open the shared backend connection before the first user tool call."""
+    root = _strip_trailing_rest_api_path((base_url or "").strip().rstrip("/"))
+    if not root:
+        return False
+    try:
+        response = _get_realtime_tool_client().get(
+            f"{root}/health",
+            timeout=timeout,
+        )
+        return response.status_code < 500
+    except Exception as exc:
+        logger.debug("Realtime tool connection prewarm failed: %s", exc)
+        return False
 
 
 def _response_ok_json_api(resp: httpx.Response) -> bool:
@@ -280,10 +320,14 @@ def invoke_realtime_tool_sync(
         "arguments": arguments if arguments is not None else "{}",
     }
     try:
-        with httpx.Client(timeout=timeout) as client:
-            resp = client.post(url, json=payload, headers=headers)
-            resp.raise_for_status()
-            body = resp.json()
+        resp = _get_realtime_tool_client().post(
+            url,
+            json=payload,
+            headers=headers,
+            timeout=timeout,
+        )
+        resp.raise_for_status()
+        body = resp.json()
         if isinstance(body, dict) and "output" in body:
             return str(body["output"])
         return ""
