@@ -2095,6 +2095,14 @@ class RealtimeVoiceSession:
                 return
             # Priority: explicit env override → audio_pair auto-detect (USB or fallback)
             output_device = (os.getenv("AUDIO_OUTPUT_DEVICE") or "").strip()
+            if output_device.lower() == "default" and self._audio_pair.playback:
+                logger.info(
+                    "Realtime playback: ignoring generic AUDIO_OUTPUT_DEVICE=default "
+                    "and using resolved device %s (%s)",
+                    self._audio_pair.playback,
+                    self._audio_pair.playback_name or self._audio_pair.playback,
+                )
+                output_device = ""
             if (
                 output_device
                 and self._audio_pair.is_combined

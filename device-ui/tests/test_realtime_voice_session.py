@@ -1119,6 +1119,34 @@ def test_speaker_writer_restarts_dead_aplay_and_retries_chunk(monkeypatch):
     session._aplay_writer.shutdown(wait=False, cancel_futures=True)
 
 
+def test_generic_default_output_defers_to_resolved_playback(monkeypatch):
+    import realtime_voice_session as rtv
+
+    monkeypatch.setattr(rtv, "sd", None)
+    monkeypatch.setenv("AUDIO_OUTPUT_DEVICE", "default")
+    monkeypatch.setattr(rtv.shutil, "which", lambda _name: "/usr/bin/aplay")
+    popen = mock.MagicMock()
+    popen.return_value = mock.MagicMock()
+    monkeypatch.setattr(rtv.subprocess, "Popen", popen)
+    session = RealtimeVoiceSession(
+        client_secret="ek_test",
+        model="gpt-realtime-2",
+        backend_base_url="http://127.0.0.1:8000",
+        device_token="mbd_test",
+        on_session_end=lambda: None,
+        on_error=lambda _msg: None,
+        on_connected=lambda: None,
+    )
+    session._audio_pair.playback = "plughw:0,0"
+    session._audio_pair.playback_name = "built-in speaker"
+
+    session._ensure_aplay()
+
+    command = popen.call_args.args[0]
+    assert command[-2:] == ["-D", "plughw:0,0"]
+    session._aplay_writer.shutdown(wait=False, cancel_futures=True)
+
+
 def test_speaker_writer_does_not_restart_after_intentional_abort(monkeypatch):
     import realtime_voice_session as rtv
 
