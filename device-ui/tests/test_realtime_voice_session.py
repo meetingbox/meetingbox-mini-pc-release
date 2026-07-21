@@ -357,7 +357,7 @@ def test_realtime_latency_tuning_constants():
     # comfortably below perceptible turn-latency boundaries.
     assert _APPEND_CHUNK_MS <= 20
     # The continuous capture path supplies 20 ms frames. A 50 ms blocking wait
-    # removes empty executor wakeups without delaying frames already queued.
+    # runs off-loop so incoming assistant audio cannot be starved.
     assert 0.02 <= _MIC_QUEUE_POLL_S <= 0.05
 
 
@@ -403,6 +403,9 @@ def test_session_update_uses_bounded_server_vad(monkeypatch):
     transcription = payload["session"]["audio"]["input"]["transcription"]
     assert transcription["model"] == _DEFAULT_INPUT_TRANSCRIPTION_MODEL
     assert "language" not in transcription
+    assert payload["session"]["audio"]["input"]["noise_reduction"] == {
+        "type": "far_field",
+    }
     turn_detection = payload["session"]["audio"]["input"]["turn_detection"]
     assert turn_detection == {
         "type": "server_vad",
@@ -411,6 +414,16 @@ def test_session_update_uses_bounded_server_vad(monkeypatch):
         "silence_duration_ms": 900,
         "create_response": True,
         "interrupt_response": True,
+    }
+
+    session._audio_pair = types.SimpleNamespace(
+        capture_name="USB PnP Sound Device / USB Audio",
+    )
+    ws.reset_mock()
+    asyncio.run(session._send_session_update(ws))
+    usb_payload = json.loads(ws.send.await_args.args[0])
+    assert usb_payload["session"]["audio"]["input"]["noise_reduction"] == {
+        "type": "near_field",
     }
 
 
@@ -825,14 +838,12 @@ def test_half_duplex_barge_in_uses_aec_cleaned_voice_not_speaker_reference(monke
         user_voice,
         now=50.06,
         echo_suppressed=True,
-        near_voice_detected=True,
     )
     assert detected is False
     detected, mic_rms, ref_rms, threshold, _ = session._detect_local_barge_in(
         user_voice,
         now=50.08,
         echo_suppressed=True,
-        near_voice_detected=True,
     )
     assert detected is True
     assert mic_rms > threshold
@@ -892,18 +903,23 @@ def test_separate_usb_mic_rejects_measured_echo_but_keeps_strong_barge_in(monkey
             echo_suppressed=True,
             near_voice_detected=False,
         )
+        # RMS alone may cross the more responsive USB threshold, but measured
+        # echo must still be rejected unless post-AEC WebRTC VAD confirms
+        # independent near-end speech.
+        assert mic_rms > threshold
         assert detected is False
 
-    detected, *_ = session._detect_local_barge_in(
-        strong_user_voice,
-        now=80.08,
-        echo_suppressed=True,
-        near_voice_detected=True,
-    )
-    assert detected is False
+    for now in (80.08, 80.10):
+        detected, *_ = session._detect_local_barge_in(
+            strong_user_voice,
+            now=now,
+            echo_suppressed=True,
+            near_voice_detected=True,
+        )
+        assert detected is False
     detected, mic_rms, _, threshold, _ = session._detect_local_barge_in(
         strong_user_voice,
-        now=80.10,
+        now=80.12,
         echo_suppressed=True,
         near_voice_detected=True,
     )
@@ -952,6 +968,33 @@ def test_mic_pump_uploads_barge_preroll_before_cancel_clears_state(monkeypatch):
         frame,
         aec_already_applied=True,
     )
+
+
+def test_live_mic_piece_discards_seconds_of_stale_audio_and_keeps_aec_aligned(
+    monkeypatch,
+):
+    rtv = sys.modules["realtime_voice_session"]
+    monkeypatch.setattr(rtv, "sd", None)
+    session = RealtimeVoiceSession(
+        client_secret="ek_test",
+        model="gpt-realtime-2",
+        backend_base_url="http://127.0.0.1:8000",
+        device_token="mbd_test",
+        on_session_end=lambda: None,
+        on_error=lambda _msg: None,
+        on_connected=lambda: None,
+    )
+    frames = [bytes([index]) * 960 for index in range(40)]
+    for frame in frames:
+        session._audio_q.put_nowait(frame)
+    session._aec_far_buf.extend(b"x" * (40 * session._aec_frame_bytes))
+
+    piece = session._get_live_mic_piece()
+
+    assert piece == frames[14]
+    assert session._audio_q.qsize() == 25
+    assert session._audio_q_drops == 14
+    assert len(session._aec_far_buf) == 26 * session._aec_frame_bytes
 
 
 def test_aec_process_uses_webrtc_near_end_voice_decision(monkeypatch):
@@ -1015,7 +1058,7 @@ def test_new_playback_clears_stale_aec_reference_and_arms_barge_in(monkeypatch):
 
     assert session._aec_far_buf == bytearray()
     assert session._aec_near_buf == bytearray()
-    assert session._barge_in_armed_at == 70.3
+    assert session._barge_in_armed_at == 70.9
 
     proc = mock.MagicMock()
     session._aplay_proc = proc
@@ -1047,34 +1090,6 @@ def test_far_ref_slice_uses_most_recent_audio(monkeypatch):
     assert ref_rms > 1500
 
 
-def test_generic_default_output_defers_to_resolved_playback(monkeypatch):
-    import realtime_voice_session as rtv
-
-    monkeypatch.setattr(rtv, "sd", None)
-    monkeypatch.setenv("AUDIO_OUTPUT_DEVICE", "default")
-    monkeypatch.setattr(rtv.shutil, "which", lambda _name: "/usr/bin/aplay")
-    popen = mock.MagicMock()
-    popen.return_value = mock.MagicMock()
-    monkeypatch.setattr(rtv.subprocess, "Popen", popen)
-    session = RealtimeVoiceSession(
-        client_secret="ek_test",
-        model="gpt-realtime-2",
-        backend_base_url="http://127.0.0.1:8000",
-        device_token="mbd_test",
-        on_session_end=lambda: None,
-        on_error=lambda _msg: None,
-        on_connected=lambda: None,
-    )
-    session._audio_pair.playback = "plughw:0,0"
-    session._audio_pair.playback_name = "built-in speaker"
-
-    session._ensure_aplay()
-
-    command = popen.call_args.args[0]
-    assert command[-2:] == ["-D", "plughw:0,0"]
-    session._aplay_writer.shutdown(wait=False, cancel_futures=True)
-
-
 def test_speaker_writer_restarts_dead_aplay_and_retries_chunk(monkeypatch):
     import realtime_voice_session as rtv
 
@@ -1101,6 +1116,34 @@ def test_speaker_writer_restarts_dead_aplay_and_retries_chunk(monkeypatch):
     session._write_to_aplay(b"audio", session._aplay_generation)
 
     healthy.stdin.write.assert_called_once_with(b"audio")
+    session._aplay_writer.shutdown(wait=False, cancel_futures=True)
+
+
+def test_generic_default_output_defers_to_resolved_playback(monkeypatch):
+    import realtime_voice_session as rtv
+
+    monkeypatch.setattr(rtv, "sd", None)
+    monkeypatch.setenv("AUDIO_OUTPUT_DEVICE", "default")
+    monkeypatch.setattr(rtv.shutil, "which", lambda _name: "/usr/bin/aplay")
+    popen = mock.MagicMock()
+    popen.return_value = mock.MagicMock()
+    monkeypatch.setattr(rtv.subprocess, "Popen", popen)
+    session = RealtimeVoiceSession(
+        client_secret="ek_test",
+        model="gpt-realtime-2",
+        backend_base_url="http://127.0.0.1:8000",
+        device_token="mbd_test",
+        on_session_end=lambda: None,
+        on_error=lambda _msg: None,
+        on_connected=lambda: None,
+    )
+    session._audio_pair.playback = "plughw:0,0"
+    session._audio_pair.playback_name = "built-in speaker"
+
+    session._ensure_aplay()
+
+    command = popen.call_args.args[0]
+    assert command[-2:] == ["-D", "plughw:0,0"]
     session._aplay_writer.shutdown(wait=False, cancel_futures=True)
 
 

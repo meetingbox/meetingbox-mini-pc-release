@@ -133,6 +133,12 @@ _APPEND_CHUNK_MS = 20
 # while the stream is healthy.
 _MIC_QUEUE_POLL_S = 0.05
 
+# Never let mic processing fall seconds behind live speech. On this device a
+# burst of speaker/AEC work can otherwise fill hundreds of 20 ms frames. Keep
+# up to 500 ms so a brief CPU spike cannot remove whole words, while still
+# preventing the multi-second delayed speech seen in production.
+_MIC_MAX_BACKLOG_FRAMES = 25
+
 # aplay ALSA buffer in microseconds. 70 ms keeps the speaker pipe from
 # starving while leaving room to hard-kill on barge-in.
 _APLAY_BUFFER_TIME_US = "70000"
@@ -388,19 +394,13 @@ _LOCAL_BARGE_IN_SPIKE_ECHO_MAX_REF_RATIO = _env_float(
 _LOCAL_BARGE_IN_MIN_FRAMES = _env_int("REALTIME_BARGE_IN_MIN_FRAMES", 2, minimum=1, maximum=10)
 _LOCAL_BARGE_IN_PREROLL_S = _env_float("REALTIME_BARGE_IN_PREROLL_S", 0.18, minimum=0.0, maximum=0.5)
 _LOCAL_BARGE_IN_ARM_DELAY_S = _env_float(
-    "REALTIME_BARGE_IN_ARM_DELAY_S", 0.3, minimum=0.0, maximum=2.0
+    "REALTIME_BARGE_IN_ARM_DELAY_S", 0.9, minimum=0.0, maximum=2.0
 )
 _USB_BARGE_IN_MIN_RMS = _env_float(
-    "REALTIME_USB_BARGE_IN_MIN_RMS", 1200.0, minimum=500.0, maximum=30000.0
+    "REALTIME_USB_BARGE_IN_MIN_RMS", 5500.0, minimum=500.0, maximum=30000.0
 )
 _USB_BARGE_IN_MIN_FRAMES = _env_int(
-    "REALTIME_USB_BARGE_IN_MIN_FRAMES", 2, minimum=2, maximum=10
-)
-_USB_BARGE_IN_RESIDUAL_RATIO = _env_float(
-    "REALTIME_USB_BARGE_IN_RESIDUAL_RATIO", 3.0, minimum=1.5, maximum=8.0
-)
-_USB_BARGE_IN_BASELINE_CAP_RMS = _env_float(
-    "REALTIME_USB_BARGE_IN_BASELINE_CAP_RMS", 600.0, minimum=200.0, maximum=3000.0
+    "REALTIME_USB_BARGE_IN_MIN_FRAMES", 3, minimum=2, maximum=10
 )
 
 # Live on-screen captions WHILE the user speaks. OpenAI's input transcription
@@ -2583,14 +2583,12 @@ class RealtimeVoiceSession:
         if not (self._response_in_progress or self.audio_playback_remaining_s() > 0.12):
             return False, 0.0, 0.0, 0.0, 1.0
         mic_rms = self._pcm_rms(mic_pcm16)
-        if now < self._barge_in_armed_at:
+        if self._half_duplex and now < self._barge_in_armed_at:
             self._barge_in_consecutive = 0
-            if near_voice_detected is not True:
-                sample = min(mic_rms, _USB_BARGE_IN_BASELINE_CAP_RMS)
-                baseline = self._barge_in_noise_rms
-                self._barge_in_noise_rms = (
-                    sample if baseline <= 0.0 else (baseline * 0.8) + (sample * 0.2)
-                )
+            baseline = self._barge_in_noise_rms
+            self._barge_in_noise_rms = (
+                mic_rms if baseline <= 0.0 else (baseline * 0.7) + (mic_rms * 0.3)
+            )
             return (
                 False,
                 mic_rms,
@@ -2617,11 +2615,8 @@ class RealtimeVoiceSession:
             0.0 if echo_suppressed else ref_rms * _LOCAL_BARGE_IN_REF_RATIO,
             baseline * _LOCAL_BARGE_IN_BASELINE_RATIO,
             (
-                max(
-                    _USB_BARGE_IN_MIN_RMS,
-                    baseline * _USB_BARGE_IN_RESIDUAL_RATIO,
-                )
-                if echo_suppressed
+                _USB_BARGE_IN_MIN_RMS
+                if echo_suppressed and self._separate_usb_mic
                 else 0.0
             ),
         )
@@ -2635,6 +2630,7 @@ class RealtimeVoiceSession:
         loud_enough = mic_rms >= threshold
         if (
             echo_suppressed
+            and self._separate_usb_mic
             and near_voice_detected is not True
         ):
             loud_enough = False
@@ -2669,16 +2665,10 @@ class RealtimeVoiceSession:
             self._barge_in_consecutive = 0
             # Track the echo/noise floor while muted; keep it slow so a user's
             # first syllable remains a spike rather than becoming the baseline.
-            if near_voice_detected is not True:
-                sample = (
-                    min(mic_rms, _USB_BARGE_IN_BASELINE_CAP_RMS)
-                    if echo_suppressed
-                    else mic_rms
-                )
-                self._barge_in_noise_rms = (baseline * 0.96) + (sample * 0.04)
+            self._barge_in_noise_rms = (baseline * 0.96) + (mic_rms * 0.04)
         required_frames = (
             _USB_BARGE_IN_MIN_FRAMES
-            if echo_suppressed
+            if echo_suppressed and self._separate_usb_mic
             else _LOCAL_BARGE_IN_MIN_FRAMES
         )
         return (
@@ -2789,19 +2779,38 @@ class RealtimeVoiceSession:
     # Mic pump (asyncio side)
     # ------------------------------------------------------------------
 
+    def _get_live_mic_piece(self) -> bytes | None:
+        """Return a near-live mic frame, bounding latency under CPU bursts."""
+        try:
+            piece = self._audio_q.get(timeout=_MIC_QUEUE_POLL_S)
+        except queue.Empty:
+            return b""
+
+        dropped = 0
+        while piece is not None and self._audio_q.qsize() > _MIC_MAX_BACKLOG_FRAMES:
+            try:
+                newer = self._audio_q.get_nowait()
+            except queue.Empty:
+                break
+            dropped += 1
+            piece = newer
+
+        if dropped:
+            self._audio_q_drops += dropped
+            # AEC consumes one 20 ms far-end frame per mic frame. Discard the
+            # matching stale reference so cancellation remains time-aligned.
+            stale_far_bytes = dropped * self._aec_frame_bytes
+            with self._aec_buf_lock:
+                del self._aec_far_buf[: min(stale_far_bytes, len(self._aec_far_buf))]
+        return piece
+
     async def _pump_mic(self) -> None:
         assert self._ws is not None
         ws = self._ws
         loop = asyncio.get_running_loop()
 
-        def _get() -> bytes:
-            try:
-                return self._audio_q.get(timeout=_MIC_QUEUE_POLL_S)
-            except queue.Empty:
-                return b""
-
         while not self._stop.is_set():
-            piece = await loop.run_in_executor(None, _get)
+            piece = await loop.run_in_executor(None, self._get_live_mic_piece)
             if piece is None:
                 break
             if not piece:
@@ -2845,7 +2854,7 @@ class RealtimeVoiceSession:
                 # echo while still allowing clear speech to interrupt.
                 if now < self._mute_mic_uplink_until:
                     barge_frame = resampled
-                    barge_aec_applied = self._aec is not None
+                    barge_aec_applied = self._half_duplex and self._aec is not None
                     if barge_aec_applied:
                         barge_frame = self._apply_aec(resampled)
                         if not barge_frame:
@@ -2880,9 +2889,28 @@ class RealtimeVoiceSession:
                                 aec_already_applied=barge_aec_applied,
                             )
                         continue
-                    # Both duplex modes withhold all playback-window audio
-                    # until post-AEC VAD and the adaptive residual gate agree.
-                    continue
+                    if self._half_duplex:
+                        # Half-duplex still withholds echo-contaminated mic
+                        # frames, but local barge-in above can break out as
+                        # soon as live user speech is detected.
+                        continue
+                    # Full-duplex (echo-isolated puck): energy-based barge-in
+                    # gate. Let a frame through only if the mic is clearly
+                    # louder than the expected echo — i.e. the user is talking
+                    # over the assistant.
+                    mic_samples = np.frombuffer(resampled, dtype=np.int16).astype(np.float32)
+                    mic_rms = float(np.sqrt(np.mean(mic_samples ** 2))) if len(mic_samples) else 0.0
+                    with self._aec_buf_lock:
+                        ref = bytes(self._aec_far_buf[:len(resampled)])
+                    if ref:
+                        ref_samples = np.frombuffer(ref, dtype=np.int16).astype(np.float32)
+                        ref_rms = float(np.sqrt(np.mean(ref_samples ** 2)))
+                    else:
+                        ref_rms = 0.0
+                    # Let through only if mic is clearly louder than the echo
+                    barge_in = mic_rms > max(ref_rms * 0.4, 300.0)
+                    if not barge_in:
+                        continue
                 else:
                     self._reset_local_barge_state()
                 await self._upload_resampled_audio(ws, resampled)
@@ -3646,6 +3674,17 @@ class RealtimeVoiceSession:
         audio_input: dict = {
             "transcription": transcription_cfg,
         }
+        capture_name = str(
+            getattr(self._audio_pair, "capture_name", "") or ""
+        ).lower()
+        external_near_field = any(
+            marker in capture_name
+            for marker in ("usb", "bluez", "bluetooth", "headset")
+        )
+        noise_reduction_type = (
+            "near_field" if external_near_field else "far_field"
+        )
+        audio_input["noise_reduction"] = {"type": noise_reduction_type}
         # Keep server-side interruption enabled. Half-duplex echo protection now
         # happens locally before frames reach OpenAI; when the local detector
         # does release user speech, the latest user turn must still win.
@@ -3677,6 +3716,7 @@ class RealtimeVoiceSession:
                 vad_silence_ms=_REALTIME_VAD_SILENCE_MS,
                 interrupt_response=interrupt_response,
                 half_duplex=self._half_duplex,
+                noise_reduction=noise_reduction_type,
             )
         except Exception:
             logger.warning("Realtime session.update failed", exc_info=True)

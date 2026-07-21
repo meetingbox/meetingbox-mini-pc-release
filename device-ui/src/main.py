@@ -4913,6 +4913,8 @@ class MeetingBoxApp(App):
             return
         if self._realtime_voice_session is not None:
             return  # an active session owns the mic right now
+        if self._realtime_session_pending:
+            return  # a wake-triggered cold session is already being minted
         if self._warm_voice_session is not None or self._warm_voice_pending:
             return  # already warm / warming
         auth_token = get_device_auth_token().strip()
@@ -5024,6 +5026,12 @@ class MeetingBoxApp(App):
             return
         self._realtime_launch_permitted = False
 
+        # A delayed standby mint must never race this user-triggered launch.
+        # If both sessions connect together, the standby can acquire the
+        # device session lock first and leave the visible assistant unable to
+        # listen. Mark the standby stale; its completion is discarded below.
+        self._warm_voice_pending = False
+
         auth_token = get_device_auth_token().strip()
         if not auth_token:
             Clock.schedule_once(
@@ -5122,7 +5130,12 @@ class MeetingBoxApp(App):
             self._warm_voice_pending = False
             # An active session may have started while the warm mint was in
             # flight (e.g. wake fired during prewarm). Don't open a 2nd socket.
-            if self._realtime_voice_session is not None or self._warm_voice_session is not None:
+            if (
+                self._realtime_session_pending
+                or self._realtime_voice_session is not None
+                or self._warm_voice_session is not None
+            ):
+                logger.info("Discarding standby launch because a wake session is pending")
                 return
         else:
             self._realtime_session_pending = False
