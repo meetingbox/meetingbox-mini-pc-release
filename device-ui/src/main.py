@@ -4506,12 +4506,7 @@ class MeetingBoxApp(App):
         )
 
     @staticmethod
-    def _parse_recipient_voice_choice(
-        text: str,
-        max_index: int,
-        *,
-        is_final: bool = True,
-    ) -> int | None:
+    def _parse_recipient_voice_choice(text: str, max_index: int) -> int | None:
         """Map spoken choice text to a 1-based picker index."""
         s = str(text or "").strip().lower()
         if not s or max_index <= 0:
@@ -4524,56 +4519,32 @@ class MeetingBoxApp(App):
         if "none of these" in s or "none of those" in s:
             return max_index
 
-        ordinal_to_idx = {
-            "first": 1, "second": 2, "third": 3, "fourth": 4, "fifth": 5,
-            "sixth": 6, "seventh": 7, "eighth": 8, "ninth": 9, "tenth": 10,
+        # Common ordinal/cardinal words used in speech.
+        word_to_idx = {
+            "first": 1, "one": 1, "1": 1,
+            "second": 2, "two": 2, "2": 2,
+            "third": 3, "three": 3, "3": 3,
+            "fourth": 4, "four": 4, "4": 4,
+            "fifth": 5, "five": 5, "5": 5,
+            "sixth": 6, "six": 6, "6": 6,
+            "seventh": 7, "seven": 7, "7": 7,
+            "eighth": 8, "eight": 8, "8": 8,
+            "ninth": 9, "nine": 9, "9": 9,
+            "tenth": 10, "ten": 10, "10": 10,
         }
-        cardinal_to_idx = {
-            "one": 1, "two": 2, "three": 3, "four": 4, "five": 5,
-            "six": 6, "seven": 7, "eight": 8, "nine": 9, "ten": 10,
-        }
-
-        # Ordinals are explicit enough for streaming partials. Ignore an ordinal
-        # that is immediately negated, then keep looking for a later correction
-        # such as "not the first one, second".
-        for match in re.finditer(
-            r"\b(first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth)\b",
-            s,
-        ):
-            prefix = s[:match.start()]
-            if re.search(
-                r"(?:\bnot|\bno|\bdon't|\bdo not)\s+"
-                r"(?:(?:want|mean|choose|pick)\s+)?(?:the\s+)?$",
-                prefix,
-            ):
-                continue
-            idx = _clamp(ordinal_to_idx[match.group(1)])
+        for token in re.findall(r"[a-z0-9]+", s):
+            idx = word_to_idx.get(token)
             if idx is not None:
-                return idx
+                c = _clamp(idx)
+                if c is not None:
+                    return c
 
-        # Cardinal words/numerals inside a longer utterance are too ambiguous
-        # ("which one?", "I don't want one"). Accept them only when the user
-        # explicitly says option/card/number, or as a complete final answer.
-        explicit = re.search(
-            r"\b(?:option|card|number|choice)\s*(?:number\s*)?"
-            r"(one|two|three|four|five|six|seven|eight|nine|ten|\d{1,2})\b",
-            s,
-        )
-        token = explicit.group(1) if explicit else ""
-        if not token and is_final:
-            bare = re.fullmatch(
-                r"(?:the\s+)?(one|two|three|four|five|six|seven|eight|nine|ten|\d{1,2})"
-                r"(?:\s+one)?[.!?]?",
-                s,
-            )
-            token = bare.group(1) if bare else ""
-        if token:
+        # Fallback for bare numerals in phrases.
+        m = re.search(r"\b(\d{1,2})\b", s)
+        if m:
             try:
-                idx = cardinal_to_idx.get(token)
-                if idx is None:
-                    idx = int(token)
-                return _clamp(idx)
-            except (TypeError, ValueError):
+                return _clamp(int(m.group(1)))
+            except Exception:
                 return None
         return None
 
@@ -4597,12 +4568,7 @@ class MeetingBoxApp(App):
                     return i
         return None
 
-    def _try_apply_active_picker_voice_choice(
-        self,
-        text: str,
-        *,
-        is_final: bool = True,
-    ) -> bool:
+    def _try_apply_active_picker_voice_choice(self, text: str) -> bool:
         """Apply a voice selection to the currently-visible picker if possible."""
         try:
             recip = getattr(self, "_recipient_overlay", None)
@@ -4615,12 +4581,8 @@ class MeetingBoxApp(App):
                 return False
             candidates = list(active.get("candidates") or [])
             max_index = len(candidates) + 1
-            idx = self._parse_recipient_voice_choice(
-                text,
-                max_index,
-                is_final=is_final,
-            )
-            if idx is None and is_final:
+            idx = self._parse_recipient_voice_choice(text, max_index)
+            if idx is None:
                 idx = self._match_recipient_voice_choice(text, candidates)
             if idx is None:
                 return False
@@ -4951,8 +4913,6 @@ class MeetingBoxApp(App):
             return
         if self._realtime_voice_session is not None:
             return  # an active session owns the mic right now
-        if self._realtime_session_pending:
-            return  # a wake-triggered cold session is already being minted
         if self._warm_voice_session is not None or self._warm_voice_pending:
             return  # already warm / warming
         auth_token = get_device_auth_token().strip()
@@ -5064,12 +5024,6 @@ class MeetingBoxApp(App):
             return
         self._realtime_launch_permitted = False
 
-        # A delayed standby mint must never race this user-triggered launch.
-        # If both sessions connect together, the standby can acquire the
-        # device session lock first and leave the visible assistant unable to
-        # listen. Mark the standby stale; its completion is discarded below.
-        self._warm_voice_pending = False
-
         auth_token = get_device_auth_token().strip()
         if not auth_token:
             Clock.schedule_once(
@@ -5168,12 +5122,7 @@ class MeetingBoxApp(App):
             self._warm_voice_pending = False
             # An active session may have started while the warm mint was in
             # flight (e.g. wake fired during prewarm). Don't open a 2nd socket.
-            if (
-                self._realtime_session_pending
-                or self._realtime_voice_session is not None
-                or self._warm_voice_session is not None
-            ):
-                logger.info("Discarding standby launch because a wake session is pending")
+            if self._realtime_voice_session is not None or self._warm_voice_session is not None:
                 return
         else:
             self._realtime_session_pending = False
@@ -5494,7 +5443,7 @@ class MeetingBoxApp(App):
 
             # Parse picker choices on partials too; final ASR can be clipped
             # ("The") while a prior partial already contained "first one".
-            if self._try_apply_active_picker_voice_choice(text, is_final=is_final):
+            if self._try_apply_active_picker_voice_choice(text):
                 return
 
             # Grammar correction — run only on the FINAL transcript so we

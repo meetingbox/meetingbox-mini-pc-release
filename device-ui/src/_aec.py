@@ -140,9 +140,10 @@ class SpeexAEC:
         _lib.speex_preprocess_ctl(
             self._pre_state, SPEEX_PREPROCESS_SET_ECHO_STATE, self._echo_state
         )
-        # Aggressive residual suppression — value is in dB (negative attenuation).
+        # Keep strong echo-only suppression, but preserve near-end speech during
+        # double-talk so barge-in remains intelligible after AEC.
         suppress = ctypes.c_int(-45)
-        suppress_active = ctypes.c_int(-55)
+        suppress_active = ctypes.c_int(-18)
         _lib.speex_preprocess_ctl(
             self._pre_state,
             SPEEX_PREPROCESS_SET_ECHO_SUPPRESS,
