@@ -555,7 +555,7 @@ def test_session_update_uses_bounded_server_vad(monkeypatch):
     payload = json.loads(ws.send.await_args.args[0])
     transcription = payload["session"]["audio"]["input"]["transcription"]
     assert transcription["model"] == _DEFAULT_INPUT_TRANSCRIPTION_MODEL
-    assert "language" not in transcription
+    assert transcription["language"] == "en"
     assert payload["session"]["audio"]["input"]["noise_reduction"] == {
         "type": "far_field",
     }

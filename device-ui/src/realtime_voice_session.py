@@ -3703,6 +3703,7 @@ class RealtimeVoiceSession:
         merged_tools = list(self._server_tools) + [END_SESSION_TOOL, START_RECORDING_TOOL]
         transcription_cfg = {
             "model": _DEFAULT_INPUT_TRANSCRIPTION_MODEL,
+            "language": "en",
         }
         if _INPUT_TRANSCRIPTION_PROMPT.strip():
             transcription_cfg["prompt"] = _INPUT_TRANSCRIPTION_PROMPT
@@ -3746,6 +3747,7 @@ class RealtimeVoiceSession:
             self._log_voice_event(
                 "session_update_sent",
                 transcript_model=_DEFAULT_INPUT_TRANSCRIPTION_MODEL,
+                transcript_language="en",
                 transcript_prompt=bool(_INPUT_TRANSCRIPTION_PROMPT.strip()),
                 vad_mode="server_vad",
                 vad_silence_ms=_REALTIME_VAD_SILENCE_MS,
