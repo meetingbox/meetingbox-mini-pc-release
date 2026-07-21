@@ -221,20 +221,54 @@ def test_invoke_realtime_tool_sync_uses_httpx(monkeypatch):
     post_resp.raise_for_status = mock.MagicMock()
     post_resp.json.return_value = {"output": '{"snip":"ok"}'}
 
-    ctx = mock.MagicMock()
-    ctx.__enter__.return_value.post.return_value = post_resp
-    ctx.__exit__.return_value = None
-    monkeypatch.setattr(api_client.httpx, "Client", lambda **kwargs: ctx)
+    client = mock.MagicMock()
+    client.post.return_value = post_resp
+    client_factory = mock.MagicMock(return_value=client)
+    monkeypatch.setattr(api_client, "_REALTIME_TOOL_CLIENT", None)
+    monkeypatch.setattr(api_client.httpx, "Client", client_factory)
 
+    for call_id in ("call_1", "call_2"):
+        out = api_client.invoke_realtime_tool_sync(
+            "http://127.0.0.1:8000",
+            "mbd_test",
+            call_id=call_id,
+            name="memory_search",
+            arguments='{"query":"x"}',
+        )
+        assert out == '{"snip":"ok"}'
+
+    assert client_factory.call_count == 1
+    assert client.post.call_count == 2
+
+
+def test_realtime_tool_prewarm_reuses_invoke_client(monkeypatch):
+    import api_client
+
+    health = mock.MagicMock(status_code=200)
+    tool = mock.MagicMock()
+    tool.raise_for_status = mock.MagicMock()
+    tool.json.return_value = {"output": '{"ok":true}'}
+    client = mock.MagicMock()
+    client.get.return_value = health
+    client.post.return_value = tool
+    client_factory = mock.MagicMock(return_value=client)
+    monkeypatch.setattr(api_client, "_REALTIME_TOOL_CLIENT", None)
+    monkeypatch.setattr(api_client.httpx, "Client", client_factory)
+
+    assert api_client.prewarm_realtime_tool_connection_sync(
+        "http://127.0.0.1:8000"
+    )
     out = api_client.invoke_realtime_tool_sync(
         "http://127.0.0.1:8000",
         "mbd_test",
         call_id="call_1",
-        name="memory_search",
-        arguments='{"query":"x"}',
+        name="show_email_draft",
     )
-    assert out == '{"snip":"ok"}'
-    assert ctx.__enter__.return_value.post.called
+
+    assert out == '{"ok":true}'
+    assert client_factory.call_count == 1
+    client.get.assert_called_once()
+    client.post.assert_called_once()
 
 
 def test_verbal_email_send_uses_authoritative_visible_fields(monkeypatch):
@@ -293,6 +327,125 @@ def test_verbal_email_send_uses_authoritative_visible_fields(monkeypatch):
         "confirmed_by_user": True,
         "confirmation_phrase": "yes send it",
     }
+
+
+def test_cancelled_response_does_not_invoke_tools(monkeypatch):
+    rtv = sys.modules["realtime_voice_session"]
+    invoke = mock.MagicMock(return_value=json.dumps({"ok": True}))
+    monkeypatch.setattr(rtv, "invoke_realtime_tool_sync", invoke)
+    session = RealtimeVoiceSession(
+        client_secret="ek_test",
+        model="gpt-realtime-2",
+        backend_base_url="http://127.0.0.1:8000",
+        device_token="mbd_test",
+        on_session_end=lambda: None,
+        on_error=lambda _msg: None,
+        on_connected=lambda: None,
+    )
+    ws = mock.AsyncMock()
+    msg = {
+        "response": {
+            "status": "cancelled",
+            "output": [{
+                "type": "function_call",
+                "call_id": "stale-call",
+                "name": "show_email_draft",
+                "arguments": '{"state":"discarded"}',
+            }],
+        },
+    }
+
+    asyncio.run(session._handle_response_done(ws, msg))
+
+    invoke.assert_not_called()
+    ws.send.assert_not_awaited()
+
+
+def test_response_done_handlers_remain_serialized(monkeypatch):
+    session = RealtimeVoiceSession(
+        client_secret="ek_test",
+        model="gpt-realtime-2",
+        backend_base_url="http://127.0.0.1:8000",
+        device_token="mbd_test",
+        on_session_end=lambda: None,
+        on_error=lambda _msg: None,
+        on_connected=lambda: None,
+    )
+    order = []
+    release_first = asyncio.Event()
+
+    async def _handle(_ws, msg):
+        marker = msg["marker"]
+        order.append(f"start-{marker}")
+        if marker == 1:
+            await release_first.wait()
+        order.append(f"end-{marker}")
+
+    monkeypatch.setattr(session, "_handle_response_done", _handle)
+
+    async def _run():
+        first = asyncio.create_task(
+            session._run_response_done_handler(None, {"marker": 1})
+        )
+        await asyncio.sleep(0)
+        second = asyncio.create_task(
+            session._run_response_done_handler(None, {"marker": 2})
+        )
+        await asyncio.sleep(0)
+        assert order == ["start-1"]
+        release_first.set()
+        await asyncio.gather(first, second)
+
+    asyncio.run(_run())
+
+    assert order == ["start-1", "end-1", "start-2", "end-2"]
+
+
+def test_receive_loop_continues_while_response_done_handler_waits(monkeypatch):
+    session = RealtimeVoiceSession(
+        client_secret="ek_test",
+        model="gpt-realtime-2",
+        backend_base_url="http://127.0.0.1:8000",
+        device_token="mbd_test",
+        on_session_end=lambda: None,
+        on_error=lambda _msg: None,
+        on_connected=lambda: None,
+    )
+    handler_started = asyncio.Event()
+    release_handler = asyncio.Event()
+
+    async def _slow_handler(_ws, _msg):
+        handler_started.set()
+        await release_handler.wait()
+
+    monkeypatch.setattr(session, "_run_response_done_handler", _slow_handler)
+
+    class _FakeWS:
+        def __init__(self):
+            self.events = iter([
+                {"type": "response.done", "response": {"output": []}},
+                {"type": "response.created"},
+            ])
+
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            try:
+                return json.dumps(next(self.events))
+            except StopIteration:
+                raise StopAsyncIteration
+
+    async def _run():
+        session._ws = _FakeWS()
+        await session._recv_loop()
+        await handler_started.wait()
+        assert session._response_in_progress is True
+        assert any(not task.done() for task in session._response_done_tasks)
+        release_handler.set()
+        await asyncio.gather(*list(session._response_done_tasks))
+
+    asyncio.run(_run())
 
 
 def test_resolve_sounddevice_capture_prefers_usb_then_builtin_then_first(monkeypatch):
