@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
 # Run over SSH when the panel shows Ubuntu but no app / docker ps is empty.
-# Does not fix GDM; it gets Redis and (if possible) the UI stack running again.
-# Audio capture is supervised inside device-ui. Do not start the legacy
-# docker-audio profile because it races device-ui for the microphone.
+# Does not fix GDM; it gets the single UI stack running again.
+# Audio capture is supervised inside device-ui.
 
 set -euo pipefail
 
@@ -17,7 +16,7 @@ if [[ ! -f docker-compose.yml ]]; then
   exit 1
 fi
 
-echo "=== device-ui + Redis (needs working X / cookie for UI) ==="
+echo "=== device-ui (needs working X / cookie; audio runs as its child) ==="
 COMPOSE_PROFILES=mini-pc docker compose up -d --remove-orphans || true
 
 echo "=== Containers ==="

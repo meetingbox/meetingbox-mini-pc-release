@@ -67,6 +67,10 @@ services:
       # held with its mic closed so wake activation does not mint/connect cold.
       - REALTIME_WARM_STANDBY=${REALTIME_WARM_STANDBY:-1}
       - REALTIME_LIVE_CAPTION=${REALTIME_LIVE_CAPTION:-1}
+      # Production appliance policy: Bluetooth is disabled at the host and
+      # ignored by every capture resolver. USB is preferred, then built-in.
+      - MEETINGBOX_BLUETOOTH_ENABLED=${MEETINGBOX_BLUETOOTH_ENABLED:-0}
+      - MEETINGBOX_USB_MIC_STRICT=${MEETINGBOX_USB_MIC_STRICT:-0}
       - AUDIO_INPUT_DEVICE_INDEX=${AUDIO_INPUT_DEVICE_INDEX:-}
       - AUDIO_INPUT_DEVICE_NAME=${AUDIO_INPUT_DEVICE_NAME:-}
       - ALSA_CARD=${ALSA_CARD:-}
@@ -81,9 +85,9 @@ services:
       # (e.g. a conference puck), it is automatically used for both.
       # Example: AUDIO_OUTPUT_DEVICE_NAME=plughw:1,0
       - AUDIO_OUTPUT_DEVICE_NAME=${AUDIO_OUTPUT_DEVICE_NAME:-}
-      # Fallback ALSA output when no USB speaker is found. Defaults to plughw:0,0
-      # (internal speaker). Change to plughw:0,3 for HDMI, or plughw:0,7 for HDMI 1, etc.
-      - AUDIO_OUTPUT_FALLBACK_DEVICE=${AUDIO_OUTPUT_FALLBACK_DEVICE:-plughw:0,0}
+      # Optional explicit output fallback. When blank, the resolver identifies
+      # the built-in ALSA card instead of assuming it always remains card 0.
+      - AUDIO_OUTPUT_FALLBACK_DEVICE=${AUDIO_OUTPUT_FALLBACK_DEVICE:-}
       # --- Merged audio capture (formerly the standalone "audio" container) ---
       # device-ui spawns mini-pc/audio/audio_capture.py via audio_supervisor.py.
       # Set MEETINGBOX_SPAWN_AUDIO=0 if you reintroduce a separate audio process.
@@ -133,8 +137,6 @@ services:
       - ./scripts/meetingbox-host-poweroff:/usr/local/bin/meetingbox-host-poweroff:ro
       # WiFi nmcli via nsenter — bypasses polkit "Not authorized to control networking".
       - ./scripts/meetingbox-wifi-nmcli:/usr/local/bin/meetingbox-wifi-nmcli:ro
-      # Bluetooth control via nsenter into host namespace — bypasses polkit for power on/off.
-      - ./scripts/meetingbox-bluetooth:/usr/local/bin/meetingbox-bluetooth:ro
       # Date/Time and Timezone: timedatectl via nsenter into host (systemd-timedated on host).
       - ./scripts/meetingbox-timedatectl:/usr/local/bin/meetingbox-timedatectl:ro
       # Landscape lock: mask host iio-sensor-proxy via nsenter so the panel never auto-rotates.
@@ -155,7 +157,6 @@ services:
       - video
       - audio
       - input
-      - bluetooth
     # nsenter into host PID 1 for Settings → Restart/Power off. cap_add alone is NOT enough:
     # Docker returns "reassociate to namespaces failed: Operation not permitted" without this.
     privileged: true

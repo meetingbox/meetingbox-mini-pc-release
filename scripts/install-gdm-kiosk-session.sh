@@ -122,7 +122,7 @@ fi
 
 echo ""
 echo "Done."
-echo "  1) sudo bash scripts/install-boot-service.sh   # REQUIRED: starts redis+audio without X; starts full stack after graphical"
+echo "  1) sudo bash scripts/install-boot-service.sh   # REQUIRED: starts device-ui after X; audio runs as its child"
 echo "     Do NOT disable meetingbox-appliance until the kiosk session is verified — otherwise nothing starts Docker."
 echo "  2) Reboot — auto-login should go to black screen + app, not the full Ubuntu dock."
 echo "  3) If stuck: bash scripts/recovery-appliance-ssh.sh  (from SSH)"

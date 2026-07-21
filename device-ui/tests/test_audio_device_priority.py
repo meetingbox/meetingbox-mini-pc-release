@@ -29,6 +29,12 @@ import audio_device_resolve as adr  # noqa: E402
 import mic_input_resolve as mir  # noqa: E402
 
 
+@pytest.fixture(autouse=True)
+def _enable_legacy_bluetooth_cases(monkeypatch):
+    """Existing Bluetooth tests must opt in; production defaults to disabled."""
+    monkeypatch.setenv("MEETINGBOX_BLUETOOTH_ENABLED", "1")
+
+
 # ---------------------------------------------------------------------------
 # Fixtures / helpers
 # ---------------------------------------------------------------------------
@@ -223,6 +229,25 @@ class TestResolveAudioPair:
         assert pair.playback in PA_ROUTING_PCMS
         assert "bluez" in (pair.capture_name or "").lower()
 
+    def test_production_policy_ignores_bluetooth_and_uses_usb(self, monkeypatch):
+        plan = {
+            "pactl_sources": PACTL_BT_SOURCE,
+            "pactl_sinks": PACTL_BT_SINK,
+            "arecord_l": ALSA_USB_COMBINED_CAPTURE,
+            "aplay_l": ALSA_USB_COMBINED_PLAYBACK,
+        }
+        monkeypatch.setattr(adr.subprocess, "run", make_subprocess_mock(plan))
+        monkeypatch.setenv("MEETINGBOX_BLUETOOTH_ENABLED", "0")
+        monkeypatch.delenv("AUDIO_OUTPUT_DEVICE_NAME", raising=False)
+        monkeypatch.delenv("AUDIO_OUTPUT_FALLBACK_DEVICE", raising=False)
+
+        pair = adr.resolve_audio_pair(sd=None)
+
+        assert pair.capture == "plughw:1,0"
+        assert pair.playback == "plughw:1,0"
+        assert "bluez" not in (pair.capture_name or "").lower()
+        assert plan["set_default_calls"] == []
+
     def test_usb_combined_when_no_bluetooth(self, monkeypatch):
         """No BT connected → USB combined mic+speaker (Jabra) wins."""
         plan = {
@@ -262,6 +287,28 @@ class TestResolveAudioPair:
         # playback falls back to plughw:0,0 (built-in) — this is expected for
         # the Docker dmix workaround, NOT a claim that a built-in is 'external'
         assert pair.playback == "plughw:0,0"
+
+    def test_builtin_playback_is_resolved_by_card_identity(self, monkeypatch):
+        plan = {
+            "pactl_sources": PACTL_NO_BT_SOURCE,
+            "pactl_sinks": PACTL_NO_BT_SINK,
+            "arecord_l": (
+                "**** List of CAPTURE Hardware Devices ****\n"
+                "card 2: PCH [HDA Intel PCH], device 0: ALC269VC Analog [ALC269VC Analog]\n"
+            ),
+            "aplay_l": (
+                "**** List of PLAYBACK Hardware Devices ****\n"
+                "card 2: PCH [HDA Intel PCH], device 0: ALC269VC Analog [ALC269VC Analog]\n"
+            ),
+        }
+        monkeypatch.setattr(adr.subprocess, "run", make_subprocess_mock(plan))
+        monkeypatch.setenv("MEETINGBOX_BLUETOOTH_ENABLED", "0")
+        monkeypatch.delenv("AUDIO_OUTPUT_DEVICE_NAME", raising=False)
+        monkeypatch.delenv("AUDIO_OUTPUT_FALLBACK_DEVICE", raising=False)
+
+        pair = adr.resolve_audio_pair(sd=None)
+
+        assert pair.playback == "plughw:2,0"
 
     def test_bluetooth_mic_only_no_sink(self, monkeypatch):
         """BT source but no BT sink → BT capture only, playback falls back."""
@@ -443,6 +490,35 @@ class TestSounddeviceResolver:
         ])
         idx = mir.resolve_sounddevice_capture_device_index(sd)
         assert idx == 2, f"BT via 'pulse' must beat USB, got {idx!r}"
+
+    def test_production_policy_ignores_bluetooth_and_uses_usb(self, monkeypatch):
+        self._clear_env(monkeypatch)
+        self._patch_pactl(monkeypatch, PACTL_BT_SOURCE)
+        monkeypatch.setenv("MEETINGBOX_BLUETOOTH_ENABLED", "0")
+
+        sd = FakeSounddevice([
+            {"name": "HDA Intel PCH: ALC269VC Analog (hw:0,0)",
+             "max_input_channels": 2, "max_output_channels": 0},
+            {"name": "Jabra Speak 410 USB: USB Audio (hw:1,0)",
+             "max_input_channels": 1, "max_output_channels": 2},
+            {"name": "pulse",
+             "max_input_channels": 32, "max_output_channels": 32},
+        ])
+
+        assert mir.resolve_sounddevice_capture_device_index(sd) == 1
+
+    def test_production_policy_falls_back_to_builtin(self, monkeypatch):
+        self._clear_env(monkeypatch)
+        self._patch_pactl(monkeypatch, PACTL_NO_BT_SOURCE)
+        monkeypatch.setenv("MEETINGBOX_BLUETOOTH_ENABLED", "0")
+        monkeypatch.setenv("MEETINGBOX_USB_MIC_STRICT", "0")
+
+        sd = FakeSounddevice([
+            {"name": "Built-in Audio Analog Stereo",
+             "max_input_channels": 2, "max_output_channels": 0},
+        ])
+
+        assert mir.resolve_sounddevice_capture_device_index(sd) == 0
 
 
 # ===========================================================================

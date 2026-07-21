@@ -4,7 +4,6 @@ set -u
 REPO_DIR="${MEETINGBOX_REPO_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 CONTAINER="${MEETINGBOX_CONTAINER:-meetingbox-appliance-ui}"
 EXPECTED_SHA="${1:-$(git -C "$REPO_DIR" rev-parse HEAD 2>/dev/null)}"
-AUDIO_USER="${MEETINGBOX_AUDIO_USER:-meetingbox}"
 failures=0
 
 check() {
@@ -39,15 +38,44 @@ warm_ready() {
     grep -q "warm-standby session ready for instant activation"
 }
 
-amw45_duplex() {
-  [[ -s /run/meetingbox-amw45-ready ]] || return 1
-  local uid runtime source sink
-  uid="$(id -u "$AUDIO_USER")"
-  runtime="/run/user/$uid"
-  source="$(runuser -u "$AUDIO_USER" -- env XDG_RUNTIME_DIR="$runtime" pactl get-default-source)"
-  sink="$(runuser -u "$AUDIO_USER" -- env XDG_RUNTIME_DIR="$runtime" pactl get-default-sink)"
-  [[ "$source" == bluez_* && "$sink" == bluez_* ]] &&
-    grep -q '^profile=headset-head-unit-msbc$' /run/meetingbox-amw45-ready
+bluetooth_disabled() {
+  ! systemctl is-active --quiet bluetooth.service &&
+    ! systemctl is-active --quiet meetingbox-amw45.service &&
+    [[ "$(docker exec "$CONTAINER" printenv MEETINGBOX_BLUETOOTH_ENABLED 2>/dev/null)" == "0" ]]
+}
+
+automatic_updates_disabled() {
+  local unit
+  for unit in apt-daily.timer apt-daily-upgrade.timer unattended-upgrades.service; do
+    if systemctl is-active --quiet "$unit"; then
+      return 1
+    fi
+  done
+  [[ -r /etc/apt/apt.conf.d/20auto-upgrades ]] &&
+    grep -q 'APT::Periodic::Enable "0"' /etc/apt/apt.conf.d/20auto-upgrades
+}
+
+audio_fallback_ready() {
+  [[ "$(docker exec "$CONTAINER" printenv MEETINGBOX_USB_MIC_STRICT 2>/dev/null)" == "0" ]] &&
+    docker exec "$CONTAINER" arecord -l 2>/dev/null |
+      grep -q '^card '
+}
+
+no_legacy_audio_stack() {
+  [[ ! -e /etc/systemd/system/meetingbox-docker-audio.service ||
+     "$(readlink /etc/systemd/system/meetingbox-docker-audio.service 2>/dev/null)" == "/dev/null" ]] &&
+    ! systemctl is-active --quiet meetingbox-docker-audio.service &&
+    ! docker ps -a --format '{{.Names}}' |
+      grep -Eq '^meetingbox-(appliance-)?redis$'
+}
+
+idle_cpu_bounded() {
+  local raw whole max
+  max="${MEETINGBOX_PREFLIGHT_MAX_CPU_PERCENT:-85}"
+  raw="$(docker stats --no-stream --format '{{.CPUPerc}}' "$CONTAINER" 2>/dev/null)"
+  whole="${raw%%%}"
+  whole="${whole%%.*}"
+  [[ "$whole" =~ ^[0-9]+$ ]] && (( whole <= max ))
 }
 
 backend_reachable() {
@@ -67,9 +95,13 @@ check "clean dev_device worktree" is_clean_dev_device
 check "deployed build SHA $EXPECTED_SHA" container_sha_matches
 check "single UI and audio owner" single_owner
 check "held warm Realtime session" warm_ready
-check "AM-W45 mSBC microphone and speaker" amw45_duplex
+check "Bluetooth disabled by appliance policy" bluetooth_disabled
+check "automatic Ubuntu updates disabled" automatic_updates_disabled
+check "USB with built-in audio fallback available" audio_fallback_ready
+check "no legacy Redis/audio stack" no_legacy_audio_stack
 check "backend health" backend_reachable
 check "OpenAI network reachability" openai_reachable
+check "container CPU within demo threshold" idle_cpu_bounded
 
 printf 'INFO  container CPU: %s\n' \
   "$(docker stats --no-stream --format '{{.CPUPerc}}' "$CONTAINER" 2>/dev/null)"

@@ -278,6 +278,10 @@ class AudioCaptureService:
   def _using_arecord(self) -> bool:
     return self.capture_backend == "arecord"
 
+  def _bluetooth_enabled(self) -> bool:
+    value = (os.getenv("MEETINGBOX_BLUETOOTH_ENABLED") or "0").strip().lower()
+    return value in ("1", "true", "yes", "on")
+
   def _resolve_arecord_device(self) -> str:
     configured = (os.getenv("AUDIO_ALSA_INPUT_DEVICE") or "").strip()
     if configured:
@@ -288,7 +292,7 @@ class AudioCaptureService:
     # and probe ``arecord -L`` for the right virtual PCM that routes
     # through PulseAudio/PipeWire (pipewire / pulse / default — depends
     # on which ALSA plugin packages are installed in this container).
-    bt_source = self._pulse_bt_source()
+    bt_source = self._pulse_bt_source() if self._bluetooth_enabled() else None
     if bt_source:
       self._pulse_set_default_source(bt_source)
       pcm = self._pick_pulse_pcm()
@@ -529,9 +533,11 @@ class AudioCaptureService:
       usb_keywords = [
         "usb", "uac", "respeaker", "jabra", "samson", "blue", "yeti",
         "rode", "fifine", "tonor", "boya", "maono", "external", "webcam", "camera",
-        # Bluetooth devices — prioritized equally with USB external devices
-        "bluetooth", "bluez", "a2dp", "hsp", "hfp", "headset", "hands-free",
       ]
+      if self._bluetooth_enabled():
+        usb_keywords.extend(
+          ("bluetooth", "bluez", "a2dp", "hsp", "hfp", "headset", "hands-free")
+        )
       builtin_keywords = ["hdmi", "built-in", "bcm", "broadcom", "headphone", "analog", "spdif", "iec958"]
       if is_generic_alias(name):
         return (2, 1)
@@ -602,6 +608,16 @@ class AudioCaptureService:
         name = device_info.get("name", "")
         if name_pattern.lower() not in name.lower():
           continue
+        if not self._bluetooth_enabled() and any(
+          marker in name.lower()
+          for marker in ("bluetooth", "bluez", "a2dp", "hsp", "hfp")
+        ):
+          logger.warning(
+            "Ignoring Bluetooth AUDIO_INPUT_DEVICE_NAME match while "
+            "MEETINGBOX_BLUETOOTH_ENABLED=0: %s",
+            name,
+          )
+          continue
         dev = {"index": i, "name": name, "info": device_info}
         capture_channels = pick_capture_channels(dev, self.TARGET_RATE)
         if capture_channels is not None:
@@ -635,6 +651,11 @@ class AudioCaptureService:
       if device_info.get("maxInputChannels", 0) <= 0:
         continue
       name = device_info.get("name", "")
+      if not self._bluetooth_enabled() and any(
+        marker in name.lower()
+        for marker in ("bluetooth", "bluez", "a2dp", "hsp", "hfp")
+      ):
+        continue
       candidates.append({"index": i, "name": name, "info": device_info})
 
     if not candidates:
@@ -655,8 +676,6 @@ class AudioCaptureService:
       usb_keywords = (
         "usb", "uac", "respeaker", "jabra", "samson", "blue", "yeti",
         "rode", "fifine", "tonor", "boya", "maono", "external",
-        # Bluetooth devices — treated as external, preventing built-in mic fallback
-        "bluetooth", "bluez", "a2dp", "hsp", "hfp", "headset", "hands-free",
       )
       usb_candidates = [
         c for c in candidates

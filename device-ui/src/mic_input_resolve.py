@@ -16,6 +16,12 @@ from config import AUDIO_INPUT_DEVICE_INDEX, AUDIO_INPUT_DEVICE_NAME
 logger = logging.getLogger(__name__)
 
 
+def _bluetooth_enabled() -> bool:
+    """Bluetooth capture is disabled on production appliances by default."""
+    value = (os.getenv("MEETINGBOX_BLUETOOTH_ENABLED") or "0").strip().lower()
+    return value in ("1", "true", "yes", "on")
+
+
 def _usb_autopick_disabled() -> bool:
     v = (os.getenv("MEETINGBOX_AUTO_SELECT_USB_MIC") or "1").strip().lower()
     return v in ("0", "false", "no", "off")
@@ -41,7 +47,9 @@ def _bluetooth_like_name(name: str) -> bool:
 
 def _external_like_name(name: str) -> bool:
     """True for any non-built-in device: USB/UAC or Bluetooth."""
-    return _usb_like_name(name) or _bluetooth_like_name(name)
+    return _usb_like_name(name) or (
+        _bluetooth_enabled() and _bluetooth_like_name(name)
+    )
 
 
 def _is_combined_device(dev: dict) -> bool:
@@ -82,7 +90,13 @@ def _capture_devices(sd) -> list[tuple[int, dict]]:
 def _match_name_substring(sd, name_sub: str) -> int | None:
     try:
         for idx, dev in _capture_devices(sd):
-            if name_sub in ((dev.get("name") or "").lower()):
+            device_name = (dev.get("name") or "").lower()
+            if (
+                not _bluetooth_enabled()
+                and _bluetooth_like_name(device_name)
+            ):
+                continue
+            if name_sub in device_name:
                 return idx
     except Exception:
         logger.exception("Audio device enumeration failed (name=%r)", name_sub)
@@ -324,7 +338,8 @@ def resolve_sounddevice_capture_device_index(sd) -> int | None:
     # 3a. Bluetooth via PulseAudio/PipeWire — must come before PortAudio enumeration
     # because BT devices managed by PipeWire often do NOT appear in PortAudio's
     # device list at all; they only appear as pactl sources (bluez_input.*).
-    bt_pulse_src = _pulse_bt_source_name()
+    bluetooth_enabled = _bluetooth_enabled()
+    bt_pulse_src = _pulse_bt_source_name() if bluetooth_enabled else None
     if bt_pulse_src is not None:
         _pulse_set_default_source(bt_pulse_src)
         pulse_idx = _pulse_portaudio_device_index(sd)
@@ -344,9 +359,10 @@ def resolve_sounddevice_capture_device_index(sd) -> int | None:
         return None
 
     # 3b. Bluetooth combined mic+speaker visible in PortAudio enumeration
-    bt_combined = _first_bluetooth_combined_capture(sd)
-    if bt_combined is not None:
-        return bt_combined
+    if bluetooth_enabled:
+        bt_combined = _first_bluetooth_combined_capture(sd)
+        if bt_combined is not None:
+            return bt_combined
 
     # 3c. USB/UAC combined mic+speaker (e.g. Jabra, Poly conference puck)
     usb_combined = _first_usb_combined_capture(sd)
@@ -354,9 +370,10 @@ def resolve_sounddevice_capture_device_index(sd) -> int | None:
         return usb_combined
 
     # 3d. Bluetooth mic-only visible in PortAudio enumeration
-    bt_only = _first_bluetooth_capture(sd)
-    if bt_only is not None:
-        return bt_only
+    if bluetooth_enabled:
+        bt_only = _first_bluetooth_capture(sd)
+        if bt_only is not None:
+            return bt_only
 
     # 3e. USB/UAC mic-only
     usb = _first_usb_like_capture(sd)

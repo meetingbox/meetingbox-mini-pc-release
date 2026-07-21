@@ -51,10 +51,11 @@ from kivy.uix.widget import Widget
 
 import hardware
 import wifi_nmcli_local
-import bluetooth_local
 import local_network
 from network_util import linux_ethernet_ready
-from config import COLORS, DISPLAY_HEIGHT, DISPLAY_WIDTH
+from config import BLUETOOTH_ENABLED, COLORS, DISPLAY_HEIGHT, DISPLAY_WIDTH
+if BLUETOOTH_ENABLED:
+    import bluetooth_local
 from components.toggle_switch import ToggleSwitch
 from components.icons import Icon
 
@@ -633,12 +634,18 @@ class QuickPanel(FloatLayout):
             "wifi", "Wi-Fi", active=True, mode="toggle",
             on_change=self._on_wifi_toggle,
         )
-        self._bt_tile = _QuickTile(
-            "bluetooth", "Bluetooth", active=False, mode="toggle",
-            on_change=self._on_bt_toggle,
-        )
+        self._bt_tile = None
+        if BLUETOOTH_ENABLED:
+            self._bt_tile = _QuickTile(
+                "bluetooth", "Bluetooth", active=False, mode="toggle",
+                on_change=self._on_bt_toggle,
+            )
+        else:
+            audio_tile = _QuickTile(
+                "mic", "USB Audio", active=True, mode="action",
+            )
         row1.add_widget(self._wifi_tile)
-        row1.add_widget(self._bt_tile)
+        row1.add_widget(self._bt_tile if self._bt_tile is not None else audio_tile)
         tile_grid.add_widget(row1)
 
         row2 = BoxLayout(orientation="horizontal", size_hint_y=None,
@@ -665,12 +672,15 @@ class QuickPanel(FloatLayout):
         inner.add_widget(self._wifi_list)
 
         # BT section
-        self._bt_sec_hdr = _SectionHeader("Bluetooth Devices")
-        self._bt_sec_hdr.bind(on_press=lambda *_: self._toggle_bt_section())
-        inner.add_widget(self._bt_sec_hdr)
-        self._bt_list = BoxLayout(orientation="vertical", size_hint_y=None,
-                                  height=0, spacing=_sv(3))
-        inner.add_widget(self._bt_list)
+        self._bt_sec_hdr = None
+        self._bt_list = None
+        if BLUETOOTH_ENABLED:
+            self._bt_sec_hdr = _SectionHeader("Bluetooth Devices")
+            self._bt_sec_hdr.bind(on_press=lambda *_: self._toggle_bt_section())
+            inner.add_widget(self._bt_sec_hdr)
+            self._bt_list = BoxLayout(orientation="vertical", size_hint_y=None,
+                                      height=0, spacing=_sv(3))
+            inner.add_widget(self._bt_list)
 
         scroll.add_widget(inner)
         return scroll
@@ -756,7 +766,10 @@ class QuickPanel(FloatLayout):
     def _fetch_status(self):
         batt    = _safe(hardware.get_battery_info,              {"percent": None, "charging": None})
         wifi_on = _safe(wifi_nmcli_local.get_wifi_radio_enabled, None)
-        bt_on   = _safe(bluetooth_local.get_power_state,         None)
+        bt_on = (
+            _safe(bluetooth_local.get_power_state, None)
+            if BLUETOOTH_ENABLED else False
+        )
         lan_on  = _safe(linux_ethernet_ready,                    False)
         lan_ip  = _safe(local_network.get_primary_ipv4,          "—")
         vol     = _safe(hardware.get_sink_volume_pct,             None)
@@ -788,7 +801,8 @@ class QuickPanel(FloatLayout):
             else:
                 self._network_lbl.text = "LAN: Off  Wi-Fi: Off"
             self._wifi_tile.set_active(bool(wifi_on))
-            self._bt_tile.set_active(bool(bt_on))
+            if self._bt_tile is not None:
+                self._bt_tile.set_active(bool(bt_on))
             self._dnd_tile.set_active(bool(dnd))
             if bool(wifi_on) and not self._wifi_expanded:
                 Clock.schedule_once(lambda _x: self._expand_wifi_section(rescan=True), 0.05)
@@ -834,6 +848,8 @@ class QuickPanel(FloatLayout):
             Clock.schedule_once(lambda _dt: self._expand_wifi_section(rescan=True), 0.45)
 
     def _on_bt_toggle(self, state: bool):
+        if not BLUETOOTH_ENABLED:
+            return
         threading.Thread(
             target=lambda: bluetooth_local.set_power(state), daemon=True
         ).start()
@@ -993,6 +1009,8 @@ class QuickPanel(FloatLayout):
     # ------------------------------------------------------------------
 
     def _toggle_bt_section(self):
+        if not BLUETOOTH_ENABLED or self._bt_sec_hdr is None or self._bt_list is None:
+            return
         self._bt_expanded = not self._bt_expanded
         self._bt_sec_hdr.set_expanded(self._bt_expanded)
         if self._bt_expanded:

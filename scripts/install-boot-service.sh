@@ -72,9 +72,10 @@ systemctl daemon-reload
 systemctl disable --now meetingbox-docker-audio.service 2>/dev/null || true
 rm -f "$LEGACY_AUDIO_SERVICE"
 systemctl daemon-reload
+systemctl reset-failed meetingbox-docker-audio.service 2>/dev/null || true
 systemctl enable meetingbox-appliance.service
 echo "Installed and enabled:"
-echo "  $SERVICE_PATH   (graphical — device-ui + Redis; audio is supervised inside device-ui)"
+echo "  $SERVICE_PATH   (graphical — device-ui; audio is supervised inside device-ui)"
 echo "Disabled legacy separate audio service if present:"
 echo "  $LEGACY_AUDIO_SERVICE"
 echo "Start now:  sudo systemctl start meetingbox-appliance"

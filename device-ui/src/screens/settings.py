@@ -23,7 +23,7 @@ from components.status_bar import StatusBar
 from components.settings_item import SettingsItem
 from components.modal_dialog import ModalDialog
 from components.text_input_dialog import TextInputDialog
-from config import (COLORS, FONT_SIZES, SPACING, DEVICE_MODEL,
+from config import (BLUETOOTH_ENABLED, COLORS, FONT_SIZES, SPACING, DEVICE_MODEL,
                     DASHBOARD_URL)
 from hardware import request_system_poweroff, request_system_reboot
 from network_util import linux_ethernet_ready
@@ -168,22 +168,25 @@ class SettingsScreen(BaseScreen):
         )
         self.container.add_widget(self.wifi_forget_item)
 
-        self.bluetooth_radio_item = SettingsItem(
-            title='Bluetooth',
-            subtitle='Loading…',
-            mode='toggle',
-            active=False,
-            on_toggle=self._on_bluetooth_radio_toggled,
-        )
-        self.container.add_widget(self.bluetooth_radio_item)
+        self.bluetooth_radio_item = None
+        self.bluetooth_item = None
+        if BLUETOOTH_ENABLED:
+            self.bluetooth_radio_item = SettingsItem(
+                title='Bluetooth',
+                subtitle='Loading…',
+                mode='toggle',
+                active=False,
+                on_toggle=self._on_bluetooth_radio_toggled,
+            )
+            self.container.add_widget(self.bluetooth_radio_item)
 
-        self.bluetooth_item = SettingsItem(
-            title='Bluetooth devices',
-            subtitle='Scan, pair & manage',
-            mode='arrow',
-            on_press=lambda _: self.goto('bluetooth_screen', transition='slide_left'),
-        )
-        self.container.add_widget(self.bluetooth_item)
+            self.bluetooth_item = SettingsItem(
+                title='Bluetooth devices',
+                subtitle='Scan, pair & manage',
+                mode='arrow',
+                on_press=lambda _: self.goto('bluetooth_screen', transition='slide_left'),
+            )
+            self.container.add_widget(self.bluetooth_item)
 
         # ---- STORAGE ----
         self.container.add_widget(self._section_header('STORAGE'))
@@ -661,21 +664,23 @@ class SettingsScreen(BaseScreen):
         """Read WiFi and Bluetooth radio state in background and sync the toggles."""
         import threading
         import wifi_nmcli_local
-        import bluetooth_local
         from kivy.clock import Clock
 
         def _fetch():
             wifi_on = wifi_nmcli_local.get_wifi_radio_enabled()
-            bt_on = bluetooth_local.get_power_state()
+            bt_on = None
+            if BLUETOOTH_ENABLED:
+                import bluetooth_local
+                bt_on = bluetooth_local.get_power_state()
 
             def _apply(_dt):
                 if wifi_on is not None:
                     self.wifi_radio_item.toggle.active = wifi_on
                     self.wifi_radio_item.subtitle_label.text = "On" if wifi_on else "Off"
-                if bt_on is not None:
+                if self.bluetooth_radio_item is not None and bt_on is not None:
                     self.bluetooth_radio_item.toggle.active = bt_on
                     self.bluetooth_radio_item.subtitle_label.text = "On" if bt_on else "Off"
-                else:
+                elif self.bluetooth_radio_item is not None:
                     self.bluetooth_radio_item.subtitle_label.text = ""
 
             Clock.schedule_once(_apply, 0)
@@ -927,6 +932,8 @@ class SettingsScreen(BaseScreen):
         threading.Thread(target=_do, daemon=True).start()
 
     def _on_bluetooth_radio_toggled(self, active: bool):
+        if not BLUETOOTH_ENABLED or self.bluetooth_radio_item is None:
+            return
         import threading
         import bluetooth_local
         from kivy.clock import Clock

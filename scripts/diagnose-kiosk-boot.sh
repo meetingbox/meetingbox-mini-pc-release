@@ -81,6 +81,38 @@ echo "--- Recent meetingbox-appliance systemd (this boot) ---"
 journalctl -b --no-pager -u meetingbox-appliance.service 2>/dev/null | tail -25 || true
 echo ""
 
+echo "--- Production appliance policy ---"
+for u in \
+  apt-daily.timer apt-daily-upgrade.timer unattended-upgrades.service \
+  bluetooth.service meetingbox-amw45.service meetingbox-docker-audio.service; do
+  printf '%-42s enabled=%-12s active=%s\n' \
+    "$u" \
+    "$(systemctl is-enabled "$u" 2>/dev/null || echo absent)" \
+    "$(systemctl is-active "$u" 2>/dev/null || true)"
+done
+if [[ -r /etc/apt/apt.conf.d/20auto-upgrades ]]; then
+  grep -E 'APT::Periodic::Enable|Unattended-Upgrade::Automatic-Reboot' \
+    /etc/apt/apt.conf.d/20auto-upgrades || true
+fi
+echo ""
+
+echo "--- Crash reports ---"
+if [[ -d /var/crash ]] && compgen -G '/var/crash/*' >/dev/null; then
+  echo "Crash files exist:"
+  ls -l --time-style=long-iso /var/crash
+else
+  echo "OK: no pending crash files"
+fi
+echo "Current-boot GNOME/Mutter failures:"
+journalctl -b --no-pager -p warning..alert 2>/dev/null |
+  grep -Ei 'gnome-shell|mutter|gdm|Xorg|Xwayland' | tail -25 || true
+echo ""
+
+echo "--- Legacy appliance containers ---"
+docker ps -a --format '{{.Names}}\t{{.Status}}' 2>/dev/null |
+  grep -Ei 'redis|docker-audio|meetingbox-appliance-ui' || true
+echo ""
+
 echo "--- GDM unit ---"
 systemctl is-active gdm3.service 2>/dev/null && echo "gdm3.service: active" || true
 systemctl is-active gdm.service 2>/dev/null && echo "gdm.service: active" || true

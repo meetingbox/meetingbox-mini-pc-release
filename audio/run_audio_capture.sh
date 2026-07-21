@@ -12,12 +12,11 @@
 # If you see "No module named 'pkg_resources'" (webrtcvad needs setuptools):
 #   .venv/bin/python3 -m pip install -U "setuptools>=69"
 #
-# Env: copy mini-pc/.env.example → mini-pc/.env (REDIS_HOST, UPLOAD_AUDIO_API_URL, …).
+# Env: copy mini-pc/.env.example → mini-pc/.env (UPLOAD_AUDIO_API_URL, token, …).
 #
 # Usage:
 #   ./run_audio_capture.sh
 #   MEETINGBOX_USE_VENV=0 ./run_audio_capture.sh
-#   REDIS_HOST=127.0.0.1 ./run_audio_capture.sh
 
 set -euo pipefail
 
@@ -84,7 +83,6 @@ if ! "$PYTHON_CMD" -c "import pkg_resources" >/dev/null 2>&1; then
   exit 1
 fi
 
-export REDIS_HOST="${REDIS_HOST:-127.0.0.1}"
 export TEMP_SEGMENTS_DIR="${TEMP_SEGMENTS_DIR:-$DATA_ROOT/data/audio/temp}"
 export RECORDINGS_DIR="${RECORDINGS_DIR:-$DATA_ROOT/data/audio/recordings}"
 if [[ -z "${DEVICE_AUTH_TOKEN:-}" ]] && [[ -f "$DATA_ROOT/data/config/device_auth_token" ]]; then
@@ -99,7 +97,6 @@ export UPLOAD_AUDIO_TIMEOUT_SECONDS="${UPLOAD_AUDIO_TIMEOUT_SECONDS:-1200}"
 mkdir -p "$TEMP_SEGMENTS_DIR" "$RECORDINGS_DIR"
 
 echo "[MeetingBox audio] DATA_ROOT=$DATA_ROOT" >&2
-echo "[MeetingBox audio] REDIS_HOST=$REDIS_HOST" >&2
 echo "[MeetingBox audio] TEMP_SEGMENTS_DIR=$TEMP_SEGMENTS_DIR" >&2
 echo "[MeetingBox audio] RECORDINGS_DIR=$RECORDINGS_DIR" >&2
 echo "[MeetingBox audio] UPLOAD_AUDIO_ON_STOP=$UPLOAD_AUDIO_ON_STOP" >&2

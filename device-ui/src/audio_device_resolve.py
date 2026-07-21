@@ -5,15 +5,12 @@ Resolves the best capture (mic) + playback (speaker) device pair by
 inspecting ALSA hardware lists (`arecord -l`, `aplay -l`).
 
 Priority:
-  1. Combined Bluetooth mic+speaker: same ALSA card appears in both
-     capture and playback lists, AND is Bluetooth-like → highest priority
-     because the user explicitly paired a combined BT audio device.
-  2. Combined USB/external mic+speaker: same ALSA card in both lists,
+  1. Combined USB/external mic+speaker: same ALSA card in both lists,
      USB/UAC-class. Eliminates echo for conference pucks (Jabra, Poly, etc.)
-  3. Bluetooth capture only (no matching playback card) → use for mic.
-  4. USB capture only (no playback on the same card) → use for mic,
-     leave playback as ALSA default.
-  5. No external device found → None for both (existing PortAudio defaults).
+  2. USB capture or playback-only devices.
+  3. Built-in hardware resolved by card identity.
+  4. Bluetooth routes are considered only when the legacy
+     MEETINGBOX_BLUETOOTH_ENABLED=1 override is explicitly set.
 
 Env overrides (highest priority, applied on top of the above):
   AUDIO_OUTPUT_DEVICE_NAME  — explicit ALSA device string for aplay -D
@@ -29,6 +26,12 @@ import subprocess
 from dataclasses import dataclass
 
 logger = logging.getLogger(__name__)
+
+
+def _bluetooth_enabled() -> bool:
+    """Bluetooth audio is disabled on production appliances by default."""
+    value = (os.getenv("MEETINGBOX_BLUETOOTH_ENABLED") or "0").strip().lower()
+    return value in ("1", "true", "yes", "on")
 
 
 # ---------------------------------------------------------------------------
@@ -112,7 +115,10 @@ def _is_bt_pulse_name(name: str) -> bool:
 def _pulse_bt_device_id(name: str) -> str:
     """Return the stable Bluetooth address fragment from a Pulse node name."""
     match = re.search(r"bluez_(?:input|output)\.([0-9a-fA-F_]{17})", name)
-    return match.group(1).lower() if match else ""
+    if match:
+        return match.group(1).lower()
+    fallback = re.match(r"bluez_(?:input|output)\.([^.]+)", name, re.IGNORECASE)
+    return fallback.group(1).lower() if fallback else ""
 
 
 def _pulse_bt_source_names() -> list[str]:
@@ -292,8 +298,9 @@ def resolve_audio_pair(sd=None) -> AudioDevicePair:
     # bluez_input.* source.  We still route playback through PulseAudio so
     # the BT speaker is used even when the mic side falls back to a USB
     # or built-in device.
-    bt_sources = _pulse_bt_source_names()
-    bt_sinks = _pulse_bt_sink_names()
+    bluetooth_enabled = _bluetooth_enabled()
+    bt_sources = _pulse_bt_source_names() if bluetooth_enabled else []
+    bt_sinks = _pulse_bt_sink_names() if bluetooth_enabled else []
     bt_speaker_routed = False
 
     if bt_sources:
@@ -368,10 +375,18 @@ def resolve_audio_pair(sd=None) -> AudioDevicePair:
     capture_cards = _parse_alsa_list(["arecord", "-l"])
     playback_cards = _parse_alsa_list(["aplay", "-l"])
 
-    bt_capture = [c for c in capture_cards if c.is_bluetooth_like]
+    bt_capture = [
+        c for c in capture_cards if bluetooth_enabled and c.is_bluetooth_like
+    ]
     usb_capture = [c for c in capture_cards if c.is_usb_like and not c.is_bluetooth_like]
-    bt_playback = [c for c in playback_cards if c.is_bluetooth_like]
+    bt_playback = [
+        c for c in playback_cards if bluetooth_enabled and c.is_bluetooth_like
+    ]
     usb_playback = [c for c in playback_cards if c.is_usb_like and not c.is_bluetooth_like]
+    built_in_playback = [
+        c for c in playback_cards
+        if not c.is_usb_like and not c.is_bluetooth_like
+    ]
 
     bt_playback_card_nums = {c.card_num for c in bt_playback}
     usb_playback_card_nums = {c.card_num for c in usb_playback}
@@ -431,6 +446,16 @@ def resolve_audio_pair(sd=None) -> AudioDevicePair:
             cap.card_num, pair.capture, cap.long_name,
         )
 
+    # A playback-only USB speaker still outranks the built-in output.
+    if not pair.playback and usb_playback:
+        pb = usb_playback[0]
+        pair.playback = pb.alsa_device
+        pair.playback_name = pb.display_name
+        logger.info(
+            "AudioPair: USB playback device on card %s — playback=%s (%s)",
+            pb.card_num, pair.playback, pb.long_name,
+        )
+
     # Env override always wins for playback
     out_override = (os.getenv("AUDIO_OUTPUT_DEVICE_NAME") or "").strip()
     if out_override:
@@ -445,7 +470,13 @@ def resolve_audio_pair(sd=None) -> AudioDevicePair:
     # ("unable to open slave"). Fall back to plughw:0,0 (first card, first
     # device) which bypasses dmix and accesses hardware directly.
     if not pair.playback:
-        fallback = (os.getenv("AUDIO_OUTPUT_FALLBACK_DEVICE") or "plughw:0,0").strip()
+        configured_fallback = (os.getenv("AUDIO_OUTPUT_FALLBACK_DEVICE") or "").strip()
+        if configured_fallback:
+            fallback = configured_fallback
+        elif built_in_playback:
+            fallback = built_in_playback[0].alsa_device
+        else:
+            fallback = "plughw:0,0"
         pair.playback = fallback
         pair.playback_name = f"(fallback) {fallback}"
         logger.info(

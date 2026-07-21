@@ -237,6 +237,7 @@ from config import (
     get_device_auth_token,
     clear_stored_device_auth_token,
     WAKE_LOCAL_VOICE_ONLY,
+    BLUETOOTH_ENABLED,
 )
 
 from api_client import BackendClient
@@ -302,7 +303,6 @@ from screens.timezone_picker import TimezonePickerScreen
 from screens.audio_sink_picker import AudioSinkPickerScreen
 from screens.audio_source_picker import AudioSourcePickerScreen
 from screens.wifi_forget_screen import WiFiForgetScreen
-from screens.bluetooth_screen import BluetoothScreen
 from screens.datetime_screen import DateTimeScreen
 from screens.storage_breakdown import StorageBreakdownScreen
 from screens.diagnostic_logs import DiagnosticLogsScreen
@@ -1196,7 +1196,9 @@ class MeetingBoxApp(App):
         self.screen_manager.add_widget(AudioSinkPickerScreen(name='audio_output_picker'))
         self.screen_manager.add_widget(AudioSourcePickerScreen(name='audio_input_picker'))
         self.screen_manager.add_widget(WiFiForgetScreen(name='wifi_forget_screen'))
-        self.screen_manager.add_widget(BluetoothScreen(name='bluetooth_screen'))
+        if BLUETOOTH_ENABLED:
+            from screens.bluetooth_screen import BluetoothScreen
+            self.screen_manager.add_widget(BluetoothScreen(name='bluetooth_screen'))
         self.screen_manager.add_widget(DateTimeScreen(name='datetime_screen'))
         self.screen_manager.add_widget(StorageBreakdownScreen(name='storage_breakdown'))
         self.screen_manager.add_widget(DiagnosticLogsScreen(name='diagnostic_logs'))

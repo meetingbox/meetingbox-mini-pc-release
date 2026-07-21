@@ -38,11 +38,14 @@ if ! id -nG "$RUN_AS_USER" 2>/dev/null | tr ' ' '\n' | grep -qx docker; then
   echo "then log out and back in (or reboot), then re-run this script if services fail." >&2
 fi
 
-echo "=== 1/2 GDM kiosk session (meetingbox-kiosk + autologin) ==="
+echo "=== 1/3 GDM kiosk session (meetingbox-kiosk + autologin) ==="
 bash "$SCRIPT_DIR/install-gdm-kiosk-session.sh" "$APPLIANCE_DIR"
 
-echo "=== 2/2 systemd (redis+audio @ boot + full stack after graphical) ==="
+echo "=== 2/3 systemd (single device-ui stack after graphical session) ==="
 bash "$SCRIPT_DIR/install-boot-service.sh" "$APPLIANCE_DIR"
+
+echo "=== 3/3 production hardening (manual updates, Bluetooth off) ==="
+bash "$SCRIPT_DIR/install-production-hardening.sh" apply
 
 echo ""
 echo "Infotainment setup installed."

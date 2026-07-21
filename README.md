@@ -10,9 +10,9 @@ This folder contains everything that normally runs on the **meeting room device*
 |------|---------|
 | `device-ui/` | Touch/kiosk UI (Python/Kivy) |
 | `audio/` | Mic capture, VAD, WAV upload (`run_audio_capture.sh` + Docker image) |
-| `docker-compose.yml` | Optional: run UI and/or Docker audio on the device |
+| `docker-compose.yml` | Runs the device UI; audio capture is its supervised child |
 | `.env.example` | All appliance env vars — copy to `.env` |
-| `scripts/install-boot-service.sh` | **systemd**: redis+audio @ multi-user + full stack @ graphical |
+| `scripts/install-boot-service.sh` | **systemd**: single appliance stack at graphical boot |
 | `scripts/recovery-appliance-ssh.sh` | **SSH recovery** when Docker / UI stopped |
 | `scripts/setup-infotainment-kiosk.sh` | **One-shot** GDM kiosk + systemd boot stack |
 | `INFOTAINMENT.md` | Checklist: infotainment-style boot (no Ubuntu desktop) |
@@ -103,7 +103,7 @@ sudo bash scripts/install-boot-service.sh  # optional: pass install dir as first
 sudo systemctl start meetingbox-appliance
 ```
 
-Install **`install-boot-service.sh`** to register two units: **`meetingbox-docker-audio.service`** (**`multi-user.target`**) starts **Redis + audio** without any display; **`meetingbox-appliance.service`** (**`graphical.target`**) runs **`scripts/kiosk-compose-up.sh`** (cookie + full **`docker compose up -d`** including the UI).
+Install **`install-boot-service.sh`** to register **`meetingbox-appliance.service`**. It removes the obsolete `meetingbox-docker-audio.service`, waits for the graphical session, and starts the single UI container; audio runs as its supervised child.
 
 Configure **automatic login** so GDM creates that session at boot; otherwise log in once on the panel after each reboot before the wait window (about two minutes) expires.
 
@@ -128,11 +128,11 @@ sudo reboot
 
 This installs a minimal **X session** (`meetingbox-kiosk`: black screen + Openbox + Docker UI) and patches **`/etc/gdm3/custom.conf`** so GDM **auto-logs in** with **`AutomaticLoginSession=meetingbox-kiosk`**. You should **not** get the Ubuntu desktop or session chooser — only a possible **brief** GDM/video mode flash before the black screen and app.
 
-**Do not** `systemctl disable meetingbox-appliance` here — if the kiosk X session fails to run `docker compose`, nothing would start the UI. The boot installer also enables **`meetingbox-docker-audio.service`** so **Redis + mic** start even when the display stack is broken (recover over SSH).
+**Do not** disable `meetingbox-appliance.service`; it is the sole owner of Compose startup.
 
 The installer also sets **`WaylandEnable=false`** (stable X11 path) and **`XSession=meetingbox-kiosk`** in **AccountsService** as a fallback.
 
-**Recovery (SSH):** `bash scripts/recovery-appliance-ssh.sh` then check `docker ps` and `journalctl -u meetingbox-docker-audio -u meetingbox-appliance -b`.
+**Recovery (SSH):** `bash scripts/recovery-appliance-ssh.sh` then check `docker ps` and `journalctl -u meetingbox-appliance -b`.
 
 **Revert:** remove the `MeetingBox kiosk autologin` block from **`/etc/gdm3/custom.conf`** (backups are created beside it); set **`XSession=ubuntu`** in **`/var/lib/AccountsService/users/<you>`**; **`sudo systemctl enable gdm3`** if needed; reboot.
 
@@ -143,7 +143,7 @@ Disables **GDM**, sets **`multi-user.target`**, **auto-login on tty1**, and runs
 ```bash
 cd /path/to/meetingbox-mini-pc-release
 MEETINGBOX_I_KNOW=1 sudo bash scripts/install-xinit-no-gdm.sh
-sudo bash scripts/install-boot-service.sh   # early redis+audio on multi-user; optional graphical unit
+sudo bash scripts/install-boot-service.sh   # single graphical appliance unit
 sudo systemctl disable meetingbox-appliance.service   # OK here: default target is multi-user; ~/.xinitrc starts Compose
 sudo reboot
 ```

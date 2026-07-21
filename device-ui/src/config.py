@@ -139,6 +139,10 @@ WS_MAX_RECONNECT_ATTEMPTS = 10
 # devices are preferred — see mic_input_resolve.resolve_sounddevice_capture_device_index.
 AUDIO_INPUT_DEVICE_INDEX = (os.getenv("AUDIO_INPUT_DEVICE_INDEX", "") or "").strip()
 AUDIO_INPUT_DEVICE_NAME = (os.getenv("AUDIO_INPUT_DEVICE_NAME", "") or "").strip()
+BLUETOOTH_ENABLED = (
+    (os.getenv("MEETINGBOX_BLUETOOTH_ENABLED", "0") or "0").strip().lower()
+    in ("1", "true", "yes", "on")
+)
 
 # Explicit ALSA output device for aplay (speaker). When unset, audio_device_resolve
 # auto-detects a combined USB device (same card for mic+speaker). Set this to
