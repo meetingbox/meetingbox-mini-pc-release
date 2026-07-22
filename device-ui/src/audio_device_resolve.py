@@ -89,6 +89,7 @@ class AudioDevicePair:
     """
     capture: int | str | None = None
     capture_name: str | None = None
+    capture_card_num: int | None = None
     playback: str | None = None
     playback_name: str | None = None
     is_combined: bool = False
@@ -397,6 +398,7 @@ def resolve_audio_pair(sd=None) -> AudioDevicePair:
             pb = next(c for c in bt_playback if c.card_num == cap.card_num)
             pair.capture = _sounddevice_index_for_card(cap, sd)
             pair.capture_name = cap.display_name
+            pair.capture_card_num = cap.card_num
             pair.playback = pb.alsa_device
             pair.playback_name = pb.display_name
             pair.is_combined = True
@@ -414,6 +416,7 @@ def resolve_audio_pair(sd=None) -> AudioDevicePair:
                 pb = next(c for c in usb_playback if c.card_num == cap.card_num)
                 pair.capture = _sounddevice_index_for_card(cap, sd)
                 pair.capture_name = cap.display_name
+                pair.capture_card_num = cap.card_num
                 pair.playback = pb.alsa_device
                 pair.playback_name = pb.display_name
                 pair.is_combined = True
@@ -429,6 +432,7 @@ def resolve_audio_pair(sd=None) -> AudioDevicePair:
         cap = bt_capture[0]
         pair.capture = _sounddevice_index_for_card(cap, sd)
         pair.capture_name = cap.display_name
+        pair.capture_card_num = cap.card_num
         logger.info(
             "AudioPair: Bluetooth capture-only on card %s — "
             "capture=%s playback=default (%s)",
@@ -440,6 +444,7 @@ def resolve_audio_pair(sd=None) -> AudioDevicePair:
         cap = usb_capture[0]
         pair.capture = _sounddevice_index_for_card(cap, sd)
         pair.capture_name = cap.display_name
+        pair.capture_card_num = cap.card_num
         logger.info(
             "AudioPair: USB capture-only on card %s — "
             "capture=%s playback=default (%s)",

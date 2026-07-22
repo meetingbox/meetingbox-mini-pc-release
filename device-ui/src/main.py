@@ -246,6 +246,7 @@ from hardware import (
     request_system_poweroff,
     request_system_reboot,
     set_brightness,
+    set_capture_card_gain_pct,
 )
 from network_util import linux_ethernet_ready
 from profile_store import get_active_profile, clear_active_profile_selection
@@ -1577,6 +1578,7 @@ class MeetingBoxApp(App):
     def on_start(self):
         logger.info("MeetingBox UI started")
         self._ui_cache_load_from_disk()
+        self._apply_cached_mic_gain_before_start()
         if self._audio_supervisor is not None:
             try:
                 self._audio_supervisor.start()
@@ -1761,6 +1763,9 @@ class MeetingBoxApp(App):
                 except (TypeError, ValueError):
                     sv = 85
                 self.assistant_speech_volume = max(0, min(100, sv))
+                backend_mic_gain = settings.get("mic_input_volume")
+                if backend_mic_gain is not None:
+                    self._apply_backend_mic_gain(backend_mic_gain)
                 self.voice_assistant.apply_server_settings(
                     wake_phrase=vwp,
                     enabled=self.voice_assistant_enabled,
@@ -2767,6 +2772,91 @@ class MeetingBoxApp(App):
     def _local_ui_settings_path(self) -> Path:
         from config import resolve_device_config_dir
         return resolve_device_config_dir() / "local_ui_settings.json"
+
+    def _update_local_ui_setting(self, key: str, value) -> None:
+        """Atomically update one value in the existing local settings cache."""
+        path = self._local_ui_settings_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        existing: dict = {}
+        if path.is_file():
+            try:
+                loaded = json.loads(path.read_text(encoding="utf-8"))
+                if isinstance(loaded, dict):
+                    existing = loaded
+            except Exception:
+                pass
+        existing[key] = value
+        temp_path = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+        try:
+            temp_path.write_text(json.dumps(existing), encoding="utf-8")
+            os.replace(temp_path, path)
+        finally:
+            try:
+                temp_path.unlink(missing_ok=True)
+            except Exception:
+                pass
+
+    def _persist_local_mic_gain(self, value: int) -> None:
+        try:
+            self._update_local_ui_setting(
+                "mic_input_volume",
+                max(0, min(150, int(value))),
+            )
+        except Exception as exc:
+            logger.debug("Could not persist mic gain locally: %s", exc)
+
+    def _load_local_mic_gain(self) -> int | None:
+        try:
+            path = self._local_ui_settings_path()
+            if path.is_file():
+                data = json.loads(path.read_text(encoding="utf-8"))
+                value = data.get("mic_input_volume")
+                if value is not None:
+                    return max(0, min(150, int(float(value))))
+        except Exception:
+            pass
+        return None
+
+    def _resolve_mic_gain_audio_pair(self):
+        pair = getattr(self, "_mic_gain_audio_pair", None)
+        if pair is not None:
+            return pair
+        try:
+            from audio_device_resolve import resolve_audio_pair
+
+            pair = resolve_audio_pair()
+            self._mic_gain_audio_pair = pair
+            return pair
+        except Exception:
+            logger.exception("Mic gain capture-card resolution failed")
+            return None
+
+    def _apply_resolved_mic_gain(self, value: int) -> bool:
+        pair = self._resolve_mic_gain_audio_pair()
+        card_num = getattr(pair, "capture_card_num", None) if pair else None
+        applied = set_capture_card_gain_pct(card_num, value)
+        if not applied:
+            logger.warning(
+                "Mic gain %s%% not applied; resolved capture card unavailable",
+                value,
+            )
+        return applied
+
+    def _apply_backend_mic_gain(self, value) -> bool:
+        try:
+            mic_gain = max(0, min(150, int(float(value))))
+        except (TypeError, ValueError):
+            logger.warning("Ignoring invalid backend mic_input_volume=%r", value)
+            return False
+        self._persist_local_mic_gain(mic_gain)
+        return self._apply_resolved_mic_gain(mic_gain)
+
+    def _apply_cached_mic_gain_before_start(self) -> bool:
+        cached_mic_gain = self._load_local_mic_gain()
+        self._resolve_mic_gain_audio_pair()
+        if cached_mic_gain is None:
+            return False
+        return self._apply_resolved_mic_gain(cached_mic_gain)
 
     def _persist_local_idle_timeout(self, value: str) -> None:
         try:

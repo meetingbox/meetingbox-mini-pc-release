@@ -26,6 +26,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 import audio_device_resolve as adr  # noqa: E402
+import hardware  # noqa: E402
 import mic_input_resolve as mir  # noqa: E402
 
 
@@ -244,6 +245,7 @@ class TestResolveAudioPair:
         pair = adr.resolve_audio_pair(sd=None)
 
         assert pair.capture == "plughw:1,0"
+        assert pair.capture_card_num == 1
         assert pair.playback == "plughw:1,0"
         assert "bluez" not in (pair.capture_name or "").lower()
         assert plan["set_default_calls"] == []
@@ -265,6 +267,7 @@ class TestResolveAudioPair:
         assert pair.is_combined is True
         # USB device is card 1 in the fixture
         assert pair.capture == "plughw:1,0"
+        assert pair.capture_card_num == 1
         assert pair.playback == "plughw:1,0"
         assert "jabra" in (pair.capture_name or "").lower()
 
@@ -555,3 +558,119 @@ class TestExternalKeywordDetection:
     ])
     def test_builtin_names_not_external(self, name):
         assert not mir._external_like_name(name), f"Built-in flagged as external: {name!r}"
+
+
+class TestResolvedCaptureGain:
+    def test_usb_capture_only_propagates_card_number(self, monkeypatch):
+        plan = {
+            "pactl_sources": PACTL_NO_BT_SOURCE,
+            "pactl_sinks": PACTL_NO_BT_SINK,
+            "arecord_l": ALSA_USB_COMBINED_CAPTURE,
+            "aplay_l": ALSA_BUILTIN_ONLY_PLAYBACK,
+        }
+        monkeypatch.setattr(adr.subprocess, "run", make_subprocess_mock(plan))
+        monkeypatch.setenv("MEETINGBOX_BLUETOOTH_ENABLED", "0")
+
+        pair = adr.resolve_audio_pair(sd=None)
+
+        assert pair.capture == "plughw:1,0"
+        assert pair.capture_card_num == 1
+        assert pair.playback == "plughw:0,0"
+
+    def test_gain_uses_real_capture_control_on_exact_card(self, monkeypatch):
+        calls: list[list[str]] = []
+
+        def _run(cmd, **_kwargs):
+            calls.append(list(cmd))
+            if cmd[-1] == "scontrols":
+                return _FakeCompleted(
+                    stdout="Simple mixer control 'Mic',0\n"
+                    "Simple mixer control 'Speaker',0\n"
+                )
+            if "sget" in cmd and cmd[-1] == "Mic":
+                return _FakeCompleted(
+                    stdout=(
+                        "Simple mixer control 'Mic',0\n"
+                        "  Capabilities: cvolume cswitch\n"
+                        "  Capture channels: Front Left\n"
+                        "  Front Left: Capture 45 [70%] [on]\n"
+                    )
+                )
+            if "sget" in cmd:
+                return _FakeCompleted(
+                    stdout="Capabilities: pvolume\nFront Left: Playback 70 [70%]\n"
+                )
+            return _FakeCompleted()
+
+        monkeypatch.setattr(hardware.shutil, "which", lambda name: f"/usr/bin/{name}")
+        monkeypatch.setattr(hardware.subprocess, "run", _run)
+
+        assert hardware.set_capture_card_gain_pct(3, 70) is True
+        assert [
+            "/usr/bin/amixer", "-c", "3", "sset", "Mic", "70%"
+        ] in calls
+        assert not any("-D" in call or "default" in call for call in calls)
+
+    def test_gain_discovery_failure_never_falls_back_to_default(self, monkeypatch):
+        calls: list[list[str]] = []
+
+        def _run(cmd, **_kwargs):
+            calls.append(list(cmd))
+            if cmd[-1] == "scontrols":
+                return _FakeCompleted(
+                    stdout="Simple mixer control 'Speaker',0\n"
+                )
+            return _FakeCompleted(
+                stdout="Capabilities: pvolume\nFront Left: Playback 70 [70%]\n"
+            )
+
+        monkeypatch.setattr(hardware.shutil, "which", lambda name: f"/usr/bin/{name}")
+        monkeypatch.setattr(hardware.subprocess, "run", _run)
+
+        assert hardware.set_capture_card_gain_pct(4, 70) is False
+        assert hardware.set_capture_card_gain_pct(None, 70) is False
+        assert not any("sset" in call for call in calls)
+        assert not any("-D" in call or "default" in call for call in calls)
+
+    def test_cached_startup_value_and_backend_override(self, tmp_path, monkeypatch):
+        import importlib
+        import importlib.metadata
+
+        try:
+            importlib.metadata.version("Kivy")
+        except importlib.metadata.PackageNotFoundError:
+            pytest.skip("Kivy is not installed in this test environment")
+
+        fake_kivy = sys.modules.pop("kivy", None)
+        fake_clock = sys.modules.pop("kivy.clock", None)
+        try:
+            device_main = importlib.import_module("main")
+        finally:
+            if fake_kivy is not None:
+                sys.modules["kivy"] = fake_kivy
+            if fake_clock is not None:
+                sys.modules["kivy.clock"] = fake_clock
+
+        app = device_main.MeetingBoxApp.__new__(device_main.MeetingBoxApp)
+        settings_path = tmp_path / "local_ui_settings.json"
+        settings_path.write_text(
+            '{"idle_screen_timeout":"600","mic_input_volume":68}',
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(app, "_local_ui_settings_path", lambda: settings_path)
+        monkeypatch.setattr(app, "_resolve_mic_gain_audio_pair", lambda: object())
+        applied: list[int] = []
+        monkeypatch.setattr(
+            app,
+            "_apply_resolved_mic_gain",
+            lambda value: applied.append(value) or True,
+        )
+
+        assert app._apply_cached_mic_gain_before_start() is True
+        assert applied == [68]
+
+        assert app._apply_backend_mic_gain("72") is True
+        assert applied == [68, 72]
+        persisted = settings_path.read_text(encoding="utf-8")
+        assert '"idle_screen_timeout": "600"' in persisted
+        assert '"mic_input_volume": 72' in persisted

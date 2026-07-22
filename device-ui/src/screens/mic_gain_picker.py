@@ -8,7 +8,6 @@ from kivy.uix.slider import Slider
 from async_helper import run_async
 from components.status_bar import StatusBar
 from config import COLORS, FONT_SIZES, SPACING
-from hardware import set_source_volume_pct
 from screens.base_screen import BaseScreen
 
 
@@ -65,7 +64,9 @@ class MicGainPickerScreen(BaseScreen):
 
     def on_enter(self):
         async def _load():
-            v = 85
+            v = self.app._load_local_mic_gain()
+            if v is None:
+                v = 85
             try:
                 s = await self.backend.get_settings()
                 rv = s.get("mic_input_volume")
@@ -79,7 +80,8 @@ class MicGainPickerScreen(BaseScreen):
                 self._value = v
                 self.slider.value = v
                 self.vol_lbl.text = f"{v}%"
-                set_source_volume_pct(v)
+                self.app._persist_local_mic_gain(v)
+                self.app._apply_resolved_mic_gain(v)
 
             Clock.schedule_once(_apply, 0)
 
@@ -89,7 +91,7 @@ class MicGainPickerScreen(BaseScreen):
         v = max(0, min(150, int(val)))
         self.vol_lbl.text = f"{v}%"
         self._value = v
-        set_source_volume_pct(v)
+        self.app._apply_resolved_mic_gain(v)
         if self._debounce:
             self._debounce.cancel()
         self._debounce = Clock.schedule_once(self._persist, 0.35)
@@ -97,6 +99,7 @@ class MicGainPickerScreen(BaseScreen):
     def _persist(self, _dt):
         self._debounce = None
         v = self._value
+        self.app._persist_local_mic_gain(v)
 
         async def _save():
             try:

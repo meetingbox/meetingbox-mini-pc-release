@@ -440,6 +440,109 @@ def set_source_volume_pct(pct: int) -> None:
             logger.debug("set_source_volume_pct amixer: %s", e)
 
 
+def _capture_volume_control_for_card(card_num: int) -> str | None:
+    """Return a real capture-volume control on one explicit ALSA card."""
+    exe = shutil.which("amixer")
+    if not exe:
+        return None
+    try:
+        listed = subprocess.run(
+            [exe, "-c", str(int(card_num)), "scontrols"],
+            capture_output=True,
+            text=True,
+            timeout=3,
+            check=False,
+        )
+    except Exception:
+        logger.debug("amixer capture control listing failed card=%s", card_num, exc_info=True)
+        return None
+    if listed.returncode != 0:
+        return None
+
+    names: list[str] = []
+    for line in listed.stdout.splitlines():
+        if "'" in line:
+            names.append(line.split("'", 2)[1])
+    names.sort(
+        key=lambda name: (
+            not any(word in name.lower() for word in ("capture", "mic", "input", "adc")),
+            name.lower(),
+        )
+    )
+    for name in names:
+        try:
+            detail = subprocess.run(
+                [exe, "-c", str(int(card_num)), "sget", name],
+                capture_output=True,
+                text=True,
+                timeout=3,
+                check=False,
+            )
+        except Exception:
+            continue
+        output = f"{detail.stdout}\n{detail.stderr}"
+        capabilities = next(
+            (
+                line.lower()
+                for line in output.splitlines()
+                if "capabilities:" in line.lower()
+            ),
+            "",
+        )
+        if (
+            detail.returncode == 0
+            and ("cvolume" in capabilities or "volume" in capabilities)
+            and "capture" in output.lower()
+            and "%" in output
+        ):
+            return name
+    return None
+
+
+def set_capture_card_gain_pct(card_num: int | None, pct: int) -> bool:
+    """Set capture gain only on the explicitly resolved ALSA capture card."""
+    if card_num is None:
+        logger.warning("Mic gain unchanged: no resolved ALSA capture card")
+        return False
+    control = _capture_volume_control_for_card(card_num)
+    if not control:
+        logger.warning(
+            "Mic gain unchanged: no capture-volume control on ALSA card %s",
+            card_num,
+        )
+        return False
+    exe = shutil.which("amixer")
+    if not exe:
+        return False
+    pct = max(0, min(150, int(pct)))
+    try:
+        result = subprocess.run(
+            [exe, "-c", str(int(card_num)), "sset", control, f"{pct}%"],
+            capture_output=True,
+            text=True,
+            timeout=3,
+            check=False,
+        )
+    except Exception:
+        logger.warning("Mic gain apply failed on ALSA card %s", card_num, exc_info=True)
+        return False
+    if result.returncode != 0:
+        logger.warning(
+            "Mic gain apply failed on ALSA card %s control=%s: %s",
+            card_num,
+            control,
+            (result.stderr or "").strip(),
+        )
+        return False
+    logger.info(
+        "Mic gain set on ALSA card %s control=%s to %s%%",
+        card_num,
+        control,
+        pct,
+    )
+    return True
+
+
 def _pactl_descriptions(object_type: str) -> dict[str, str]:
     """Return {name: description} from ``pactl list <object_type>`` verbose output.
 
