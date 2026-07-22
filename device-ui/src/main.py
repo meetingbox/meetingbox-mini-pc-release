@@ -1814,17 +1814,33 @@ class MeetingBoxApp(App):
         logger.info(f"Nav → {screen_name} ({transition})")
         self._maybe_clear_summary_context(screen_name)
 
-        # Push current screen onto stack (avoid duplicates)
         current = self.screen_manager.current
+
+        # Same-screen navigation is a refresh, not a transition: the
+        # ScreenManager runs no enter/leave cycle of its own, so run the hook
+        # directly (and don't grow the back stack with a self-entry).
+        if current == screen_name:
+            cur_screen = self.screen_manager.current_screen
+            if hasattr(cur_screen, 'on_enter'):
+                cur_screen.on_enter()
+            self._sync_voice_assistant_state()
+            self._refresh_voice_indicator()
+            return
+
+        # Push current screen onto stack (avoid duplicates)
         if not self._nav_stack or self._nav_stack[-1] != current:
             self._nav_stack.append(current)
 
         # Set transition
         self._set_transition(transition)
 
-        # Notify current screen
+        # Notify current screen. Kivy re-dispatches both hooks when the
+        # transition animation completes; suppress those so the work does not
+        # run twice per navigation (see BaseScreen.skip_next_lifecycle).
         cur_screen = self.screen_manager.current_screen
         if hasattr(cur_screen, 'on_leave'):
+            if hasattr(cur_screen, 'skip_next_lifecycle'):
+                cur_screen.skip_next_lifecycle('on_leave')
             cur_screen.on_leave()
 
         self.screen_manager.current = screen_name
@@ -1832,6 +1848,8 @@ class MeetingBoxApp(App):
         # Notify new screen
         new_screen = self.screen_manager.current_screen
         if hasattr(new_screen, 'on_enter'):
+            if hasattr(new_screen, 'skip_next_lifecycle'):
+                new_screen.skip_next_lifecycle('on_enter')
             new_screen.on_enter()
         self._sync_voice_assistant_state()
         self._refresh_voice_indicator()
@@ -1848,13 +1866,26 @@ class MeetingBoxApp(App):
             while target in skip and self._nav_stack:
                 target = self._nav_stack.pop()
             self._maybe_clear_summary_context(target)
+            if target == self.screen_manager.current:
+                # No screen change means no transition and no Kivy re-dispatch;
+                # arming a skip here would swallow the next real navigation.
+                cur_screen = self.screen_manager.current_screen
+                if hasattr(cur_screen, 'on_enter'):
+                    cur_screen.on_enter()
+                self._sync_voice_assistant_state()
+                self._refresh_voice_indicator()
+                return
             self._set_transition('slide_right')
             cur = self.screen_manager.current_screen
             if hasattr(cur, 'on_leave'):
+                if hasattr(cur, 'skip_next_lifecycle'):
+                    cur.skip_next_lifecycle('on_leave')
                 cur.on_leave()
             self.screen_manager.current = target
             new = self.screen_manager.current_screen
             if hasattr(new, 'on_enter'):
+                if hasattr(new, 'skip_next_lifecycle'):
+                    new.skip_next_lifecycle('on_enter')
                 new.on_enter()
             self._sync_voice_assistant_state()
             self._refresh_voice_indicator()
@@ -3475,16 +3506,19 @@ class MeetingBoxApp(App):
                     logger.exception("Realtime navigate to summary_review failed")
             return
 
+        # Voice-driven navigation is instant: the user has already waited for
+        # the model to decide, so a 300 ms animation on top reads as lag. Touch
+        # navigation keeps its fade/slide transitions unchanged.
         routes = {
-            "home": ("home", "fade"),
-            "voice_session": ("voice_session", "slide_right"),
-            "calendar": ("calendar", "slide_left"),
-            "emails": ("emails", "slide_left"),
-            "meetings": ("meetings", "slide_left"),
-            "tasks": ("tasks", "slide_left"),
-            "morning_brief": ("morning_brief", "slide_left"),
-            "settings": ("settings", "slide_left"),
-            "mic_test": ("mic_test", "slide_left"),
+            "home": ("home", "none"),
+            "voice_session": ("voice_session", "none"),
+            "calendar": ("calendar", "none"),
+            "emails": ("emails", "none"),
+            "meetings": ("meetings", "none"),
+            "tasks": ("tasks", "none"),
+            "morning_brief": ("morning_brief", "none"),
+            "settings": ("settings", "none"),
+            "mic_test": ("mic_test", "none"),
         }
         pair = routes.get(s)
         if not pair:

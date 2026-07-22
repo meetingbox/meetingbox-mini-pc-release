@@ -38,8 +38,31 @@ class BaseScreen(Screen):
     - Lifecycle hooks
     """
 
+    # Set by App.goto_screen() when it has already run a lifecycle hook eagerly.
+    # Kivy dispatches 'on_enter'/'on_leave' again from the ScreenManager's
+    # transition completion (screenmanager.py `_on_complete`), so without this
+    # every navigation runs each screen's enter/leave work twice — once
+    # immediately and once when the animation finishes.
+    _pending_lifecycle_skip = None
+
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
+
+    def skip_next_lifecycle(self, event_type: str) -> None:
+        """Swallow the next Kivy-dispatched *event_type* for this screen."""
+        skip = self._pending_lifecycle_skip
+        if skip is None:
+            skip = self._pending_lifecycle_skip = set()
+        skip.add(event_type)
+
+    def dispatch(self, event_type, *args, **kwargs):
+        # Fast path: the attribute is a class-level None for every screen that
+        # is not mid-navigation, so this costs one load on hot touch dispatch.
+        skip = self._pending_lifecycle_skip
+        if skip and event_type in skip:
+            skip.discard(event_type)
+            return
+        return super().dispatch(event_type, *args, **kwargs)
 
     # --- Display-relative sizing (20% larger than home; see config OTHER_CONTENT_SCALE) ---
     @staticmethod

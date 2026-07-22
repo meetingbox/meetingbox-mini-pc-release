@@ -164,6 +164,29 @@ _SESSION_IDLE_CLOSE_S = 40.0
 # each gated until the previous section's audio has finished playing.
 _BRIEF_SECTIONS = ("schedule", "tasks", "emails")
 _BRIEF_SECTION_INDEX = {name: idx for idx, name in enumerate(_BRIEF_SECTIONS)}
+
+# Read-only tools whose HTTP round-trip may be started before the response.done
+# loop reaches them. They only fetch or render, so running one early cannot
+# commit anything the user has not yet confirmed. Anything that sends, saves,
+# approves, discards or writes memory is deliberately absent: those stay
+# strictly sequential so a cancelled response can still suppress them.
+#
+# Keep in sync with the server tool names in
+# `server/web/services/realtime_voice_tools.py`.
+_PREFETCH_SAFE_TOOLS = frozenset({
+    "navigate_device_ui",
+    "show_email_draft",
+    "show_email_view",
+    "fetch_and_show_email",
+    "show_recipient_picker",
+    "show_task_creation",
+    "show_calendar_event",
+    "get_briefing_context",
+    "memory_search",
+    "get_sent_emails",
+})
+# Cap on concurrently tracked tool calls per session.
+_MAX_INFLIGHT_TOOL_CALLS = 32
 _BRIEF_DIRECTIVE_TEMPLATES = {
     "schedule": (
         "[Morning briefing — SCHEDULE] The schedule card is now visible. "
@@ -934,6 +957,15 @@ class RealtimeVoiceSession:
         self._aplay_writer = ThreadPoolExecutor(
             max_workers=1, thread_name_prefix="rtv-aplay"
         )
+        # Tool HTTP gets its own pool. On the default asyncio executor it shared
+        # threads with mic polling (`_get_live_mic_piece`), so a slow backend
+        # call starved audio capture and dropped frames.
+        self._tool_executor = ThreadPoolExecutor(
+            max_workers=4, thread_name_prefix="rtv-tool"
+        )
+        # In-flight tool HTTP keyed by call_id, so a call started ahead of the
+        # response.done loop is awaited there instead of being issued twice.
+        self._tool_futures: dict[str, Any] = {}
         self._suppress_audio_until = 0.0
         # Playback clock. Realtime audio deltas often arrive faster than aplay
         # can speak them, so timing UI transitions from the last chunk alone is
@@ -2468,6 +2500,11 @@ class RealtimeVoiceSession:
                 self._aplay_writer.shutdown(wait=False, cancel_futures=True)
             except Exception:
                 pass
+            try:
+                self._tool_futures.clear()
+                self._tool_executor.shutdown(wait=False, cancel_futures=True)
+            except Exception:
+                pass
             if self._aec is not None:
                 try:
                     self._aec.close()
@@ -3762,6 +3799,55 @@ class RealtimeVoiceSession:
     # Tool round-trip on response.done
     # ------------------------------------------------------------------
 
+    def _submit_tool_call(self, call_id: str, name: str, args: str):
+        """Start a tool HTTP round-trip on the dedicated tool pool."""
+        return self._tool_executor.submit(
+            invoke_realtime_tool_sync,
+            self._backend_base_url,
+            self._device_token,
+            call_id=call_id,
+            name=name,
+            arguments=args,
+        )
+
+    def _prefetch_safe_tools(self, outputs: list) -> None:
+        """Kick off the read-only tool calls in *outputs* concurrently."""
+        for item in outputs:
+            if not isinstance(item, dict) or item.get("type") != "function_call":
+                continue
+            call_id = (item.get("call_id") or "").strip()
+            name = (item.get("name") or "").strip()
+            if not call_id or name not in _PREFETCH_SAFE_TOOLS:
+                continue
+            if call_id in self._tool_futures:
+                continue
+            args = item.get("arguments")
+            if args is None:
+                args = "{}"
+            elif not isinstance(args, str):
+                args = json.dumps(args)
+            # Bounded registry: a long session must not accumulate futures for
+            # calls the loop never claimed (cancelled responses, errors).
+            while len(self._tool_futures) >= _MAX_INFLIGHT_TOOL_CALLS:
+                _stale_id, stale = next(iter(self._tool_futures.items()))
+                self._tool_futures.pop(_stale_id, None)
+                stale.cancel()
+            try:
+                self._tool_futures[call_id] = self._submit_tool_call(
+                    call_id, name, args
+                )
+            except RuntimeError:
+                # Pool already shut down (session closing). The response loop
+                # falls back to invoking directly.
+                return
+
+    async def _await_tool_result(self, call_id: str, name: str, args: str) -> str:
+        """Return the result for *call_id*, reusing a prefetched call if any."""
+        fut = self._tool_futures.pop(call_id, None)
+        if fut is None or fut.cancelled():
+            fut = self._submit_tool_call(call_id, name, args)
+        return await asyncio.wrap_future(fut)
+
     async def _run_response_done_handler(self, ws, msg: dict) -> None:
         """Handle completed responses off-loop while preserving their order."""
         try:
@@ -3786,6 +3872,12 @@ class RealtimeVoiceSession:
         outputs = response.get("output") or []
         if not isinstance(outputs, list):
             return
+
+        # Start the read-only tool calls concurrently before walking the
+        # outputs. The loop below still processes results in model order, so UI
+        # emits and draft state stay sequenced — only the HTTP waits overlap,
+        # turning N round-trips into roughly one.
+        self._prefetch_safe_tools(outputs)
 
         pending: list[dict] = []
         end_session_requested = False
@@ -3859,13 +3951,7 @@ class RealtimeVoiceSession:
                 name, call_id, args[:200],
             )
             invoke_started = time.monotonic()
-            out = await asyncio.get_running_loop().run_in_executor(
-                None,
-                lambda _b=self._backend_base_url, _t=self._device_token,
-                       _c=call_id, _n=name, _a=args: invoke_realtime_tool_sync(
-                    _b, _t, call_id=_c, name=_n, arguments=_a,
-                ),
-            )
+            out = await self._await_tool_result(call_id, name, args)
             logger.info(
                 "Realtime tool result: name=%s out_len=%d elapsed_ms=%.1f",
                 name,
