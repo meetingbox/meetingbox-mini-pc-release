@@ -3061,7 +3061,27 @@ class MeetingBoxApp(App):
         self._sync_voice_assistant_state()
         self._schedule_voice_prewarm(delay=0.5)
 
+    def _notify_screen_context(self) -> None:
+        """Mirror the visible screen/tab to the live Realtime session.
+
+        Called from every navigation path via _sync_voice_assistant_state, and
+        directly by screens whose tab changes without a navigation.
+        """
+        sess = getattr(self, "_realtime_voice_session", None)
+        if sess is None:
+            return
+        try:
+            screen = self.screen_manager.current_screen
+            tab = None
+            label_fn = getattr(screen, "active_tab_label", None)
+            if callable(label_fn):
+                tab = label_fn()
+            sess.set_screen_context(self.screen_manager.current, tab)
+        except Exception:
+            logger.debug("screen context notify failed", exc_info=True)
+
     def _sync_voice_assistant_state(self) -> None:
+        self._notify_screen_context()
         if not getattr(self, 'voice_assistant', None):
             return
         self.voice_assistant.set_paused(not self._voice_assistant_should_listen())

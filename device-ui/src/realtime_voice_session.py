@@ -187,6 +187,48 @@ _PREFETCH_SAFE_TOOLS = frozenset({
 })
 # Cap on concurrently tracked tool calls per session.
 _MAX_INFLIGHT_TOOL_CALLS = 32
+
+# Human labels for screens the user can meaningfully be "on". Screens not listed
+# (setup wizard, pickers, splash) are deliberately absent — telling the model the
+# user is on "brightness_picker" is noise, not context.
+_SCREEN_LABELS = {
+    "home": "Home",
+    "calendar": "Calendar",
+    "emails": "Emails",
+    "email_draft": "Email draft",
+    "meetings": "Meetings",
+    "meeting_detail": "Meeting details",
+    "summary_review": "Meeting summary",
+    "tasks": "Tasks",
+    "voice_task_creation": "Task creation",
+    "calendar_event_creation": "Calendar event",
+    "morning_brief": "Morning brief",
+    "briefing": "Morning brief",
+    "settings": "Settings",
+    "recording": "Recording",
+    "voice_session": "Voice session",
+    "mic_test": "Microphone test",
+    "idle": "Idle",
+}
+# Rapid navigation should produce one context item, not one per screen.
+_SCREEN_CONTEXT_DEBOUNCE_S = 0.25
+_SCREEN_CONTEXT_PREAMBLE = (
+    "Screen context. This states which device screen the user is looking at right "
+    "now, and it is re-sent whenever they navigate. Answer questions like 'which "
+    "screen am I on?' or 'what am I looking at?' directly from this — never call a "
+    "tool to find out, and never say you cannot tell."
+)
+
+
+def _format_screen_context(screen: str, tab: str | None = None) -> str:
+    """Render one compact screen-context line, or '' for screens we don't report."""
+    label = _SCREEN_LABELS.get((screen or "").strip())
+    if not label:
+        return ""
+    tab_name = (tab or "").strip()
+    if tab_name:
+        return f'[Screen] {label} — "{tab_name}" tab'
+    return f"[Screen] {label}"
 _BRIEF_DIRECTIVE_TEMPLATES = {
     "schedule": (
         "[Morning briefing — SCHEDULE] The schedule card is now visible. "
@@ -966,6 +1008,11 @@ class RealtimeVoiceSession:
         # In-flight tool HTTP keyed by call_id, so a call started ahead of the
         # response.done loop is awaited there instead of being issued twice.
         self._tool_futures: dict[str, Any] = {}
+        # Which screen the user is looking at, mirrored to the model so it can
+        # answer "which screen am I on?" without a tool round-trip.
+        self._screen_context = ""
+        self._screen_context_sent = ""
+        self._screen_context_timer = None
         self._suppress_audio_until = 0.0
         # Playback clock. Realtime audio deltas often arrive faster than aplay
         # can speak them, so timing UI transitions from the last chunk alone is
@@ -3795,9 +3842,74 @@ class RealtimeVoiceSession:
         except Exception:
             logger.warning("Realtime session.update failed", exc_info=True)
 
+        # Seed the screen the user is already looking at, with the explanatory
+        # preamble, so the very first "which screen am I on?" is answerable
+        # without a round-trip.
+        line = self._screen_context
+        if line:
+            self._screen_context_sent = line
+            await self._send_screen_context(ws, line, with_preamble=True)
+
     # ------------------------------------------------------------------
     # Tool round-trip on response.done
     # ------------------------------------------------------------------
+
+    def set_screen_context(self, screen: str, tab: str | None = None) -> None:
+        """Record the visible screen/tab. Safe to call from the Kivy main thread.
+
+        Debounced: walking through five screens sends one context item, not five.
+        If no session is live the value is simply retained and injected at the
+        start of the next one.
+        """
+        line = _format_screen_context(screen, tab)
+        if not line or line == self._screen_context:
+            return
+        self._screen_context = line
+        timer = self._screen_context_timer
+        if timer is not None:
+            try:
+                timer.cancel()
+            except Exception:
+                pass
+        self._screen_context_timer = Clock.schedule_once(
+            lambda _dt: self._flush_screen_context(), _SCREEN_CONTEXT_DEBOUNCE_S
+        )
+
+    def _flush_screen_context(self) -> None:
+        self._screen_context_timer = None
+        line = self._screen_context
+        if not line or line == self._screen_context_sent:
+            return
+        loop, ws = self._loop, self._ws
+        if loop is None or ws is None or loop.is_closed():
+            # No live session — _send_session_update injects the current screen
+            # when the next one starts.
+            return
+        self._screen_context_sent = line
+        try:
+            asyncio.run_coroutine_threadsafe(
+                self._send_screen_context(ws, line), loop
+            )
+        except Exception:
+            logger.debug("screen context schedule failed", exc_info=True)
+
+    async def _send_screen_context(
+        self, ws, line: str, with_preamble: bool = False
+    ) -> None:
+        text = f"{_SCREEN_CONTEXT_PREAMBLE}\n{line}" if with_preamble else line
+        try:
+            await ws.send(json.dumps({
+                "type": "conversation.item.create",
+                "item": {
+                    "type": "message",
+                    "role": "system",
+                    "content": [{"type": "input_text", "text": text}],
+                },
+            }))
+            # Deliberately NO response.create: this is context only. Navigating
+            # must never make the assistant start speaking on its own.
+        except Exception:
+            logger.debug("screen context send failed", exc_info=True)
 
     def _submit_tool_call(self, call_id: str, name: str, args: str):
         """Start a tool HTTP round-trip on the dedicated tool pool."""

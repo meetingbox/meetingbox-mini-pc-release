@@ -821,6 +821,18 @@ class TasksScreen(BaseScreen):
 
     # ── Tab selection / styling ─────────────────────────────────────────────────
 
+    def active_tab_label(self) -> str:
+        """Human label of the visible tab, for voice screen context."""
+        return dict(_TABS).get(self._active_tab, "")
+
+    def _notify_screen_context(self) -> None:
+        # A tab switch changes what the user is looking at without a
+        # navigation, so the voice session has to be told separately.
+        try:
+            self.app._notify_screen_context()
+        except Exception:
+            pass
+
     def set_active_tab(self, tab_id: str) -> None:
         if tab_id not in _TAB_IDS:
             return
@@ -828,6 +840,7 @@ class TasksScreen(BaseScreen):
         if self._tab_labels:
             self._sync_tab_styles()
             self._rebuild_task_list()
+        self._notify_screen_context()
 
     def _on_tab(self, tab_id: str) -> None:
         self._close_menu()
@@ -836,6 +849,7 @@ class TasksScreen(BaseScreen):
         self._active_tab = tab_id
         self._sync_tab_styles()
         self._rebuild_task_list()
+        self._notify_screen_context()
 
     def _sync_tab_styles(self) -> None:
         for tid in _TAB_IDS:
