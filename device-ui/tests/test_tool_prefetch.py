@@ -36,6 +36,7 @@ class _Stub:
     _submit_tool_call = R.RealtimeVoiceSession._submit_tool_call
     _prefetch_safe_tools = R.RealtimeVoiceSession._prefetch_safe_tools
     _await_tool_result = R.RealtimeVoiceSession._await_tool_result
+    _maybe_early_invoke = R.RealtimeVoiceSession._maybe_early_invoke
 
     def __init__(self):
         self._backend_base_url = "http://backend"
@@ -137,3 +138,47 @@ def test_registry_is_bounded(monkeypatch):
         _outputs(*[(f"b{i}", "memory_search") for i in range(_CAP * 2)])
     )
     assert len(stub._tool_futures) <= _CAP
+
+
+def test_early_invoke_starts_safe_tool_at_arguments_done(monkeypatch):
+    """A read-only tool fires immediately at arguments.done, before response.done."""
+    calls = []
+    monkeypatch.setattr(R, "invoke_realtime_tool_sync", _fake_invoke(calls, 0.05))
+    stub = _Stub()
+
+    started = stub._maybe_early_invoke("c1", "show_email_draft", '{"state":"drafting"}')
+    assert started is True
+    assert "c1" in stub._tool_futures
+
+    # The later response.done path reuses the in-flight future, so the tool runs once.
+    out = asyncio.run(stub._await_tool_result("c1", "show_email_draft", "{}"))
+    assert '"ok": true' in out
+    assert len(calls) == 1
+
+
+def test_early_invoke_skips_mutations(monkeypatch):
+    """Mutations must not fire early — they wait for a non-cancelled response.done."""
+    calls = []
+    monkeypatch.setattr(R, "invoke_realtime_tool_sync", _fake_invoke(calls, 0.01))
+    stub = _Stub()
+    for name in (
+        "send_visible_email_draft",
+        "approve_pending_action",
+        "memory_remember",
+        "confirm_calendar_event",
+        "discard_task_creation",
+    ):
+        assert stub._maybe_early_invoke(f"m-{name}", name, "{}") is False
+    assert stub._tool_futures == {}
+    assert calls == []
+
+
+def test_early_invoke_is_idempotent_per_call_id(monkeypatch):
+    """Two arguments.done deliveries for one call_id start the tool once."""
+    calls = []
+    monkeypatch.setattr(R, "invoke_realtime_tool_sync", _fake_invoke(calls, 0.05))
+    stub = _Stub()
+    assert stub._maybe_early_invoke("c1", "navigate_device_ui", "{}") is True
+    assert stub._maybe_early_invoke("c1", "navigate_device_ui", "{}") is False
+    asyncio.run(stub._await_tool_result("c1", "navigate_device_ui", "{}"))
+    assert len(calls) == 1

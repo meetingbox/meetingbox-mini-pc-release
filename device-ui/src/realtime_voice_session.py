@@ -1008,6 +1008,10 @@ class RealtimeVoiceSession:
         # In-flight tool HTTP keyed by call_id, so a call started ahead of the
         # response.done loop is awaited there instead of being issued twice.
         self._tool_futures: dict[str, Any] = {}
+        # call_id -> tool name, captured from output_item.added. The
+        # arguments.done event omits the name, so we need this to gate the
+        # early-invoke allowlist. Cleared when a new response starts.
+        self._fn_call_names: dict[str, str] = {}
         # Which screen the user is looking at, mirrored to the model so it can
         # answer "which screen am I on?" without a tool round-trip.
         self._screen_context = ""
@@ -3521,6 +3525,8 @@ class RealtimeVoiceSession:
                 elif t in ("response.created", "response.started"):
                     self._touch()
                     self._log_voice_event("response_created")
+                    # New response: names from the previous one are stale.
+                    self._fn_call_names.clear()
                     if self._silent_hold_phrase or self._silent_hold_resume_pending:
                         self._response_in_progress = True
                         self._abort_aplay()
@@ -3612,13 +3618,36 @@ class RealtimeVoiceSession:
                     # the audio tail; no extra holdoff needed here.
                     self._emit_state("listening")
 
+                elif t in ("response.output_item.added", "response.output_item.done"):
+                    # Capture the function name now (arguments.done omits it) so
+                    # the early-invoke allowlist can be checked when args arrive.
+                    item = msg.get("item")
+                    if isinstance(item, dict) and item.get("type") == "function_call":
+                        cid = (item.get("call_id") or "").strip()
+                        nm = (item.get("name") or "").strip()
+                        if cid and nm:
+                            self._fn_call_names[cid] = nm
+
                 elif t == "response.function_call_arguments.done":
+                    call_id = (msg.get("call_id") or "").strip()
+                    name = self._fn_call_names.get(call_id, "") or (
+                        msg.get("name") or ""
+                    ).strip()
+                    raw_args = msg.get("arguments")
+                    args = raw_args if isinstance(raw_args, str) else (
+                        json.dumps(raw_args) if raw_args is not None else "{}"
+                    )
                     logger.info(
                         "Realtime function_call.done: name=%s call_id=%s args=%s",
-                        msg.get("name"),
-                        msg.get("call_id"),
-                        (msg.get("arguments") or "")[:200],
+                        name, call_id, args[:200],
                     )
+                    # EARLY INVOKE: start the HTTP round-trip for read-only UI
+                    # tools now — before the model finishes speaking — so the
+                    # result is ready (or nearly) by response.done, which is
+                    # where the UI still emits. Mutations are absent from the
+                    # allowlist and run only at response.done. A possible double
+                    # invoke is made safe by the server-side idempotency ledger.
+                    self._maybe_early_invoke(call_id, name, args)
 
                 # ---- Errors -------------------------------------------
                 elif t in ("error", "invalid_request_error"):
@@ -3921,6 +3950,27 @@ class RealtimeVoiceSession:
             name=name,
             arguments=args,
         )
+
+    def _maybe_early_invoke(self, call_id: str, name: str, args: str) -> bool:
+        """Start a read-only tool's HTTP call at arguments.done. Returns True if started.
+
+        Only allowlisted read-only tools qualify; mutations are excluded so a
+        cancelled/barged-in response can still suppress them at response.done.
+        Idempotent per call_id; the server ledger makes a double-invoke safe.
+        """
+        if not call_id or name not in _PREFETCH_SAFE_TOOLS:
+            return False
+        if call_id in self._tool_futures:
+            return False
+        while len(self._tool_futures) >= _MAX_INFLIGHT_TOOL_CALLS:
+            _sid, _sf = next(iter(self._tool_futures.items()))
+            self._tool_futures.pop(_sid, None)
+            _sf.cancel()
+        try:
+            self._tool_futures[call_id] = self._submit_tool_call(call_id, name, args)
+        except RuntimeError:
+            return False  # pool shutting down; response.done falls back to a fresh call
+        return True
 
     def _prefetch_safe_tools(self, outputs: list) -> None:
         """Kick off the read-only tool calls in *outputs* concurrently."""
