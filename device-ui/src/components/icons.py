@@ -36,6 +36,17 @@ from kivy.uix.widget import Widget
 
 RGBA = Tuple[float, float, float, float]
 
+# Per-glyph stroke weight, as a multiplier on the shared width.
+# wifi (three bands), mic (cradle + stem + base) and the dnd crescent outline
+# pack far more line into the same box than, say, the power symbol, so the
+# common 9% weight goes heavy and muddy on them. Thin these rather than
+# lightening the whole set.
+_STROKE_SCALE = {
+    "wifi": 0.68,
+    "mic":  0.72,
+    "dnd":  0.66,
+}
+
 
 def _stroke(**kwargs) -> Line:
     """Line with rounded caps and joints.
@@ -98,7 +109,9 @@ class Icon(Widget):
         cx = self.center_x
         cy = self.center_y
         m = min(self.width, self.height)   # icon bounding square
-        lw = max(1.2, m * 0.09)           # stroke width
+        # Floor of 1.0 (was 1.2) so the per-glyph thinning above still has an
+        # effect at small panel sizes instead of being clamped away.
+        lw = max(1.0, m * 0.09 * _STROKE_SCALE.get(self._kind, 1.0))
 
         with self.canvas:
             Color(*self._color)
@@ -141,7 +154,7 @@ class Icon(Widget):
         for r in (m * 0.22, m * 0.42, m * 0.62):
             _stroke(
                 ellipse=(cx - r, dot_cy - r, r * 2, r * 2, -65, 65),
-                width=lw * 0.9,
+                width=lw,
             )
 
     def _bluetooth(self, cx, cy, m, lw):
@@ -395,5 +408,7 @@ class Icon(Widget):
         for i in range(steps + 1):
             b = b0 + (b1 - b0) * i / steps
             pts += [cx + offset + r_in * math.cos(b), cy + r_in * math.sin(b)]
-        _stroke(points=pts, width=lw, close=True)
+        # Mitred joints so the horns come to points. Round joints blunt them
+        # into little knobs, which is the opposite of what a crescent should do.
+        _stroke(points=pts, width=lw, close=True, joint="miter", cap="square")
 
