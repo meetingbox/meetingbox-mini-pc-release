@@ -2683,9 +2683,22 @@ class MeetingBoxApp(App):
         # Pre-recording context (who/what/why) captured by the voice agent, to be
         # stored as searchable metadata so the recording is findable later.
         rec_context = context if isinstance(context, dict) else None
-        self._suspend_voice_assistant_for_recording()
+        released = self._suspend_voice_assistant_for_recording()
 
         async def _start():
+            # The assistant's teardown (websocket close + mic release) now runs
+            # on helper threads so the UI stays responsive. Still wait for it
+            # before starting the recording, or the recorder and the assistant
+            # would briefly contend for the microphone — just do the waiting
+            # here, off the Kivy main thread.
+            if released:
+                loop = asyncio.get_running_loop()
+                for event in released:
+                    try:
+                        await loop.run_in_executor(None, event.wait, 6.0)
+                    except Exception:
+                        logger.debug("voice teardown wait failed", exc_info=True)
+
             last_exc: BaseException | None = None
             max_attempts = 3
             for attempt in range(max_attempts):
@@ -3039,8 +3052,16 @@ class MeetingBoxApp(App):
         }
         return self.screen_manager.current not in blocked
 
-    def _suspend_voice_assistant_for_recording(self) -> None:
-        """Guarantee meeting audio is not mixed with assistant mic/speaker use."""
+    def _suspend_voice_assistant_for_recording(self) -> list:
+        """Guarantee meeting audio is not mixed with assistant mic/speaker use.
+
+        Returns the events that fire once the assistant has actually let go of
+        the audio devices. Teardown is started here but not waited on: this runs
+        on the Kivy main thread, and blocking it froze the UI (the
+        "python3.11 is not responding" dialog) and stalled recording start.
+        The caller waits on these off the UI thread.
+        """
+        self._voice_audio_released = None
         self._voice_recording_suspended = True
         self._voice_start_confirmation_pending = False
         self._voice_start_in_flight = False
@@ -3058,18 +3079,22 @@ class MeetingBoxApp(App):
                 self._end_realtime_voice_session()
             except Exception:
                 logger.exception("Failed to stop Realtime voice session for recording")
+        released = []
+        if getattr(self, "_voice_audio_released", None) is not None:
+            released.append(self._voice_audio_released)
         warm = getattr(self, "_warm_voice_session", None)
         self._warm_voice_session = None
         self._warm_voice_pending = False
         if warm is not None:
             try:
                 logger.info("Recording active — cancelling Realtime warm standby")
-                warm.stop()
+                released.append(warm.stop(wait=False))
             except Exception:
                 logger.exception("Failed to stop Realtime warm standby for recording")
         self._set_voice_runtime_state("idle")
         self._sync_voice_assistant_state()
         self._refresh_voice_indicator()
+        return released
 
     def _resume_voice_assistant_after_recording(self) -> None:
         self._voice_recording_suspended = False
@@ -5080,7 +5105,10 @@ class MeetingBoxApp(App):
         sess = self._realtime_voice_session
         if sess is not None:
             try:
-                sess.stop()
+                # Non-blocking: this runs on the Kivy main thread, and a
+                # blocking stop() freezes the UI for up to ~7s. Callers that
+                # need the mic released (recording) wait on the event instead.
+                self._voice_audio_released = sess.stop(wait=False)
             except Exception:
                 logger.debug("Realtime session stop", exc_info=True)
         short_failed = (

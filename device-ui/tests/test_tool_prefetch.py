@@ -265,3 +265,47 @@ def test_mutations_never_early_paint(monkeypatch):
         assert stub._maybe_early_invoke(f"m-{name}", name, "{}") is False
     assert stub.painted == []
     assert stub._emitted_call_ids == set()
+
+
+# --- session teardown must not block the caller ---------------------------
+
+def test_stop_does_not_block_the_caller_when_wait_is_false(monkeypatch):
+    """stop() blocks up to ~7s (3s ws close + 4s join).
+
+    Run from the Kivy main thread that froze the UI — the window manager showed
+    "python3.11 is not responding" and recording start stalled behind it.
+    wait=False must return promptly and signal completion via the event.
+    """
+    import threading
+
+    sess = R.RealtimeVoiceSession.__new__(R.RealtimeVoiceSession)
+    sess._user_ended = False
+    sess._stop = threading.Event()
+    sess._audio_q = _DummyQueue()
+    sess._loop = None
+    sess._ws = None
+    sess._async_task = None
+    sess._thread = None
+    slow = {"aborted": False}
+
+    def _slow_abort():
+        time.sleep(0.6)          # stand in for the real close/join cost
+        slow["aborted"] = True
+
+    sess._cancel_briefing = lambda: None
+    sess._abort_aplay = _slow_abort
+    sess._close_mic = lambda: None
+
+    started = time.monotonic()
+    done = sess.stop(wait=False)
+    elapsed = time.monotonic() - started
+
+    assert elapsed < 0.2, f"stop(wait=False) blocked the caller for {elapsed:.2f}s"
+    assert done.wait(3.0), "teardown never signalled completion"
+    assert slow["aborted"] is True
+    assert sess._stop.is_set()
+
+
+class _DummyQueue:
+    def put_nowait(self, _item):
+        return None

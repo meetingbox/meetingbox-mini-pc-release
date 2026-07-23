@@ -1212,7 +1212,20 @@ class RealtimeVoiceSession:
             and not self._stop.is_set()
         )
 
-    def stop(self) -> None:
+    def stop(self, wait: bool = True) -> threading.Event:
+        """Tear the session down; returns an Event set once audio is released.
+
+        The closing sequence blocks for up to ~7s (3s waiting on the websocket
+        close, then a 4s thread join). Run from the Kivy main thread — which is
+        what `Start recording` did — that freezes the UI long enough for the
+        window manager to raise "python3.11 is not responding", and delays the
+        recording by the same amount.
+
+        With wait=False the blocking part runs on a helper thread and the caller
+        returns immediately. Wait on the returned Event (off the UI thread) when
+        you need the microphone to actually be free before continuing.
+        """
+        done = threading.Event()
         self._user_ended = True
         self._stop.set()
         self._cancel_briefing()
@@ -1227,25 +1240,36 @@ class RealtimeVoiceSession:
                 loop.call_soon_threadsafe(task.cancel)
             except Exception:
                 pass
-        if loop and ws and not loop.is_closed():
-            async def _close():
+
+        def _finish() -> None:
+            if loop and ws and not loop.is_closed():
+                async def _close():
+                    try:
+                        await ws.close()
+                    except Exception:
+                        pass
                 try:
-                    await ws.close()
+                    asyncio.run_coroutine_threadsafe(_close(), loop).result(timeout=3.0)
                 except Exception:
                     pass
-            try:
-                asyncio.run_coroutine_threadsafe(_close(), loop).result(timeout=3.0)
-            except Exception:
-                pass
-        self._abort_aplay()
-        self._close_mic()
-        thread = self._thread
-        if (
-            thread is not None
-            and thread is not threading.current_thread()
-            and thread.is_alive()
-        ):
-            thread.join(timeout=4.0)
+            self._abort_aplay()
+            self._close_mic()
+            thread = self._thread
+            if (
+                thread is not None
+                and thread is not threading.current_thread()
+                and thread.is_alive()
+            ):
+                thread.join(timeout=4.0)
+            done.set()
+
+        if wait:
+            _finish()
+        else:
+            threading.Thread(
+                target=_finish, name="rtv-teardown", daemon=True
+            ).start()
+        return done
 
     def _acquire_device_session_lock(self) -> bool:
         """Ensure only one Realtime session owns this physical appliance."""
