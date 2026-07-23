@@ -329,6 +329,10 @@ from screens.email_draft import EmailDraftScreen
 from screens.voice_task_creation import VoiceTaskCreationScreen
 from screens.calendar_event_creation import CalendarEventCreationScreen
 from components.quick_panel import QuickPanel
+from components.summary_notification import (
+    NOTIFY_BLOCKED_SCREENS,
+    build_summary_notification,
+)
 from components.voice_control_bar import VoiceControlBar
 
 # ------------------------------------------------------------------
@@ -722,6 +726,12 @@ class MeetingBoxApp(App):
 
         # Restore processing UI if summary/transcript-ready arrived before the processing screen.
         self._processing_summary_cache = {}
+        # Summary-ready notification. Owned by the app (not HomeScreen) so a
+        # summary finishing while the user is on Tasks/Calendar/Emails still
+        # surfaces instead of waiting until they navigate Home.
+        self._summary_notification = None
+        self._summary_poll_ev = None
+        self._shown_summary_ids: set[str] = set()
         # Lightweight shared data cache for instant screen paint (stale-while-refresh).
         self._ui_data_cache: dict = {}
         self._ui_data_cache_ts: dict[str, float] = {}
@@ -1593,6 +1603,11 @@ class MeetingBoxApp(App):
                 self.backend.set_device_auth_header(tok)
         # Defer only until Kivy/async loop are up; reach API quickly after boot/restart.
         Clock.schedule_once(self._check_backend, 0.35)
+        # App-wide summary-ready watch (runs regardless of the visible screen).
+        if self._summary_poll_ev is None:
+            self._summary_poll_ev = Clock.schedule_interval(
+                self._check_summary_ready, 1.5
+            )
         # Idle + home both consume weather; start the singleton refresh loop
         # once here so it's running by the time those screens are entered.
         try:
@@ -3060,6 +3075,68 @@ class MeetingBoxApp(App):
         self._voice_recording_suspended = False
         self._sync_voice_assistant_state()
         self._schedule_voice_prewarm(delay=0.5)
+
+    # ── Summary-ready notification (app-wide) ────────────────────────────────
+
+    def _check_summary_ready(self, *_):
+        """Poll the processing cache for a finished summary, on any screen."""
+        if self._summary_notification is not None:
+            return
+        sm = getattr(self, "screen_manager", None)
+        if sm is None or sm.current in NOTIFY_BLOCKED_SCREENS:
+            return
+        cache = self._processing_summary_cache
+        if not isinstance(cache, dict) or not cache:
+            return
+        for meeting_id, entry in list(cache.items()):
+            if not isinstance(entry, dict) or not entry.get("ok"):
+                continue
+            if meeting_id in self._shown_summary_ids:
+                continue
+            self._show_summary_notification(meeting_id, entry.get("summary") or {})
+            break
+
+    def _show_summary_notification(self, meeting_id: str, summary: dict) -> None:
+        self._dismiss_summary_notification()
+        if self.root_layout is None:
+            return
+        try:
+            card = build_summary_notification(
+                summary,
+                on_view=lambda mid=meeting_id, sm=summary: self._on_view_summary_notification(mid, sm),
+                on_close=lambda mid=meeting_id: self._dismiss_summary_notification(mark=mid),
+            )
+        except Exception:
+            logger.exception("Failed to build summary notification")
+            return
+        self._summary_notification = card
+        # Mounted on root_layout (above the ScreenManager) so it floats over
+        # whatever screen is showing and survives navigation.
+        self.root_layout.add_widget(card)
+
+    def _on_view_summary_notification(self, meeting_id: str, summary: dict) -> None:
+        self._shown_summary_ids.add(meeting_id)
+        self._dismiss_summary_notification()
+        try:
+            screen = self.screen_manager.get_screen("summary_review")
+            if hasattr(screen, "set_meeting_data"):
+                screen.set_meeting_data(meeting_id, summary or {})
+        except Exception:
+            logger.exception("Failed to open summary_review from notification")
+        self.goto_screen("summary_review", "fade")
+
+    def _dismiss_summary_notification(self, mark: str | None = None) -> None:
+        if mark:
+            self._shown_summary_ids.add(mark)
+        card = self._summary_notification
+        self._summary_notification = None
+        if card is None:
+            return
+        try:
+            if card.parent is not None:
+                card.parent.remove_widget(card)
+        except Exception:
+            logger.debug("summary notification dismiss failed", exc_info=True)
 
     def _notify_screen_context(self) -> None:
         """Mirror the visible screen/tab to the live Realtime session.
