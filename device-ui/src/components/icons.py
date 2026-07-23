@@ -123,17 +123,21 @@ class Icon(Widget):
     # ------------------------------------------------------------------
 
     def _wifi(self, cx, cy, m, lw):
-        """Three arcs + center dot."""
-        # Center dot
-        d = max(3, m * 0.13)
-        Ellipse(pos=(cx - d / 2, cy - m * 0.42), size=(d, d))
-        # Three arcs (small → large), centered on that dot.
-        # Kivy ellipse angles: 0° = top, clockwise. -50°→50° arches over the
-        # top of the dot = upright WiFi fan (∩ shape).
-        dot_cy = cy - m * 0.42 + d / 2
-        for r in (m * 0.22, m * 0.36, m * 0.50):
+        """Signal dot with three arcs fanning above it.
+
+        The old version hung everything off a dot at -0.42m, so the drawn shape
+        sat in the bottom of the box with dead space above it. The fan is now
+        balanced around the centre and the arcs open wider (124° vs 100°), which
+        is closer to how a wifi glyph normally reads.
+        """
+        dot_cy = cy - m * 0.26
+        d = max(3, m * 0.14)
+        Ellipse(pos=(cx - d / 2, dot_cy - d / 2), size=(d, d))
+        # Kivy ellipse angles: 0° = top, clockwise — so a span centred on 0
+        # arches over the dot (∩).
+        for r in (m * 0.22, m * 0.37, m * 0.52):
             _stroke(
-                ellipse=(cx - r, dot_cy - r, r * 2, r * 2, -50, 50),
+                ellipse=(cx - r, dot_cy - r, r * 2, r * 2, -62, 62),
                 width=lw,
             )
 
@@ -143,18 +147,22 @@ class Icon(Widget):
         Vertical spine + two right-pointing chevrons (top & bottom half).
         """
         half_h = m * 0.44
-        half_w = m * 0.26
+        half_w = m * 0.24
         top    = cy + half_h
         bot    = cy - half_h
-        mid    = cy
         right  = cx + half_w
 
-        # Vertical center spine
-        _stroke(points=[cx, top, cx, bot], width=lw)
-        # Upper half: center-top → right-center-upper → center-mid
-        _stroke(points=[cx, top, right, cy + half_h * 0.45, cx, mid], width=lw)
-        # Lower half: center-mid → right-center-lower → center-bot
-        _stroke(points=[cx, mid, right, cy - half_h * 0.45, cx, bot], width=lw)
+        # One continuous path — spine bottom→top, then the two flags back down
+        # through the centre. Drawing it as three separate strokes overdrew the
+        # junctions, which thickened and blunted the corners of the rune.
+        _stroke(points=[
+            cx,    bot,                    # spine start
+            cx,    top,                    # spine end / upper flag start
+            right, cy + half_h * 0.50,     # upper flag tip
+            cx,    cy,                     # waist
+            right, cy - half_h * 0.50,     # lower flag tip
+            cx,    bot,                    # back to the foot
+        ], width=lw)
 
     def _battery(self, cx, cy, m, lw):
         """Rectangle body + positive nub + fill rect."""
@@ -211,12 +219,14 @@ class Icon(Widget):
             sx + tw,     cy + th / 2,
             sx + tw,     cy - th / 2,
         ])
-        # Sound-wave arcs
-        base_x = sx + tw + m * 0.04
-        for r in (m * 0.22, m * 0.36):
-            arc_cx = base_x + r * 0.08
+        # Sound-wave arcs. These used 315→405, i.e. a span centred on 0° — the
+        # TOP of the circle — so the waves arched over the speaker instead of
+        # radiating from it. Centred on 90° (Kivy's 3 o'clock) they open to the
+        # right, which is what a volume glyph reads as.
+        base_x = sx + tw
+        for r in (m * 0.20, m * 0.34):
             _stroke(
-                ellipse=(arc_cx - r, cy - r, r * 2, r * 2, 315, 405),
+                ellipse=(base_x - r, cy - r, r * 2, r * 2, 40, 140),
                 width=lw,
             )
 
@@ -299,16 +309,15 @@ class Icon(Widget):
         by = cy - m * 0.40
         RoundedRectangle(pos=(bx, by), size=(bw, bh), radius=[m * 0.09])
 
-        # Shackle: half-circle whose ends land on the body's top edge.
+        # Shackle: the TOP half of a circle centred on the body's top edge, so
+        # it arches over (∩) with both ends landing on the body. Angles 0→180
+        # would give the right half of the circle instead.
         r = m * 0.17
         top = by + bh
         _stroke(
-            ellipse=(cx - r, top - r, r * 2, r * 2, 0, 180),
+            ellipse=(cx - r, top - r, r * 2, r * 2, -90, 90),
             width=lw,
         )
-        # Straight legs closing the gap between arc ends and the body.
-        for sx in (cx - r, cx + r):
-            _stroke(points=[sx, top, sx, top - r * 0.35], width=lw)
 
     def _power(self, cx, cy, m, lw):
         """Power symbol: broken circle + vertical line to top."""
@@ -319,29 +328,33 @@ class Icon(Widget):
         _stroke(points=[cx, cy, cx, cy + r * 1.05], width=lw * 1.5)
 
     def _mic(self, cx, cy, m, lw):
-        """Microphone: rounded capsule body + stand arc + base line."""
-        bw = m * 0.28
-        bh = m * 0.46
+        """Microphone: filled capsule + U-shaped stand cradle + stem and base.
+
+        The cradle was drawn with angles 0→180, which in Kivy's convention
+        (0° = top, clockwise) is the RIGHT half of the circle — a ")" beside the
+        capsule rather than a "U" beneath it. It now spans 90→270, the bottom
+        half, so it actually cradles the mic.
+        """
+        bw = m * 0.26
+        bh = m * 0.44
         br = bw / 2
         bx = cx - br
-        by = cy - m * 0.10
-        # Capsule body (rounded rectangle approximated by a tall ellipse outline)
+        by = cy - m * 0.04
+        # Solid capsule reads better at small sizes than a thin outline.
+        RoundedRectangle(pos=(bx, by), size=(bw, bh), radius=[br])
+
+        # Cradle: bottom half of a circle centred just under the capsule.
+        stand_r = m * 0.27
+        stand_cy = by + m * 0.05
         _stroke(
-            rounded_rectangle=(bx, by, bw, bh, br),
+            ellipse=(cx - stand_r, stand_cy - stand_r, stand_r * 2, stand_r * 2, 90, 270),
             width=lw,
         )
-        # Stand arc below the capsule
-        stand_r = m * 0.30
-        stand_cy = by
-        _stroke(
-            ellipse=(cx - stand_r, stand_cy - stand_r, stand_r * 2, stand_r * 2, 0, 180),
-            width=lw,
-        )
-        # Vertical stem connecting stand to base
-        _stroke(points=[cx, stand_cy - stand_r, cx, cy - m * 0.44], width=lw)
-        # Horizontal base
-        base_hw = m * 0.20
-        _stroke(points=[cx - base_hw, cy - m * 0.44, cx + base_hw, cy - m * 0.44], width=lw)
+        base_y = cy - m * 0.42
+        # Stem from the cradle's lowest point down to the base.
+        _stroke(points=[cx, stand_cy - stand_r, cx, base_y], width=lw)
+        base_hw = m * 0.17
+        _stroke(points=[cx - base_hw, base_y, cx + base_hw, base_y], width=lw)
 
     def _dnd(self, cx, cy, m, lw):
         """Do Not Disturb: crescent moon shape."""
