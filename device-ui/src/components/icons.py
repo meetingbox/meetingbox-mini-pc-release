@@ -28,10 +28,25 @@ from __future__ import annotations
 import math
 from typing import Tuple
 
-from kivy.graphics import Color, Ellipse, Line, Rectangle, Triangle
+from kivy.graphics import (
+    Color, Ellipse, Line, PopMatrix, PushMatrix, Rectangle,
+    Rotate, RoundedRectangle, Triangle,
+)
 from kivy.uix.widget import Widget
 
 RGBA = Tuple[float, float, float, float]
+
+
+def _stroke(**kwargs) -> Line:
+    """Line with rounded caps and joints.
+
+    Kivy defaults to square butt-ends, which is the main reason hand-drawn
+    icons read as crude next to a real icon set — every stroke terminates in a
+    hard corner. Rounding caps/joints is the single biggest fidelity win here.
+    """
+    kwargs.setdefault("cap", "round")
+    kwargs.setdefault("joint", "round")
+    return Line(**kwargs)
 
 
 class Icon(Widget):
@@ -117,7 +132,7 @@ class Icon(Widget):
         # top of the dot = upright WiFi fan (∩ shape).
         dot_cy = cy - m * 0.42 + d / 2
         for r in (m * 0.22, m * 0.36, m * 0.50):
-            Line(
+            _stroke(
                 ellipse=(cx - r, dot_cy - r, r * 2, r * 2, -50, 50),
                 width=lw,
             )
@@ -135,11 +150,11 @@ class Icon(Widget):
         right  = cx + half_w
 
         # Vertical center spine
-        Line(points=[cx, top, cx, bot], width=lw)
+        _stroke(points=[cx, top, cx, bot], width=lw)
         # Upper half: center-top → right-center-upper → center-mid
-        Line(points=[cx, top, right, cy + half_h * 0.45, cx, mid], width=lw)
+        _stroke(points=[cx, top, right, cy + half_h * 0.45, cx, mid], width=lw)
         # Lower half: center-mid → right-center-lower → center-bot
-        Line(points=[cx, mid, right, cy - half_h * 0.45, cx, bot], width=lw)
+        _stroke(points=[cx, mid, right, cy - half_h * 0.45, cx, bot], width=lw)
 
     def _battery(self, cx, cy, m, lw):
         """Rectangle body + positive nub + fill rect."""
@@ -151,35 +166,56 @@ class Icon(Widget):
         nub_h = bh * 0.42
         body_w = bw - nub_w
 
-        # Body outline
-        Line(rectangle=(bx, by, body_w, bh), width=lw)
-        # Positive nub (right side)
-        Rectangle(pos=(bx + body_w, cy - nub_h / 2), size=(nub_w, nub_h))
-        # Fill
+        # Body outline — rounded, like every real battery glyph.
+        r_body = bh * 0.28
+        _stroke(rounded_rectangle=(bx, by, body_w, bh, r_body), width=lw)
+        # Positive nub (right side), rounded on its outer corners.
+        RoundedRectangle(
+            pos=(bx + body_w, cy - nub_h / 2),
+            size=(nub_w, nub_h),
+            radius=[nub_w * 0.45],
+        )
+        # Fill, inset and rounded so it echoes the body instead of a hard block.
         if self._level > 0.02:
             pad = lw * 1.2
             fill_w = max(0, (body_w - pad * 2) * self._level)
-            Rectangle(
-                pos=(bx + pad, by + pad),
-                size=(fill_w, bh - pad * 2),
-            )
+            if fill_w > 0:
+                RoundedRectangle(
+                    pos=(bx + pad, by + pad),
+                    size=(fill_w, bh - pad * 2),
+                    radius=[min(fill_w, bh - pad * 2) * 0.28],
+                )
 
     def _volume(self, cx, cy, m, lw):
-        """Speaker triangle + two sound-wave arcs."""
-        # Speaker cone (triangle)
-        sx  = cx - m * 0.40
-        tw  = m * 0.28
-        th  = m * 0.38
+        """Speaker (neck + cone) + two sound-wave arcs.
+
+        The cone alone was a bare triangle pointing the wrong way round; a real
+        speaker glyph is a small rectangular neck with the cone flaring out of
+        it.
+        """
+        sx = cx - m * 0.40
+        tw = m * 0.28
+        th = m * 0.38
+        neck_w = tw * 0.42
+        neck_h = th * 0.44
+        # Neck (the driver box against the left edge)
+        Rectangle(pos=(sx, cy - neck_h / 2), size=(neck_w, neck_h))
+        # Cone flaring right from the neck
         Triangle(points=[
-            sx,        cy,
-            sx + tw,   cy + th / 2,
-            sx + tw,   cy - th / 2,
+            sx + neck_w, cy - neck_h / 2,
+            sx + neck_w, cy + neck_h / 2,
+            sx + tw,     cy + th / 2,
+        ])
+        Triangle(points=[
+            sx + neck_w, cy - neck_h / 2,
+            sx + tw,     cy + th / 2,
+            sx + tw,     cy - th / 2,
         ])
         # Sound-wave arcs
         base_x = sx + tw + m * 0.04
         for r in (m * 0.22, m * 0.36):
             arc_cx = base_x + r * 0.08
-            Line(
+            _stroke(
                 ellipse=(arc_cx - r, cy - r, r * 2, r * 2, 315, 405),
                 width=lw,
             )
@@ -187,67 +223,100 @@ class Icon(Widget):
     def _brightness(self, cx, cy, m, lw):
         """Circle + 8 short radiating rays."""
         r_c = m * 0.20
-        Line(circle=(cx, cy, r_c), width=lw)
+        _stroke(circle=(cx, cy, r_c), width=lw)
         r1, r2 = m * 0.30, m * 0.44
         for angle_deg in range(0, 360, 45):
             rad = math.radians(angle_deg)
-            Line(points=[
+            _stroke(points=[
                 cx + math.cos(rad) * r1, cy + math.sin(rad) * r1,
                 cx + math.cos(rad) * r2, cy + math.sin(rad) * r2,
             ], width=lw)
 
     def _airplane(self, cx, cy, m, lw):
-        """Simplified airplane silhouette (body + two wings)."""
-        # Fuselage line (diagonal, bottom-left to top-right)
-        Line(points=[cx - m*0.30, cy - m*0.28, cx + m*0.30, cy + m*0.28],
-             width=lw * 1.6)
-        # Main wing
-        Line(points=[
-            cx - m*0.10, cy + m*0.04,
-            cx + m*0.10, cy + m*0.04,
-            cx + m*0.24, cy + m*0.22,
-        ], width=lw)
-        # Tail fin
-        Line(points=[
-            cx - m*0.26, cy - m*0.20,
-            cx - m*0.14, cy - m*0.10,
-            cx - m*0.04, cy - m*0.10,
-        ], width=lw)
+        """Upright airplane silhouette, drawn as one closed shape.
+
+        Previously three disconnected strokes (fuselage, wing, tail) that read
+        as random marks rather than a plane. Now a single symmetric outline:
+        nose, swept wings, waist, tailplane.
+        """
+        s = m
+        pts = [
+            (0.00,  0.46),   # nose
+            (0.09,  0.20),   # right shoulder
+            (0.42, -0.04),   # right wingtip
+            (0.42, -0.15),
+            (0.09, -0.06),   # wing trailing edge back to body
+            (0.07, -0.30),
+            (0.20, -0.40),   # right tailplane tip
+            (0.20, -0.47),
+            (0.00, -0.40),   # tail centre
+            (-0.20, -0.47),  # left tailplane tip
+            (-0.20, -0.40),
+            (-0.07, -0.30),
+            (-0.09, -0.06),
+            (-0.42, -0.15),  # left wingtip
+            (-0.42, -0.04),
+            (-0.09,  0.20),  # left shoulder
+        ]
+        flat = []
+        for px, py in pts:
+            flat.extend([cx + px * s, cy + py * s])
+        _stroke(points=flat, width=lw, close=True)
 
     def _settings(self, cx, cy, m, lw):
-        """Gear: center circle + 6 rectangular teeth."""
-        r_inner = m * 0.22
-        r_outer = m * 0.44
-        Line(circle=(cx, cy, r_inner), width=lw)
-        for i in range(6):
-            rad = math.radians(i * 60)
-            Line(points=[
-                cx + math.cos(rad) * r_inner,
-                cy + math.sin(rad) * r_inner,
-                cx + math.cos(rad) * r_outer,
-                cy + math.sin(rad) * r_outer,
-            ], width=lw * 2.2)
+        """Gear: hub ring + 8 rounded teeth around it.
+
+        The old version drew straight spokes radiating from a circle, which
+        reads as a sun/asterisk rather than a gear. Real teeth sit tangentially
+        around the rim, so each is drawn as a small rounded rect rotated into
+        place.
+        """
+        r_hub = m * 0.24
+        _stroke(circle=(cx, cy, r_hub), width=lw)
+
+        tooth_w = m * 0.14
+        tooth_h = m * 0.14
+        r_tooth = r_hub + tooth_h * 0.42
+        for i in range(8):
+            PushMatrix()
+            Rotate(angle=i * 45.0, origin=(cx, cy))
+            RoundedRectangle(
+                pos=(cx - tooth_w / 2, cy + r_tooth - tooth_h / 2),
+                size=(tooth_w, tooth_h),
+                radius=[tooth_w * 0.32],
+            )
+            PopMatrix()
 
     def _lock(self, cx, cy, m, lw):
-        """Padlock body rectangle + shackle arc."""
-        bw, bh = m * 0.56, m * 0.40
+        """Padlock: rounded body + shackle arc rising from its top edge.
+
+        The body was a sharp-cornered rectangle outline, which reads as a box
+        rather than a padlock. A solid rounded body with the shackle springing
+        from its top edge is the shape people actually recognise.
+        """
+        bw, bh = m * 0.54, m * 0.40
         bx = cx - bw / 2
-        by = cy - m * 0.42
-        Line(rectangle=(bx, by, bw, bh), width=lw)
-        # Shackle
-        r = m * 0.22
-        Line(
-            ellipse=(cx - r, by + bh - r * 0.5, r * 2, r * 2, 0, 180),
+        by = cy - m * 0.40
+        RoundedRectangle(pos=(bx, by), size=(bw, bh), radius=[m * 0.09])
+
+        # Shackle: half-circle whose ends land on the body's top edge.
+        r = m * 0.17
+        top = by + bh
+        _stroke(
+            ellipse=(cx - r, top - r, r * 2, r * 2, 0, 180),
             width=lw,
         )
+        # Straight legs closing the gap between arc ends and the body.
+        for sx in (cx - r, cx + r):
+            _stroke(points=[sx, top, sx, top - r * 0.35], width=lw)
 
     def _power(self, cx, cy, m, lw):
         """Power symbol: broken circle + vertical line to top."""
         r = m * 0.38
         # Circle arc leaving a gap at the top (30° gap each side)
-        Line(ellipse=(cx - r, cy - r, r * 2, r * 2, 210, 510), width=lw * 1.3)
+        _stroke(ellipse=(cx - r, cy - r, r * 2, r * 2, 210, 510), width=lw * 1.3)
         # Vertical line from center to top
-        Line(points=[cx, cy, cx, cy + r * 1.05], width=lw * 1.5)
+        _stroke(points=[cx, cy, cx, cy + r * 1.05], width=lw * 1.5)
 
     def _mic(self, cx, cy, m, lw):
         """Microphone: rounded capsule body + stand arc + base line."""
@@ -257,22 +326,22 @@ class Icon(Widget):
         bx = cx - br
         by = cy - m * 0.10
         # Capsule body (rounded rectangle approximated by a tall ellipse outline)
-        Line(
+        _stroke(
             rounded_rectangle=(bx, by, bw, bh, br),
             width=lw,
         )
         # Stand arc below the capsule
         stand_r = m * 0.30
         stand_cy = by
-        Line(
+        _stroke(
             ellipse=(cx - stand_r, stand_cy - stand_r, stand_r * 2, stand_r * 2, 0, 180),
             width=lw,
         )
         # Vertical stem connecting stand to base
-        Line(points=[cx, stand_cy - stand_r, cx, cy - m * 0.44], width=lw)
+        _stroke(points=[cx, stand_cy - stand_r, cx, cy - m * 0.44], width=lw)
         # Horizontal base
         base_hw = m * 0.20
-        Line(points=[cx - base_hw, cy - m * 0.44, cx + base_hw, cy - m * 0.44], width=lw)
+        _stroke(points=[cx - base_hw, cy - m * 0.44, cx + base_hw, cy - m * 0.44], width=lw)
 
     def _dnd(self, cx, cy, m, lw):
         """Do Not Disturb: crescent moon shape."""
@@ -282,14 +351,14 @@ class Icon(Widget):
         # Crescent: outer circle minus an overlapping inner circle shifted right
         # Approximate with a thick arc on the left side + fill using two ellipses
         # Simpler approach: draw arc from ~120° to 300° (left-facing crescent)
-        Line(
+        _stroke(
             ellipse=(cx - r_out, cy - r_out, r_out * 2, r_out * 2, 105, 345),
             width=lw,
         )
         # Inner cutout edge (smaller arc on the right)
         r_in = r_out * 0.65
         offset_x = r_out * 0.35
-        Line(
+        _stroke(
             ellipse=(
                 cx + offset_x - r_in,
                 cy - r_in,
@@ -303,11 +372,11 @@ class Icon(Widget):
         # Connect the two arc endpoints at top and bottom to close the crescent
         ang_top = math.radians(105)
         ang_bot = math.radians(345)
-        Line(points=[
+        _stroke(points=[
             cx + math.cos(ang_top) * r_out, cy + math.sin(ang_top) * r_out,
             cx + offset_x + math.cos(ang_top) * r_in, cy + math.sin(ang_top) * r_in,
         ], width=lw)
-        Line(points=[
+        _stroke(points=[
             cx + math.cos(ang_bot) * r_out, cy + math.sin(ang_bot) * r_out,
             cx + offset_x + math.cos(ang_bot) * r_in, cy + math.sin(ang_bot) * r_in,
         ], width=lw)
