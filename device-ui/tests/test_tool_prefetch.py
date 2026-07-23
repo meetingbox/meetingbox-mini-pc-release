@@ -43,6 +43,10 @@ class _Stub:
         self._device_token = "token"
         self._tool_executor = ThreadPoolExecutor(max_workers=4)
         self._tool_futures = {}
+        # No live session here, so the early-paint callback bails out early
+        # instead of raising inside a done-callback. _PaintStub overrides this.
+        self._ws = None
+        self._emitted_call_ids = set()
 
 
 def _fake_invoke(calls, latency=_LATENCY_S):
@@ -182,3 +186,82 @@ def test_early_invoke_is_idempotent_per_call_id(monkeypatch):
     assert stub._maybe_early_invoke("c1", "navigate_device_ui", "{}") is False
     asyncio.run(stub._await_tool_result("c1", "navigate_device_ui", "{}"))
     assert len(calls) == 1
+
+
+# --- early UI paint -------------------------------------------------------
+
+class _PaintStub(_Stub):
+    """Adds the emit surface so early painting can be observed."""
+
+    _paint_early_result = R.RealtimeVoiceSession._paint_early_result
+
+    def __init__(self):
+        super().__init__()
+        self._ws = object()          # session considered live
+        self._emitted_call_ids = set()
+        self.painted = []
+
+    def _emit_email_draft(self, out):
+        self.painted.append(("draft", out))
+
+    def _emit_recipient_picker(self, out):
+        self.painted.append(("picker", out))
+
+    def _emit_email_view(self, out):
+        self.painted.append(("view", out))
+
+
+def _settle(stub, call_id, timeout=2.0):
+    """Wait for the in-flight future (and its done-callback) to finish."""
+    fut = stub._tool_futures.get(call_id)
+    if fut is not None:
+        fut.result(timeout=timeout)
+    time.sleep(0.05)  # let add_done_callback run
+
+
+def test_display_tool_paints_early_without_waiting_for_response_done(monkeypatch):
+    calls = []
+    monkeypatch.setattr(R, "invoke_realtime_tool_sync", _fake_invoke(calls, 0.02))
+    stub = _PaintStub()
+
+    assert stub._maybe_early_invoke("c1", "show_email_draft", "{}") is True
+    _settle(stub, "c1")
+
+    assert [p[0] for p in stub.painted] == ["draft"], "draft should paint on early result"
+    assert "c1" in stub._emitted_call_ids
+
+
+def test_early_paint_claims_call_id_so_response_done_does_not_repaint(monkeypatch):
+    calls = []
+    monkeypatch.setattr(R, "invoke_realtime_tool_sync", _fake_invoke(calls, 0.02))
+    stub = _PaintStub()
+    stub._maybe_early_invoke("c1", "show_recipient_picker", "{}")
+    _settle(stub, "c1")
+
+    # response.done consults this set; the claim must already be present.
+    assert "c1" in stub._emitted_call_ids
+    assert len(stub.painted) == 1
+    # A second delivery of the same call_id must not paint again.
+    stub._paint_early_result("c1", "show_recipient_picker", stub._tool_futures.get("c1"))
+    assert len(stub.painted) == 1
+
+
+def test_navigation_is_not_early_painted(monkeypatch):
+    """navigate_device_ui drives the brief carousel — it must stay on response.done."""
+    calls = []
+    monkeypatch.setattr(R, "invoke_realtime_tool_sync", _fake_invoke(calls, 0.02))
+    stub = _PaintStub()
+    assert stub._maybe_early_invoke("c1", "navigate_device_ui", "{}") is True  # still prefetched
+    _settle(stub, "c1")
+    assert stub.painted == [], "navigation must not paint early"
+    assert "c1" not in stub._emitted_call_ids
+
+
+def test_mutations_never_early_paint(monkeypatch):
+    calls = []
+    monkeypatch.setattr(R, "invoke_realtime_tool_sync", _fake_invoke(calls, 0.01))
+    stub = _PaintStub()
+    for name in ("send_visible_email_draft", "approve_pending_action", "memory_remember"):
+        assert stub._maybe_early_invoke(f"m-{name}", name, "{}") is False
+    assert stub.painted == []
+    assert stub._emitted_call_ids == set()

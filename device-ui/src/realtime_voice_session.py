@@ -188,6 +188,26 @@ _PREFETCH_SAFE_TOOLS = frozenset({
 # Cap on concurrently tracked tool calls per session.
 _MAX_INFLIGHT_TOOL_CALLS = 32
 
+# Tools whose screen is painted as soon as their early-invoked HTTP returns,
+# instead of waiting for response.done (which only arrives after the model has
+# finished generating its whole spoken reply). These are pure display payloads:
+# the emit just forwards data to the UI, with no state machine behind it.
+#
+# navigate_device_ui and show_meeting_summary are deliberately EXCLUDED — they
+# drive the morning-brief carousel / summary lifecycle, and firing those early
+# could desync the walkthrough. They keep painting at response.done.
+#
+# Mutations are absent from _PREFETCH_SAFE_TOOLS entirely, so they can never be
+# early-invoked and therefore never early-painted.
+_EARLY_EMIT_TOOLS = {
+    "show_email_draft": "_emit_email_draft",
+    "show_recipient_picker": "_emit_recipient_picker",
+    "show_task_creation": "_emit_task_creation",
+    "show_calendar_event": "_emit_calendar_event",
+    "fetch_and_show_email": "_emit_email_view",
+    "show_email_view": "_emit_email_view",
+}
+
 # Human labels for screens the user can meaningfully be "on". Screens not listed
 # (setup wizard, pickers, splash) are deliberately absent — telling the model the
 # user is on "brightness_picker" is noise, not context.
@@ -1012,6 +1032,9 @@ class RealtimeVoiceSession:
         # arguments.done event omits the name, so we need this to gate the
         # early-invoke allowlist. Cleared when a new response starts.
         self._fn_call_names: dict[str, str] = {}
+        # call_ids already painted early, so the response.done pass does not
+        # emit the same screen a second time.
+        self._emitted_call_ids: set[str] = set()
         # Which screen the user is looking at, mirrored to the model so it can
         # answer "which screen am I on?" without a tool round-trip.
         self._screen_context = ""
@@ -3967,10 +3990,49 @@ class RealtimeVoiceSession:
             self._tool_futures.pop(_sid, None)
             _sf.cancel()
         try:
-            self._tool_futures[call_id] = self._submit_tool_call(call_id, name, args)
+            future = self._submit_tool_call(call_id, name, args)
         except RuntimeError:
             return False  # pool shutting down; response.done falls back to a fresh call
+        self._tool_futures[call_id] = future
+        # Paint display-only screens the moment the result lands, rather than
+        # waiting for the model to finish speaking.
+        if name in _EARLY_EMIT_TOOLS:
+            future.add_done_callback(
+                lambda f, _c=call_id, _n=name: self._paint_early_result(_c, _n, f)
+            )
         return True
+
+    def _paint_early_result(self, call_id: str, name: str, future) -> None:
+        """Emit a display-only tool's screen as soon as its HTTP returns.
+
+        Runs on the tool executor thread; every _emit_* helper marshals to the
+        Kivy thread via Clock.schedule_once, so this is safe from here.
+        """
+        if future.cancelled():
+            return
+        try:
+            out = future.result()
+        except Exception:
+            return  # response.done will surface the error normally
+        if not out or self._ws is None:
+            return
+        emitter = getattr(self, _EARLY_EMIT_TOOLS.get(name, ""), None)
+        if emitter is None:
+            return
+        # Claim the call_id BEFORE emitting. If the HTTP resolves just as the
+        # response.done pass reaches this tool, the claim guarantees exactly one
+        # of the two paints it — never both.
+        if call_id in self._emitted_call_ids:
+            return
+        if len(self._emitted_call_ids) >= _MAX_INFLIGHT_TOOL_CALLS * 2:
+            self._emitted_call_ids.clear()
+        self._emitted_call_ids.add(call_id)
+        try:
+            emitter(out)
+        except Exception:
+            # Release the claim so response.done still paints the screen.
+            self._emitted_call_ids.discard(call_id)
+            logger.debug("early paint failed name=%s", name, exc_info=True)
 
     def _prefetch_safe_tools(self, outputs: list) -> None:
         """Kick off the read-only tool calls in *outputs* concurrently."""
@@ -4164,9 +4226,11 @@ class RealtimeVoiceSession:
                         self._cancel_briefing()
                     self._emit_device_navigation(out)
             elif name in ("fetch_and_show_email", "show_email_view"):
-                self._emit_email_view(out)
+                if call_id not in self._emitted_call_ids:
+                    self._emit_email_view(out)
             elif name == "show_email_draft":
-                self._emit_email_draft(out)
+                if call_id not in self._emitted_call_ids:
+                    self._emit_email_draft(out)
                 # The draft popup (incl. the full reply-all recipient list the
                 # server resolved) is a DEVICE-ONLY surface. Strip those concrete
                 # recipients from what we feed back to the model so it can never
@@ -4175,19 +4239,22 @@ class RealtimeVoiceSession:
                 # the reply / reply-all tools, which compute recipients server-side.
                 model_out = self._redact_email_draft_for_model(out)
             elif name == "show_task_creation":
-                self._emit_task_creation(out)
+                if call_id not in self._emitted_call_ids:
+                    self._emit_task_creation(out)
                 model_out = self._redact_task_creation_for_model(out)
             elif name in ("confirm_task_creation", "discard_task_creation"):
                 self._emit_task_dismiss(out)
                 model_out = self._redact_task_dismiss_for_model(out)
             elif name == "show_calendar_event":
-                self._emit_calendar_event(out)
+                if call_id not in self._emitted_call_ids:
+                    self._emit_calendar_event(out)
                 model_out = self._redact_calendar_event_for_model(out)
             elif name in ("confirm_calendar_event", "discard_calendar_event"):
                 self._emit_calendar_event_dismiss(out)
                 model_out = self._redact_calendar_event_dismiss_for_model(out)
             elif name == "show_recipient_picker":
-                self._emit_recipient_picker(out)
+                if call_id not in self._emitted_call_ids:
+                    self._emit_recipient_picker(out)
             elif name == "show_meeting_summary":
                 self._emit_device_navigation(out)
                 # The summary body is a DEVICE-ONLY surface (the screen shows it).
