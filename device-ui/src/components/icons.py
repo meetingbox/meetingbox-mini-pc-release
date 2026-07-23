@@ -130,15 +130,18 @@ class Icon(Widget):
         balanced around the centre and the arcs open wider (124° vs 100°), which
         is closer to how a wifi glyph normally reads.
         """
-        dot_cy = cy - m * 0.26
-        d = max(3, m * 0.14)
+        dot_cy = cy - m * 0.30
+        d = max(3, m * 0.15)
         Ellipse(pos=(cx - d / 2, dot_cy - d / 2), size=(d, d))
-        # Kivy ellipse angles: 0° = top, clockwise — so a span centred on 0
-        # arches over the dot (∩).
-        for r in (m * 0.22, m * 0.37, m * 0.52):
+        # Radii are spaced 0.20m apart. At the previous 0.15m spacing the gap
+        # between bands was only ~0.06m against a 0.09m stroke, so the three
+        # arcs crowded into a single blob at panel size.
+        # Kivy ellipse angles: 0° = top, clockwise — a span centred on 0 arches
+        # over the dot (∩).
+        for r in (m * 0.22, m * 0.42, m * 0.62):
             _stroke(
-                ellipse=(cx - r, dot_cy - r, r * 2, r * 2, -62, 62),
-                width=lw,
+                ellipse=(cx - r, dot_cy - r, r * 2, r * 2, -65, 65),
+                width=lw * 0.9,
             )
 
     def _bluetooth(self, cx, cy, m, lw):
@@ -357,39 +360,40 @@ class Icon(Widget):
         _stroke(points=[cx - base_hw, base_y, cx + base_hw, base_y], width=lw)
 
     def _dnd(self, cx, cy, m, lw):
-        """Do Not Disturb: crescent moon shape."""
-        # Outer full circle (clip by drawing the inner offset circle over it)
-        r_out = m * 0.40
-        # Draw the outer circle arc that forms the lit side of the crescent
-        # Crescent: outer circle minus an overlapping inner circle shifted right
-        # Approximate with a thick arc on the left side + fill using two ellipses
-        # Simpler approach: draw arc from ~120° to 300° (left-facing crescent)
-        _stroke(
-            ellipse=(cx - r_out, cy - r_out, r_out * 2, r_out * 2, 105, 345),
-            width=lw,
+        """Do Not Disturb: crescent moon, as one closed outline.
+
+        The old version mixed two angle conventions: the arcs used Kivy's
+        ellipse angles (0° = top, clockwise) while the two lines meant to close
+        the shape computed their endpoints with math.cos/sin (0° = right,
+        counter-clockwise). Those lines therefore ran to points that were not on
+        the arcs, and the crescent never closed.
+
+        This builds the whole outline from explicit points in one convention:
+        an outer arc, then the inner arc back, sized so the two circles actually
+        intersect at the horns.
+        """
+        r_out = m * 0.42
+        offset = m * 0.30
+        theta = math.radians(55)          # half-angle to each horn
+        # Inner radius that puts the inner circle through both horn points.
+        r_in = math.sqrt(
+            r_out * r_out - 2 * r_out * offset * math.cos(theta) + offset * offset
         )
-        # Inner cutout edge (smaller arc on the right)
-        r_in = r_out * 0.65
-        offset_x = r_out * 0.35
-        _stroke(
-            ellipse=(
-                cx + offset_x - r_in,
-                cy - r_in,
-                r_in * 2,
-                r_in * 2,
-                105,
-                345,
-            ),
-            width=lw,
-        )
-        # Connect the two arc endpoints at top and bottom to close the crescent
-        ang_top = math.radians(105)
-        ang_bot = math.radians(345)
-        _stroke(points=[
-            cx + math.cos(ang_top) * r_out, cy + math.sin(ang_top) * r_out,
-            cx + offset_x + math.cos(ang_top) * r_in, cy + math.sin(ang_top) * r_in,
-        ], width=lw)
-        _stroke(points=[
-            cx + math.cos(ang_bot) * r_out, cy + math.sin(ang_bot) * r_out,
-            cx + offset_x + math.cos(ang_bot) * r_in, cy + math.sin(ang_bot) * r_in,
-        ], width=lw)
+        # Horn position, and its angle as seen from the inner circle's centre.
+        hx, hy = r_out * math.cos(theta), r_out * math.sin(theta)
+        phi = math.atan2(hy, hx - offset)
+
+        steps = 28
+        pts: list[float] = []
+        # Outer edge: horn → over the top → around the left → bottom horn.
+        a0, a1 = theta, 2 * math.pi - theta
+        for i in range(steps + 1):
+            a = a0 + (a1 - a0) * i / steps
+            pts += [cx + r_out * math.cos(a), cy + r_out * math.sin(a)]
+        # Inner edge: back from the bottom horn to the top one, carving the bite.
+        b0, b1 = 2 * math.pi - phi, phi
+        for i in range(steps + 1):
+            b = b0 + (b1 - b0) * i / steps
+            pts += [cx + offset + r_in * math.cos(b), cy + r_in * math.sin(b)]
+        _stroke(points=pts, width=lw, close=True)
+

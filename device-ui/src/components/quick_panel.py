@@ -113,6 +113,27 @@ _ROW_PRESS_BG = (0.90, 0.92, 0.96, 1.0)
 _TILE_ACTIVE_BG = (0.82, 0.89, 1.00, 1.0)      # blue-tinted active tile
 _TILE_INACTIVE_BG = (0.92, 0.94, 0.97, 1.0)    # neutral light tile
 
+# Soft drop shadow under the sheet's bottom edge. Kivy cannot blur, so stack a
+# few translucent bands with growing spread and falling alpha.
+_PANEL_SHADOW_RGB = (0.42, 0.45, 0.52)
+_PANEL_SHADOW_LAYERS = (
+    (16.0, 0.030),
+    (11.0, 0.042),
+    (7.0, 0.055),
+    (3.5, 0.070),
+)
+
+
+def _shade(rgba, factor: float):
+    """Multiply RGB by *factor*, preserving alpha — for press states."""
+    r, g, b, a = rgba
+    return (
+        max(0.0, min(1.0, r * factor)),
+        max(0.0, min(1.0, g * factor)),
+        max(0.0, min(1.0, b * factor)),
+        a,
+    )
+
 
 class _QuickTile(ButtonBehavior, FloatLayout):
     """Square-ish tile: large icon top-left, name bottom-left, toggle/arrow top-right."""
@@ -137,7 +158,9 @@ class _QuickTile(ButtonBehavior, FloatLayout):
             self._bg_col = Color(*(_TILE_ACTIVE_BG if active else _TILE_INACTIVE_BG))
             self._bg = RoundedRectangle(pos=self.pos, size=self.size,
                                         radius=[_sv(10)])
-        self.bind(pos=self._sync_bg, size=self._sync_bg)
+        # Repaint on press too: without this the tiles were completely inert
+        # under the finger, which is what made them feel unresponsive.
+        self.bind(pos=self._sync_bg, size=self._sync_bg, state=self._sync_bg)
 
         # Icon (top-left)
         icon_col = (0.16, 0.36, 0.72, 1.0) if active else _TEXT_SECONDARY
@@ -190,6 +213,7 @@ class _QuickTile(ButtonBehavior, FloatLayout):
     def _sync_bg(self, *_):
         self._bg.pos = self.pos
         self._bg.size = self.size
+        self._update_visuals()
 
     def _reposition_icon(self, *_):
         pad = _sv(8)
@@ -237,7 +261,10 @@ class _QuickTile(ButtonBehavior, FloatLayout):
         self._update_visuals()
 
     def _update_visuals(self):
-        self._bg_col.rgba = _TILE_ACTIVE_BG if self._active else _TILE_INACTIVE_BG
+        base = _TILE_ACTIVE_BG if self._active else _TILE_INACTIVE_BG
+        if self.state == "down":
+            base = _shade(base, 0.92)
+        self._bg_col.rgba = base
         icon_col = (0.16, 0.36, 0.72, 1.0) if self._active else _TEXT_SECONDARY
         self._icon.set_color(icon_col)
         txt_col = _TEXT_PRIMARY if self._active else _TEXT_SECONDARY
@@ -507,15 +534,21 @@ class QuickPanel(FloatLayout):
             height=PANEL_H,
         )
         with self._card.canvas.before:
+            # Shadow first, so the sheet reads as floating over the screen
+            # behind it rather than being pasted flat onto it.
+            sr, sg, sb = _PANEL_SHADOW_RGB
+            self._card_shadows = []
+            for _spread, alpha in _PANEL_SHADOW_LAYERS:
+                Color(sr, sg, sb, alpha)
+                self._card_shadows.append(
+                    RoundedRectangle(radius=[0, 0, _sv(20), _sv(20)])
+                )
             Color(*_PANEL_BG)
             self._card_bg = RoundedRectangle(
                 pos=self._card.pos, size=self._card.size,
                 radius=[0, 0, _sv(16), _sv(16)],
             )
-        self._card.bind(
-            pos=lambda _, v: setattr(self._card_bg, "pos", v),
-            size=lambda _, v: setattr(self._card_bg, "size", v),
-        )
+        self._card.bind(pos=self._sync_card_bg, size=self._sync_card_bg)
 
         self._card.add_widget(self._make_header())
         self._card.add_widget(self._make_scroll())
@@ -523,6 +556,17 @@ class QuickPanel(FloatLayout):
 
         self._card.pos = (0, Window.height)
         self.add_widget(self._card)
+
+    def _sync_card_bg(self, *_):
+        x, y = self._card.pos
+        w, h = self._card.size
+        self._card_bg.pos = (x, y)
+        self._card_bg.size = (w, h)
+        # Only the bottom edge is visible (the sheet is flush with the top of
+        # the screen), so spread the bands downward from there.
+        for rect, (spread, _alpha) in zip(self._card_shadows, _PANEL_SHADOW_LAYERS):
+            rect.pos = (x - spread, y - spread)
+            rect.size = (w + spread * 2, h + spread)
 
     def _sync_scrim(self, *_):
         self._scrim_rect.pos = self.pos
