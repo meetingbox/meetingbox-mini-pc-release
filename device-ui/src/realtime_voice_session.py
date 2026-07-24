@@ -2900,6 +2900,32 @@ class RealtimeVoiceSession:
         self._barge_in_noise_rms = 0.0
         self._barge_in_preroll.clear()
 
+    def _log_response_usage(self, msg: dict) -> None:
+        """Record how much of the prompt OpenAI served from cache.
+
+        Without this there is no way to tell whether prompt caching is working.
+        The session carries ~9.9k tokens of tool definitions plus the standing
+        instructions; if cached_tokens stays near zero the prefix is being
+        invalidated somewhere and every session is paying to reprocess all of
+        it. Emitted per response so a regression shows up in normal use.
+        """
+        try:
+            usage = ((msg.get("response") or {}).get("usage")) or {}
+            if not usage:
+                return
+            details = usage.get("input_token_details") or {}
+            cached = int(details.get("cached_tokens") or 0)
+            total_in = int(usage.get("input_tokens") or 0)
+            self._log_voice_event(
+                "response_usage",
+                input_tokens=total_in,
+                cached_tokens=cached,
+                cached_pct=round(cached / total_in * 100.0, 1) if total_in else 0.0,
+                output_tokens=int(usage.get("output_tokens") or 0),
+            )
+        except Exception:
+            logger.debug("usage logging failed", exc_info=True)
+
     def _log_voice_event(self, event: str, **fields: Any) -> None:
         payload = {
             "event": event,
@@ -3676,6 +3702,7 @@ class RealtimeVoiceSession:
 
                 elif t == "response.done":
                     self._touch()
+                    self._log_response_usage(msg)
                     if self._silent_hold_phrase:
                         self._ai_transcript_buf = ""
                         self._active_ai_transcript_item_id = ""
