@@ -4393,20 +4393,28 @@ class RealtimeVoiceSession:
                 pass
 
         if start_recording_requested:
-            # The model has already spoken its confirmation; close the session
-            # and trigger start_recording() on the Kivy main thread.
-            self._user_ended = True
-            self._stop.set()
-            try:
-                await ws.close()
-            except Exception:
-                pass
+            # The model has already spoken its confirmation; hand the recording
+            # off to the Kivy main thread, then close the session.
+            #
+            # Order matters. `await ws.close()` yields, and setting _stop makes
+            # the recv loop exit, whose finally cancels every response-done task
+            # — including this one, while it is suspended in that close. When
+            # that happened the Clock.schedule_once below was never reached, the
+            # CancelledError was re-raised silently, and the recording simply
+            # never started: the log showed "starting recording" and then
+            # nothing. Scheduling first makes the hand-off immune to that race.
             cb = self._on_start_recording_cb
             if cb:
                 Clock.schedule_once(
                     lambda _dt, m=start_recording_mode, c=start_recording_context: self._safe_call(cb, m, c),
                     0,
                 )
+            self._user_ended = True
+            self._stop.set()
+            try:
+                await ws.close()
+            except Exception:
+                pass
 
     # ------------------------------------------------------------------
     # Misc helpers

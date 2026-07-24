@@ -309,3 +309,32 @@ def test_stop_does_not_block_the_caller_when_wait_is_false(monkeypatch):
 class _DummyQueue:
     def put_nowait(self, _item):
         return None
+
+
+# --- start_recording hand-off must survive teardown cancellation ----------
+
+def test_start_recording_callback_is_scheduled_before_websocket_close():
+    """The recording hand-off must not sit behind `await ws.close()`.
+
+    Setting _stop makes the recv loop exit, and its finally cancels every
+    response-done task — including this one while it is suspended inside
+    ws.close(). When the Clock.schedule_once came after the close it was never
+    reached: the log showed "starting recording" and then nothing, and no
+    recording ever began. Assert the scheduling happens first.
+    """
+    import inspect
+
+    src = inspect.getsource(R.RealtimeVoiceSession._handle_response_done)
+    block = src[src.index("if start_recording_requested:"):]
+    # Strip comments: the explanatory comment in that block quotes both
+    # "await ws.close()" and "Clock.schedule_once", which would otherwise be
+    # matched instead of the actual statements.
+    code = "\n".join(
+        line for line in block.split("\n") if not line.strip().startswith("#")
+    )
+    sched = code.index("Clock.schedule_once")
+    closed = code.index("await ws.close()")
+    assert sched < closed, (
+        "start_recording callback must be scheduled BEFORE ws.close(); "
+        "otherwise teardown cancellation can drop the hand-off"
+    )
