@@ -2530,6 +2530,21 @@ class RealtimeVoiceSession:
                     if self._prewarm else None
                 )
 
+                # Warm the speaker path in the background as well. _ensure_aplay
+                # spawns the aplay process and opens the ALSA playback device,
+                # and it was previously reached only from _play_delta — i.e. paid
+                # when the FIRST greeting audio chunk arrived, right in the middle
+                # of the greeting. Doing it here overlaps that cost with the
+                # model generating the greeting.
+                #
+                # Plain thread rather than the loop's executor: this is
+                # fire-and-forget, and _play_delta still calls _ensure_aplay
+                # itself, so a slow warm-up simply falls back to the old
+                # behaviour instead of delaying audio.
+                threading.Thread(
+                    target=self._ensure_aplay, name="rtv-aplay-warm", daemon=True
+                ).start()
+
                 # Device resolution and the ALSA open are blocking calls. Run
                 # them off the event loop, otherwise they stall the greeting
                 # request above and the parallelism is lost.
