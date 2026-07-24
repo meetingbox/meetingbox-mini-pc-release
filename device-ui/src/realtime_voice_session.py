@@ -777,8 +777,14 @@ _SAFE_TO_IGNORE_ERRORS = (
 # ---------------------------------------------------------------------------
 
 def build_realtime_websocket_url(model: str) -> str:
-    """Return the OpenAI Realtime WebSocket URL for a given model id."""
-    m = (model or "").strip() or "gpt-realtime-2"
+    """Return the OpenAI Realtime WebSocket URL for a given model id.
+
+    The model normally comes from the server's mint response, which is the single
+    source of truth — the caller refuses to start a session without one. This
+    literal is only a last-resort fallback; keep it in step with the server's
+    _REALTIME_SPEECH_MODEL_DEFAULT so a fallback cannot silently downgrade speed.
+    """
+    m = (model or "").strip() or "gpt-realtime-2.1"
     return f"wss://{_REALTIME_WS_HOST}/v1/realtime?model={quote(m, safe='')}"
 
 
