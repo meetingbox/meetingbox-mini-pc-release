@@ -5259,7 +5259,9 @@ class MeetingBoxApp(App):
                 self._warm_voice_session = None
                 self._warm_voice_pending = False
                 try:
-                    sess.stop()
+                    # Wake path — a blocking stop would freeze the UI for up to
+                    # ~7s right when the user is waiting to be greeted.
+                    sess.stop(wait=False)
                 except Exception:
                     logger.debug("Stopping unready warm standby failed", exc_info=True)
             else:
@@ -5277,7 +5279,7 @@ class MeetingBoxApp(App):
         except Exception:
             logger.exception("Realtime warm activate failed; cold-starting")
             try:
-                sess.stop()
+                sess.stop(wait=False)   # wake path — never block here
             except Exception:
                 pass
             self._realtime_voice_session = None
@@ -5931,7 +5933,7 @@ class MeetingBoxApp(App):
                         self._warm_voice_session = None
                         self._warm_voice_pending = False
                         try:
-                            _s.stop()
+                            _s.stop(wait=False)
                         except Exception:
                             logger.debug("Stopping timed-out warm standby failed", exc_info=True)
                         self._schedule_voice_prewarm_retry("readiness timeout")
