@@ -2513,8 +2513,34 @@ class RealtimeVoiceSession:
                     self._safe_call(self._on_before_open_mic_cb)
                     await asyncio.sleep(0.01)
 
-                preferred, candidates = self._resolve_input_device()
-                if not self._open_mic(preferred, candidates):
+                _loop = asyncio.get_running_loop()
+                # Ask for the greeting NOW, so the model is generating it while
+                # the ALSA handoff below happens rather than after it. This is
+                # what the greeting was always meant to do on a warm wake ("comes
+                # back in ~1s"), but it had drifted to firing only once the mic
+                # was fully open, so device resolution + stream open sat in front
+                # of the user's first impression.
+                #
+                # Safe here: the local wake mic has just been released and the
+                # Realtime capture stream is not open yet, so there is nothing
+                # for the greeting audio to leak into; once it does open, the
+                # echo-settle window below keeps the uplink muted anyway.
+                greet_task = (
+                    _loop.create_task(self._send_wake_greeting(ws))
+                    if self._prewarm else None
+                )
+
+                # Device resolution and the ALSA open are blocking calls. Run
+                # them off the event loop, otherwise they stall the greeting
+                # request above and the parallelism is lost.
+                preferred, candidates = await _loop.run_in_executor(
+                    None, self._resolve_input_device
+                )
+                if not await _loop.run_in_executor(
+                    None, self._open_mic, preferred, candidates
+                ):
+                    if greet_task is not None:
+                        greet_task.cancel()
                     self._emit_error("Realtime: microphone unavailable.")
                     await ws.close()
                     self._emit_session_end()
@@ -2554,12 +2580,15 @@ class RealtimeVoiceSession:
                 idle_task = asyncio.create_task(self._idle_watchdog())
                 route_task = asyncio.create_task(self._audio_route_watchdog())
 
-                # Warm session just woken: greet only after the local wake-word
-                # mic has been released and the Realtime mic is open. Speaking
-                # before this point can feel like a delayed wake and can leak
-                # assistant/prompt audio into the transcript path.
-                if self._prewarm:
-                    await self._send_wake_greeting(ws)
+                # The greeting was already requested above, in parallel with the
+                # ALSA handoff. Just make sure that send completed.
+                if greet_task is not None:
+                    try:
+                        await greet_task
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception:
+                        logger.debug("wake greeting task failed", exc_info=True)
 
                 try:
                     await recv_task
