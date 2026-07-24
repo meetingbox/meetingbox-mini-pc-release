@@ -264,6 +264,13 @@ REALTIME_WARM_STANDBY = os.environ.get(
     "REALTIME_WARM_STANDBY", "0"
 ).strip().lower() not in ("", "0", "false", "no", "off")
 
+# How long start_recording will wait for the voice assistant to release the
+# microphone before starting anyway. A short, hard budget: the recorder opening
+# a moment early is far better than the recording silently never starting.
+_VOICE_TEARDOWN_WAIT_S = float(
+    os.environ.get("MEETINGBOX_VOICE_TEARDOWN_WAIT_S", "1.5")
+)
+
 # Boot-flow screens
 from screens.splash import SplashScreen
 from screens.welcome import WelcomeScreen
@@ -2684,20 +2691,36 @@ class MeetingBoxApp(App):
         # stored as searchable metadata so the recording is findable later.
         rec_context = context if isinstance(context, dict) else None
         released = self._suspend_voice_assistant_for_recording()
+        logger.info(
+            "start_recording: mode=%s waiting_on=%d voice teardown event(s)",
+            mode,
+            len(released or []),
+        )
 
         async def _start():
-            # The assistant's teardown (websocket close + mic release) now runs
-            # on helper threads so the UI stays responsive. Still wait for it
-            # before starting the recording, or the recorder and the assistant
-            # would briefly contend for the microphone — just do the waiting
-            # here, off the Kivy main thread.
+            # Give the assistant's teardown a moment to release the microphone
+            # before the recorder opens it, but never let that gate the actual
+            # start.
+            #
+            # This deliberately does NOT use run_in_executor: the previous
+            # version awaited threading.Event.wait() on the loop's default
+            # thread pool, once per event and 6s each. If those threads were
+            # busy the await never got scheduled and start_recording hung
+            # forever — no HTTP, no error, the UI just fell back to home. Poll
+            # cooperatively instead: no thread pool, all events at once, and a
+            # hard overall budget.
             if released:
-                loop = asyncio.get_running_loop()
-                for event in released:
-                    try:
-                        await loop.run_in_executor(None, event.wait, 6.0)
-                    except Exception:
-                        logger.debug("voice teardown wait failed", exc_info=True)
+                deadline = time.monotonic() + _VOICE_TEARDOWN_WAIT_S
+                while time.monotonic() < deadline:
+                    if all(ev.is_set() for ev in released):
+                        break
+                    await asyncio.sleep(0.05)
+                else:
+                    logger.warning(
+                        "start_recording: voice teardown still pending after %.1fs; "
+                        "starting anyway",
+                        _VOICE_TEARDOWN_WAIT_S,
+                    )
 
             last_exc: BaseException | None = None
             max_attempts = 3
