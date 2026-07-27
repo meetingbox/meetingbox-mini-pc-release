@@ -870,6 +870,7 @@ class RealtimeVoiceSession:
         on_calendar_event=None,
         on_calendar_event_dismiss=None,
         on_start_recording=None,
+        on_end_session_requested=None,
         should_suppress_farewell=None,
         brief_data_provider=None,
         prewarm: bool = False,
@@ -923,6 +924,15 @@ class RealtimeVoiceSession:
         self._on_calendar_event_cb = on_calendar_event
         self._on_calendar_event_dismiss_cb = on_calendar_event_dismiss
         self._on_start_recording_cb = on_start_recording
+        # Fires the moment end_session is detected in a response, well before
+        # the session actually closes (farewell audio still plays ~2-3s). Lets
+        # main.py start priming the NEXT warm standby during that window, so
+        # a back-to-back wake right after goodbye finds it already held.
+        self._on_end_session_requested_cb = on_end_session_requested
+        # Fire-once guard: model can (and sometimes does) restate end_session
+        # across multiple response.done events in the same closure sequence;
+        # we only want to start ONE prewarm.
+        self._end_session_notified = False
         # Optional predicate: when it returns True the aggressive keyword-based
         # client-side farewell close is skipped (e.g. while an email draft is
         # on screen) and we defer to the model's contextual end_session tool.
@@ -4232,6 +4242,14 @@ class RealtimeVoiceSession:
                     call_id,
                 )
                 end_session_requested = True
+                # Fire the "session is ending" hook exactly once, right now -
+                # farewell audio still has ~2-3s to play before we actually
+                # close, and that is the head start we want on the next mint.
+                if not self._end_session_notified:
+                    self._end_session_notified = True
+                    cb = self._on_end_session_requested_cb
+                    if cb is not None:
+                        self._safe_call(cb)
                 continue
 
             # Client-only tool: model was asked to start a meeting recording.

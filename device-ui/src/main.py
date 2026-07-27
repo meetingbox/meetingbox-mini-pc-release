@@ -5194,6 +5194,31 @@ class MeetingBoxApp(App):
     # Warm-standby Realtime session (instant wake response)
     # ------------------------------------------------------------------
 
+    def _on_active_session_end_requested(self) -> None:
+        """The active session's model just called end_session. Farewell audio
+        will play for ~2-3s before the session actually closes and its
+        on_session_end callback fires _end_realtime_voice_session (which is
+        where the next prewarm is normally scheduled). Use that head start:
+        kick the next standby mint NOW, so it is already held by the time the
+        user says the next 'Hey Nexa'. Without this, a wake within ~3s of
+        goodbye lands in the await path and feels laggy (~3s to first audio).
+
+        Safe against overlap because a warm standby does not open the mic or
+        speak until activate(); the active session keeps sole audio ownership
+        until it fully tears down. Once end_realtime_voice_session runs its
+        own _schedule_voice_prewarm, its guard sees warm already primed and
+        no-ops - no double mint.
+
+        Fires from the Realtime session's asyncio worker thread; marshal onto
+        Kivy main via Clock.
+        """
+        if not REALTIME_WARM_STANDBY:
+            return
+        Clock.schedule_once(
+            lambda _dt: self._prewarm_realtime_voice_session(allow_overlap=True),
+            0,
+        )
+
     def _on_backend_ws_reconnected(self) -> None:
         """The backend WebSocket just (re)connected — proof the network path is
         usable again, e.g. after a wired<->wifi handover. This is a much sharper
@@ -5270,10 +5295,18 @@ class MeetingBoxApp(App):
         )
         self._schedule_voice_prewarm(delay=delay)
 
-    def _prewarm_realtime_voice_session(self) -> None:
+    def _prewarm_realtime_voice_session(self, *, allow_overlap: bool = False) -> None:
         """Mint + connect a Realtime session and hold it in standby (mic closed,
         no greeting) so the next wake word activates it instantly. No-ops unless
-        the cloud assistant is enabled, authed, idle, and not already warm."""
+        the cloud assistant is enabled, authed, idle, and not already warm.
+
+        allow_overlap: bypass the "active session already exists" guard. Set
+        only from the on_end_session_requested hook, when we KNOW the current
+        session is on its way out (farewell audio still playing) and we want
+        the next standby ready by the time the user speaks again. A warm
+        standby does not touch the mic or speaker until activate(), so a brief
+        overlap with an ending active session is safe.
+        """
         if not REALTIME_WARM_STANDBY or not REALTIME_VOICE_IMPLEMENTED:
             return
         if USE_MOCK_BACKEND or WAKE_LOCAL_VOICE_ONLY:
@@ -5282,7 +5315,7 @@ class MeetingBoxApp(App):
             return
         if self.recording_state.get("active"):
             return
-        if self._realtime_voice_session is not None:
+        if not allow_overlap and self._realtime_voice_session is not None:
             return  # an active session owns the mic right now
         if self._realtime_session_pending:
             return  # a wake-triggered cold session is already being minted
@@ -6099,6 +6132,7 @@ class MeetingBoxApp(App):
                 on_calendar_event=self._on_calendar_event_directive,
                 on_calendar_event_dismiss=self._on_calendar_event_dismiss_directive,
                 on_start_recording=self._realtime_handle_start_recording,
+                on_end_session_requested=self._on_active_session_end_requested,
                 should_suppress_farewell=self._email_workflow_active,
                 brief_data_provider=self._voice_brief_facts,
                 prewarm=prewarm,
