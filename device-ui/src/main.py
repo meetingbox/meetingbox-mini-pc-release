@@ -684,6 +684,7 @@ class MeetingBoxApp(App):
         else:
             self.backend = BackendClient()
             logger.info("Using REAL backend")
+        self.backend.on_ws_reconnected = self._on_backend_ws_reconnected
 
         # Multi-device scoping: this device's id, resolved from
         # /api/device/pairing-status after we know we're paired (see
@@ -5176,6 +5177,27 @@ class MeetingBoxApp(App):
     # Warm-standby Realtime session (instant wake response)
     # ------------------------------------------------------------------
 
+    def _on_backend_ws_reconnected(self) -> None:
+        """The backend WebSocket just (re)connected — proof the network path is
+        usable again, e.g. after a wired<->wifi handover. This is a much sharper
+        signal than the independent warm-standby backoff timer, which can still
+        be sitting on a multi-second delay from retries during the outage.
+
+        Without this, a real wake right after the network recovers can land with
+        no warm standby ready and fall through to a ~15s cold mint+connect,
+        which is indistinguishable from the assistant being broken.
+
+        Runs on the backend's asyncio thread; Clock.schedule_once is safe to
+        call from any thread and marshals the retry onto the Kivy main thread.
+        """
+        if not REALTIME_WARM_STANDBY:
+            return
+        Clock.schedule_once(self._retry_voice_prewarm_after_reconnect, 0)
+
+    def _retry_voice_prewarm_after_reconnect(self, _dt) -> None:
+        self._warm_voice_retry_attempt = 0
+        self._schedule_voice_prewarm(delay=0.2)
+
     def _schedule_voice_prewarm(self, delay: float = 0.5) -> None:
         """Schedule a warm-standby Realtime session to connect (idempotent)."""
         if not REALTIME_WARM_STANDBY:
@@ -5237,7 +5259,14 @@ class MeetingBoxApp(App):
             try:
                 data = await self.backend.create_realtime_voice_session()
             except Exception as e:
-                logger.warning("Realtime warm prewarm mint failed: %s", e)
+                # httpx timeout exceptions frequently stringify to "" (e.g.
+                # ConnectTimeout raised with no args), which made every network
+                # blip show up as an unreadable blank "mint failed: " line.
+                logger.warning(
+                    "Realtime warm prewarm mint failed: %s: %s",
+                    type(e).__name__,
+                    e or "(no message)",
+                )
                 if auth_generation == self._realtime_auth_generation:
                     self._warm_voice_pending = False
                     Clock.schedule_once(
@@ -5397,7 +5426,11 @@ class MeetingBoxApp(App):
             try:
                 data = await self.backend.create_realtime_voice_session()
             except Exception as e:
-                logger.warning("Realtime voice session request failed: %s", e)
+                logger.warning(
+                    "Realtime voice session request failed: %s: %s",
+                    type(e).__name__,
+                    e or "(no message)",
+                )
                 if auth_generation != self._realtime_auth_generation:
                     return
                 self._realtime_session_pending = False

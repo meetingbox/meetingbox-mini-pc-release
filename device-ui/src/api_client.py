@@ -13,7 +13,7 @@ import re
 import threading
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
-from typing import AsyncIterator, Dict, List, Optional
+from typing import AsyncIterator, Callable, Dict, List, Optional
 from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
 import httpx
@@ -402,6 +402,14 @@ class BackendClient:
         self._refresh_auth_header()
         self.ws_connection = None
         self._ws_reconnect_attempts = 0
+        # Optional hook: called whenever the backend WebSocket (re)connects.
+        # This is the first proof after an outage (e.g. a wired<->wifi handover)
+        # that the network path to our backend actually works again, which is a
+        # much sharper signal than an independent polling/backoff timer. main.py
+        # uses it to retry Realtime warm-standby immediately instead of waiting
+        # out its own backoff, which is what previously left a real wake to fall
+        # through to a slow cold-start after a network change.
+        self.on_ws_reconnected: Optional[Callable[[], None]] = None
 
     def _refresh_auth_header(self) -> None:
         """Re-read the device auth token and update the httpx client header.
@@ -1083,8 +1091,20 @@ class BackendClient:
             return {"error": "request_failed", "detail": str(e)}
 
     async def create_realtime_voice_session(self) -> Dict:
-        """POST /api/voice/realtime/session — OpenAI Realtime client secret (Bearer token)."""
-        resp = await self.client.post(f"{self.base_url}/api/voice/realtime/session")
+        """POST /api/voice/realtime/session — OpenAI Realtime client secret (Bearer token).
+
+        Latency-critical: this gates both warm-standby prewarm and the felt wake
+        response. The client default connect timeout is 10s, sized for ordinary
+        API calls; on a bad network (e.g. mid wired<->wifi handover) that means a
+        single doomed attempt burns 10s before the warm-standby retry loop even
+        gets to try again. Override to a short connect timeout here so a dead
+        path fails fast and the caller's own retry/backoff drives the recovery
+        cadence instead of one slow TCP handshake attempt.
+        """
+        resp = await self.client.post(
+            f"{self.base_url}/api/voice/realtime/session",
+            timeout=httpx.Timeout(float(API_TIMEOUT), connect=3.0),
+        )
         resp.raise_for_status()
         return resp.json()
 
@@ -1427,6 +1447,12 @@ class BackendClient:
                     logger.info("WebSocket connected")
                     self._ws_reconnect_attempts = 0
                     self.ws_connection = ws
+                    cb = self.on_ws_reconnected
+                    if cb is not None:
+                        try:
+                            cb()
+                        except Exception:
+                            logger.debug("on_ws_reconnected callback failed", exc_info=True)
 
                     async for message in ws:
                         try:
