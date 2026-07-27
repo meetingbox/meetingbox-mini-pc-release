@@ -3404,21 +3404,28 @@ class MeetingBoxApp(App):
 
             def _kick_realtime(_dt):
                 self._show_home_listening_after_wake()
-                # Instant path: if a pre-warmed session is HELD in standby,
-                # activate it (no mint, no connect, no greeting).
-                if REALTIME_WARM_STANDBY and self._activate_warm_voice_session():
-                    return
-                # Back-to-back wakes land during the ~1-2s re-prewarm window
-                # that follows a session end. Without this, an already-in-flight
-                # standby gets DISCARDED and we cold-start from scratch (~15s),
-                # then the completed standby is thrown away. Await briefly
-                # instead - cheap (~100ms polling, no I/O), and the worst case
-                # is identical to today plus the wait budget.
-                if REALTIME_WARM_STANDBY and self._warm_is_arriving_but_not_held():
-                    self._await_warm_then_start(
-                        wake_id=self._pending_voice_wake_id,
-                    )
-                    return
+                if REALTIME_WARM_STANDBY:
+                    sess = self._warm_voice_session
+                    # Instant path: warm is already HELD - activate directly.
+                    # Gate on is_held BEFORE calling _activate_warm_voice_session
+                    # because that method discards on not-held; if we called it
+                    # while the session was still connecting we would kill the
+                    # standby out from under the await path below.
+                    if (
+                        sess is not None
+                        and getattr(sess, "is_held", lambda: False)()
+                        and self._activate_warm_voice_session()
+                    ):
+                        return
+                    # Await path: mint HTTP still in flight (sess is None,
+                    # _warm_voice_pending) OR session object exists and is
+                    # connecting/handshaking (sess is not None, is_held False).
+                    # Both are ~1-2s from ready in the back-to-back case.
+                    if self._warm_is_arriving_but_not_held():
+                        self._await_warm_then_start(
+                            wake_id=self._pending_voice_wake_id,
+                        )
+                        return
                 self._start_realtime_voice_session()
 
             Clock.schedule_once(_kick_realtime, 0)
