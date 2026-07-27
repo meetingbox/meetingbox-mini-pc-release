@@ -3546,17 +3546,6 @@ class RealtimeVoiceSession:
                                     del self._aec_far_buf[: len(self._aec_far_buf) - retain_bytes]
                         self._emit_state("listening")
                     else:
-                        # Half-duplex hedge: our local detector did not confirm
-                        # in the last 0.9s, so we don't fully commit (no
-                        # response.cancel, no 0.4s suppress). But OpenAI's
-                        # server VAD DID think it heard the user, and with
-                        # interrupt_response=true it will stop generating new
-                        # audio on its own. The remaining problem is the
-                        # 200-500ms of audio already buffered in aplay - the
-                        # user's perception is "she kept talking after I
-                        # started". Cut the local buffer only. If it was echo,
-                        # the next real audio delta restarts aplay in ~100ms.
-                        self._abort_aplay()
                         self._log_voice_event(
                             "speech_started_ignored",
                             reason="half_duplex_unconfirmed",
