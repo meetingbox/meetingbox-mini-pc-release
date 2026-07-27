@@ -3055,11 +3055,25 @@ class RealtimeVoiceSession:
             detection_mode=detection_mode,
             half_duplex=self._half_duplex,
         )
-        try:
-            await ws.send(json.dumps({"type": "response.cancel"}))
-            self._log_voice_event("response_cancel_sent", source="local_barge_in")
-        except Exception:
-            logger.debug("local barge-in response.cancel failed", exc_info=True)
+        # Deliberately do NOT send response.cancel here. When local barge-in
+        # fires on a real user speech, OpenAI's server VAD sees the same audio
+        # and issues its own cancel within ~200-300ms - we lose that much
+        # felt-immediacy vs an eager local cancel, but that is a small cost.
+        #
+        # The much bigger cost of the eager cancel was on FALSE POSITIVES:
+        # ambient noise (chair scrape, breath, paper) can pass the
+        # aec_verified thresholds and fire this path even when the user is
+        # NOT actually speaking. If we cancel eagerly, OpenAI stops
+        # generating, the user says nothing (because they never intended to
+        # speak), and the session sits SILENT until the user gives up. Real
+        # observed instance: session ended with "user lost interest" after
+        # ambient noise cut Nexa mid-sentence with no recovery.
+        #
+        # By not cancelling eagerly, false positives now cause only a brief
+        # (~400ms suppress) audio hiccup, then Nexa's sentence continues.
+        # OpenAI keeps generating, we resume playback after the suppress.
+        # abort_aplay above is still enough to feel instant to the user; the
+        # missing cancel is invisible unless they were REALLY interrupting.
 
     async def _upload_resampled_audio(
         self,
