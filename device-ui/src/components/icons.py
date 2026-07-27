@@ -375,19 +375,27 @@ class Icon(Widget):
     def _dnd(self, cx, cy, m, lw):
         """Do Not Disturb: crescent moon, as one closed outline.
 
-        The old version mixed two angle conventions: the arcs used Kivy's
-        ellipse angles (0° = top, clockwise) while the two lines meant to close
-        the shape computed their endpoints with math.cos/sin (0° = right,
-        counter-clockwise). Those lines therefore ran to points that were not on
-        the arcs, and the crescent never closed.
+        Two things broke the old version:
 
-        This builds the whole outline from explicit points in one convention:
-        an outer arc, then the inner arc back, sized so the two circles actually
-        intersect at the horns.
+        1. joint="miter" put a visible SPIKE at the lower horn. The outer arc
+           arrives going one way and the inner arc departs the opposite way,
+           so the polyline turns through a near-180° angle. Mitre extends the
+           join proportional to 1/sin(angle/2), which at near-180° blows up
+           into a long straight stroke shooting off to the side — the mystery
+           extra line on the icon.
+        2. offset=0.30 with r_in≈0.35 made the inner circle bulge LEFT past
+           the icon's vertical centre. The "bite" carved into the outer body
+           reached into the middle of the moon, so the crescent read as fat
+           and lopsided, not moon-like.
+
+        Fix: round joints (no spike, and at a smooth polyline they read as
+        continuous curve, not a knob). Then geometry retuned so the inner
+        circle stays right of centre: r_out=0.45, offset=0.28, theta=35°,
+        which gives a slim right-opening crescent close to iOS's DND moon.
         """
-        r_out = m * 0.42
-        offset = m * 0.30
-        theta = math.radians(55)          # half-angle to each horn
+        r_out = m * 0.45
+        offset = m * 0.28
+        theta = math.radians(35)          # half-angle to each horn
         # Inner radius that puts the inner circle through both horn points.
         r_in = math.sqrt(
             r_out * r_out - 2 * r_out * offset * math.cos(theta) + offset * offset
@@ -408,7 +416,9 @@ class Icon(Widget):
         for i in range(steps + 1):
             b = b0 + (b1 - b0) * i / steps
             pts += [cx + offset + r_in * math.cos(b), cy + r_in * math.sin(b)]
-        # Mitred joints so the horns come to points. Round joints blunt them
-        # into little knobs, which is the opposite of what a crescent should do.
-        _stroke(points=pts, width=lw, close=True, joint="miter", cap="square")
+        # Round joints throughout: at the horns the two arc directions differ
+        # by ~180°, and mitre at that angle projects an arbitrarily long spike
+        # (the "extra line" the crescent used to show). Round cap so the
+        # polyline's start/end at the upper horn also blend smoothly.
+        _stroke(points=pts, width=lw, close=True, joint="round", cap="round")
 
