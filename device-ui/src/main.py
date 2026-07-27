@@ -1598,6 +1598,7 @@ class MeetingBoxApp(App):
         self._ui_cache_load_from_disk()
         self._apply_cached_mic_gain_before_start()
         self._prepare_wake_chime()
+        self._prewarm_audio_pipeline_libs()
         if self._audio_supervisor is not None:
             try:
                 self._audio_supervisor.start()
@@ -3286,6 +3287,43 @@ class MeetingBoxApp(App):
             )
 
     _WAKE_CHIME_PATH = "/tmp/meetingbox_wake_chime.wav"
+
+    def _prewarm_audio_pipeline_libs(self) -> None:
+        """Force-load the audio DSP libraries at boot so the first realtime
+        session does not pay for it.
+
+        The first session after device restart consistently mangles short
+        utterances - audio_queue_drops hits ~30 on the first session (600ms
+        of mic input lost) vs 7-11 later. That's the classic cold-start
+        pattern for a synchronous audio pipeline: SpeexAEC's ctypes-loaded
+        libspeexdsp.so, webrtcvad's C extension, and Python's per-module JIT
+        all resolve inside RealtimeVoiceSession.__init__ on the first wake,
+        which lets mic frames pile up while the worker thread is still
+        importing.
+
+        Do that work here, once, at boot. Instantiate each briefly with the
+        same params the real session uses, then discard. Later sessions get
+        cache-hot imports. No PortAudio open - Vosk already holds the mic at
+        this point, so touching sounddevice would conflict.
+
+        Fail-silent: this is an optimisation, not a correctness path.
+        """
+        try:
+            from _aec import SpeexAEC, is_available as _aec_available
+            if _aec_available():
+                _warm = SpeexAEC(frame_size=480, filter_length=4800, sample_rate=24000)
+                del _warm
+        except Exception:
+            logger.debug("SpeexAEC warmup failed (ok, only an optimisation)", exc_info=True)
+        try:
+            import webrtcvad
+            _warm_vad = webrtcvad.Vad(2)
+            # Feed one silent 20ms frame so the classifier's internal state initialises.
+            _warm_vad.is_speech(b"\x00" * (480 * 2), 24000)
+            del _warm_vad
+        except Exception:
+            logger.debug("webrtcvad warmup failed (ok, only an optimisation)", exc_info=True)
+        logger.info("Audio DSP libraries pre-loaded (Speex + WebRTC VAD)")
 
     def _prepare_wake_chime(self) -> None:
         """Generate a soft acknowledgement chime once at startup.
