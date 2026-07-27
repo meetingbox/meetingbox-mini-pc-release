@@ -3404,10 +3404,20 @@ class MeetingBoxApp(App):
 
             def _kick_realtime(_dt):
                 self._show_home_listening_after_wake()
-                # Instant path: if a pre-warmed session is held in standby,
-                # just activate it (no mint, no connect, no greeting). Falls
-                # back to a cold per-wake session if none is ready.
+                # Instant path: if a pre-warmed session is HELD in standby,
+                # activate it (no mint, no connect, no greeting).
                 if REALTIME_WARM_STANDBY and self._activate_warm_voice_session():
+                    return
+                # Back-to-back wakes land during the ~1-2s re-prewarm window
+                # that follows a session end. Without this, an already-in-flight
+                # standby gets DISCARDED and we cold-start from scratch (~15s),
+                # then the completed standby is thrown away. Await briefly
+                # instead - cheap (~100ms polling, no I/O), and the worst case
+                # is identical to today plus the wait budget.
+                if REALTIME_WARM_STANDBY and self._warm_is_arriving_but_not_held():
+                    self._await_warm_then_start(
+                        wake_id=self._pending_voice_wake_id,
+                    )
                     return
                 self._start_realtime_voice_session()
 
@@ -5295,6 +5305,81 @@ class MeetingBoxApp(App):
             )
 
         run_async(_go())
+
+    _WARM_AWAIT_BUDGET_S = 2.5
+    _WARM_AWAIT_TICK_S = 0.1
+
+    def _warm_is_arriving_but_not_held(self) -> bool:
+        """True iff a warm standby is on its way but not yet activatable.
+
+        Two mutually exclusive states qualify:
+          - _warm_voice_pending: the HTTP mint is still in flight, so the
+            session object does not exist yet.
+          - _warm_voice_session exists but is_held() returns False, meaning
+            the WebSocket is still opening or the session.updated handshake
+            has not arrived.
+
+        In both cases the standby is <2s from ready in the common case, and
+        the caller should wait for it rather than cold-start.
+        """
+        if self._warm_voice_pending:
+            return True
+        sess = self._warm_voice_session
+        if sess is None:
+            return False
+        is_held = getattr(sess, "is_held", None)
+        if is_held is None:
+            return False
+        return not is_held()
+
+    def _await_warm_then_start(self, wake_id: str) -> None:
+        """Poll (via Clock, never blocking) for a held warm standby.
+
+        Only calls _activate_warm_voice_session AFTER confirming is_held() is
+        True, so the discard-on-not-held branch is never taken here - the warm
+        session survives across ticks until it either becomes held (we
+        activate) or the caller times out (we cold-start).
+
+        Cost: ~25 polls at 100ms, each doing a handful of attribute reads. No
+        I/O, no allocations, no locks. Under 0.01% CPU for the wait budget.
+        RAM cost: zero new state.
+        """
+        deadline = time.monotonic() + self._WARM_AWAIT_BUDGET_S
+        wait_started = time.monotonic()
+
+        def _tick(_dt):
+            # Wake got superseded (user gave up, another wake fired, session
+            # already started by another path); abort quietly.
+            if wake_id != getattr(self, "_pending_voice_wake_id", ""):
+                return
+            if self._realtime_voice_session is not None:
+                return
+            sess = self._warm_voice_session
+            if sess is not None and getattr(sess, "is_held", lambda: False)():
+                if self._activate_warm_voice_session():
+                    logger.info(
+                        "Realtime: warm caught up during %.2fs wait; activated",
+                        time.monotonic() - wait_started,
+                    )
+                    return
+            # Warm mint failed while we were waiting - no session AND no
+            # pending. Cold-start immediately rather than burning the budget.
+            if sess is None and not self._warm_voice_pending:
+                logger.info(
+                    "Realtime: warm mint failed during wait; cold-starting"
+                )
+                self._start_realtime_voice_session()
+                return
+            if time.monotonic() >= deadline:
+                logger.info(
+                    "Realtime: warm did not arrive within %.1fs; cold-starting",
+                    self._WARM_AWAIT_BUDGET_S,
+                )
+                self._start_realtime_voice_session()
+                return
+            Clock.schedule_once(_tick, self._WARM_AWAIT_TICK_S)
+
+        Clock.schedule_once(_tick, self._WARM_AWAIT_TICK_S)
 
     def _activate_warm_voice_session(self) -> bool:
         """Promote the held warm session to active on wake. Returns True if a
