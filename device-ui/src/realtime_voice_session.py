@@ -2453,11 +2453,22 @@ class RealtimeVoiceSession:
             self._async_task = None
             self._emit_session_end()
             return
-        if not self._acquire_device_session_lock():
-            self._async_task = None
-            self._emit_error("Another voice session is already active on this device.")
-            self._emit_session_end()
-            return
+        # Cold sessions claim the device lock immediately: they open the mic
+        # in a few hundred milliseconds. Warm-standby sessions defer this to
+        # activate time - they never touch the mic while held, and grabbing
+        # the lock at connect time would collide with the still-alive active
+        # session that requested this prewarm in the first place (see the
+        # end_session-triggered overlap in main.py), reject the new standby
+        # instantly, and leave us right back on the cold-mint path we were
+        # trying to skip. The invariant the lock protects is "one owner of
+        # the physical mic/speaker at a time", which activate is the actual
+        # entry to, not connect.
+        if not self._prewarm:
+            if not self._acquire_device_session_lock():
+                self._async_task = None
+                self._emit_error("Another voice session is already active on this device.")
+                self._emit_session_end()
+                return
 
         url = build_realtime_websocket_url(self._model)
         headers = [("Authorization", f"Bearer {self._client_secret}")]
@@ -2516,6 +2527,14 @@ class RealtimeVoiceSession:
                         return
 
                 if self._prewarm:
+                    # Warm session is being activated - claim the device lock
+                    # now, before we touch any audio. If the previous session
+                    # has not yet released it (very fast wake right after
+                    # goodbye), fail cleanly and let main.py fall back rather
+                    # than racing on the mic.
+                    if not self._acquire_device_session_lock():
+                        self._emit_error("Another voice session is already active on this device.")
+                        return
                     # Refresh a potentially idle keep-alive connection at wake.
                     asyncio.get_running_loop().run_in_executor(
                         None,
