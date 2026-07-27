@@ -1597,6 +1597,7 @@ class MeetingBoxApp(App):
         logger.info("MeetingBox UI started")
         self._ui_cache_load_from_disk()
         self._apply_cached_mic_gain_before_start()
+        self._prepare_wake_chime()
         if self._audio_supervisor is not None:
             try:
                 self._audio_supervisor.start()
@@ -3284,6 +3285,71 @@ class MeetingBoxApp(App):
                 self._clear_voice_indicator_override, duration
             )
 
+    _WAKE_CHIME_PATH = "/tmp/meetingbox_wake_chime.wav"
+
+    def _prepare_wake_chime(self) -> None:
+        """Generate a soft acknowledgement chime once at startup.
+
+        A ~120ms bell-like tone played the instant a wake word is detected,
+        BEFORE any AI response. Voice assistants universally do this
+        (Alexa ring, Siri ping) because the network + LLM path can't get
+        first audio in under ~1s; a local sound within 100ms of hearing
+        the user closes the perceived gap even though the real latency
+        floor is unchanged. Trivial CPU/RAM/network cost.
+
+        Gate off with MEETINGBOX_WAKE_CHIME=0 for silent operation.
+
+        Fails silently on any error - never blocks or crashes wake.
+        """
+        if os.environ.get("MEETINGBOX_WAKE_CHIME", "1").strip().lower() in ("0", "false", "no", "off"):
+            self._wake_chime_ready = False
+            return
+        try:
+            import math, struct, wave
+            path = self._WAKE_CHIME_PATH
+            if not os.path.exists(path):
+                sr = 24000
+                duration_s = 0.12
+                freq_hz = 880.0  # A5, warm and small
+                n = int(sr * duration_s)
+                attack = int(sr * 0.008)  # 8ms attack — soft, not a click
+                amp = 0.35 * 32767  # ~-9 dBFS, well below shout
+                frames = bytearray()
+                for i in range(n):
+                    t = i / sr
+                    env_attack = min(1.0, i / max(1, attack))
+                    env_decay = max(0.0, 1.0 - (t / duration_s))
+                    sample = int(amp * env_attack * env_decay * math.sin(2 * math.pi * freq_hz * t))
+                    frames.extend(struct.pack("<h", sample))
+                with wave.open(path, "wb") as w:
+                    w.setnchannels(1)
+                    w.setsampwidth(2)
+                    w.setframerate(sr)
+                    w.writeframes(bytes(frames))
+            self._wake_chime_ready = True
+        except Exception:
+            logger.debug("wake chime prep failed", exc_info=True)
+            self._wake_chime_ready = False
+
+    def _play_wake_chime(self) -> None:
+        """Fire-and-forget chime playback (non-blocking).
+
+        Uses plughw:0,0 to match the realtime playback device (default/dmix
+        is broken in this Docker setup per audio_route logs). Missing/failed
+        aplay is silently ignored — chime is UX polish, not correctness.
+        """
+        if not getattr(self, "_wake_chime_ready", False):
+            return
+        try:
+            subprocess.Popen(
+                ["aplay", "-q", "-D", "plughw:0,0", self._WAKE_CHIME_PATH],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+        except Exception:
+            logger.debug("wake chime playback failed", exc_info=True)
+
     def _handle_voice_wake_phrase(self, _text: str) -> None:
         """Run after local wake detection or mic orb (same flow).
 
@@ -3346,6 +3412,13 @@ class MeetingBoxApp(App):
         else:
             self._voice_cloud_qa_budget = 0
         self._realtime_launch_permitted = False
+
+        # Play the acknowledgement chime FIRST, before any other wake work.
+        # This is what the user hears within ~100ms of finishing "Hey Nexa";
+        # everything else (AI mint, greeting, first speaker write) takes 1-3s
+        # and the chime is what makes the whole thing FEEL instant. Runs
+        # non-blocking so it never delays the actual wake path.
+        self._play_wake_chime()
 
         timeout = max(2.0, self.voice_assistant.command_timeout_seconds)
         lbl = getattr(self, "voice_wake_phrase_display", "Hey Nexa") or "Hey Nexa"
