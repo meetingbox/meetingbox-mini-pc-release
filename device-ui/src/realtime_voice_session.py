@@ -487,6 +487,32 @@ _LOCAL_BARGE_IN_ARM_DELAY_S = _env_float(
 _USB_BARGE_IN_MIN_RMS = _env_float(
     "REALTIME_USB_BARGE_IN_MIN_RMS", 5500.0, minimum=500.0, maximum=30000.0
 )
+
+# AEC-verified barge-in: additive detection path for normal-volume speech
+# during assistant playback. When AEC has processed the mic frame, the
+# residual RMS is near-zero for pure echo and near-input for user speech;
+# combined with a low similarity-to-reference check and WebRTC VAD, this
+# reliably catches user speech at conversational volume (~1500-3000 RMS)
+# without needing the 5500+ RMS spike the old logic required (which is why
+# users had to shout or lean close to the mic to interrupt).
+# Independent of the loud_enough / diverged_from_echo paths - never removes
+# from detection, only adds. Turn off with REALTIME_AEC_VERIFIED_BARGE_IN=0.
+_AEC_VERIFIED_BARGE_IN_ENABLED = (
+    os.environ.get("REALTIME_AEC_VERIFIED_BARGE_IN", "1").strip().lower()
+    not in ("0", "false", "no", "off", "")
+)
+_AEC_VERIFIED_MIN_RMS = _env_float(
+    "REALTIME_AEC_VERIFIED_MIN_RMS", 1500.0, minimum=500.0, maximum=10000.0
+)
+_AEC_VERIFIED_BASELINE_RATIO = _env_float(
+    "REALTIME_AEC_VERIFIED_BASELINE_RATIO", 2.0, minimum=1.2, maximum=5.0
+)
+_AEC_VERIFIED_MAX_ECHO_SIMILARITY = _env_float(
+    "REALTIME_AEC_VERIFIED_MAX_ECHO_SIMILARITY",
+    0.5,
+    minimum=0.1,
+    maximum=0.9,
+)
 _USB_BARGE_IN_MIN_FRAMES = _env_int(
     "REALTIME_USB_BARGE_IN_MIN_FRAMES", 3, minimum=2, maximum=10
 )
@@ -2903,7 +2929,34 @@ class RealtimeVoiceSession:
                 )
                 and echo_similarity <= _LOCAL_BARGE_IN_MAX_ECHO_SIMILARITY
             )
-        detected = loud_enough or diverged_from_echo
+        # AEC-verified user speech: when AEC ran on this frame, its residual is
+        # near-zero for pure echo (subtracted out) and near-input for user
+        # speech (uncorrelated with the reference). So RMS well above baseline
+        # noise AND low similarity to the reference AND WebRTC VAD saying
+        # "voice-like" is a confident user-speech signal at NORMAL speaking
+        # volume - no shouting or close-mic required.
+        #
+        # Independent of the RMS-spike loud_enough path (5500+ RMS): that path
+        # still fires for very loud speech. This adds a lower-RMS path gated by
+        # AEC quality, so calm speech at ~1500 RMS also interrupts.
+        #
+        # Additive by design - if the check goes wrong we can turn it off with
+        # REALTIME_AEC_VERIFIED_BARGE_IN=0 and the original behaviour returns.
+        aec_verified_speech = False
+        if (
+            _AEC_VERIFIED_BARGE_IN_ENABLED
+            and echo_suppressed
+            and baseline > 0.0
+            and ref_rms > 0.0
+            and mic_rms >= max(
+                baseline * _AEC_VERIFIED_BASELINE_RATIO,
+                _AEC_VERIFIED_MIN_RMS,
+            )
+            and echo_similarity <= _AEC_VERIFIED_MAX_ECHO_SIMILARITY
+            and near_voice_detected is not False
+        ):
+            aec_verified_speech = True
+        detected = loud_enough or diverged_from_echo or aec_verified_speech
         if detected:
             self._barge_in_consecutive += 1
         else:
@@ -2983,7 +3036,16 @@ class RealtimeVoiceSession:
         self._abort_aplay()
         self._suppress_audio_until = time.monotonic() + _BARGE_IN_SUPPRESS_AUDIO_S
         self._emit_state("listening")
-        detection_mode = "rms_spike" if mic_rms >= threshold else "echo_divergence"
+        # detection_mode is diagnostic - matches the branch that would have
+        # fired given the observed values. Correct in the common case; if
+        # the new aec_verified branch and rms_spike both fire for the same
+        # frame, we credit rms_spike (older, higher-confidence path).
+        if mic_rms >= threshold:
+            detection_mode = "rms_spike"
+        elif echo_similarity <= _AEC_VERIFIED_MAX_ECHO_SIMILARITY and mic_rms >= _AEC_VERIFIED_MIN_RMS:
+            detection_mode = "aec_verified"
+        else:
+            detection_mode = "echo_divergence"
         self._log_voice_event(
             "barge_in_detected",
             mic_rms=round(mic_rms, 1),
