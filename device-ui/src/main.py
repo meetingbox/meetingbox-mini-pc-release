@@ -5271,6 +5271,11 @@ class MeetingBoxApp(App):
             return
         auth_generation = self._realtime_auth_generation
         self._warm_voice_pending = True
+        # Record when the mint HTTP goes out so we can log the total mint
+        # duration when the session becomes held. Feeds the await-budget
+        # tuning: if p95 mint stays under _WARM_AWAIT_BUDGET_S the budget is
+        # fine; if it climbs, the budget needs to follow.
+        self._warm_mint_started_monotonic = time.monotonic()
 
         async def _go():
             try:
@@ -5313,7 +5318,12 @@ class MeetingBoxApp(App):
 
         run_async(_go())
 
-    _WARM_AWAIT_BUDGET_S = 2.5
+    # Await budget for an in-flight warm-standby mint. Measured back-to-back
+    # mints take 0.9s-4s; a 2.5s budget missed the tail (see 2f27fa1 test
+    # data). 5s catches ~all normal cases and, on the rare truly-failed mint,
+    # still beats today's baseline: 5s wait + cold-start ~= 8s, versus the
+    # ~15s user-visible cold-start we were seeing before any of this.
+    _WARM_AWAIT_BUDGET_S = 5.0
     _WARM_AWAIT_TICK_S = 0.1
 
     def _warm_is_arriving_but_not_held(self) -> bool:
@@ -5364,9 +5374,17 @@ class MeetingBoxApp(App):
             sess = self._warm_voice_session
             if sess is not None and getattr(sess, "is_held", lambda: False)():
                 if self._activate_warm_voice_session():
+                    mint_started = getattr(
+                        self, "_warm_mint_started_monotonic", None
+                    )
+                    mint_str = (
+                        f", mint_took {time.monotonic() - mint_started:.2f}s"
+                        if mint_started else ""
+                    )
                     logger.info(
-                        "Realtime: warm caught up during %.2fs wait; activated",
+                        "Realtime: warm caught up during %.2fs wait; activated%s",
                         time.monotonic() - wait_started,
+                        mint_str,
                     )
                     return
             # Warm mint failed while we were waiting - no session AND no
