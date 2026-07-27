@@ -5212,6 +5212,28 @@ class MeetingBoxApp(App):
         Clock.schedule_once(self._retry_voice_prewarm_after_reconnect, 0)
 
     def _retry_voice_prewarm_after_reconnect(self, _dt) -> None:
+        # Any existing warm standby was minted on the OLD network path (e.g.
+        # wired), so its OpenAI WebSocket TCP endpoint is now dead. Activating
+        # it on the next wake sends the greeting into the void and the user
+        # hears silence. Discard it BEFORE re-priming so _prewarm's own guard
+        # (skip when _warm_voice_session is not None) does not no-op us and
+        # leave the corpse in place.
+        stale = self._warm_voice_session
+        if stale is not None:
+            self._warm_voice_session = None
+            self._warm_voice_pending = False
+            try:
+                # Wake path timing is not on us here; still non-blocking so
+                # the Kivy main thread never freezes on socket teardown.
+                stale.stop(wait=False)
+            except Exception:
+                logger.debug(
+                    "Discarding stale warm standby after reconnect failed",
+                    exc_info=True,
+                )
+            logger.info(
+                "Realtime: discarded stale warm standby after network reconnect"
+            )
         self._warm_voice_retry_attempt = 0
         self._schedule_voice_prewarm(delay=0.2)
 
