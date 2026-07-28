@@ -16,6 +16,7 @@ from kivy.effects.scroll import ScrollEffect
 from kivy.uix.label import Label
 from kivy.uix.widget import Widget
 from kivy.clock import Clock
+from kivy.graphics import Color, Rectangle
 from async_helper import run_async
 
 from screens.base_screen import BaseScreen
@@ -60,12 +61,14 @@ class SettingsScreen(BaseScreen):
         self._build_ui()
 
     def _section_header(self, text):
-        """Create an uppercase gray section header label."""
+        """Uppercase muted section header - matches the light-theme surface
+        used by quick_panel and summary_notification. Dark text (not the old
+        gray_500 which was tuned for the dark navy backdrop)."""
         lbl = Label(
             text=text,
             font_size=self.suf(FONT_SIZES['small']),
             bold=True,
-            color=COLORS['gray_500'],
+            color=(0.48, 0.50, 0.58, 1.0),  # _TEXT_MUTED from quick_panel
             halign='left',
             valign='bottom',
             size_hint_y=None,
@@ -75,9 +78,22 @@ class SettingsScreen(BaseScreen):
         lbl.bind(size=lbl.setter('text_size'))
         return lbl
 
+    def _make_light_bg(self, widget):
+        """Attach the light-theme surface used elsewhere in the device UI
+        (quick_panel, summary_notification). Very light near-white base so
+        the near-white settings cards read as slightly-raised on top."""
+        with widget.canvas.before:
+            Color(0.96, 0.97, 0.99, 1.0)
+            bg = Rectangle(pos=widget.pos, size=widget.size)
+        widget.bind(
+            pos=lambda w, _v: setattr(bg, 'pos', w.pos),
+            size=lambda w, _v: setattr(bg, 'size', w.size),
+        )
+        return bg
+
     def _build_ui(self):
         root = BoxLayout(orientation='vertical')
-        self.make_dark_bg(root)
+        self._make_light_bg(root)
 
         # Header
         self.status_bar = StatusBar(

@@ -1,12 +1,24 @@
 """
-Settings Item Component – Dark Theme
+Settings Item Component – Light Theme
 
 Row in the scrollable settings list.
 Supports three modes:
   1. Tappable row with arrow (→)
   2. Toggle row with switch
   3. Info-only row (no interaction)
+
+Colors match the light-theme surfaces used elsewhere in the device UI
+(quick_panel, summary_notification): near-white cards with dark text
+and subtle blue press accent. The dark-navy version this replaced was
+inconsistent with the rest of the recent UI redesign.
 """
+
+# Light-theme palette (matches quick_panel exactly)
+_TEXT_PRIMARY = (0.15, 0.17, 0.22, 1.0)     # near-black title
+_TEXT_SECONDARY = (0.36, 0.39, 0.46, 1.0)   # medium gray subtitle
+_CARD_BG = (1.00, 1.00, 1.00, 1.0)          # near-white card
+_CARD_PRESSED = (0.88, 0.92, 0.98, 1.0)     # subtle blue press
+_SHADOW = (0.10, 0.14, 0.22, 0.08)          # very soft shadow
 
 from kivy.uix.behaviors import ButtonBehavior
 from kivy.uix.boxlayout import BoxLayout
@@ -70,9 +82,9 @@ class SettingsItem(ButtonBehavior, BoxLayout):
 
         # Card background (keep Color + rect; update rgba on press — avoid clear()+rebuild)
         with self.canvas.before:
-            self._shadow_color = Color(0, 0, 0, 0.14)
+            self._shadow_color = Color(*_SHADOW)
             self._shadow = RoundedRectangle(pos=(self.x + 1, self.y - _si_suv(2)), size=self.size, radius=[BORDER_RADIUS])
-            self._bg_color = Color(0.12, 0.16, 0.23, 0.86)
+            self._bg_color = Color(*_CARD_BG)
             self._bg = RoundedRectangle(
                 pos=self.pos, size=self.size, radius=[BORDER_RADIUS])
         self.bind(
@@ -90,7 +102,7 @@ class SettingsItem(ButtonBehavior, BoxLayout):
         self.title_label = Label(
             text=title,
             font_size=_si_suf(FONT_SIZES['small'] + 2),
-            color=COLORS['white'],
+            color=_TEXT_PRIMARY,
             halign='left',
             valign='bottom',
             size_hint=(1, 0.5),
@@ -101,7 +113,7 @@ class SettingsItem(ButtonBehavior, BoxLayout):
         self.subtitle_label = Label(
             text=subtitle,
             font_size=_si_suf(FONT_SIZES['small']),
-            color=COLORS['gray_300'],
+            color=_TEXT_SECONDARY,
             halign='left',
             valign='top',
             size_hint=(1, 0.5),
@@ -137,8 +149,8 @@ class SettingsItem(ButtonBehavior, BoxLayout):
     # Press feedback
     def on_press(self):
         if self._mode == 'arrow':
-            self._bg_color.rgba = (0.18, 0.24, 0.34, 0.96)
+            self._bg_color.rgba = _CARD_PRESSED
 
     def on_release(self):
         if self._mode == 'arrow':
-            self._bg_color.rgba = (0.12, 0.16, 0.23, 0.86)
+            self._bg_color.rgba = _CARD_BG
