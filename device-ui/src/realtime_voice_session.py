@@ -386,6 +386,46 @@ _DEFAULT_INPUT_TRANSCRIPTION_MODEL = (
 _INPUT_TRANSCRIPTION_PROMPT = ""
 
 
+def _is_unsupported_script(text: str) -> bool:
+    """True if a transcript is in a script the user does not actually speak.
+
+    gpt-4o-transcribe treats the ``language`` hint as a preference, not a
+    hard constraint. On short/unclear audio it happily hallucinates in
+    whatever script fits its guess - the log has captured user speech
+    coming back as Korean (Hangul), Indonesian, and other scripts the user
+    never speaks. The user explicitly speaks only English and Telugu, so
+    any transcript containing characters from a different script is
+    treated as a hallucination and dropped, same as _is_prompt_echo.
+
+    Allowed:
+      - Basic Latin + Latin-1 Supplement + Latin Extended (English etc.)
+      - Telugu (U+0C00-U+0C7F)
+      - General Punctuation (curly quotes, em-dashes, ellipsis)
+      - Common whitespace
+
+    Any character outside these ranges rejects the whole transcript. A
+    real English/Telugu utterance never contains Hangul, Kana, Arabic,
+    Cyrillic, Devanagari, etc., so a single stray char is a reliable
+    signal of a language-hallucination rather than a mixed-script user.
+    """
+    if not text:
+        return False
+    for ch in text:
+        cp = ord(ch)
+        if 0x20 <= cp <= 0x7E:              # ASCII printable
+            continue
+        if ch in ("\r", "\n", "\t"):
+            continue
+        if 0xA0 <= cp <= 0x024F:            # Latin-1 Suppl + Latin Extended A/B
+            continue
+        if 0x0C00 <= cp <= 0x0C7F:          # Telugu
+            continue
+        if 0x2000 <= cp <= 0x206F:          # General Punctuation
+            continue
+        return True
+    return False
+
+
 def _is_prompt_echo(text: str) -> bool:
     """True if a transcript is a Whisper *prompt-echo hallucination*.
 
@@ -3697,7 +3737,10 @@ class RealtimeVoiceSession:
                         # hallucinations so the phantom never paints a bubble.
                         # Partial — not final, so the UI skips grammar
                         # correction until the .completed event.
-                        if not _is_prompt_echo(self._user_transcript_buf):
+                        if (
+                            not _is_prompt_echo(self._user_transcript_buf)
+                            and not _is_unsupported_script(self._user_transcript_buf)
+                        ):
                             self._emit_user_transcript(
                                 self._user_transcript_buf, is_final=False
                             )
@@ -3715,6 +3758,12 @@ class RealtimeVoiceSession:
                     self._active_user_transcript_item_id = ""
                     if spoken and _is_prompt_echo(spoken):
                         logger.debug("Realtime: dropped prompt-echo phantom %r", spoken)
+                        spoken = ""
+                    if spoken and _is_unsupported_script(spoken):
+                        logger.info(
+                            "Realtime: dropped hallucinated non-English/Telugu transcript %r",
+                            spoken,
+                        )
                         spoken = ""
                     if spoken:
                         logger.info("User said: %r", spoken)

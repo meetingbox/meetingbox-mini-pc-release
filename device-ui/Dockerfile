@@ -63,6 +63,7 @@ RUN set -eux; \
             xauth \
             x11-xserver-utils \
             fonts-dejavu-core \
+            fonts-noto-core \
             util-linux \
             iproute2 \
             espeak-ng \

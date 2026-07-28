@@ -106,8 +106,17 @@ class _Bubble(BoxLayout):
         _attach_bg(self, _USER_BUBBLE if is_user else _AI_BUBBLE,
                    radius=_BUBBLE_RADIUS)
 
+        # Font family picked from text content so Telugu characters render
+        # as letters rather than tofu boxes. Default is the design font
+        # (Latin-only); we switch to Noto-Telugu automatically when the
+        # transcript contains any Telugu character. See main.font_for_text.
+        try:
+            from main import font_for_text as _font_for
+        except Exception:
+            _font_for = lambda t: "42dot-Sans"
         lbl = Label(
             text=text,
+            font_name=_font_for(text),
             font_size=_FONT_BUBBLE,
             color=_TEXT_COLOR,
             halign='left',
@@ -118,6 +127,7 @@ class _Bubble(BoxLayout):
         lbl.bind(texture_size=lambda l, ts: self._sync_height(l, ts))
         self.add_widget(lbl)
         self._label = lbl
+        self._font_for = _font_for
 
     def _sync_height(self, lbl, ts):
         lbl.height = ts[1]
@@ -125,6 +135,10 @@ class _Bubble(BoxLayout):
 
     def update_text(self, text: str):
         """Replace the visible text. Triggers a height recompute via texture_size."""
+        # Re-pick the font each update - a bubble can transition from
+        # partial English caption to a Telugu final transcript on the same
+        # widget. Cheap: single pass over the string.
+        self._label.font_name = self._font_for(text)
         self._label.text = text
 
 

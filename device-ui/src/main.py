@@ -216,7 +216,57 @@ def _register_asta_fonts() -> None:
         pass
 
 
+def _register_telugu_font() -> None:
+    """Register NotoSansTelugu so Telugu transcripts render as letters, not
+    tofu boxes. 42dot Sans is Latin-only; without a Telugu-capable font the
+    Kivy label just draws replacement squares for U+0C00-U+0C7F glyphs.
+
+    Provided by the fonts-noto-core apt package (added to the Dockerfile).
+    Falls back silently on any system where the file is missing, keeping
+    the app usable on hosts without the package.
+
+    Kept as a separate named family ("Noto-Telugu") rather than replacing
+    the default, so English text stays on the design font (42dot Sans) and
+    only labels rendering Telugu need to switch. Helper below picks the
+    right family for a given string.
+    """
+    from pathlib import Path
+    from kivy.core.text import LabelBase
+    candidates = [
+        "/usr/share/fonts/truetype/noto/NotoSansTelugu-Regular.ttf",
+        "/usr/share/fonts/noto/NotoSansTelugu-Regular.ttf",
+    ]
+    reg = next((p for p in candidates if Path(p).is_file()), None)
+    if not reg:
+        return
+    bold_candidates = [
+        "/usr/share/fonts/truetype/noto/NotoSansTelugu-Bold.ttf",
+        "/usr/share/fonts/noto/NotoSansTelugu-Bold.ttf",
+    ]
+    bold = next((p for p in bold_candidates if Path(p).is_file()), reg)
+    try:
+        LabelBase.register(name="Noto-Telugu", fn_regular=reg, fn_bold=bold)
+    except Exception:
+        pass
+
+
+def font_for_text(text: str, default: str = "42dot-Sans") -> str:
+    """Return the font family that can render `text`. Switches to
+    Noto-Telugu when the string contains any Telugu character
+    (U+0C00-U+0C7F), otherwise returns the design default.
+
+    Cheap enough to call per-label update - single-pass scan of the string.
+    """
+    if not text:
+        return default
+    for ch in text:
+        if 0x0C00 <= ord(ch) <= 0x0C7F:
+            return "Noto-Telugu"
+    return default
+
+
 _register_asta_fonts()
+_register_telugu_font()
 
 from config import (
     DISPLAY_WIDTH,
