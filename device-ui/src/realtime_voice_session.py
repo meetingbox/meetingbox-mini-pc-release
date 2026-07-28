@@ -539,6 +539,13 @@ _AEC_VERIFIED_MIN_RAW_RATIO = _env_float(
     minimum=1.0,
     maximum=5.0,
 )
+# Compare against the PEAK ref RMS over the last ~300ms rather than the
+# current 20ms frame. Reason: mic captures echo of speaker output ~50-100ms
+# after playback, so mic-now must be compared against ref-from-recent-past.
+# 300ms comfortably covers speaker->room->mic delay while staying short
+# enough that a real user barge-in during a genuinely quiet passage still
+# clears the peak. 24 kHz * 2 bytes/sample * 0.3s = 14400 bytes.
+_AEC_VERIFIED_PEAK_WINDOW_BYTES = 24000 * 2 * 300 // 1000  # 14400
 _USB_BARGE_IN_MIN_FRAMES = _env_int(
     "REALTIME_USB_BARGE_IN_MIN_FRAMES", 3, minimum=2, maximum=10
 )
@@ -2830,6 +2837,38 @@ class RealtimeVoiceSession:
     def _far_ref_rms(self, length: int) -> float:
         return self._pcm_rms(self._far_ref_slice(length))
 
+    def _far_ref_peak_rms_over_window(self, window_bytes: int, frame_bytes: int) -> float:
+        """RMS of the LOUDEST recent ref chunk within the last window_bytes.
+
+        Fixes the AEC-alignment failure mode where mic captures the echo of a
+        LOUD word (say "stop") ~50-100ms after the speaker played it, but by
+        then the reference buffer has advanced to a SOFT next word. Comparing
+        loud mic-echo against soft current-ref produces a false huge ratio
+        that tricks the physical raw-ratio gate.
+
+        By scanning the last ~300ms of ref for its loudest 20ms frame, we
+        find the reference level that most likely produced the echo now
+        reaching the mic. Room can still only attenuate, so mic can still
+        never exceed that historical peak - the physical bound is restored
+        under real acoustic timing.
+        """
+        with self._aec_buf_lock:
+            snap = bytes(self._aec_far_buf[-window_bytes:])
+        if not snap or frame_bytes <= 0:
+            return 0.0
+        peak = 0.0
+        for i in range(0, len(snap) - frame_bytes + 1, frame_bytes):
+            r = self._pcm_rms(snap[i:i + frame_bytes])
+            if r > peak:
+                peak = r
+        # Handle trailing bytes shorter than frame_bytes
+        tail = len(snap) % frame_bytes
+        if tail:
+            r = self._pcm_rms(snap[-tail:])
+            if r > peak:
+                peak = r
+        return peak
+
     @staticmethod
     def _echo_similarity(mic_pcm16: bytes, ref_pcm16: bytes) -> float:
         """Cosine similarity between current mic and far-end playback slices.
@@ -2982,15 +3021,21 @@ class RealtimeVoiceSession:
             and echo_similarity <= _AEC_VERIFIED_MAX_ECHO_SIMILARITY
             and near_voice_detected is not False
             # Physical fingerprint: the room can only attenuate the speaker,
-            # never amplify. Nexa's echo alone can never make raw mic RMS
-            # exceed raw ref RMS - if this ratio is well above 1, there is
-            # necessarily an EXTERNAL sound source (user speech) contributing
-            # energy the room did not receive from our own speaker. This is
-            # a physical bound, not a tunable heuristic - it does not depend
-            # on AEC quality, room acoustics, or model tuning. Zero-risk
-            # self-hearing protection: no combination of Nexa's own audio
-            # can pass this gate.
-            and raw_mic_rms >= ref_rms * _AEC_VERIFIED_MIN_RAW_RATIO
+            # never amplify. But mic-echo lags speaker-output by ~50-100ms
+            # (sound travel + PortAudio buffering), so instantaneous
+            # ref_rms of the CURRENT frame does not represent the reference
+            # that actually produced the echo we're hearing now. Use the
+            # PEAK ref RMS over the last ~300ms so the loudest recent word
+            # is the yardstick - that is the ref that produced the echo
+            # currently reaching the mic. Without this, Nexa's own word
+            # "stop" echoed back and was compared against the following
+            # soft passage, showed as 55x louder than ref, passed a naive
+            # 2x gate, and got transcribed as user command "Stop" - which
+            # ended the session.
+            and raw_mic_rms >= self._far_ref_peak_rms_over_window(
+                window_bytes=_AEC_VERIFIED_PEAK_WINDOW_BYTES,
+                frame_bytes=len(mic_pcm16),
+            ) * _AEC_VERIFIED_MIN_RAW_RATIO
         ):
             aec_verified_speech = True
         detected = loud_enough or diverged_from_echo or aec_verified_speech
