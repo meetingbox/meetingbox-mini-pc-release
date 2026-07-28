@@ -627,14 +627,13 @@ _REALTIME_STOPWORD_ENABLED = (
     os.environ.get("REALTIME_STOPWORD", "1").strip().lower()
     not in ("0", "false", "no", "off", "")
 )
-_STOPWORD_PHRASES = (
-    "stop nexa",
-    "wait nexa",
-    "nexa stop",
-    "nexa wait",
-    "hold on nexa",
-    "nexa quiet",
-)
+# Words that count as "stop this reply" when paired with a name token.
+_STOPWORD_VERBS = frozenset({
+    "stop", "wait", "quiet", "silence", "pause", "hush", "shush",
+    "enough", "cancel", "halt",
+})
+# "Hold on" is two tokens - detect as adjacent tokens in the transcript.
+_STOPWORD_TWO_WORD_VERBS = (("hold", "on"), ("shut", "up"))
 # Debounce interval - one stop-word event per this many seconds. Prevents
 # a single sustained utterance from firing multiple cancels.
 _STOPWORD_DEBOUNCE_S = 1.5
@@ -1685,15 +1684,25 @@ class RealtimeVoiceSession:
     # ------------------------------------------------------------------
 
     def _start_stopword_worker(self) -> None:
-        """Bring up a grammar-restricted Vosk decoder on a side thread.
+        """Bring up a free-form Vosk decoder on a side thread; match a
+        stop-verb + nexa-variant pattern in the decoded text.
 
-        Two invariants make this safe against self-hearing:
-          1. Every phrase in the grammar contains the token 'nexa'. Nexa's
-             own replies do not refer to her by name in third person, so
-             echo-through-mic literally cannot match the grammar.
-          2. Frames fed to the recognizer are AEC-processed (echo suppressed)
-             pulled from the same barge-in pipeline that already runs during
-             playback. Any residual reference audio is heavily attenuated.
+        The earlier grammar-restricted design failed because the small Vosk
+        English model does not have 'nexa' in its vocabulary - it produces
+        'nexus', 'next', 'neksa', 'nexo' etc. A grammar of literal 'nexa'
+        never matched. Use free-form decoding and match against the same
+        _NEXA_TOKENS variant set the wake-word detector already uses; that
+        catches every hallucination we have observed in practice.
+
+        Two invariants preserve zero-self-hearing:
+          1. Match requires a stop VERB (stop/wait/quiet/etc.) AND a NEXA
+             VARIANT together. Nexa's own replies do not refer to her by
+             name in third person, so echo-through-mic will not produce
+             both tokens together.
+          2. Frames fed to the recognizer are AEC-processed (echo
+             suppressed) from the same barge-in pipeline that already
+             runs during playback. Residual reference audio is heavily
+             attenuated before Vosk sees it.
 
         No-op if the model is unavailable or the feature is disabled.
         """
@@ -1703,15 +1712,26 @@ class RealtimeVoiceSession:
             return
         try:
             from vosk import KaldiRecognizer
+            # Free-form decoding - no grammar argument. Model produces its
+            # natural tokens; the worker matches the pattern below.
             self._stopword_rec = KaldiRecognizer(
                 self._vosk_model,
                 _REALTIME_RATE,
-                json.dumps([*_STOPWORD_PHRASES, "[unk]"]),
             )
         except Exception:
             logger.debug("Stopword: recognizer init failed; disabling", exc_info=True)
             self._stopword_enabled = False
             return
+        # Import the same NEXA variant set the wake-word code uses so we
+        # inherit updates to it automatically instead of maintaining two
+        # copies of the same 14-token list.
+        try:
+            from voice_assistant import _NEXA_TOKENS
+            self._stopword_name_tokens = frozenset(_NEXA_TOKENS)
+        except Exception:
+            self._stopword_name_tokens = frozenset({
+                "nexa", "nexus", "next", "necks", "neksa", "nexo",
+            })
         self._stopword_q = queue.Queue(maxsize=64)
         self._stopword_thread = threading.Thread(
             target=self._stopword_worker, daemon=True, name="rtv-stopword"
@@ -1719,7 +1739,9 @@ class RealtimeVoiceSession:
         self._stopword_thread.start()
         logger.info(
             "Realtime stop-word detection: on-device Vosk enabled "
-            "(phrases=%d)", len(_STOPWORD_PHRASES),
+            "(verbs=%d, name_variants=%d)",
+            len(_STOPWORD_VERBS) + len(_STOPWORD_TWO_WORD_VERBS),
+            len(self._stopword_name_tokens),
         )
 
     def _stopword_worker(self) -> None:
@@ -1740,13 +1762,19 @@ class RealtimeVoiceSession:
                 break
             try:
                 decode_started = time.perf_counter()
+                # Check BOTH partial and final results - waiting only for
+                # AcceptWaveform() to return True means we wait for a full
+                # silence gap before matching, which loses the interrupt
+                # window. Partial results let us fire the moment the phrase
+                # is decoded, even mid-utterance.
                 if rec.AcceptWaveform(pcm):
                     res = json.loads(rec.Result() or "{}")
                     text = (res.get("text") or "").strip().lower()
-                    if text and text != "[unk]" and any(
-                        p in text for p in _STOPWORD_PHRASES
-                    ):
-                        self._trigger_stopword(text)
+                else:
+                    pres = json.loads(rec.PartialResult() or "{}")
+                    text = (pres.get("partial") or "").strip().lower()
+                if text and self._matches_stopword(text):
+                    self._trigger_stopword(text)
                 decode_frames += 1
                 decode_total_ms += (time.perf_counter() - decode_started) * 1000.0
                 now = time.monotonic()
@@ -1763,6 +1791,47 @@ class RealtimeVoiceSession:
                     last_report = now
             except Exception:
                 logger.debug("Stopword decode failed", exc_info=True)
+
+    def _matches_stopword(self, text: str) -> bool:
+        """True iff `text` looks like a stop-me-and-listen command.
+
+        Requires BOTH a stop verb (stop/wait/quiet/hold on/etc.) AND a
+        nexa-variant token, adjacent within a small window. The adjacency
+        check prevents false positives on unrelated speech that happens
+        to contain both words in different places (e.g. 'I need to stop
+        by the store; also, next up on the calendar').
+        """
+        tokens = [t for t in text.split() if t]
+        if len(tokens) < 2:
+            return False
+        name_toks = self._stopword_name_tokens
+        # Find each stop-verb position, then check for a name token within
+        # 3 tokens on either side.
+        verb_positions: list[int] = []
+        for i, tok in enumerate(tokens):
+            if tok in _STOPWORD_VERBS:
+                verb_positions.append(i)
+        # Two-word verbs ("hold on", "shut up")
+        for i in range(len(tokens) - 1):
+            for a, b in _STOPWORD_TWO_WORD_VERBS:
+                if tokens[i] == a and tokens[i + 1] == b:
+                    verb_positions.append(i + 1)  # anchor on second word
+        if not verb_positions:
+            return False
+        # Window of 2 tokens on either side. Real interrupt phrases keep the
+        # verb and name adjacent or one word apart ("stop nexa", "please
+        # stop nexa", "hold on nexa"). Wider windows start to accept "stop
+        # by the next station" - unrelated speech that happens to have both
+        # tokens in proximity. 2 is the sweet spot.
+        for vp in verb_positions:
+            lo = max(0, vp - 2)
+            hi = min(len(tokens), vp + 3)
+            for j in range(lo, hi):
+                if j == vp:
+                    continue
+                if tokens[j] in name_toks:
+                    return True
+        return False
 
     def _trigger_stopword(self, phrase: str) -> None:
         """Fire when Vosk matched a stop phrase. Cancel Nexa's current
@@ -1781,6 +1850,13 @@ class RealtimeVoiceSession:
         if now - self._stopword_last_at < _STOPWORD_DEBOUNCE_S:
             return
         self._stopword_last_at = now
+        # Clear Vosk decoder state so the same partial does not keep
+        # re-triggering while the user continues speaking.
+        try:
+            if self._stopword_rec is not None:
+                self._stopword_rec.Reset()
+        except Exception:
+            pass
         self._log_voice_event("stopword_detected", phrase=phrase)
         self._abort_aplay()
         self._suppress_audio_until = now + _BARGE_IN_SUPPRESS_AUDIO_S
