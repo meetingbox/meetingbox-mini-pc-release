@@ -386,6 +386,29 @@ _DEFAULT_INPUT_TRANSCRIPTION_MODEL = (
 _INPUT_TRANSCRIPTION_PROMPT = ""
 
 
+def _is_noise_transcript(text: str) -> bool:
+    """True if a transcript is just punctuation / dots / single-letter noise.
+
+    gpt-4o-transcribe returns strings like '.', '..', '...', ',', '?' when the
+    audio is near-silence or a very brief unclear sound (a breath, a chair
+    scrape). These are not real user speech - they should never appear as a
+    user bubble on screen. Same drop-quietly pattern as _is_prompt_echo.
+    """
+    if not text:
+        return False
+    stripped = text.strip()
+    if not stripped:
+        return True
+    # Only whitespace + punctuation? no meaningful content.
+    if all(not ch.isalnum() for ch in stripped):
+        return True
+    # Single letter or single letter with punctuation only ("a.", "I?", "a")
+    letters = [c for c in stripped if c.isalnum()]
+    if len(letters) <= 1:
+        return True
+    return False
+
+
 def _is_unsupported_script(text: str) -> bool:
     """True if a transcript is in a script the user does not actually speak.
 
@@ -4006,6 +4029,7 @@ class RealtimeVoiceSession:
                         if (
                             not _is_prompt_echo(self._user_transcript_buf)
                             and not _is_unsupported_script(self._user_transcript_buf)
+                            and not _is_noise_transcript(self._user_transcript_buf)
                         ):
                             self._emit_user_transcript(
                                 self._user_transcript_buf, is_final=False
@@ -4030,6 +4054,9 @@ class RealtimeVoiceSession:
                             "Realtime: dropped hallucinated non-English/Telugu transcript %r",
                             spoken,
                         )
+                        spoken = ""
+                    if spoken and _is_noise_transcript(spoken):
+                        logger.debug("Realtime: dropped noise transcript %r", spoken)
                         spoken = ""
                     if spoken:
                         logger.info("User said: %r", spoken)
