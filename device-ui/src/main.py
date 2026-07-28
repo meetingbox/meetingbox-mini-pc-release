@@ -6104,26 +6104,46 @@ class MeetingBoxApp(App):
                 return
             pending = getattr(self, "_pending_user_msg_id", None)
             current = getattr(self, "_current_user_msg_id", None)
-            if pending:
-                # First transcript event for this utterance: replace the "…"
-                # placeholder and remember the bubble id for subsequent deltas.
-                overlay.update_user_message(pending, text)
-                msg_id = pending
-                self._pending_user_msg_id = None
-                self._current_user_msg_id = msg_id
-            elif current:
-                # Subsequent partial delta or the final .completed event:
-                # update the same bubble in place — never create a new one.
-                overlay.update_user_message(current, text)
-                msg_id = current
-            else:
-                # No placeholder and no active bubble (e.g. speech_stopped
-                # never fired): create a fresh bubble and track it.
-                msg_id = overlay.add_user_message(text)
-                self._current_user_msg_id = msg_id
+            # Only paint the ON-SCREEN bubble on the FINAL transcript. Partial
+            # deltas (streaming Whisper hypotheses + local Vosk captions) were
+            # flickering the wrong words while the user was still talking,
+            # then snapping to the correct sentence on the .completed event -
+            # per-user request, hide the intermediate steps entirely. The
+            # placeholder "…" bubble created on speech_started stays as "…"
+            # until the final arrives and we replace it here. Downstream
+            # side-effects (picker choice parsing, say_bar, grammar
+            # correction) still run on partials below.
+            msg_id = None
+            if is_final:
+                if pending:
+                    overlay.update_user_message(pending, text)
+                    msg_id = pending
+                    self._pending_user_msg_id = None
+                    self._current_user_msg_id = msg_id
+                elif current:
+                    overlay.update_user_message(current, text)
+                    msg_id = current
+                else:
+                    msg_id = overlay.add_user_message(text)
+                    self._current_user_msg_id = msg_id
+                # Guarantee the just-updated bubble is at the visible bottom.
+                # The placeholder scroll ran on speech_started - by the time
+                # the final arrives, other messages may have grown the layout
+                # and the placeholder can be off-screen or above newer AI
+                # content. Force scroll to the bottom of the list.
+                try:
+                    if hasattr(overlay, "_scroll"):
+                        from kivy.clock import Clock as _Clock
+                        _Clock.schedule_once(
+                            lambda _dt: setattr(overlay._scroll, "scroll_y", 0), 0
+                        )
+                except Exception:
+                    pass
 
-            # Also update home say bar / voice-session transcript with user text
-            self._schedule_say_bar_update("You", text)
+            # Also update home say bar / voice-session transcript with user text.
+            # Skip on partials too - the say bar has the same flicker complaint.
+            if is_final:
+                self._schedule_say_bar_update("You", text)
 
             # Parse picker choices on partials too; final ASR can be clipped
             # ("The") while a prior partial already contained "first one".
