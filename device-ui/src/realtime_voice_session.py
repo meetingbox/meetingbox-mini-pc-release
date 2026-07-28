@@ -3654,13 +3654,23 @@ class RealtimeVoiceSession:
                         self._caption_active = True
                         self._caption_reset.set()
                         self._emit_user_speech_started()
-                    # In half-duplex, server-side speech_started can still
-                    # occasionally come from residual echo on some external
-                    # mic/speaker paths. Only force-stop playback when local
-                    # barge-in already confirmed recently; otherwise defer to
-                    # the local detector and avoid false self-interrupt.
+                    # Trust OpenAI's server-side VAD when it fires. Original
+                    # behaviour required local barge-in confirmation within
+                    # 0.9s in half-duplex mode - a legacy hedge from when we
+                    # sent RAW mic frames to OpenAI (server VAD could then be
+                    # fooled by echo). We now send AEC-processed frames via
+                    # _upload_resampled_audio, so the server VAD is looking
+                    # at echo-suppressed audio and its firing is trustworthy
+                    # regardless of what the local detector thinks.
+                    #
+                    # Also keeps the old "local confirmed within 0.9s"
+                    # shortcut as belt-and-suspenders. If AEC turns out to
+                    # leak residual strong enough to fool OpenAI's VAD
+                    # (self-hearing regressions), revert this and add the
+                    # stop-word detection path instead.
                     should_force_interrupt = (
                         not self._half_duplex
+                        or (self._aec is not None)
                         or (time.monotonic() - self._barge_in_last_cancel_at) <= 0.9
                     )
                     if should_force_interrupt:
