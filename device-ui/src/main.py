@@ -6297,6 +6297,12 @@ class MeetingBoxApp(App):
                 should_suppress_farewell=self._email_workflow_active,
                 brief_data_provider=self._voice_brief_facts,
                 prewarm=prewarm,
+                # Share the wake-word Vosk model so on-device stop-word
+                # detection and live captions can run without loading a
+                # second ~40 MB model into RAM. None during boot (before
+                # voice_assistant finishes downloading/loading), then
+                # populated - each new session pulls the current value.
+                vosk_model=getattr(self.voice_assistant, "vosk_model", None),
             )
             session_ref["session"] = sess
             if prewarm:

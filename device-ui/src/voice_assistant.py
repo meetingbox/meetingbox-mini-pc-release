@@ -604,6 +604,17 @@ class VoiceAssistant:
         self._warned_unavailable = False
 
     @property
+    def vosk_model(self):
+        """Public accessor for the loaded Vosk Model instance.
+
+        Used by RealtimeVoiceSession to share the wake-word model with
+        the stop-word detector and live-caption recognizer - avoids
+        loading a second copy (~40 MB) into RAM. Returns None until the
+        model has finished downloading/loading in the background.
+        """
+        return self._model
+
+    @property
     def available(self) -> bool:
         return self.enabled and sd is not None and Model is not None and KaldiRecognizer is not None
 
