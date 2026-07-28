@@ -496,10 +496,24 @@ _USB_BARGE_IN_MIN_RMS = _env_float(
 # without needing the 5500+ RMS spike the old logic required (which is why
 # users had to shout or lean close to the mic to interrupt).
 # Independent of the loud_enough / diverged_from_echo paths - never removes
-# from detection, only adds. Turn off with REALTIME_AEC_VERIFIED_BARGE_IN=0.
+# from detection, only adds.
+#
+# DEFAULT DISABLED (2026-07-27) after user report of self-hearing and mid-
+# sentence pauses. Root cause: AEC leaves a small residual of Nexa's own
+# audio (5-30% of original energy) that has LOW similarity to the raw ref
+# (AEC did its subtraction, that's the whole point) but non-zero RMS
+# passing the min-RMS gate. My path assumed "low similarity == user speech";
+# in practice it can also mean "AEC residual with some leaked content", so
+# Nexa's own reverb-tail was tripping barge-in. User was explicit that
+# self-hearing is worse than degraded barge-in, so trade off accordingly.
+#
+# With this off, barge-in requires the loud_enough path (5500+ RMS on USB)
+# - the "shout or lean close" behaviour from before 38c4f7d. To re-enable
+# and tune, set REALTIME_AEC_VERIFIED_BARGE_IN=1 (must be wired through
+# docker-compose too, currently is not).
 _AEC_VERIFIED_BARGE_IN_ENABLED = (
-    os.environ.get("REALTIME_AEC_VERIFIED_BARGE_IN", "1").strip().lower()
-    not in ("0", "false", "no", "off", "")
+    os.environ.get("REALTIME_AEC_VERIFIED_BARGE_IN", "0").strip().lower()
+    in ("1", "true", "yes", "on")
 )
 _AEC_VERIFIED_MIN_RMS = _env_float(
     "REALTIME_AEC_VERIFIED_MIN_RMS", 1500.0, minimum=500.0, maximum=10000.0
