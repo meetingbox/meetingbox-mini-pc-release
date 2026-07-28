@@ -2989,8 +2989,14 @@ class RealtimeVoiceSession:
 
                 # Start the live-caption side thread now that the mic is open.
                 self._start_caption_worker()
-                # Stop-word detector runs in parallel on AEC-processed mic.
-                self._start_stopword_worker()
+                # Stop-word detector intentionally NOT started. User disabled
+                # it because common English words in Nexa's own replies (e.g.
+                # "cancel the next meeting", "stop... let me check the next
+                # item") satisfied the (stop-verb + name-variant) match and
+                # caused self-interrupts. All the detector code below is left
+                # dormant so re-enabling is one line if the model, grammar,
+                # or matcher gets a fix worth trying.
+                # self._start_stopword_worker()
 
                 pump_task = asyncio.create_task(self._pump_mic())
                 # Reset the idle clock from the moment the mic is live so
