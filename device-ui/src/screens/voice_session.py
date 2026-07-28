@@ -318,15 +318,23 @@ class _TranscriptionBox(FloatLayout):
 
         # Update the matching speaker's live bubble in place (unless this is the
         # start of a brand-new user turn).
+        # Switch to the Telugu-capable font when the transcript contains any
+        # Telugu character - _FONT_SB (42dot Sans) is Latin-only and renders
+        # Telugu codepoints as tofu boxes. See main.font_for_text.
+        try:
+            from main import font_for_text as _font_for
+        except Exception:
+            _font_for = lambda t: _FONT_SB
         if update_in_place:
             target.text  = full
+            target.font_name = _font_for(full)
             target.color = color
             Clock.schedule_once(lambda _dt: self._scroll_bottom(), 0.05)
             return
 
         lbl = Label(
             text=full,
-            font_name=_FONT_SB,
+            font_name=_font_for(full),
             font_size=_ff(37),
             color=color,
             halign="left",
