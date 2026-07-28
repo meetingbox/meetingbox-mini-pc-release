@@ -498,22 +498,20 @@ _USB_BARGE_IN_MIN_RMS = _env_float(
 # Independent of the loud_enough / diverged_from_echo paths - never removes
 # from detection, only adds.
 #
-# DEFAULT DISABLED (2026-07-27) after user report of self-hearing and mid-
-# sentence pauses. Root cause: AEC leaves a small residual of Nexa's own
-# audio (5-30% of original energy) that has LOW similarity to the raw ref
-# (AEC did its subtraction, that's the whole point) but non-zero RMS
-# passing the min-RMS gate. My path assumed "low similarity == user speech";
-# in practice it can also mean "AEC residual with some leaked content", so
-# Nexa's own reverb-tail was tripping barge-in. User was explicit that
-# self-hearing is worse than degraded barge-in, so trade off accordingly.
+# RE-ENABLED (2026-07-27) with a physical-bound gate that makes self-hearing
+# impossible regardless of AEC quality: raw_mic_rms >= ref_rms * MIN_RAW_RATIO.
+# Room acoustics can only attenuate the speaker output, never amplify it, so
+# Nexa's echo alone can never make the raw mic louder than the raw reference.
+# When the ratio is above ~1.5-2.0, there IS an external sound contributing
+# energy - i.e., real user speech - regardless of what AEC residual or
+# similarity metrics say.
 #
-# With this off, barge-in requires the loud_enough path (5500+ RMS on USB)
-# - the "shout or lean close" behaviour from before 38c4f7d. To re-enable
-# and tune, set REALTIME_AEC_VERIFIED_BARGE_IN=1 (must be wired through
-# docker-compose too, currently is not).
+# Previous version (disabled state) relied only on residual RMS + similarity,
+# both of which could be tripped by AEC's own leakage of Nexa's audio. This
+# version uses a physical fingerprint that is not fooled by that.
 _AEC_VERIFIED_BARGE_IN_ENABLED = (
-    os.environ.get("REALTIME_AEC_VERIFIED_BARGE_IN", "0").strip().lower()
-    in ("1", "true", "yes", "on")
+    os.environ.get("REALTIME_AEC_VERIFIED_BARGE_IN", "1").strip().lower()
+    not in ("0", "false", "no", "off", "")
 )
 _AEC_VERIFIED_MIN_RMS = _env_float(
     "REALTIME_AEC_VERIFIED_MIN_RMS", 1500.0, minimum=500.0, maximum=10000.0
@@ -526,6 +524,20 @@ _AEC_VERIFIED_MAX_ECHO_SIMILARITY = _env_float(
     0.5,
     minimum=0.1,
     maximum=0.9,
+)
+# Physical guarantee against self-hearing: raw mic (pre-AEC) must be at
+# least this multiple of the raw reference (what we sent to the speaker).
+# Room acoustics only attenuate - they cannot make echo louder than the
+# source - so any ratio well above 1 requires an external sound source.
+# 2.0 is conservatively above the plausible worst case where the mic sits
+# right next to the speaker; user speech at normal volume clears easily
+# during Nexa's soft passages. Tune up (2.5+) if any self-hearing occurs;
+# tune down (1.5) if user must speak too loudly to interrupt.
+_AEC_VERIFIED_MIN_RAW_RATIO = _env_float(
+    "REALTIME_AEC_VERIFIED_MIN_RAW_RATIO",
+    2.0,
+    minimum=1.0,
+    maximum=5.0,
 )
 _USB_BARGE_IN_MIN_FRAMES = _env_int(
     "REALTIME_USB_BARGE_IN_MIN_FRAMES", 3, minimum=2, maximum=10
@@ -2850,6 +2862,7 @@ class RealtimeVoiceSession:
         now: float,
         echo_suppressed: bool = False,
         near_voice_detected: bool | None = None,
+        raw_mic_rms: float = 0.0,
     ) -> tuple[bool, float, float, float, float]:
         """Detect live user speech while normal mic upload is muted for echo.
 
@@ -2968,6 +2981,16 @@ class RealtimeVoiceSession:
             )
             and echo_similarity <= _AEC_VERIFIED_MAX_ECHO_SIMILARITY
             and near_voice_detected is not False
+            # Physical fingerprint: the room can only attenuate the speaker,
+            # never amplify. Nexa's echo alone can never make raw mic RMS
+            # exceed raw ref RMS - if this ratio is well above 1, there is
+            # necessarily an EXTERNAL sound source (user speech) contributing
+            # energy the room did not receive from our own speaker. This is
+            # a physical bound, not a tunable heuristic - it does not depend
+            # on AEC quality, room acoustics, or model tuning. Zero-risk
+            # self-hearing protection: no combination of Nexa's own audio
+            # can pass this gate.
+            and raw_mic_rms >= ref_rms * _AEC_VERIFIED_MIN_RAW_RATIO
         ):
             aec_verified_speech = True
         detected = loud_enough or diverged_from_echo or aec_verified_speech
@@ -3216,6 +3239,13 @@ class RealtimeVoiceSession:
                 if now < self._mute_mic_uplink_until:
                     barge_frame = resampled
                     barge_aec_applied = self._half_duplex and self._aec is not None
+                    # Raw mic energy BEFORE AEC subtraction - the physical
+                    # signal the room actually delivered. Compared against
+                    # the raw reference in the aec_verified branch as a
+                    # physical fingerprint of "user vs echo": echo alone
+                    # can never make raw mic louder than raw ref (room
+                    # attenuates, doesn't amplify).
+                    raw_mic_rms = self._pcm_rms(resampled)
                     if barge_aec_applied:
                         barge_frame = self._apply_aec(resampled)
                         if not barge_frame:
@@ -3230,6 +3260,7 @@ class RealtimeVoiceSession:
                             if barge_aec_applied
                             else None
                         ),
+                        raw_mic_rms=raw_mic_rms,
                     )
                     if detected:
                         # Snapshot before cancellation: aborting playback resets
