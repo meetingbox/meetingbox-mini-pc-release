@@ -605,6 +605,40 @@ _LIVE_CAPTION_START_RMS = _env_float(
     "REALTIME_LIVE_CAPTION_START_RMS", 250.0, minimum=50.0, maximum=5000.0
 )
 
+# Local Vosk stop-word detection.
+#
+# Barge-in via OpenAI's server VAD is unreliable: short interrupt utterances
+# get half-uploaded or mistranscribed, so 'wait / stop / create a task' comes
+# back as gibberish ('Maylis?') and Nexa keeps talking. Solution: run Vosk
+# locally on the AEC-processed mic with a grammar restricted to a handful of
+# stop phrases. When one fires we bypass OpenAI's STT entirely - cancel the
+# response, cut playback, drop into listening.
+#
+# Self-hearing guard: every phrase contains "nexa". Nexa never refers to
+# herself in third person ("nexa stop", "wait nexa") in her own replies, so
+# echo-through-mic literally cannot match the grammar. AEC also runs first,
+# so residual reference audio is suppressed before Vosk sees it.
+#
+# CPU/RAM: grammar-restricted Vosk decode is ~2-5% CPU during active
+# playback, shares the wake-word model instance (no extra RAM), runs in its
+# own daemon thread so it never blocks the audio pump. Off with
+# REALTIME_STOPWORD=0.
+_REALTIME_STOPWORD_ENABLED = (
+    os.environ.get("REALTIME_STOPWORD", "1").strip().lower()
+    not in ("0", "false", "no", "off", "")
+)
+_STOPWORD_PHRASES = (
+    "stop nexa",
+    "wait nexa",
+    "nexa stop",
+    "nexa wait",
+    "hold on nexa",
+    "nexa quiet",
+)
+# Debounce interval - one stop-word event per this many seconds. Prevents
+# a single sustained utterance from firing multiple cancels.
+_STOPWORD_DEBOUNCE_S = 1.5
+
 
 # ---------------------------------------------------------------------------
 # Farewell detection — only consulted on COMPLETED user transcripts
@@ -1227,6 +1261,18 @@ class RealtimeVoiceSession:
         self._caption_emit_scheduled = False
         self._caption_q_drops = 0
 
+        # Vosk stop-word detector - runs in parallel with the caption worker
+        # on the same wake-word model, grammar-restricted to _STOPWORD_PHRASES.
+        # See _start_stopword_worker for the full design.
+        self._stopword_enabled = bool(
+            _REALTIME_STOPWORD_ENABLED and vosk_model is not None
+        )
+        self._stopword_rec = None
+        self._stopword_q: queue.Queue | None = None
+        self._stopword_thread: threading.Thread | None = None
+        self._stopword_last_at = 0.0
+        self._stopword_q_drops = 0
+
         # Streaming buffer for AI audio transcript deltas. We flush it
         # on the matching .done event, or on response.done as a fallback
         # when the API never emits .done at all.
@@ -1633,6 +1679,130 @@ class RealtimeVoiceSession:
                     last_report = now
             except Exception:
                 logger.debug("Live caption decode failed", exc_info=True)
+
+    # ------------------------------------------------------------------
+    # Vosk stop-word detector (parallel to captions, own thread + queue)
+    # ------------------------------------------------------------------
+
+    def _start_stopword_worker(self) -> None:
+        """Bring up a grammar-restricted Vosk decoder on a side thread.
+
+        Two invariants make this safe against self-hearing:
+          1. Every phrase in the grammar contains the token 'nexa'. Nexa's
+             own replies do not refer to her by name in third person, so
+             echo-through-mic literally cannot match the grammar.
+          2. Frames fed to the recognizer are AEC-processed (echo suppressed)
+             pulled from the same barge-in pipeline that already runs during
+             playback. Any residual reference audio is heavily attenuated.
+
+        No-op if the model is unavailable or the feature is disabled.
+        """
+        if not self._stopword_enabled or self._vosk_model is None:
+            return
+        if self._stopword_thread is not None and self._stopword_thread.is_alive():
+            return
+        try:
+            from vosk import KaldiRecognizer
+            self._stopword_rec = KaldiRecognizer(
+                self._vosk_model,
+                _REALTIME_RATE,
+                json.dumps([*_STOPWORD_PHRASES, "[unk]"]),
+            )
+        except Exception:
+            logger.debug("Stopword: recognizer init failed; disabling", exc_info=True)
+            self._stopword_enabled = False
+            return
+        self._stopword_q = queue.Queue(maxsize=64)
+        self._stopword_thread = threading.Thread(
+            target=self._stopword_worker, daemon=True, name="rtv-stopword"
+        )
+        self._stopword_thread.start()
+        logger.info(
+            "Realtime stop-word detection: on-device Vosk enabled "
+            "(phrases=%d)", len(_STOPWORD_PHRASES),
+        )
+
+    def _stopword_worker(self) -> None:
+        rec = self._stopword_rec
+        q = self._stopword_q
+        if rec is None or q is None:
+            return
+        # Track decode load so we can log if it ever becomes expensive.
+        decode_frames = 0
+        decode_total_ms = 0.0
+        last_report = time.monotonic()
+        while not self._stop.is_set():
+            try:
+                pcm = q.get(timeout=0.2)
+            except queue.Empty:
+                continue
+            if pcm is None:
+                break
+            try:
+                decode_started = time.perf_counter()
+                if rec.AcceptWaveform(pcm):
+                    res = json.loads(rec.Result() or "{}")
+                    text = (res.get("text") or "").strip().lower()
+                    if text and text != "[unk]" and any(
+                        p in text for p in _STOPWORD_PHRASES
+                    ):
+                        self._trigger_stopword(text)
+                decode_frames += 1
+                decode_total_ms += (time.perf_counter() - decode_started) * 1000.0
+                now = time.monotonic()
+                if now - last_report >= 15.0 and decode_frames > 0:
+                    self._log_voice_event(
+                        "stopword_pipeline",
+                        frames=decode_frames,
+                        avg_decode_ms=round(decode_total_ms / decode_frames, 3),
+                        queue_depth=q.qsize(),
+                        drops=self._stopword_q_drops,
+                    )
+                    decode_frames = 0
+                    decode_total_ms = 0.0
+                    last_report = now
+            except Exception:
+                logger.debug("Stopword decode failed", exc_info=True)
+
+    def _trigger_stopword(self, phrase: str) -> None:
+        """Fire when Vosk matched a stop phrase. Cancel Nexa's current
+        response, cut local playback, drop into listening. Safe from any
+        thread - schedules the WS cancel back onto the asyncio loop.
+
+        Two guards prevent unwanted fires:
+          - Only acts when a response is actively in progress. If Nexa is
+            not talking, there is nothing to stop.
+          - Debounced by _STOPWORD_DEBOUNCE_S so a sustained phrase does
+            not fire multiple cancels in quick succession.
+        """
+        if not self._response_in_progress:
+            return
+        now = time.monotonic()
+        if now - self._stopword_last_at < _STOPWORD_DEBOUNCE_S:
+            return
+        self._stopword_last_at = now
+        self._log_voice_event("stopword_detected", phrase=phrase)
+        self._abort_aplay()
+        self._suppress_audio_until = now + _BARGE_IN_SUPPRESS_AUDIO_S
+        self._emit_state("listening")
+        loop = self._loop
+        if loop is not None and not loop.is_closed():
+            try:
+                asyncio.run_coroutine_threadsafe(
+                    self._send_stopword_cancel(), loop
+                )
+            except Exception:
+                logger.debug("Stopword cancel schedule failed", exc_info=True)
+
+    async def _send_stopword_cancel(self) -> None:
+        ws = self._ws
+        if ws is None:
+            return
+        try:
+            await ws.send(json.dumps({"type": "response.cancel"}))
+            self._log_voice_event("response_cancel_sent", source="stopword")
+        except Exception:
+            logger.debug("Stopword response.cancel failed", exc_info=True)
 
     def _emit_device_navigation(self, tool_output_json: str) -> None:
         cb = self._on_device_navigate_cb
@@ -2720,6 +2890,8 @@ class RealtimeVoiceSession:
 
                 # Start the live-caption side thread now that the mic is open.
                 self._start_caption_worker()
+                # Stop-word detector runs in parallel on AEC-processed mic.
+                self._start_stopword_worker()
 
                 pump_task = asyncio.create_task(self._pump_mic())
                 # Reset the idle clock from the moment the mic is live so
@@ -3332,6 +3504,14 @@ class RealtimeVoiceSession:
                         if not barge_frame:
                             continue
                     self._barge_in_preroll.append(barge_frame)
+                    # Feed the AEC-processed frame to the stop-word Vosk
+                    # (non-blocking, drop-on-full). Only during playback -
+                    # if Nexa is not speaking there is nothing to stop.
+                    if self._stopword_q is not None and barge_aec_applied:
+                        try:
+                            self._stopword_q.put_nowait(barge_frame)
+                        except queue.Full:
+                            self._stopword_q_drops += 1
                     detected, mic_rms, ref_rms, threshold, echo_similarity = self._detect_local_barge_in(
                         barge_frame,
                         now=now,
