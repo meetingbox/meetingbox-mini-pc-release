@@ -1940,6 +1940,12 @@ class MeetingBoxApp(App):
             }
             while target in skip and self._nav_stack:
                 target = self._nav_stack.pop()
+            if target in skip:
+                # Stack drained while still sitting on a skip-listed screen
+                # (e.g. 'splash' at the very bottom from boot) — using it
+                # anyway sent users back into onboarding/the splash screen.
+                # 'home' is always a safe, real destination.
+                target = 'home'
             self._maybe_clear_summary_context(target)
             if target == self.screen_manager.current:
                 # No screen change means no transition and no Kivy re-dispatch;
