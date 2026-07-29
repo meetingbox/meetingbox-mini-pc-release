@@ -183,6 +183,40 @@ class SettingsScreen(BaseScreen):
         self._scroll.add_widget(self.category_list_container)
         root.add_widget(self._scroll)
 
+        # The ~50 rows across all 12 categories (below, in _build_category_rows)
+        # are NOT built here. Building them synchronously in __init__ — which
+        # runs during App.build(), before the window even renders its first
+        # frame — measurably delayed how soon the boot splash could appear,
+        # and paid that cost on every boot even for users who never open
+        # Settings at all in a session.
+        #
+        # Instead they're built on-demand, the first time Settings is
+        # actually entered (see on_enter()'s call to
+        # _ensure_category_rows_built()) — zero cost at boot if Settings is
+        # never opened; a one-time build right as the user navigates in if
+        # it is, which is the normal place for a brief first-open moment.
+        self._category_rows_built = False
+
+        # Footer
+        footer = self.build_footer()
+        root.add_widget(footer)
+
+        self.add_widget(root)
+
+    def _ensure_category_rows_built(self, *_args):
+        """Build every category's rows exactly once.
+
+        Scheduled for the next frame after __init__ (see _build_ui) so it
+        doesn't block the window's first render. Also called defensively
+        from on_enter()/_show_category() as a synchronous fallback, in the
+        unlikely event Settings is reached before that deferred tick has run.
+        """
+        if self._category_rows_built:
+            return
+        self._category_rows_built = True
+        self._build_category_rows()
+
+    def _build_category_rows(self):
         # ---- DEVICE ----
         cat = self._category_containers['device']
         cat.add_widget(self._section_header('DEVICE'))
@@ -709,12 +743,6 @@ class SettingsScreen(BaseScreen):
         for c in self._category_containers.values():
             c.add_widget(Widget(size_hint_y=None, height=self.suv(20)))
 
-        # Footer
-        footer = self.build_footer()
-        root.add_widget(footer)
-
-        self.add_widget(root)
-
     def _new_category_container(self):
         """Empty scrollable list container, same styling the old single flat
         list used — now scoped to one category's rows."""
@@ -748,6 +776,7 @@ class SettingsScreen(BaseScreen):
             self.status_bar.device_label.text = 'Settings'
 
     def _show_category(self, key):
+        self._ensure_category_rows_built()
         container = self._category_containers.get(key)
         if container is None:
             return
@@ -771,6 +800,11 @@ class SettingsScreen(BaseScreen):
     # Lifecycle
     # ------------------------------------------------------------------
     def on_enter(self):
+        # _load_system_info() below sets subtitle text on every item across
+        # every category unconditionally, so those widgets must exist before
+        # it runs — force the (normally already-completed) deferred build
+        # synchronously here as a guarantee, not just a hope.
+        self._ensure_category_rows_built()
         # Always land on the category list when Settings is (re)opened from
         # elsewhere, rather than resuming whatever category was last open.
         self._show_categories()
