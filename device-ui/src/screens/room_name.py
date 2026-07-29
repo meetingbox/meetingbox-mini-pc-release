@@ -91,7 +91,12 @@ class RoomNameScreen(BaseScreen):
             self._next_btn.disabled = not bool((self._text_input.text or '').strip())
 
     def _on_back(self, _inst):
-        self.go_back()
+        # room_name's only entry point is welcome. go_back() can't be used
+        # here: it skips onboarding screens (including welcome) when
+        # unwinding the stack, and if the stack empties while still on a
+        # skipped screen, it lands there anyway — sending this specific
+        # back tap to splash, which then auto-redirects unpredictably.
+        self.goto('welcome', transition='slide_right')
 
     def _on_next(self, _inst):
         name = (self._text_input.text or '').strip()

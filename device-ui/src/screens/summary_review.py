@@ -625,4 +625,7 @@ class SummaryReviewScreen(BaseScreen):
 
     # ------------------------------------------------------------- handlers
     def _on_back(self):
-        self.goto("home", transition="fade")
+        # This screen is opened from anywhere (summary notification, voice
+        # command from any screen) — return to wherever the user actually
+        # came from instead of always dropping them at Home.
+        self.go_back()
