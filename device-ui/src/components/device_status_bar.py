@@ -51,7 +51,10 @@ class _BatteryIcon(Widget):
             (0.95, 0.65, 0.10, 0.95) if level > 0.20 else
             (0.95, 0.25, 0.20, 0.95)
         )
-        pad = max(1.5, h * 0.12)
+        # Fixed thin inset — matches home.py's _BatteryWidget border so the
+        # icon reads identically across every screen instead of thickening
+        # on taller renders.
+        pad = 1.5
         self._fill.pos = (x + pad, y + pad)
         self._fill.size = (max(0.0, (body_w - 2 * pad) * level), max(0.0, h - 2 * pad))
         self._fill.radius = [max(1.0, (h - 2 * pad) * 0.22)]
