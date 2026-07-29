@@ -28,6 +28,7 @@ Public API (called from main.py):
 from __future__ import annotations
 
 import logging
+import threading
 import time
 
 from kivy.clock import Clock
@@ -42,7 +43,7 @@ from kivy.uix.widget import Widget
 from components.live_wifi_icon import LiveWifiIcon
 from config import ASSETS_DIR, DISPLAY_HEIGHT, DISPLAY_WIDTH
 from screens.base_screen import BaseScreen
-from screens.home import _VoiceStatePill  # noqa: PLC2701
+from screens.home import _BatteryWidget, _VoiceStatePill  # noqa: PLC2701
 
 logger = logging.getLogger(__name__)
 
@@ -128,6 +129,8 @@ class EmailsScreen(BaseScreen):
         self._listening   = False
         self._amplitude   = 0.0
         self._voice_tick_ev = None
+        self._battery: _BatteryWidget | None = None
+        self._status_ev = None
 
         # Displayed email state
         self._subject        = ""
@@ -315,14 +318,9 @@ class EmailsScreen(BaseScreen):
         # WiFi icon  x=1109  y=31  29×20
         root.add_widget(LiveWifiIcon(**_ph(1109, 31, 29, 20)))
 
-        # Battery icon  x=1175  y=30  47×21
-        batt_src = _asset("icon_battery.png")
-        if batt_src:
-            root.add_widget(Image(
-                source=batt_src,
-                fit_mode="contain",
-                **_ph(1175, 30, 47, 21),
-            ))
+        # Battery icon  x=1175  y=30  47×21 — live, matches Home/DeviceStatusBar
+        self._battery = _BatteryWidget(**_ph(1175, 30, 47, 21))
+        root.add_widget(self._battery)
 
     # ── Public API ────────────────────────────────────────────────────────────
 
@@ -403,7 +401,46 @@ class EmailsScreen(BaseScreen):
         if self._voice_pill:
             self._voice_pill.update_bars(time.monotonic(), self._amplitude)
 
+    # ── Battery (live, same read/refresh pattern as HomeScreen) ─────────────────
+
+    def _refresh_battery(self) -> None:
+        threading.Thread(target=self._fetch_battery, daemon=True).start()
+
+    def _fetch_battery(self) -> None:
+        try:
+            import hardware as _hw          # noqa: PLC0415
+            batt = _hw.get_battery_info()
+        except Exception:
+            return
+
+        def _apply(_dt):
+            if self._battery is None:
+                return
+            pct = batt.get("percent")
+            if pct is not None:
+                level = pct / 100.0
+                bat_col = (
+                    (0.22, 0.80, 0.35, 0.88) if level > 0.50 else
+                    (0.95, 0.65, 0.10, 0.88) if level > 0.20 else
+                    (0.95, 0.25, 0.20, 0.88)
+                )
+                self._battery.set_color(bat_col)
+                self._battery.set_level(level)
+            else:
+                self._battery.set_level(1.0)
+                self._battery.set_color((0.44, 0.44, 0.46, 0.85))
+
+        Clock.schedule_once(_apply, 0)
+
+    def on_enter(self, *args) -> None:
+        if self._status_ev is None:
+            Clock.schedule_once(lambda _dt: self._refresh_battery(), 1.5)
+            self._status_ev = Clock.schedule_interval(lambda _dt: self._refresh_battery(), 30.0)
+
     def on_leave(self, *args) -> None:
         self._stop_voice_tick()
         if self._voice_pill:
             self._voice_pill.opacity = 0.0
+        if self._status_ev is not None:
+            self._status_ev.cancel()
+            self._status_ev = None

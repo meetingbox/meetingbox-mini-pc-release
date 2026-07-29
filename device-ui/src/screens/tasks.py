@@ -37,6 +37,7 @@ import asyncio
 import calendar as _cal_module
 import json
 import logging
+import threading
 from datetime import date, datetime, timedelta
 
 from kivy.clock import Clock
@@ -638,6 +639,8 @@ class TasksScreen(BaseScreen):
         self._list_box:    BoxLayout | None        = None
         self._voice_pill:  _VoiceStatePill | None  = None
         self._menu_overlay: Widget | None          = None
+        self._battery: _BatteryWidget | None        = None
+        self._status_ev = None
         self._back_btn = None                      # top-left back button
         # Set by the Calendar→Tasks swipe so the back button is suppressed when
         # Tasks is reached as part of the Home page-swipe chain (you swipe back).
@@ -817,7 +820,39 @@ class TasksScreen(BaseScreen):
             pass
         root.add_widget(self._voice_pill)
         root.add_widget(_WifiIcon(**_ph(1109.0, 31.0, 29.0, 20.0)))
-        root.add_widget(_BatteryWidget(**_ph(1175.0, 30.0, 47.0, 21.0)))
+        self._battery = _BatteryWidget(**_ph(1175.0, 30.0, 47.0, 21.0))
+        root.add_widget(self._battery)
+
+    # ── Battery (live, same read/refresh pattern as HomeScreen) ─────────────────
+
+    def _refresh_battery(self) -> None:
+        threading.Thread(target=self._fetch_battery, daemon=True).start()
+
+    def _fetch_battery(self) -> None:
+        try:
+            import hardware as _hw          # noqa: PLC0415
+            batt = _hw.get_battery_info()
+        except Exception:
+            return
+
+        def _apply(_dt):
+            if self._battery is None:
+                return
+            pct = batt.get("percent")
+            if pct is not None:
+                level = pct / 100.0
+                bat_col = (
+                    (0.22, 0.80, 0.35, 0.88) if level > 0.50 else
+                    (0.95, 0.65, 0.10, 0.88) if level > 0.20 else
+                    (0.95, 0.25, 0.20, 0.88)
+                )
+                self._battery.set_color(bat_col)
+                self._battery.set_level(level)
+            else:
+                self._battery.set_level(1.0)
+                self._battery.set_color((0.44, 0.44, 0.46, 0.85))
+
+        Clock.schedule_once(_apply, 0)
 
     # ── Tab selection / styling ─────────────────────────────────────────────────
 
@@ -1253,6 +1288,9 @@ class TasksScreen(BaseScreen):
         Clock.schedule_once(self._load_tasks, 0)
         if self._refresh_ev is None:
             self._refresh_ev = Clock.schedule_interval(self._load_tasks, _REFRESH_INTERVAL)
+        if self._status_ev is None:
+            Clock.schedule_once(lambda _dt: self._refresh_battery(), 1.5)
+            self._status_ev = Clock.schedule_interval(lambda _dt: self._refresh_battery(), 30.0)
 
     def on_leave(self) -> None:
         pager = getattr(self, "_calendar_pager", None)
@@ -1264,6 +1302,9 @@ class TasksScreen(BaseScreen):
         if self._refresh_ev is not None:
             self._refresh_ev.cancel()
             self._refresh_ev = None
+        if self._status_ev is not None:
+            self._status_ev.cancel()
+            self._status_ev = None
 
 
 class _TabTap(ButtonBehavior, Widget):

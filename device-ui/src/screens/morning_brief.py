@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import threading
 from datetime import date, datetime
 
 from kivy.animation import Animation
@@ -43,6 +44,7 @@ from api_client import (
 from components.live_wifi_icon import LiveWifiIcon
 from config import ASSETS_DIR, DISPLAY_HEIGHT, DISPLAY_WIDTH, display_now, to_display_local
 from screens.base_screen import BaseScreen
+from screens.home import _BatteryWidget  # noqa: PLC2701
 
 logger = logging.getLogger(__name__)
 
@@ -261,6 +263,8 @@ class MorningBriefScreen(BaseScreen):
         self._voice_facts: dict[str, str] = {
             "schedule": "", "tasks": "", "emails": "", "ready": "",
         }
+        self._battery: _BatteryWidget | None = None
+        self._status_ev = None
         self._build_ui()
         self.bind(slide=self._on_slide)
 
@@ -372,9 +376,11 @@ class MorningBriefScreen(BaseScreen):
             size_hint=(29 / FW, 20 / FH),
             pos_hint={"x": 1125 / FW, "y": (FH - 31 - 20) / FH},
         ))
-        batt_src = _asset("icon_battery.png")
-        if batt_src:
-            root.add_widget(_img(batt_src, FW, FH, 1191, 30, 47, 21))
+        self._battery = _BatteryWidget(
+            size_hint=(47 / FW, 21 / FH),
+            pos_hint={"x": 1191 / FW, "y": (FH - 30 - 21) / FH},
+        )
+        root.add_widget(self._battery)
 
     # ── Card builder ───────────────────────────────────────────────────────────
 
@@ -636,7 +642,41 @@ class MorningBriefScreen(BaseScreen):
         h12 = h24 % 12 or 12
         return f"{h12}:{m:02d} {am}"
 
+    # ── Battery (live, same read/refresh pattern as HomeScreen) ─────────────────
+
+    def _refresh_battery(self) -> None:
+        threading.Thread(target=self._fetch_battery, daemon=True).start()
+
+    def _fetch_battery(self) -> None:
+        try:
+            import hardware as _hw          # noqa: PLC0415
+            batt = _hw.get_battery_info()
+        except Exception:
+            return
+
+        def _apply(_dt):
+            if self._battery is None:
+                return
+            pct = batt.get("percent")
+            if pct is not None:
+                level = pct / 100.0
+                bat_col = (
+                    (0.22, 0.80, 0.35, 0.88) if level > 0.50 else
+                    (0.95, 0.65, 0.10, 0.88) if level > 0.20 else
+                    (0.95, 0.25, 0.20, 0.88)
+                )
+                self._battery.set_color(bat_col)
+                self._battery.set_level(level)
+            else:
+                self._battery.set_level(1.0)
+                self._battery.set_color((0.44, 0.44, 0.46, 0.85))
+
+        Clock.schedule_once(_apply, 0)
+
     def on_enter(self) -> None:
+        if self._status_ev is None:
+            Clock.schedule_once(lambda _dt: self._refresh_battery(), 1.5)
+            self._status_ev = Clock.schedule_interval(lambda _dt: self._refresh_battery(), 30.0)
         if self._pending_index is None:
             self._index = 0
             self.slide = 0.0
@@ -677,6 +717,9 @@ class MorningBriefScreen(BaseScreen):
         if self._render_event is not None:
             self._render_event.cancel()
             self._render_event = None
+        if self._status_ev is not None:
+            self._status_ev.cancel()
+            self._status_ev = None
 
     def _on_cache_update(self, _payload) -> None:
         """Any cache key update → debounced render so both keys are consumed together."""
