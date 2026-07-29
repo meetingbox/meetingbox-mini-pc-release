@@ -170,3 +170,14 @@ class SettingsItem(ButtonBehavior, BoxLayout):
     def on_release(self):
         if self._mode == 'arrow':
             self._bg_color.rgba = _CARD_BG
+
+    def reset_visual(self):
+        """Force the pressed-state tint back to normal.
+
+        Needed by callers that remove this row from its parent as an
+        immediate (same-frame) side effect of the tap — e.g. swapping to a
+        different list — since that starves the row of its own touch-up
+        event and on_release() never runs to clear the pressed color.
+        """
+        if self._mode == 'arrow':
+            self._bg_color.rgba = _CARD_BG

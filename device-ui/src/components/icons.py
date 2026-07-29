@@ -47,12 +47,26 @@ RGBA = Tuple[float, float, float, float]
 # pack far more line into the same box than, say, the power symbol, so the
 # common 9% weight goes heavy and muddy on them. Thin these rather than
 # lightening the whole set.
+#
+# The Settings-category set (device/storage/shield/link/bell/help, plus the
+# pre-existing volume/brightness/settings/lock/power reused for categories)
+# were reported as reading too thick together in that list, so they're tuned
+# down to the same "thin" tier as wifi/mic/dnd rather than the 9% default.
 _STROKE_SCALE = {
-    "wifi":    0.68,
-    "mic":     0.72,
-    "dnd":     0.66,
-    "storage": 0.80,
-    "bell":    0.80,
+    "wifi":       0.68,
+    "mic":        0.72,
+    "dnd":        0.66,
+    "volume":     0.68,
+    "brightness": 0.68,
+    "settings":   0.68,
+    "lock":       0.68,
+    "power":      0.68,
+    "device":     0.62,
+    "storage":    0.62,
+    "shield":     0.62,
+    "link":       0.62,
+    "bell":       0.62,
+    "help":       0.62,
 }
 
 

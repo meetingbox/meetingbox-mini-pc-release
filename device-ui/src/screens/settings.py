@@ -162,12 +162,18 @@ class SettingsScreen(BaseScreen):
             minimum_height=self.category_list_container.setter('height'))
 
         for key, title, desc in _CATEGORIES:
+            # Deferred one frame: _show_category() clears this row out of the
+            # tree, which — done directly from on_press (touch-down) — skips
+            # the row's own touch-up/on_release and leaves it stuck showing
+            # its pressed-tint background. Scheduling it lets that release
+            # cycle finish first.
             self.category_list_container.add_widget(SettingsItem(
                 title=title,
                 subtitle=desc,
                 mode='arrow',
                 icon=_CATEGORY_ICONS.get(key),
-                on_press=lambda _inst, k=key: self._show_category(k),
+                on_press=lambda _inst, k=key: Clock.schedule_once(
+                    lambda _dt, kk=k: self._show_category(kk), 0),
             ))
             self._category_containers[key] = self._new_category_container()
 
@@ -729,6 +735,12 @@ class SettingsScreen(BaseScreen):
     # ------------------------------------------------------------------
     def _show_categories(self):
         self._current_category = None
+        # Defensive: clear any pressed-tint left stuck on a row (belt-and-
+        # suspenders alongside the deferred tap above — cheap and covers any
+        # other path that could strand a row mid-press).
+        for row in self.category_list_container.children:
+            if hasattr(row, 'reset_visual'):
+                row.reset_visual()
         self._scroll.clear_widgets()
         self._scroll.add_widget(self.category_list_container)
         self._scroll.scroll_y = 1
