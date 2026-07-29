@@ -1395,6 +1395,38 @@ class AudioCaptureService:
 
   MAX_COMMAND_AGE = 60  # seconds — discard commands older than this
 
+  def _ack_command(self, action: str, session_id: str | None) -> None:
+    """Best-effort report to the server that a command actually ran.
+
+    Fire-and-forget on a daemon thread, same pattern as ``_publish_to_bridge``
+    — the stop-recording flow was found to complete server-side (Redis
+    publish) without the audio-capture process ever confirming it received
+    or acted on it, so the caller (``meetings.py``'s ``stop_meeting``) polls
+    for this ack before trusting a stop actually happened.
+    """
+    if not session_id or not self._upload_auth_token:
+      return
+    base = self._poll_command_api_base()
+    url = f"{base}/api/device/audio-command/ack"
+    data = json.dumps({"action": action, "session_id": session_id}).encode("utf-8")
+
+    def _do() -> None:
+      try:
+        req = urlrequest.Request(
+          url,
+          data=data,
+          headers={
+            "Authorization": f"Bearer {self._upload_auth_token}",
+            "Content-Type": "application/json",
+          },
+          method="POST",
+        )
+        urlrequest.urlopen(req, timeout=5.0).close()
+      except Exception:  # noqa: BLE001 - ack is best-effort
+        logger.debug("audio-command ack failed for %s/%s", action, session_id, exc_info=True)
+
+    threading.Thread(target=_do, daemon=True).start()
+
   def _dispatch_command(self, command: dict) -> None:
     ts = command.get("ts")
     if ts is not None:
@@ -1425,7 +1457,9 @@ class AudioCaptureService:
         thread.start()
         self._recording_thread = thread
     elif action == "stop_recording":
-      self.stop_recording(session_id_from_command=command.get("session_id"))
+      cmd_session_id = command.get("session_id")
+      self.stop_recording(session_id_from_command=cmd_session_id)
+      self._ack_command("stop_recording", cmd_session_id)
     elif action == "pause_recording":
       self.pause_recording()
     elif action == "resume_recording":
