@@ -33,6 +33,7 @@ from config import (
     other_screen_vertical_scale,
 )
 from components.toggle_switch import ToggleSwitch
+from components.icons import Icon
 
 
 def _si_suv(px):
@@ -66,7 +67,12 @@ class SettingsItem(ButtonBehavior, BoxLayout):
 
     def __init__(self, title: str, subtitle: str = '',
                  mode: str = 'arrow', active: bool = False,
-                 on_press=None, on_toggle=None, **kwargs):
+                 on_press=None, on_toggle=None,
+                 icon: str | None = None, **kwargs):
+        """``icon`` is optional and opt-in only (default None): existing
+        callers that don't pass it get the exact same row as before. When
+        given, it must be one of the kinds supported by components.icons.Icon
+        (e.g. 'wifi', 'volume', 'brightness', 'lock', 'power')."""
 
         kwargs.setdefault('orientation', 'horizontal')
         kwargs.setdefault('size_hint_y', None)
@@ -91,6 +97,16 @@ class SettingsItem(ButtonBehavior, BoxLayout):
             pos=self._sync_bg,
             size=self._sync_bg,
         )
+
+        # Optional leading icon (only present when explicitly requested)
+        if icon:
+            self.add_widget(Icon(
+                kind=icon,
+                color=_TEXT_SECONDARY,
+                size_hint=(None, None),
+                size=(_si_suv(30), _si_suv(30)),
+                pos_hint={'center_y': 0.5},
+            ))
 
         # Text container (left)
         text_box = BoxLayout(

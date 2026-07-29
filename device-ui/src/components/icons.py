@@ -16,6 +16,12 @@ Available icons (set via `kind` kwarg):
   'power'      – broken circle + center line
   'mic'        – capsule body + stand arc + base line
   'dnd'        – crescent moon (Do Not Disturb)
+  'device'     – phone silhouette + home button + speaker notch
+  'storage'    – database cylinder (lid ellipse + side walls + base arc)
+  'shield'     – privacy/security shield outline
+  'link'       – two connected nodes (integrations)
+  'bell'       – notification bell + clapper
+  'help'       – circled question mark (support)
 
 Usage:
     icon = Icon(kind='wifi', size=(24, 24), color=(1, 1, 1, 0.9))
@@ -42,9 +48,11 @@ RGBA = Tuple[float, float, float, float]
 # common 9% weight goes heavy and muddy on them. Thin these rather than
 # lightening the whole set.
 _STROKE_SCALE = {
-    "wifi": 0.68,
-    "mic":  0.72,
-    "dnd":  0.66,
+    "wifi":    0.68,
+    "mic":     0.72,
+    "dnd":     0.66,
+    "storage": 0.80,
+    "bell":    0.80,
 }
 
 
@@ -127,6 +135,12 @@ class Icon(Widget):
                 "power":      self._power,
                 "mic":        self._mic,
                 "dnd":        self._dnd,
+                "device":     self._device,
+                "storage":    self._storage,
+                "shield":     self._shield,
+                "link":       self._link,
+                "bell":       self._bell,
+                "help":       self._help,
             }.get(self._kind)
             if fn:
                 fn(cx, cy, m, lw)
@@ -421,4 +435,98 @@ class Icon(Widget):
         # (the "extra line" the crescent used to show). Round cap so the
         # polyline's start/end at the upper horn also blend smoothly.
         _stroke(points=pts, width=lw, close=True, joint="round", cap="round")
+
+    def _device(self, cx, cy, m, lw):
+        """Settings category glyph: phone silhouette — rounded body,
+        speaker notch near the top, home-button dot near the bottom."""
+        bw, bh = m * 0.46, m * 0.86
+        bx, by = cx - bw / 2, cy - bh / 2
+        _stroke(rounded_rectangle=(bx, by, bw, bh, m * 0.10), width=lw)
+
+        notch_w = bw * 0.34
+        _stroke(points=[
+            cx - notch_w / 2, by + bh * 0.88,
+            cx + notch_w / 2, by + bh * 0.88,
+        ], width=lw)
+
+        r = m * 0.045
+        Ellipse(pos=(cx - r, by + bh * 0.12 - r), size=(r * 2, r * 2))
+
+    def _storage(self, cx, cy, m, lw):
+        """Settings category glyph: database cylinder — lid ellipse, two
+        side walls, base arc (the classic "storage" silhouette)."""
+        rx, ry = m * 0.34, m * 0.13
+        top = cy + m * 0.28
+        bot = cy - m * 0.28
+
+        _stroke(ellipse=(cx - rx, top - ry, rx * 2, ry * 2), width=lw)
+        _stroke(points=[cx - rx, top, cx - rx, bot], width=lw)
+        _stroke(points=[cx + rx, top, cx + rx, bot], width=lw)
+        _stroke(ellipse=(cx - rx, bot - ry, rx * 2, ry * 2, 0, 180), width=lw)
+
+    def _shield(self, cx, cy, m, lw):
+        """Settings category glyph: privacy shield — flat-topped shield
+        silhouette as one closed, rounded-joint outline."""
+        s = m
+        pts = [
+            (-0.30,  0.38),
+            (0.30,  0.38),
+            (0.30, -0.02),
+            (0.00, -0.46),
+            (-0.30, -0.02),
+        ]
+        flat = []
+        for px, py in pts:
+            flat.extend([cx + px * s, cy + py * s])
+        _stroke(points=flat, width=lw, close=True, joint="round")
+
+    def _link(self, cx, cy, m, lw):
+        """Settings category glyph: two connected nodes — reads as
+        "linking external services" without relying on a crossing-chain
+        shape that's error-prone to draw legibly at icon sizes."""
+        r = m * 0.16
+        dx = m * 0.30
+        _stroke(circle=(cx - dx, cy, r), width=lw)
+        _stroke(circle=(cx + dx, cy, r), width=lw)
+        _stroke(points=[cx - dx + r, cy, cx + dx - r, cy], width=lw)
+
+    def _bell(self, cx, cy, m, lw):
+        """Settings category glyph: notification bell — sampled dome arc
+        closed into the flared sides and base, plus a small clapper."""
+        top_y = cy + m * 0.38
+        base_y = cy - m * 0.10
+        dome_r = m * 0.24
+        dome_cy = top_y - dome_r
+        flare_hw = m * 0.34
+
+        steps = 14
+        pts: list[float] = []
+        for i in range(steps + 1):
+            a = math.radians(180 - 180 * i / steps)
+            pts += [cx + dome_r * math.cos(a), dome_cy + dome_r * math.sin(a)]
+        pts += [cx + flare_hw, base_y]
+        pts += [cx - flare_hw, base_y]
+        _stroke(points=pts, width=lw, close=True, joint="round")
+
+        _stroke(points=[cx, top_y, cx, top_y + m * 0.06], width=lw)
+
+        r_c = m * 0.045
+        Ellipse(pos=(cx - r_c, base_y - m * 0.09 - r_c), size=(r_c * 2, r_c * 2))
+
+    def _help(self, cx, cy, m, lw):
+        """Settings category glyph: circled question mark — outer ring,
+        a hook stroke for the "?" body, and a small dot for its base."""
+        r = m * 0.42
+        _stroke(circle=(cx, cy, r), width=lw)
+
+        hook_r = m * 0.14
+        hook_cy = cy + m * 0.10
+        _stroke(
+            ellipse=(cx - hook_r, hook_cy - hook_r, hook_r * 2, hook_r * 2, -20, 220),
+            width=lw * 0.9,
+        )
+        _stroke(points=[cx, hook_cy - hook_r * 0.9, cx, cy - m * 0.06], width=lw * 0.9)
+
+        r_d = m * 0.045
+        Ellipse(pos=(cx - r_d, cy - m * 0.20 - r_d), size=(r_d * 2, r_d * 2))
 

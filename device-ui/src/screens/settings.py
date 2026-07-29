@@ -95,35 +95,91 @@ class SettingsScreen(BaseScreen):
         root = BoxLayout(orientation='vertical')
         self._make_light_bg(root)
 
-        # Header
+        # Header — title text is swapped between 'Settings' (category list)
+        # and the open category's name, like iOS Settings' nav-bar title.
         self.status_bar = StatusBar(
             status_text='Settings',
             device_name='Settings',
             back_button=True,
-            on_back=self.go_back,
+            on_back=self._on_back_pressed,
             show_settings=False,
         )
         root.add_widget(self.status_bar)
 
-        # Scrollable items
-        scroll = ScrollView(
+        # Scrollable area — its single child is swapped between the category
+        # list and whichever category's own item list is currently open.
+        self._scroll = ScrollView(
             do_scroll_x=False,
             scroll_distance=12,
             effect_cls=ScrollEffect,
             smooth_scroll_end=0,
             always_overscroll=False,
         )
-        self.container = GridLayout(
+
+        self._current_category = None
+        self._category_containers = {}
+
+        # ---- Category list (top level, iOS-Settings style) ----
+        _CATEGORIES = [
+            ('device', 'Device', 'Name, room, model'),
+            ('network', 'Network', 'WiFi, Ethernet, Bluetooth'),
+            ('storage', 'Storage', 'Usage, auto-delete'),
+            ('system', 'System', 'Updates, date & time, logs'),
+            ('privacy', 'Privacy', 'Recording & transcript controls'),
+            ('display', 'Display', 'Brightness, idle screen, weather'),
+            ('audio', 'Audio', 'Volume, mic, voice assistant'),
+            ('integrations', 'Integrations', 'Gmail, Google Calendar'),
+            ('notifications', 'Notifications', 'Alerts & reminders'),
+            ('security', 'Security', 'PIN lock, session timeout'),
+            ('maintenance', 'Maintenance', 'Restart, reset, diagnostics'),
+            ('support', 'Support', 'About, feedback, help'),
+        ]
+        self._category_titles = {key: title for key, title, _ in _CATEGORIES}
+
+        _CATEGORY_ICONS = {
+            'device': 'device',
+            'network': 'wifi',
+            'storage': 'storage',
+            'system': 'settings',
+            'privacy': 'shield',
+            'display': 'brightness',
+            'audio': 'volume',
+            'integrations': 'link',
+            'notifications': 'bell',
+            'security': 'lock',
+            'maintenance': 'power',
+            'support': 'help',
+        }
+
+        self.category_list_container = GridLayout(
             cols=1,
             size_hint_x=1,
             spacing=self.suv(SPACING['list_item_spacing']),
             padding=[self.suh(SPACING['screen_padding']), self.suv(8)],
             size_hint_y=None,
         )
-        self.container.bind(minimum_height=self.container.setter('height'))
+        self.category_list_container.bind(
+            minimum_height=self.category_list_container.setter('height'))
+
+        for key, title, desc in _CATEGORIES:
+            self.category_list_container.add_widget(SettingsItem(
+                title=title,
+                subtitle=desc,
+                mode='arrow',
+                icon=_CATEGORY_ICONS.get(key),
+                on_press=lambda _inst, k=key: self._show_category(k),
+            ))
+            self._category_containers[key] = self._new_category_container()
+
+        self.category_list_container.add_widget(
+            Widget(size_hint_y=None, height=self.suv(20)))
+
+        self._scroll.add_widget(self.category_list_container)
+        root.add_widget(self._scroll)
 
         # ---- DEVICE ----
-        self.container.add_widget(self._section_header('DEVICE'))
+        cat = self._category_containers['device']
+        cat.add_widget(self._section_header('DEVICE'))
 
         self.device_name_item = SettingsItem(
             title='Device Name',
@@ -131,7 +187,7 @@ class SettingsScreen(BaseScreen):
             mode='arrow',
             on_press=lambda _: self._show_device_name_dialog(),
         )
-        self.container.add_widget(self.device_name_item)
+        cat.add_widget(self.device_name_item)
 
         self.model_item = SettingsItem(
             title='Model / Serial',
@@ -139,7 +195,7 @@ class SettingsScreen(BaseScreen):
             mode='info',
         )
         self.model_item.height = self.suv(70)
-        self.container.add_widget(self.model_item)
+        cat.add_widget(self.model_item)
 
         self.room_label_item = SettingsItem(
             title='Room / Location',
@@ -147,10 +203,11 @@ class SettingsScreen(BaseScreen):
             mode='arrow',
             on_press=lambda _: self.goto('room_label_screen', transition='slide_left'),
         )
-        self.container.add_widget(self.room_label_item)
+        cat.add_widget(self.room_label_item)
 
         # ---- NETWORK ----
-        self.container.add_widget(self._section_header('NETWORK'))
+        cat = self._category_containers['network']
+        cat.add_widget(self._section_header('NETWORK'))
 
         self.wifi_radio_item = SettingsItem(
             title='WiFi',
@@ -159,7 +216,7 @@ class SettingsScreen(BaseScreen):
             active=True,
             on_toggle=self._on_wifi_radio_toggled,
         )
-        self.container.add_widget(self.wifi_radio_item)
+        cat.add_widget(self.wifi_radio_item)
 
         self.wifi_item = SettingsItem(
             title='WiFi network',
@@ -167,14 +224,14 @@ class SettingsScreen(BaseScreen):
             mode='arrow',
             on_press=lambda _: self.goto('wifi', transition='slide_left'),
         )
-        self.container.add_widget(self.wifi_item)
+        cat.add_widget(self.wifi_item)
 
         self.ethernet_item = SettingsItem(
             title='Ethernet',
             subtitle='Checking…',
             mode='info',
         )
-        self.container.add_widget(self.ethernet_item)
+        cat.add_widget(self.ethernet_item)
 
         self.wifi_forget_item = SettingsItem(
             title='Forget saved networks',
@@ -182,7 +239,7 @@ class SettingsScreen(BaseScreen):
             mode='arrow',
             on_press=lambda _: self.goto('wifi_forget_screen', transition='slide_left'),
         )
-        self.container.add_widget(self.wifi_forget_item)
+        cat.add_widget(self.wifi_forget_item)
 
         self.bluetooth_radio_item = None
         self.bluetooth_item = None
@@ -194,7 +251,7 @@ class SettingsScreen(BaseScreen):
                 active=False,
                 on_toggle=self._on_bluetooth_radio_toggled,
             )
-            self.container.add_widget(self.bluetooth_radio_item)
+            cat.add_widget(self.bluetooth_radio_item)
 
             self.bluetooth_item = SettingsItem(
                 title='Bluetooth devices',
@@ -202,17 +259,18 @@ class SettingsScreen(BaseScreen):
                 mode='arrow',
                 on_press=lambda _: self.goto('bluetooth_screen', transition='slide_left'),
             )
-            self.container.add_widget(self.bluetooth_item)
+            cat.add_widget(self.bluetooth_item)
 
         # ---- STORAGE ----
-        self.container.add_widget(self._section_header('STORAGE'))
+        cat = self._category_containers['storage']
+        cat.add_widget(self._section_header('STORAGE'))
 
         self.storage_item = SettingsItem(
             title='Storage',
             subtitle='Loading…',
             mode='info',
         )
-        self.container.add_widget(self.storage_item)
+        cat.add_widget(self.storage_item)
 
         self.auto_delete_item = SettingsItem(
             title='Auto-delete old meetings',
@@ -220,7 +278,7 @@ class SettingsScreen(BaseScreen):
             mode='arrow',
             on_press=lambda _: self.goto('auto_delete_picker', transition='slide_left'),
         )
-        self.container.add_widget(self.auto_delete_item)
+        cat.add_widget(self.auto_delete_item)
 
         self.storage_breakdown_item = SettingsItem(
             title='Storage breakdown',
@@ -228,17 +286,18 @@ class SettingsScreen(BaseScreen):
             mode='arrow',
             on_press=lambda _: self.goto('storage_breakdown', transition='slide_left'),
         )
-        self.container.add_widget(self.storage_breakdown_item)
+        cat.add_widget(self.storage_breakdown_item)
 
         # ---- SYSTEM ----
-        self.container.add_widget(self._section_header('SYSTEM'))
+        cat = self._category_containers['system']
+        cat.add_widget(self._section_header('SYSTEM'))
 
         self.firmware_item = SettingsItem(
             title='Firmware Version',
             subtitle='Loading…',
             mode='info',
         )
-        self.container.add_widget(self.firmware_item)
+        cat.add_widget(self.firmware_item)
 
         self.update_item = SettingsItem(
             title='Check for Updates',
@@ -246,14 +305,14 @@ class SettingsScreen(BaseScreen):
             mode='arrow',
             on_press=lambda _: self.goto('update_check', transition='slide_left'),
         )
-        self.container.add_widget(self.update_item)
+        cat.add_widget(self.update_item)
 
         self.uptime_item = SettingsItem(
             title='Uptime',
             subtitle='Loading…',
             mode='info',
         )
-        self.container.add_widget(self.uptime_item)
+        cat.add_widget(self.uptime_item)
 
         self.auto_update_item = SettingsItem(
             title='Auto-update',
@@ -262,7 +321,7 @@ class SettingsScreen(BaseScreen):
             active=True,
             on_toggle=lambda v: self._save_setting('auto_update_enabled', v),
         )
-        self.container.add_widget(self.auto_update_item)
+        cat.add_widget(self.auto_update_item)
 
         self.update_channel_item = SettingsItem(
             title='Update channel',
@@ -270,7 +329,7 @@ class SettingsScreen(BaseScreen):
             mode='arrow',
             on_press=lambda _: self.goto('update_channel_picker', transition='slide_left'),
         )
-        self.container.add_widget(self.update_channel_item)
+        cat.add_widget(self.update_channel_item)
 
         self.datetime_item = SettingsItem(
             title='Date & Time',
@@ -278,7 +337,7 @@ class SettingsScreen(BaseScreen):
             mode='arrow',
             on_press=lambda _: self.goto('datetime_screen', transition='slide_left'),
         )
-        self.container.add_widget(self.datetime_item)
+        cat.add_widget(self.datetime_item)
 
         self.timezone_item = SettingsItem(
             title='Timezone',
@@ -286,7 +345,7 @@ class SettingsScreen(BaseScreen):
             mode='arrow',
             on_press=lambda _: self.goto('timezone_picker', transition='slide_left'),
         )
-        self.container.add_widget(self.timezone_item)
+        cat.add_widget(self.timezone_item)
 
         self.diag_logs_item = SettingsItem(
             title='Diagnostic logs',
@@ -294,10 +353,11 @@ class SettingsScreen(BaseScreen):
             mode='arrow',
             on_press=lambda _: self.goto('diagnostic_logs', transition='slide_left'),
         )
-        self.container.add_widget(self.diag_logs_item)
+        cat.add_widget(self.diag_logs_item)
 
         # ---- PRIVACY ----
-        self.container.add_widget(self._section_header('PRIVACY'))
+        cat = self._category_containers['privacy']
+        cat.add_widget(self._section_header('PRIVACY'))
 
         self.privacy_item = SettingsItem(
             title='Privacy Mode',
@@ -306,7 +366,7 @@ class SettingsScreen(BaseScreen):
             active=False,
             on_toggle=self._on_privacy_toggled,
         )
-        self.container.add_widget(self.privacy_item)
+        cat.add_widget(self.privacy_item)
 
         self.auto_record_item = SettingsItem(
             title='Auto-start from calendar',
@@ -315,7 +375,7 @@ class SettingsScreen(BaseScreen):
             active=False,
             on_toggle=self._on_auto_record_toggled,
         )
-        self.container.add_widget(self.auto_record_item)
+        cat.add_widget(self.auto_record_item)
 
         self.auto_summarize_item = SettingsItem(
             title='Auto-summarize meetings',
@@ -324,7 +384,7 @@ class SettingsScreen(BaseScreen):
             active=True,
             on_toggle=lambda v: self._save_setting('auto_summarize', v),
         )
-        self.container.add_widget(self.auto_summarize_item)
+        cat.add_widget(self.auto_summarize_item)
 
         self.transcript_storage_item = SettingsItem(
             title='Save transcripts',
@@ -333,7 +393,7 @@ class SettingsScreen(BaseScreen):
             active=True,
             on_toggle=lambda v: self._save_setting('transcript_storage_enabled', v),
         )
-        self.container.add_widget(self.transcript_storage_item)
+        cat.add_widget(self.transcript_storage_item)
 
         self.consent_reminder_item = SettingsItem(
             title='Recording consent reminder',
@@ -342,7 +402,7 @@ class SettingsScreen(BaseScreen):
             active=True,
             on_toggle=lambda v: self._save_setting('recording_consent_reminder', v),
         )
-        self.container.add_widget(self.consent_reminder_item)
+        cat.add_widget(self.consent_reminder_item)
 
         self.clear_recordings_item = SettingsItem(
             title='Clear all recordings',
@@ -350,7 +410,7 @@ class SettingsScreen(BaseScreen):
             mode='arrow',
             on_press=lambda _: self._confirm_clear_all('recordings'),
         )
-        self.container.add_widget(self.clear_recordings_item)
+        cat.add_widget(self.clear_recordings_item)
 
         self.clear_transcripts_item = SettingsItem(
             title='Clear all transcripts',
@@ -358,10 +418,11 @@ class SettingsScreen(BaseScreen):
             mode='arrow',
             on_press=lambda _: self._confirm_clear_all('transcripts'),
         )
-        self.container.add_widget(self.clear_transcripts_item)
+        cat.add_widget(self.clear_transcripts_item)
 
         # ---- DISPLAY ----
-        self.container.add_widget(self._section_header('DISPLAY'))
+        cat = self._category_containers['display']
+        cat.add_widget(self._section_header('DISPLAY'))
 
         self.brightness_item = SettingsItem(
             title='Screen Brightness',
@@ -369,7 +430,7 @@ class SettingsScreen(BaseScreen):
             mode='arrow',
             on_press=lambda _: self.goto('brightness_slider', transition='slide_left'),
         )
-        self.container.add_widget(self.brightness_item)
+        cat.add_widget(self.brightness_item)
 
         # Replaces the old "Screen Timeout" (display-off) entry. Opens the
         # idle-timeout picker so users can set how long until the lock-screen
@@ -380,7 +441,7 @@ class SettingsScreen(BaseScreen):
             mode='arrow',
             on_press=lambda _: self.goto('idle_timeout_picker', transition='slide_left'),
         )
-        self.container.add_widget(self.idle_timeout_item)
+        cat.add_widget(self.idle_timeout_item)
 
         # Weather location used by the home/idle screens. Stored locally on
         # the device (no backend involvement) — IP-detected by default,
@@ -391,7 +452,7 @@ class SettingsScreen(BaseScreen):
             mode='arrow',
             on_press=lambda _: self._show_weather_location_dialog(),
         )
-        self.container.add_widget(self.weather_location_item)
+        cat.add_widget(self.weather_location_item)
 
         self.screen_always_on_item = SettingsItem(
             title='Screen always-on during recording',
@@ -400,10 +461,11 @@ class SettingsScreen(BaseScreen):
             active=True,
             on_toggle=lambda v: self._save_setting('screen_always_on_recording', v),
         )
-        self.container.add_widget(self.screen_always_on_item)
+        cat.add_widget(self.screen_always_on_item)
 
         # ---- AUDIO ----
-        self.container.add_widget(self._section_header('AUDIO'))
+        cat = self._category_containers['audio']
+        cat.add_widget(self._section_header('AUDIO'))
 
         self.speech_volume_item = SettingsItem(
             title='Assistant voice volume',
@@ -411,7 +473,7 @@ class SettingsScreen(BaseScreen):
             mode='arrow',
             on_press=lambda _: self.goto('speech_volume_picker', transition='slide_left'),
         )
-        self.container.add_widget(self.speech_volume_item)
+        cat.add_widget(self.speech_volume_item)
 
         self.notif_volume_item = SettingsItem(
             title='System / notification volume',
@@ -419,7 +481,7 @@ class SettingsScreen(BaseScreen):
             mode='arrow',
             on_press=lambda _: self.goto('notification_volume_picker', transition='slide_left'),
         )
-        self.container.add_widget(self.notif_volume_item)
+        cat.add_widget(self.notif_volume_item)
 
         self.mic_gain_item = SettingsItem(
             title='Microphone input gain',
@@ -427,7 +489,7 @@ class SettingsScreen(BaseScreen):
             mode='arrow',
             on_press=lambda _: self.goto('mic_gain_picker', transition='slide_left'),
         )
-        self.container.add_widget(self.mic_gain_item)
+        cat.add_widget(self.mic_gain_item)
 
         self.audio_output_item = SettingsItem(
             title='Output device',
@@ -435,7 +497,7 @@ class SettingsScreen(BaseScreen):
             mode='arrow',
             on_press=lambda _: self.goto('audio_output_picker', transition='slide_left'),
         )
-        self.container.add_widget(self.audio_output_item)
+        cat.add_widget(self.audio_output_item)
 
         self.audio_input_item = SettingsItem(
             title='Input (microphone) device',
@@ -443,7 +505,7 @@ class SettingsScreen(BaseScreen):
             mode='arrow',
             on_press=lambda _: self.goto('audio_input_picker', transition='slide_left'),
         )
-        self.container.add_widget(self.audio_input_item)
+        cat.add_widget(self.audio_input_item)
 
         self.mic_test_item = SettingsItem(
             title='Microphone Test',
@@ -451,7 +513,7 @@ class SettingsScreen(BaseScreen):
             mode='arrow',
             on_press=lambda _: self.goto('mic_test', transition='slide_left'),
         )
-        self.container.add_widget(self.mic_test_item)
+        cat.add_widget(self.mic_test_item)
 
         self.meeting_chime_item = SettingsItem(
             title='Meeting start/end chime',
@@ -460,7 +522,7 @@ class SettingsScreen(BaseScreen):
             active=True,
             on_toggle=lambda v: self._save_setting('meeting_chime_enabled', v),
         )
-        self.container.add_widget(self.meeting_chime_item)
+        cat.add_widget(self.meeting_chime_item)
 
         self.alert_sounds_item = SettingsItem(
             title='Alert / notification sounds',
@@ -469,7 +531,7 @@ class SettingsScreen(BaseScreen):
             active=True,
             on_toggle=lambda v: self._save_setting('alert_sounds_enabled', v),
         )
-        self.container.add_widget(self.alert_sounds_item)
+        cat.add_widget(self.alert_sounds_item)
 
         self.voice_assistant_enabled_item = SettingsItem(
             title='Voice assistant',
@@ -478,7 +540,7 @@ class SettingsScreen(BaseScreen):
             active=True,
             on_toggle=self._on_voice_assistant_enabled_toggled,
         )
-        self.container.add_widget(self.voice_assistant_enabled_item)
+        cat.add_widget(self.voice_assistant_enabled_item)
 
         self.voice_realtime_item = SettingsItem(
             title='Realtime voice mode',
@@ -487,7 +549,7 @@ class SettingsScreen(BaseScreen):
             active=False,
             on_toggle=self._on_voice_realtime_toggled,
         )
-        self.container.add_widget(self.voice_realtime_item)
+        cat.add_widget(self.voice_realtime_item)
 
         self.wake_phrase_item = SettingsItem(
             title='Wake phrase',
@@ -495,10 +557,11 @@ class SettingsScreen(BaseScreen):
             mode='arrow',
             on_press=lambda _: self._show_wake_phrase_dialog(),
         )
-        self.container.add_widget(self.wake_phrase_item)
+        cat.add_widget(self.wake_phrase_item)
 
         # ---- INTEGRATIONS ----
-        self.container.add_widget(self._section_header('INTEGRATIONS'))
+        cat = self._category_containers['integrations']
+        cat.add_widget(self._section_header('INTEGRATIONS'))
 
         self.gmail_item = SettingsItem(
             title='Gmail',
@@ -506,7 +569,7 @@ class SettingsScreen(BaseScreen):
             mode='arrow',
             on_press=lambda _: self._open_integration_detail('gmail'),
         )
-        self.container.add_widget(self.gmail_item)
+        cat.add_widget(self.gmail_item)
 
         self.calendar_item = SettingsItem(
             title='Google Calendar',
@@ -514,10 +577,11 @@ class SettingsScreen(BaseScreen):
             mode='arrow',
             on_press=lambda _: self._open_integration_detail('calendar'),
         )
-        self.container.add_widget(self.calendar_item)
+        cat.add_widget(self.calendar_item)
 
         # ---- NOTIFICATIONS ----
-        self.container.add_widget(self._section_header('NOTIFICATIONS'))
+        cat = self._category_containers['notifications']
+        cat.add_widget(self._section_header('NOTIFICATIONS'))
 
         self.notif_master_item = SettingsItem(
             title='Notifications',
@@ -526,7 +590,7 @@ class SettingsScreen(BaseScreen):
             active=True,
             on_toggle=lambda v: self._save_setting('notification_enabled', v),
         )
-        self.container.add_widget(self.notif_master_item)
+        cat.add_widget(self.notif_master_item)
 
         self.notif_settings_item = SettingsItem(
             title='Notification preferences',
@@ -534,10 +598,11 @@ class SettingsScreen(BaseScreen):
             mode='arrow',
             on_press=lambda _: self.goto('notifications_settings', transition='slide_left'),
         )
-        self.container.add_widget(self.notif_settings_item)
+        cat.add_widget(self.notif_settings_item)
 
         # ---- SECURITY ----
-        self.container.add_widget(self._section_header('SECURITY'))
+        cat = self._category_containers['security']
+        cat.add_widget(self._section_header('SECURITY'))
 
         self.security_item = SettingsItem(
             title='Security settings',
@@ -545,10 +610,11 @@ class SettingsScreen(BaseScreen):
             mode='arrow',
             on_press=lambda _: self.goto('security_settings', transition='slide_left'),
         )
-        self.container.add_widget(self.security_item)
+        cat.add_widget(self.security_item)
 
         # ---- MAINTENANCE ----
-        self.container.add_widget(self._section_header('MAINTENANCE'))
+        cat = self._category_containers['maintenance']
+        cat.add_widget(self._section_header('MAINTENANCE'))
 
         self.unpair_account_item = SettingsItem(
             title='Unpair from account',
@@ -556,7 +622,7 @@ class SettingsScreen(BaseScreen):
             mode='arrow',
             on_press=lambda _: self._show_unpair_account_dialog(),
         )
-        self.container.add_widget(self.unpair_account_item)
+        cat.add_widget(self.unpair_account_item)
 
         self.restart_item = SettingsItem(
             title='Restart Device',
@@ -564,7 +630,7 @@ class SettingsScreen(BaseScreen):
             mode='arrow',
             on_press=lambda _: self._show_restart_dialog(),
         )
-        self.container.add_widget(self.restart_item)
+        cat.add_widget(self.restart_item)
 
         self.poweroff_item = SettingsItem(
             title='Power Off',
@@ -572,7 +638,7 @@ class SettingsScreen(BaseScreen):
             mode='arrow',
             on_press=lambda _: self._show_poweroff_dialog(),
         )
-        self.container.add_widget(self.poweroff_item)
+        cat.add_widget(self.poweroff_item)
 
         self.reset_item = SettingsItem(
             title='Factory Reset',
@@ -580,7 +646,7 @@ class SettingsScreen(BaseScreen):
             mode='arrow',
             on_press=lambda _: self._show_factory_reset_dialog(),
         )
-        self.container.add_widget(self.reset_item)
+        cat.add_widget(self.reset_item)
 
         self.connectivity_item = SettingsItem(
             title='Server connectivity check',
@@ -588,7 +654,7 @@ class SettingsScreen(BaseScreen):
             mode='arrow',
             on_press=lambda _: self.goto('connectivity_check', transition='slide_left'),
         )
-        self.container.add_widget(self.connectivity_item)
+        cat.add_widget(self.connectivity_item)
 
         self.usb_info_item = SettingsItem(
             title='Connected USB devices',
@@ -596,7 +662,7 @@ class SettingsScreen(BaseScreen):
             mode='arrow',
             on_press=lambda _: self.goto('usb_info', transition='slide_left'),
         )
-        self.container.add_widget(self.usb_info_item)
+        cat.add_widget(self.usb_info_item)
 
         self.diag_report_item = SettingsItem(
             title='Send diagnostic report',
@@ -604,10 +670,11 @@ class SettingsScreen(BaseScreen):
             mode='arrow',
             on_press=lambda _: self._send_diag_report(),
         )
-        self.container.add_widget(self.diag_report_item)
+        cat.add_widget(self.diag_report_item)
 
         # ---- SUPPORT ----
-        self.container.add_widget(self._section_header('SUPPORT'))
+        cat = self._category_containers['support']
+        cat.add_widget(self._section_header('SUPPORT'))
 
         self.about_item = SettingsItem(
             title='About / Licenses',
@@ -615,7 +682,7 @@ class SettingsScreen(BaseScreen):
             mode='arrow',
             on_press=lambda _: self.goto('about_screen', transition='slide_left'),
         )
-        self.container.add_widget(self.about_item)
+        cat.add_widget(self.about_item)
 
         self.feedback_item = SettingsItem(
             title='Send feedback',
@@ -623,20 +690,18 @@ class SettingsScreen(BaseScreen):
             mode='arrow',
             on_press=lambda _: self.goto('send_feedback', transition='slide_left'),
         )
-        self.container.add_widget(self.feedback_item)
+        cat.add_widget(self.feedback_item)
 
         self.support_item = SettingsItem(
             title='Help',
             subtitle='support.nexa.ai',
             mode='info',
         )
-        self.container.add_widget(self.support_item)
+        cat.add_widget(self.support_item)
 
-        # Bottom padding
-        self.container.add_widget(Widget(size_hint_y=None, height=self.suv(20)))
-
-        scroll.add_widget(self.container)
-        root.add_widget(scroll)
+        # Bottom padding for every category's own list
+        for c in self._category_containers.values():
+            c.add_widget(Widget(size_hint_y=None, height=self.suv(20)))
 
         # Footer
         footer = self.build_footer()
@@ -644,10 +709,59 @@ class SettingsScreen(BaseScreen):
 
         self.add_widget(root)
 
+    def _new_category_container(self):
+        """Empty scrollable list container, same styling the old single flat
+        list used — now scoped to one category's rows."""
+        c = GridLayout(
+            cols=1,
+            size_hint_x=1,
+            spacing=self.suv(SPACING['list_item_spacing']),
+            padding=[self.suh(SPACING['screen_padding']), self.suv(8)],
+            size_hint_y=None,
+        )
+        c.bind(minimum_height=c.setter('height'))
+        return c
+
+    # ------------------------------------------------------------------
+    # Category navigation (iOS-Settings-style: tap a category to drill into
+    # its rows). All existing rows/handlers above are unchanged — only which
+    # container each is mounted in changed.
+    # ------------------------------------------------------------------
+    def _show_categories(self):
+        self._current_category = None
+        self._scroll.clear_widgets()
+        self._scroll.add_widget(self.category_list_container)
+        self._scroll.scroll_y = 1
+        if hasattr(self.status_bar, 'device_label'):
+            self.status_bar.device_label.text = 'Settings'
+
+    def _show_category(self, key):
+        container = self._category_containers.get(key)
+        if container is None:
+            return
+        self._current_category = key
+        self._scroll.clear_widgets()
+        self._scroll.add_widget(container)
+        self._scroll.scroll_y = 1
+        if hasattr(self.status_bar, 'device_label'):
+            self.status_bar.device_label.text = self._category_titles.get(key, 'Settings')
+
+    def _on_back_pressed(self):
+        """Back exits one level at a time: out of a category first, then out
+        of Settings — matches the previous single-target back behaviour once
+        already at the category list."""
+        if self._current_category is not None:
+            self._show_categories()
+        else:
+            self.go_back()
+
     # ------------------------------------------------------------------
     # Lifecycle
     # ------------------------------------------------------------------
     def on_enter(self):
+        # Always land on the category list when Settings is (re)opened from
+        # elsewhere, rather than resuming whatever category was last open.
+        self._show_categories()
         self._load_system_info()
         self._load_radio_states()
         # Sync privacy and auto_record toggles from app state
