@@ -43,15 +43,36 @@ def _get_realtime_tool_client() -> httpx.Client:
     if _REALTIME_TOOL_CLIENT is None:
         with _REALTIME_TOOL_CLIENT_LOCK:
             if _REALTIME_TOOL_CLIENT is None:
+                # keepalive_expiry lowered from 300s to 30s so dead sockets
+                # after a wired<->wifi handover flush themselves within 30s
+                # of any idle window instead of stalling the next tool call
+                # for its full 90s read timeout. See BackendClient._build_client.
                 _REALTIME_TOOL_CLIENT = httpx.Client(
                     timeout=90.0,
                     limits=httpx.Limits(
                         max_connections=8,
                         max_keepalive_connections=4,
-                        keepalive_expiry=300.0,
+                        keepalive_expiry=30.0,
                     ),
                 )
     return _REALTIME_TOOL_CLIENT
+
+
+def reset_realtime_tool_client() -> None:
+    """Close and drop the process-wide Realtime tool client.
+
+    Companion to BackendClient.reset_client_pool: called on WS reconnect so
+    the Realtime worker thread's pool is not still holding TCP sockets from
+    the pre-outage network path.
+    """
+    global _REALTIME_TOOL_CLIENT
+    with _REALTIME_TOOL_CLIENT_LOCK:
+        old, _REALTIME_TOOL_CLIENT = _REALTIME_TOOL_CLIENT, None
+    if old is not None:
+        try:
+            old.close()
+        except Exception:  # noqa: BLE001 - pool eviction must never raise
+            logger.debug("reset_realtime_tool_client: close failed", exc_info=True)
 
 
 def prewarm_realtime_tool_connection_sync(
@@ -392,13 +413,7 @@ class BackendClient:
     def __init__(self, base_url: str = BACKEND_URL):
         self.base_url = _strip_trailing_rest_api_path(base_url.rstrip("/"))
         self.ws_url = BACKEND_WS_URL
-        # Short connect timeout so unreachable hosts fail fast; read/write use API_TIMEOUT.
-        self.client = httpx.AsyncClient(
-            timeout=httpx.Timeout(
-                float(API_TIMEOUT),
-                connect=min(10.0, float(API_TIMEOUT)),
-            ),
-        )
+        self.client = self._build_client()
         self._refresh_auth_header()
         self.ws_connection = None
         self._ws_reconnect_attempts = 0
@@ -411,6 +426,30 @@ class BackendClient:
         # through to a slow cold-start after a network change.
         self.on_ws_reconnected: Optional[Callable[[], None]] = None
 
+    def _build_client(self) -> httpx.AsyncClient:
+        """Build the shared httpx.AsyncClient with a bounded keepalive pool.
+
+        Short ``keepalive_expiry`` matters: after a wired<->wifi handover or
+        any silent NAT/firewall drop, the pool's TCP sockets can become
+        half-open (OS never sees a RST), and any new request queued on the
+        same connection blocks until the read timeout, silently — that
+        would previously stall every HTTPS call in the process until a full
+        container restart. Capping keepalive at 30s means any dead socket
+        gets evicted within 30s of an idle window; ``reset_client_pool()``
+        below is the explicit reset for the "network just recovered" case.
+        """
+        return httpx.AsyncClient(
+            timeout=httpx.Timeout(
+                float(API_TIMEOUT),
+                connect=min(10.0, float(API_TIMEOUT)),
+            ),
+            limits=httpx.Limits(
+                max_connections=10,
+                max_keepalive_connections=5,
+                keepalive_expiry=30.0,
+            ),
+        )
+
     def _refresh_auth_header(self) -> None:
         """Re-read the device auth token and update the httpx client header.
 
@@ -422,6 +461,23 @@ class BackendClient:
             self.client.headers["Authorization"] = f"Bearer {token}"
         else:
             self.client.headers.pop("Authorization", None)
+
+    async def reset_client_pool(self) -> None:
+        """Discard the current httpx client (and its pool) and build a fresh one.
+
+        Called by main.py's ``_on_backend_ws_reconnected`` hook — a successful
+        WS reconnect after an outage is the strongest signal that the network
+        path is usable again AND that the pool's cached TCP sockets from the
+        OLD path are now dead. Without this, HTTPS requests kept hanging on
+        those dead sockets even though WSS worked fine on fresh ones.
+        """
+        old = self.client
+        self.client = self._build_client()
+        self._refresh_auth_header()
+        try:
+            await old.aclose()
+        except Exception:  # noqa: BLE001 - pool eviction must never raise
+            logger.debug("reset_client_pool: aclose of old client failed", exc_info=True)
 
     async def close(self):
         await self.client.aclose()

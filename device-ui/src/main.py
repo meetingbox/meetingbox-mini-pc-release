@@ -290,7 +290,7 @@ from config import (
     BLUETOOTH_ENABLED,
 )
 
-from api_client import BackendClient
+from api_client import BackendClient, reset_realtime_tool_client
 from mock_backend import MockBackendClient
 from hardware import (
     request_system_poweroff,
@@ -1647,8 +1647,15 @@ class MeetingBoxApp(App):
         logger.info("MeetingBox UI started")
         self._ui_cache_load_from_disk()
         self._apply_cached_mic_gain_before_start()
-        self._prepare_wake_chime()
-        self._prewarm_audio_pipeline_libs()
+        # Defer both audio-pipeline warmups off the first-frame path. Each is
+        # a pure optimisation (their own docstrings say "best-effort, only an
+        # optimisation"): wake chime synthesises a WAV; prewarm ctypes-loads
+        # libspeexdsp and runs a warmup frame through WebRTC VAD. Running
+        # them synchronously here delayed the first paint by tens to hundreds
+        # of ms. Wake is typically minutes away, so 0.5-1.5s post-boot is
+        # plenty early to still avoid a cold pay on the first real wake.
+        Clock.schedule_once(lambda _dt: self._prepare_wake_chime(), 0.5)
+        Clock.schedule_once(lambda _dt: self._prewarm_audio_pipeline_libs(), 1.5)
         if self._audio_supervisor is not None:
             try:
                 self._audio_supervisor.start()
@@ -5399,6 +5406,26 @@ class MeetingBoxApp(App):
         Runs on the backend's asyncio thread; Clock.schedule_once is safe to
         call from any thread and marshals the retry onto the Kivy main thread.
         """
+        # Reset the HTTP client pool(s) on the same signal: their cached TCP
+        # sockets from the pre-outage network path can be half-open (OS never
+        # saw a RST), which silently stalls the next HTTPS request for its
+        # full read timeout. WSS works fine on fresh sockets — which is why
+        # the reconnect just succeeded — so HTTPS on the same host is almost
+        # certainly stale. Run the async reset on the backend's own loop.
+        try:
+            reset_realtime_tool_client()
+        except Exception:  # noqa: BLE001 - never let cleanup block reconnect
+            logger.debug("realtime tool client reset failed", exc_info=True)
+        try:
+            # We're inside the WS listener's own asyncio loop (see api_client.py
+            # subscribe_events -> cb()), so just schedule the reset on the
+            # running loop instead of run_coroutine_threadsafe (which would
+            # deadlock since it targets the same loop from within it).
+            loop = asyncio.get_event_loop()
+            loop.create_task(self.backend.reset_client_pool())
+        except Exception:  # noqa: BLE001
+            logger.debug("backend client pool reset failed", exc_info=True)
+
         if not REALTIME_WARM_STANDBY:
             return
         Clock.schedule_once(self._retry_voice_prewarm_after_reconnect, 0)
