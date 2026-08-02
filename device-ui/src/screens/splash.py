@@ -1,9 +1,9 @@
 """
 Splash Screen – Brand introduction during boot
 
-Deep-navy background, centred wordmark with a soft blue glow, a tagline,
-and three pulsing dots so the 3–5s cold-start feels intentional rather
-than frozen. Auto-advances to Welcome or Home after ``SPLASH_DURATION``.
+Deep-navy background, centred "Nexa" wordmark, and three pulsing dots so
+the 3–5s cold-start feels intentional rather than frozen. Auto-advances
+to Welcome or Home after ``SPLASH_DURATION``.
 """
 
 from kivy.uix.widget import Widget
@@ -15,13 +15,12 @@ from kivy.clock import Clock
 
 from screens.base_screen import BaseScreen
 from async_helper import run_async
-from config import COLORS, FONT_SIZES, SPLASH_DURATION, USE_MOCK_BACKEND
+from config import COLORS, SPLASH_DURATION, USE_MOCK_BACKEND
 
 
 # Deep navy — richer than pure black without competing with the wordmark.
 _BG_TOP = (0.05, 0.07, 0.13, 1)      # #0D1221
 _BG_BOTTOM = (0.02, 0.03, 0.07, 1)   # #050812
-_GLOW = (0.22, 0.55, 0.98, 0.18)     # primary_start at low alpha
 
 
 class _LoadingDots(Widget):
@@ -86,27 +85,10 @@ class SplashScreen(BaseScreen):
             self._bg_top = Rectangle(pos=root.pos, size=root.size)
         root.bind(pos=self._resize_bg, size=self._resize_bg)
 
-        # Radial-ish glow behind the wordmark — an oversized primary-blue
-        # label at very low alpha reads as a soft halo without needing a
-        # real blur shader.
-        self._glow_label = Label(
-            text='Nexa',
-            font_size=self.suf(96),
-            bold=True,
-            color=(_GLOW[0], _GLOW[1], _GLOW[2], _GLOW[3]),
-            halign='center',
-            valign='middle',
-            size_hint=(None, None),
-            size=(self.suf(600), self.suf(180)),
-            pos_hint={'center_x': 0.5, 'center_y': 0.55},
-            opacity=0,
-        )
-        self._glow_label.bind(size=self._sync_text_size)
-
-        # The actual wordmark.
+        # Single clean wordmark, centred.
         self._logo_label = Label(
             text='Nexa',
-            font_size=self.suf(64),
+            font_size=self.suf(72),
             bold=True,
             color=COLORS['white'],
             halign='center',
@@ -118,34 +100,18 @@ class SplashScreen(BaseScreen):
         )
         self._logo_label.bind(size=self._sync_text_size)
 
-        # Tagline.
-        self._tagline_label = Label(
-            text='AI Meeting Assistant',
-            font_size=self.suf(FONT_SIZES['medium']),
-            color=COLORS['gray_400'],
-            halign='center',
-            valign='middle',
-            size_hint=(None, None),
-            size=(self.suf(400), self.suf(30)),
-            pos_hint={'center_x': 0.5, 'center_y': 0.44},
-            opacity=0,
-        )
-        self._tagline_label.bind(size=self._sync_text_size)
-
-        # Loading dots below the tagline.
+        # Loading dots below the wordmark.
         self._dots = _LoadingDots(
             dot_radius=self.suf(5),
             spacing=self.suf(12),
             color=(1, 1, 1, 0.55),
             size_hint=(None, None),
             size=(self.suf(80), self.suf(20)),
-            pos_hint={'center_x': 0.5, 'center_y': 0.32},
+            pos_hint={'center_x': 0.5, 'center_y': 0.40},
             opacity=0,
         )
 
-        root.add_widget(self._glow_label)
         root.add_widget(self._logo_label)
-        root.add_widget(self._tagline_label)
         root.add_widget(self._dots)
         self.add_widget(root)
 
@@ -166,19 +132,13 @@ class SplashScreen(BaseScreen):
     # ------------------------------------------------------------------
     def on_enter(self):
         # Reset opacities so re-entering the splash re-plays the intro.
-        for w in (self._glow_label, self._logo_label, self._tagline_label, self._dots):
+        for w in (self._logo_label, self._dots):
             w.opacity = 0
 
-        # Wordmark + glow fade in together, tagline + dots follow slightly
-        # later so the eye lands on the name first.
-        Animation(opacity=1, duration=0.55, t='out_quad').start(self._glow_label)
-        Animation(opacity=1, duration=0.55, t='out_quad').start(self._logo_label)
+        # Wordmark first, dots follow so the eye lands on the name.
+        Animation(opacity=1, duration=0.5, t='out_quad').start(self._logo_label)
         (
-            Animation(duration=0.35)
-            + Animation(opacity=1, duration=0.45, t='out_quad')
-        ).start(self._tagline_label)
-        (
-            Animation(duration=0.55)
+            Animation(duration=0.4)
             + Animation(opacity=1, duration=0.35, t='out_quad')
         ).start(self._dots)
 
