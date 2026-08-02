@@ -15,12 +15,15 @@ from kivy.clock import Clock
 
 from screens.base_screen import BaseScreen
 from async_helper import run_async
-from config import COLORS, SPLASH_DURATION, USE_MOCK_BACKEND
+from config import SPLASH_DURATION, USE_MOCK_BACKEND
 
 
-# Deep navy — richer than pure black without competing with the wordmark.
-_BG_TOP = (0.05, 0.07, 0.13, 1)      # #0D1221
-_BG_BOTTOM = (0.02, 0.03, 0.07, 1)   # #050812
+# Light theme — near-white with a subtle top-to-bottom shade, matches the
+# rest of the device UI (settings/summary notification light surfaces).
+_BG_TOP = (0.98, 0.98, 0.99, 1)      # #FAFAFC
+_BG_BOTTOM = (0.94, 0.95, 0.97, 1)   # #F0F2F7
+_LOGO_COLOR = (0.07, 0.07, 0.08, 1)  # #111214 near-black
+_DOT_COLOR = (0.07, 0.07, 0.08, 0.55)
 
 
 class _LoadingDots(Widget):
@@ -90,7 +93,7 @@ class SplashScreen(BaseScreen):
             text='Nexa',
             font_size=self.suf(72),
             bold=True,
-            color=COLORS['white'],
+            color=_LOGO_COLOR,
             halign='center',
             valign='middle',
             size_hint=(None, None),
@@ -104,7 +107,7 @@ class SplashScreen(BaseScreen):
         self._dots = _LoadingDots(
             dot_radius=self.suf(5),
             spacing=self.suf(12),
-            color=(1, 1, 1, 0.55),
+            color=_DOT_COLOR,
             size_hint=(None, None),
             size=(self.suf(80), self.suf(20)),
             pos_hint={'center_x': 0.5, 'center_y': 0.40},
