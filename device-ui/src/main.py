@@ -784,6 +784,11 @@ class MeetingBoxApp(App):
 
         # Restore processing UI if summary/transcript-ready arrived before the processing screen.
         self._processing_summary_cache = {}
+        # De-dupe recording_stopped handling: the WS event and the local
+        # stop_recording() code path can both fire and both try to navigate
+        # to the processing screen, showing it twice. Track the last session
+        # id we advanced past 'recording' for so the second handler is a no-op.
+        self._last_stopped_session_id: str | None = None
         # Summary-ready notification. Owned by the app (not HomeScreen) so a
         # summary finishing while the user is on Tasks/Calendar/Emails still
         # surfaces instead of waiting until they navigate Home.
@@ -2202,12 +2207,20 @@ class MeetingBoxApp(App):
             })
 
     def on_recording_stopped(self, data):
+        sid = data.get('session_id') or self.current_session_id
+        # De-dupe: if the local stop_recording() path already handled this
+        # session id, the WS event now arriving would re-navigate to the
+        # processing screen and the user sees it fade in twice. Bail early
+        # -- state was already cleared and navigation already scheduled.
+        if sid and sid == self._last_stopped_session_id:
+            logger.info("on_recording_stopped: duplicate for %s, skipping", sid)
+            return
+        self._last_stopped_session_id = sid
         self.recording_state['active'] = False
         try:
             self._processing_summary_cache.clear()
         except Exception:
             pass
-        sid = data.get('session_id') or self.current_session_id
         duration_seconds = data.get('duration') or self._current_recording_elapsed_seconds()
         self._prime_processing_screen(sid, duration_seconds)
         self._kick_post_stop_meeting_polls(sid)
@@ -2852,7 +2865,12 @@ class MeetingBoxApp(App):
                 self._clear_recording_elapsed_clock()
                 Clock.schedule_once(lambda _: self._resume_voice_assistant_after_recording(), 0)
                 logger.info("Recording stopped successfully")
-                # Device-initiated stop never goes through on_recording_stopped (Redis/WS).
+                # Mark session as handled so the WS recording_stopped event (which
+                # NOW arrives reliably after the stop-recording ack landed in
+                # server 14c1fe0 + device 3d65b65) doesn't re-navigate and show
+                # the processing screen twice. See on_recording_stopped.
+                if sid:
+                    self._last_stopped_session_id = sid
                 Clock.schedule_once(
                     lambda _dt, _sid=sid, _dur=duration_seconds:
                         self._prime_processing_screen(_sid, _dur),
