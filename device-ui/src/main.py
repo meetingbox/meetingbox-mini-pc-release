@@ -2816,6 +2816,10 @@ class MeetingBoxApp(App):
                 try:
                     result = await self.backend.start_recording(mode, context=rec_context)
                     self.current_session_id = result['session_id']
+                    # New session begins — reset the "already stopped" dedupe
+                    # so a future Stop click on this session is not mistakenly
+                    # ignored as a duplicate of the previous session's stop.
+                    self._last_stopped_session_id = None
                     self.current_recording_mode = (
                         result.get('recording_mode') or mode
                     )
@@ -2855,30 +2859,41 @@ class MeetingBoxApp(App):
 
     def stop_recording(self):
         logger.info("stop_recording called, session_id=%s", self.current_session_id)
+        sid = self.current_session_id
+        # Duplicate-click guard: if this same session was already stopped
+        # (either by an earlier click on this button or by the WS event),
+        # do nothing. Prevents a jittery second navigation from double-tap.
+        if sid and sid == self._last_stopped_session_id:
+            logger.info("stop_recording: %s already stopped, ignoring", sid)
+            return
+        duration_seconds = self._current_recording_elapsed_seconds()
+
+        # Optimistic UI + bulletproof dedupe. Do BOTH of these BEFORE the
+        # backend call:
+        #   (a) Mark this session id as handled so the WS recording_stopped
+        #       event -- which now lands reliably after 3d65b65 + server
+        #       14c1fe0 and can arrive before OR after this coroutine's
+        #       await returns -- becomes a strict no-op. Any race between
+        #       the two goto_screen sources is settled here.
+        #   (b) Navigate to processing NOW, not after the server 200. The
+        #       server's new stop-confirmation loop can spend up to ~3s
+        #       waiting for the device audio-capture ack; blocking the UI
+        #       on that made Stop feel slow. Prime + navigate immediately;
+        #       the async call below just confirms in the background.
+        if sid:
+            self._last_stopped_session_id = sid
+        self.recording_state['active'] = False
+        self._voice_start_in_flight = False
+        self._clear_recording_elapsed_clock()
+        self._prime_processing_screen(sid, duration_seconds)
+        self._kick_post_stop_meeting_polls(sid)
+        Clock.schedule_once(lambda _: self._resume_voice_assistant_after_recording(), 0)
+        Clock.schedule_once(lambda _: self.goto_screen('processing', 'fade'), 0)
+
         async def _stop():
             try:
-                sid = self.current_session_id
-                duration_seconds = self._current_recording_elapsed_seconds()
                 await self.backend.stop_recording(sid)
-                self.recording_state['active'] = False
-                self._voice_start_in_flight = False
-                self._clear_recording_elapsed_clock()
-                Clock.schedule_once(lambda _: self._resume_voice_assistant_after_recording(), 0)
                 logger.info("Recording stopped successfully")
-                # Mark session as handled so the WS recording_stopped event (which
-                # NOW arrives reliably after the stop-recording ack landed in
-                # server 14c1fe0 + device 3d65b65) doesn't re-navigate and show
-                # the processing screen twice. See on_recording_stopped.
-                if sid:
-                    self._last_stopped_session_id = sid
-                Clock.schedule_once(
-                    lambda _dt, _sid=sid, _dur=duration_seconds:
-                        self._prime_processing_screen(_sid, _dur),
-                    0,
-                )
-                self._kick_post_stop_meeting_polls(sid)
-                Clock.schedule_once(
-                    lambda _: self.goto_screen('processing', 'fade'), 0)
             except Exception as e:
                 logger.error(f"Failed to stop recording: {e}")
                 Clock.schedule_once(
